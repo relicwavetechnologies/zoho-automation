@@ -228,6 +228,35 @@ arguments, or the plan stops here with the evidence written down.
 
 ### Phase 4 — Delete the mega-tool
 
+**The plan was wrong about this phase, twice.** It treated `divo_gateway` as
+`tools.invoke` wearing a costume. It fronts **thirteen** operations, and typed
+tools replace exactly one. Deleting it is only safe once every operation the
+model actually reaches has a replacement.
+
+Audit of all thirteen:
+
+| Operation | Status |
+| --- | --- |
+| `tools.invoke` | replaced by typed tools |
+| `connections.list` | replaced by `divo_connections` |
+| `media.image_ocr` | replaced by `divo_image_read` |
+| `work.resolve` | covered by `divo_skill_resolve` |
+| `tools.list` | internal only (broker, contract fetch) |
+| `capabilities.get`, `persona.resolve`, `skills.list/search/get` | registry inspection the guidance already tells the model not to use as a routing loop |
+| `teach.context.get` | **model-facing, no replacement** |
+| `teach.learning.apply` | **model-facing, no replacement** |
+| `tools.preflight` | **model-facing, no replacement** |
+
+The Teach agent prompt names `divo_gateway op "teach.context.get"` directly, so
+deleting the mega-tool today breaks Teach outright.
+
+- [x] Prerequisite: register typed tools eagerly, so an ordinary run that never
+      resolves work still has governed tools.
+- [x] Replace `connections.list` and `media.image_ocr` with typed tools.
+- [ ] Replace `teach.context.get` and `teach.learning.apply`, and rewrite the
+      Teach agent prompt to name the new tools.
+- [ ] Replace or retire `tools.preflight`. Decide whether it stays a tool or
+      becomes an option on the typed tool it validates.
 - [ ] Remove the `divo_gateway` registration and its `promptGuidelines` block.
 - [ ] Redistribute any surviving bullet to the one tool it constrains; delete
       the rest with a note on which schema now enforces it.
@@ -238,13 +267,12 @@ arguments, or the plan stops here with the evidence written down.
 - [ ] Remove `args schema:` stringification from `formatWorkBootstrap`; the
       schema now arrives as a tool definition.
 - [ ] Update `runtime-manifest.json` to drop `divo_gateway`.
-- [ ] Coordinate: this phase edits `index.ts`. Confirm the export project is
-      not mid-edit in the same file before starting.
 
-**Exit gate:** one cloud run completes a governed Zoho and Google flow with no
-`divo_gateway` registered.
+**Exit gate:** one cloud run completes a governed Zoho and Google flow, plus one
+Teach flow, with no `divo_gateway` registered.
 
-**Rollback:** revert the single commit; nothing else depends on the deletion.
+**Rollback:** revert the deletion commit; the typed tools stand on their own and
+nothing else depends on the removal.
 
 ### Phase 5 — Harvest what the typed surface unlocks
 
