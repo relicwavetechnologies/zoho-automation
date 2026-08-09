@@ -355,6 +355,59 @@ describe('Shopify tool contracts', () => {
     assert.equal(pages[1]?.rows[0]?.Order, '#1002');
   });
 
+  it('caps Shopify list replay at 25,000 rows for each operation page size', async () => {
+    const scenarios = [
+      {
+        source: { kind: 'shopify_snapshot', connectionId, toolId: 'shopifyOrders', args: { connectionId, operation: 'list_orders', first: 100 } },
+        operation: 'list_orders',
+        data: [orderNode],
+        expectedCalls: 250,
+      },
+      {
+        source: { kind: 'shopify_snapshot', connectionId, toolId: 'shopifyCustomers', args: { connectionId, operation: 'list_customers', first: 100 } },
+        operation: 'list_customers',
+        data: [customerNode],
+        expectedCalls: 250,
+      },
+      {
+        source: {
+          kind: 'shopify_snapshot',
+          connectionId,
+          toolId: 'shopifyCustomers',
+          args: { connectionId, operation: 'search_customers', search: { field: 'email', value: 'customer@example.com' }, first: 50 },
+        },
+        operation: 'search_customers',
+        data: [customerNode],
+        expectedCalls: 500,
+      },
+    ] as const;
+
+    for (const scenario of scenarios) {
+      let calls = 0;
+      const fetchPage = async (): Promise<ShopifyOperationResult> => {
+        calls += 1;
+        return {
+          ...completed,
+          operation: scenario.operation,
+          data: scenario.data,
+          pageInfo: { hasNextPage: true, endCursor: `${scenario.operation}-${calls}` },
+        };
+      };
+      const adapter = new ShopifySnapshotDataExportSource({
+        analytics: async () => completed,
+        orders: fetchPage,
+        customers: fetchPage,
+      });
+      let coverage: unknown;
+      for await (const page of adapter.read(scenario.source, { companyId: 'co-test', userId: 'user-test' })) {
+        coverage = page.coverage;
+      }
+
+      assert.equal(calls, scenario.expectedCalls, scenario.operation);
+      assert.deepEqual(coverage, { outcome: 'partial', cause: 'provider_limit' }, scenario.operation);
+    }
+  });
+
   it('fails closed when failure auditing fails instead of exposing an upstream result', async () => {
     const audit = makeAudit({ recordRequired: async () => { throw new Error('audit write failed'); } });
     const service = makeService({
