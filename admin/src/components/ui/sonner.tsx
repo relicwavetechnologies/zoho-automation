@@ -13,10 +13,16 @@ import { Toaster as Sonner, type ToasterProps } from "sonner"
 const Toaster = ({ ...props }: ToasterProps) => (
   <Sonner
     className="cur-toast toaster group"
-    // Below the header rather than over it: a notice that covers the control
-    // you just pressed hides the thing it is talking about.
-    position="top-right"
-    offset={16}
+    /*
+     * Bottom, not top.
+     *
+     * Top-right sat directly over Cancel and Turn it on — the two controls a
+     * message about the form is almost always about — so the answer covered the
+     * question. Down here it is out of the way of every header in the app and
+     * still in the corner the eye goes to after pressing something.
+     */
+    position="bottom-right"
+    offset={20}
     gap={10}
     {...props}
   />

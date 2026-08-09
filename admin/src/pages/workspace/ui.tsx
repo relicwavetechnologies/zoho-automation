@@ -84,7 +84,7 @@ export const Fade = ({ children }: { children: ReactNode }) => <div className="w
 
 /* ── Page furniture ──────────────────────────────────── */
 export function PageHeader({
-  eyebrow, title, description, actions, note,
+  eyebrow, title, description, actions,
   // `eyebrow` is a node rather than a string so a sub-page can put its way back
   // where the section name would otherwise sit — a wizard's breadcrumb belongs
   // above its own title, not in a rail the wizard has replaced.
@@ -93,14 +93,6 @@ export function PageHeader({
   title: string
   description?: string
   actions?: ReactNode
-  /**
-   * A line above the buttons, for the reason a button is refusing.
-   *
-   * Kept out of `actions` because a sentence sharing a row with two buttons
-   * wraps to two lines and turns the header into a paragraph with controls in
-   * it. Above them it still reads as being about the button it sits over.
-   */
-  note?: ReactNode
 }) {
   return (
     <div className="ws-ph">
@@ -109,13 +101,13 @@ export function PageHeader({
         <h1 style={{ marginTop: eyebrow ? 7 : 0 }}>{title}</h1>
         {description ? <p>{description}</p> : null}
       </div>
-      {actions ? <div className="ws-ph-act">{actions}</div> : null}
       {/*
-        Its own row under the header rather than stacked inside the actions.
-        `.ws-ph` aligns its columns to the bottom, so a taller actions column
-        grows upward — which pushed this sentence off the top of the page.
+        No third slot for a caveat. Two attempts lived here — beside the buttons,
+        where it wrapped, then above them, where it grew the bottom-aligned
+        column off the top of the page — and both were a sentence competing with
+        the controls it was about. It is a toast now, raised on the press.
       */}
-      {note ? <div className="ws-ph-note">{note}</div> : null}
+      {actions ? <div className="ws-ph-act">{actions}</div> : null}
     </div>
   )
 }

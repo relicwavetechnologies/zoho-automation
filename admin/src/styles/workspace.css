@@ -1766,18 +1766,9 @@
    spends the alarm colour on the ordinary state of a form somebody is still
    filling in — which leaves nothing louder for a forward that leaves the
    company. */
-/* A full-width row under the header, right-aligned so it sits beneath the
-   button it explains. Inside the actions it competed with Cancel and Turn it
-   on for one row and wrapped to two lines; stacked above them it grew the
-   bottom-aligned column upward and clipped off the top of the page. */
-.cur .ws-ph-note {
-  flex-basis: 100%; order: 3; margin-top: 10px;
-  display: flex; justify-content: flex-end;
-}
-.cur .ws-mk-blocked {
-  max-width: 62ch; margin: 0;
-  font-size: 12px; line-height: 1.5; color: var(--cur-muted); text-align: right;
-}
+/* The reason a button refuses is a toast now, raised when it is pressed. A
+   line beside the button was read by nobody who had already decided to press
+   it, and a disabled button answers nothing at all. */
 
 /* ── The rule sheet ────────────────────────────────────
    This was a three-step wizard: catch → do → check. Three screens for six

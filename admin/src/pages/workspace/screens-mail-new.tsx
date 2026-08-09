@@ -430,24 +430,6 @@ function MailRuleForm({
       : 'Matching mail leaves your company in full, so your manager is asked before this starts.',
   }
 
-  /*
-   * Announced on the edge, not on every render.
-   *
-   * Keyed on the addresses themselves so retyping the same one is silent, and
-   * delayed so a half-typed address — which is outside the domain right up to
-   * its last character — never raises one.
-   */
-  const advisoryKey = advisory ? `${externals.join(',')}|${unreadLeaves}` : ''
-  const announced = useRef('')
-  useEffect(() => {
-    if (!advisoryKey || announced.current === advisoryKey) return
-    const timer = setTimeout(() => {
-      announced.current = advisoryKey
-      if (advisory) notify.heads(advisory.title, advisory.body)
-    }, 700)
-    return () => clearTimeout(timer)
-  }, [advisoryKey])
-
   const buildDraft = (): MailRuleDraft | null => {
     if (!mailbox || !destination) return null
     return {
@@ -494,8 +476,27 @@ function MailRuleForm({
   }
 
   const onSubmit = async () => {
+    /*
+     * One answer per press.
+     *
+     * `blockedReason` returns the first thing standing in the way and nothing
+     * else, so fixing it and pressing again surfaces the next — which is how
+     * somebody works through a form, rather than being handed a list of
+     * everything wrong with it at once.
+     */
+    if (blocked) {
+      notify.refused('This rule is not ready yet', blocked)
+      return
+    }
     const request = buildDraft()
     if (!request) return
+
+    /*
+     * The one consequence worth hearing before the rule exists, said at the
+     * moment it is committed rather than while an address is still being typed.
+     * Not a refusal — the rule is made either way, and somebody is asked.
+     */
+    if (advisory) notify.heads(advisory.title, advisory.body)
 
     if (editing && sourceRuleId) {
       const outcome = await updating.update(sourceRuleId, request)
@@ -626,16 +627,6 @@ function MailRuleForm({
         // said it in alarm colours. It is neither: the rule is unfinished, not
         // wrong. Sharing the actions row made it wrap beside Cancel and Turn it
         // on, so it takes a line of its own above them.
-        // Blocked first: you cannot press the button at all, so why it refuses
-        // outranks what pressing it would mean. The advisory takes the line when
-        // there is nothing stopping you — it is the consequence of the thing you
-        // are about to do, and it belongs where you decide to do it. The toast
-        // announces it once; this is what is still true at submit.
-        note={
-          blocked ? <span className="ws-mk-blocked">{blocked}</span>
-            : advisory ? <span className="ws-mk-blocked">{advisory.title} — {advisory.body}</span>
-              : undefined
-        }
         actions={
           <>
             {resolution.status === 'choose' && !editing ? (
@@ -649,10 +640,18 @@ function MailRuleForm({
             <button
               type="button"
               className="btn primary"
-              // Nothing to press once it is with somebody else. Leaving it live
-              // invites the same request again, and a member who clicks twice
-              // should not have to wonder whether they sent two.
-              disabled={saving || blocked !== null || pending !== null}
+              /*
+               * Live even when the rule is unfinished.
+               *
+               * Disabled, it refused silently: the reason lived in a line
+               * beside it that somebody who had already decided to press was
+               * not reading. Pressing is how a person asks what is wrong, and
+               * the answer comes back as one toast.
+               *
+               * Still dead once the request is with somebody else — leaving it
+               * live there invites the same approval twice.
+               */
+              disabled={saving || pending !== null}
               onClick={() => { void onSubmit() }}
             >
               {pending
