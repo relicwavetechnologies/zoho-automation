@@ -159,6 +159,65 @@ describe('Google Workspace MCP product tools', () => {
     }]);
   });
 
+  /**
+   * The three-trip loop this removes: call fails on a field name, model calls
+   * describe to learn the contract, model repeats the call. The schema is
+   * already known here, so it travels with the rejection.
+   */
+  it('returns the native schema alongside a rejected argument name', async () => {
+    let describeCalls = 0;
+    const client: GoogleWorkspaceMcpPort = {
+      describeTool: async (name) => {
+        describeCalls += 1;
+        return { name, description: 'schema', inputSchema: { type: 'object', properties: { page_size: { type: 'integer' } } } };
+      },
+      callTool: async () => {
+        throw new Error('1 validation error for call[search_gmail_messages]\nmaxResults\n  Extra inputs are not permitted');
+      },
+    };
+    const tools = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({ status: 'resolved', connection: { client } }),
+    });
+    const gmail = tools.find((tool) => tool.id === 'googleGmail')!;
+    const result = await gmail.execute({
+      connectionId: 'connection-1',
+      op: 'call',
+      nativeTool: 'search_gmail_messages',
+      input: { maxResults: 20 },
+    }, makeCtx('googleGmail', ['read']));
+
+    assert.equal(result.ok, false);
+    const message = result.ok ? '' : String((result.error as { message?: string }).message);
+    // The original rejection survives — it is still the useful part.
+    assert.match(message, /Extra inputs are not permitted/);
+    // And the answer to the model's next question arrives with it.
+    assert.match(message, /page_size/);
+    assert.match(message, /do not call describe/i);
+    assert.equal(describeCalls, 1);
+  });
+
+  it('leaves a failure that is not about the contract alone', async () => {
+    let describeCalls = 0;
+    const client: GoogleWorkspaceMcpPort = {
+      describeTool: async () => { describeCalls += 1; return null; },
+      callTool: async () => { throw new Error('Quota exceeded for quota metric'); },
+    };
+    const tools = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({ status: 'resolved', connection: { client } }),
+    });
+    const gmail = tools.find((tool) => tool.id === 'googleGmail')!;
+    const result = await gmail.execute({
+      connectionId: 'connection-1',
+      op: 'call',
+      nativeTool: 'search_gmail_messages',
+      input: {},
+    }, makeCtx('googleGmail', ['read']));
+
+    assert.equal(result.ok, false);
+    // A quota problem is not a contract problem; a schema under it is noise.
+    assert.equal(describeCalls, 0);
+  });
+
   it('maps native mutation semantics to Divo action groups and scope requirements', async () => {
     const requests: any[] = [];
     const calls: any[] = [];
