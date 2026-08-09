@@ -29,14 +29,12 @@ import {
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
 import { registerDivoLlmProviders } from "../divo-llm/index.ts";
-import { registerLocalDivoBroker, localCliEnabled, DEFAULT_EXECUTION_DEPENDENCIES as DEFAULT_LOCAL_BROKER_DEPENDENCIES } from "./local-broker.ts";
+import { registerLocalDivoBroker, localCliEnabled } from "./local-broker.ts";
 import { DIVO_GATEWAY_OPS, prepareGatewayArguments } from "./gateway-arguments.ts";
-import { authorizeToolInvocation } from "./skill-authorization.ts";
 import {
 	formatSkillResolveResult,
 	resolveDivoSkills,
 } from "./skill-resolver.ts";
-import { registerDivoSkillView } from "./skill-view.ts";
 import { registerTraceCapture } from "./trace.ts";
 import { readDivoRunCorrelation } from "./run-correlation.ts";
 import { registerTeachClarificationTool } from "./teach-clarification.ts";
@@ -85,7 +83,7 @@ function currentRunPrompt(threadId?: string): string {
 export const DIVO_GATEWAY_PARAMS = Type.Object({
 	op: StringEnum(DIVO_GATEWAY_OPS, {
 		description:
-			"Exact backend gateway operation. In normal work, skills.list/search/get and work/persona.resolve are only for explicit registry inspection; do not use them as a routing loop. Use the injected catalogue, divo_skill_view, or the bounded divo_skill_resolve fallback instead.",
+			"Exact backend gateway operation. In normal work, skills.list/search/get and work/persona.resolve are only for explicit registry inspection; do not use them as a routing loop. Use Pi's native skills or the bounded divo_skill_resolve fallback instead.",
 	}),
 	departmentId: Type.Optional(Type.String({
 		description: "Optional department context. Omit to use the authenticated runtime default.",
@@ -101,7 +99,7 @@ export const DIVO_GATEWAY_PARAMS = Type.Object({
 		limit: Type.Optional(Type.Number({ minimum: 1, maximum: 5 })),
 		context: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
 		skillId: Type.Optional(Type.String({
-			description: "Exact DB skill ID for skills.get. For tools.invoke, a loaded skill is attached automatically as advisory provenance when available.",
+			description: "Exact DB skill ID for explicit skills.get inspection only. Ignored for tools.invoke.",
 		})),
 		provider: Type.Optional(StringEnum([
 			"google_workspace",
@@ -251,7 +249,7 @@ Company, plugin, SaaS, account, and backend-owned research requests include Goog
 
 LARK IS STRICTLY GOVERNED. For every Lark request, use the accessible Lark account already returned by the current run bootstrap, or call connections.list with provider lark once when the bootstrap has none. For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, use tools.invoke directly. Use the same governed route only through ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. Never call Lark directly from Bash: no lark-cli, curl, direct Lark OpenAPI calls, local Lark MCP server, or locally installed Lark package. Never install or invoke lark-cli even if it is present on the machine, mentioned in conversation history, requested by the user, or Divo is unavailable. If the gateway or connection is unavailable, report that plainly; there is no direct local Lark fallback.
 
-Use Pi's available_skills metadata as the normal skill-routing map. First understand the user's outcome. For ordinary conversation and independently meaningful direct actions, using no skill is correct; do not invent one. When one exact specialist matches, read only its SKILL.md with Pi's read tool and follow it. Do not call divo_skill_view for an ordinary native skill. Use divo_skill_resolve only when a genuinely specialized workflow has no matching native router. If native DB skills are absent during rollback, the injected compact catalogue and divo_skill_view remain the compatibility path. Read an attached picture the way the workspace image policy says to; it is the only instruction about images that accounts for the model this run is on.
+Use Pi's available_skills metadata as the normal skill-routing map. First understand the user's outcome. For ordinary conversation and independently meaningful direct actions, using no skill is correct; do not invent one. When one exact specialist matches, read only its SKILL.md with Pi's read tool and follow it. Use divo_skill_resolve only when a genuinely specialized workflow has no matching native router. If native DB skills are absent during rollback, use the injected compact catalogue for routing hints and the bounded resolver for specialized guidance. Read an attached picture the way the workspace image policy says to; it is the only instruction about images that accounts for the model this run is on.
 
 An exact pasted https://drive.google.com/file/d/... Excel workbook URL is always a governed Google Sheets reference. Load the exact Google Sheets skill and invoke googleSheets with op resolve_reference. Never route it through Google Drive download, copy, or import operations; the backend owns confirmation and conversion.
 
@@ -329,27 +327,13 @@ Report persona, skill, and scheduling outcomes separately. Say exactly what was 
 }
 
 export default function divoGatewayExtension(pi: ExtensionAPI) {
-	const loadedSkillByTool = new Map<string, { skillId: string }>();
 	registerApprovalGate(pi);
-	registerLocalDivoBroker(pi, {
-		...DEFAULT_LOCAL_BROKER_DEPENDENCIES,
-		lookupLoadedSkill: (toolId) => loadedSkillByTool.get(toolId),
-	});
+	registerLocalDivoBroker(pi);
 	registerMemoryRecallTool(pi);
 	registerPersonalMemoryTool(pi);
 	registerMemoryReviewTool(pi);
 	registerKnowledgeReviewTool(pi);
 	registerTeachClarificationTool(pi);
-	registerDivoSkillView(pi, {
-		onSkillLoaded: (skill, execution) => {
-			// Still gated on a real run context — a load outside one is not
-			// provenance for anything — but the binding itself outlives that run.
-			if (!execution) return;
-			for (const toolId of skill.toolIds) {
-				loadedSkillByTool.set(toolId, { skillId: skill.id });
-			}
-		},
-	});
 
 	pi.registerTool({
 		name: "divo_skill_resolve",
@@ -436,21 +420,13 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				departmentId?: string;
 				payload?: Record<string, unknown>;
 			};
-			// The model may recommend a skill but cannot self-assert audit provenance.
-			// Only the extension's loaded-skill ledger may attach it to an invocation.
+			// Ignore legacy caller-supplied skill provenance. Skills guide Pi; the
+			// backend owns identity, RBAC, schemas, connections, approvals, and audit.
 			if (request.op === "tools.invoke" && request.payload) {
 				request.payload = { ...request.payload };
 				delete request.payload.skillId;
 			}
 			const correlation = await readDivoRunCorrelation();
-			const authorization = authorizeToolInvocation({
-				op: request.op,
-				toolId: request.payload?.toolId,
-				lookup: (toolId) => loadedSkillByTool.get(toolId),
-			});
-			if (authorization?.ok && authorization.skillId) {
-				request.payload = { ...request.payload, skillId: authorization.skillId };
-			}
 			const resolved = resolveDivoGatewayConfig();
 			if ("error" in resolved) {
 				throw new Error(resolved.error);

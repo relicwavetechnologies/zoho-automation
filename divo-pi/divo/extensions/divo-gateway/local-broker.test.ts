@@ -28,15 +28,6 @@ const correlation = {
 };
 const execFileAsync = promisify(execFile);
 
-/**
- * Stands in for the skill registry the extension owns. A tool call may carry
- * advisory provenance when divo_skill_view loaded a matching recipe, so the
- * tests below say which skill was actually read before each call.
- */
-function loadedSkills(skillId = "gmail-read"): (toolId: string) => { skillId: string } | undefined {
-	return () => ({ skillId });
-}
-
 function activeCalls(signal?: AbortSignal): Map<string, ActiveBashCall> {
 	return new Map([["bash-1", {
 		toolCallId: "bash-1",
@@ -62,7 +53,7 @@ describe("Divo local broker protocol", () => {
 		}), /not exposed/);
 	});
 
-	it("sends the loaded skill with a scripted tool call", async () => {
+	it("does not attach skill provenance to a scripted tool call", async () => {
 		const gatewayRequests: GatewayRequestBody[] = [];
 		await executeLocalBrokerRequest({
 			version: 1,
@@ -70,14 +61,13 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills("gmail-read"),
 			executeGateway: async (_resolved, request) => {
 				gatewayRequests.push(request);
 				return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
 			},
 		});
 
-		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, "gmail-read");
+		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, undefined);
 	});
 
 	it("sends an ordinary scripted call without invented skill provenance", async () => {
@@ -91,7 +81,6 @@ describe("Divo local broker protocol", () => {
 			}, activeCalls(), {
 				resolveConfig: () => config,
 				readCorrelation: async () => correlation,
-				lookupLoadedSkill: () => undefined,
 				executeGateway: async (_resolved, request) => {
 					sentPayload = request.payload;
 					return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
@@ -108,39 +97,12 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills("shopify-commerce"),
 			executeGateway: async () => {
 				gatewayCalls += 1;
 				return { body: { ok: true, status: "success" }, httpStatus: 200 };
 			},
 		}), /must be called directly through divo_gateway/);
 		assert.equal(gatewayCalls, 0);
-	});
-
-	/**
-	 * A skill loaded on an earlier message still authorizes this one.
-	 *
-	 * This used to be a rejection: the binding was scoped to the run that
-	 * created it, so every later message paid a refused call plus a redundant
-	 * re-fetch of a recipe already in context. The backend re-resolves RBAC on
-	 * each call regardless, so nothing was being protected by the expiry.
-	 */
-	it("honours a skill loaded on an earlier message", async () => {
-		let sentSkillId: unknown;
-		await executeLocalBrokerRequest({
-			version: 1,
-			request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
-		}, activeCalls(), {
-			resolveConfig: () => config,
-			readCorrelation: async () => correlation,
-			lookupLoadedSkill: () => ({ skillId: "gmail-read" }),
-			executeGateway: async (_config, request) => {
-				sentSkillId = (request.payload as { skillId?: unknown } | undefined)?.skillId;
-				return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
-			},
-		});
-		// Provenance still comes from what was loaded, never from the caller.
-		assert.equal(sentSkillId, "gmail-read");
 	});
 
 	it("rejects calls that are not owned by one active approved Bash execution", async () => {
@@ -165,7 +127,6 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills(),
 			executeGateway: async (resolved, request, toolCallId, ctx) => executeGatewayRequest(
 				resolved,
 				request,
@@ -209,7 +170,6 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills(),
 			executeGateway: async (resolved, request, toolCallId, ctx) => executeGatewayRequest(
 				resolved,
 				request,
@@ -256,7 +216,6 @@ describe("Divo local broker protocol", () => {
 			}, activeCalls(), {
 				resolveConfig: () => config,
 				readCorrelation: async () => correlation,
-				lookupLoadedSkill: loadedSkills(),
 				executeGateway: async () => ({
 					body: { ok: false, status, error: { code: status, message: `Backend ${status}` } },
 					httpStatus: status === "rate_limited" ? 429 : 403,
@@ -275,7 +234,6 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills(),
 			executeGateway: async () => ({
 				body: {
 					ok: false,
@@ -308,7 +266,6 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills(),
 			executeGateway: async (_config, _request, _toolCallId, ctx) => {
 				observedSignal = ctx.signal;
 				if (ctx.signal?.aborted) throw new DOMException("cancelled", "AbortError");
@@ -332,7 +289,6 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => ({ ...correlation, departmentId: "dept-2" }),
-			lookupLoadedSkill: loadedSkills(),
 			executeGateway: async () => {
 				executions += 1;
 				throw new Error("unreachable");
@@ -359,7 +315,6 @@ describe("Divo local broker protocol", () => {
 		} as never, {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills(),
 			executeGateway: async (_resolved, request) => ({
 				body: { ok: true, status: "success", data: { op: request.op } },
 				httpStatus: 200,

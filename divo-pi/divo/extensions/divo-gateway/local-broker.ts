@@ -2,7 +2,6 @@ import type {
 	ExtensionAPI,
 	ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
-import { authorizeToolInvocation, type LoadedSkillLookup } from "./skill-authorization.ts";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
@@ -66,21 +65,12 @@ export interface LocalBrokerExecutionDependencies {
 	resolveConfig: typeof resolveDivoGatewayConfig;
 	readCorrelation: typeof readDivoRunCorrelation;
 	executeGateway: typeof executeGatewayRequest;
-	/**
-	 * Which skill registered a tool in this run. Supplied by the extension that
-	 * owns the registry, so the broker enforces the same gate as the tool path
-	 * instead of trusting whatever a script sends.
-	 */
-	lookupLoadedSkill: LoadedSkillLookup;
 }
 
 export const DEFAULT_EXECUTION_DEPENDENCIES: LocalBrokerExecutionDependencies = {
 	resolveConfig: resolveDivoGatewayConfig,
 	readCorrelation: readDivoRunCorrelation,
 	executeGateway: executeGatewayRequest,
-	// No registry wired means nothing was ever loaded, so every invocation is
-	// refused. Failing closed is the only safe default for an authorization gate.
-	lookupLoadedSkill: () => undefined,
 };
 
 function asRecord(value: unknown): JsonRecord | undefined {
@@ -156,9 +146,9 @@ export async function executeLocalBrokerRequest(
 		active.nextBrokerCall += 1;
 		const actionId = `${active.toolCallId}:broker:${active.nextBrokerCall}`;
 		const label = brokerLabel(input);
-		// Same provenance rule the divo_gateway tool applies. A script reaching the
-		// backend through this socket has no more authority than the model calling
-		// the tool directly, and only a skill actually loaded here may be attached.
+		// A script reaching the backend through this socket has no more authority
+		// than the model. Ignore any caller-supplied legacy skill provenance; the
+		// backend checks identity, RBAC, schema, connection access, and approval.
 		const payload = asRecord(input.request.payload);
 		let trustedPayload = input.request.payload;
 		if (input.request.op === "tools.invoke" && payload) {
@@ -171,21 +161,12 @@ export async function executeLocalBrokerRequest(
 		) {
 			throw new Error("Protected Shopify record tools must be called directly through divo_gateway; divo-local cannot retain or print their results.");
 		}
-		const authorization = authorizeToolInvocation({
-			op: input.request.op,
-			toolId: payload?.["toolId"],
-			lookup: dependencies.lookupLoadedSkill,
-		});
-		const authorizedPayload = authorization?.ok && authorization.skillId
-			? { ...(asRecord(trustedPayload) ?? {}), skillId: authorization.skillId }
-			: trustedPayload;
-
 		const request: GatewayRequestBody = {
 			op: input.request.op,
 			...(input.request.departmentId || correlation.departmentId
 				? { departmentId: input.request.departmentId ?? correlation.departmentId }
 				: {}),
-			...(Object.hasOwn(input.request, "payload") ? { payload: authorizedPayload } : {}),
+			...(Object.hasOwn(input.request, "payload") ? { payload: trustedPayload } : {}),
 			execution: {
 				version: 1,
 				threadId: correlation.threadId,
