@@ -3,7 +3,12 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { WorkBootstrap } from "./work-bootstrap.ts";
-import { registerTypedTools, type TypedToolHost, type TypedToolResult } from "./typed-tool-runtime.ts";
+import {
+	registerEagerTypedTools,
+	registerTypedTools,
+	type TypedToolHost,
+	type TypedToolResult,
+} from "./typed-tool-runtime.ts";
 
 const fixtures = JSON.parse(
 	readFileSync(new URL("./backend-schema-fixture.json", import.meta.url), "utf8"),
@@ -103,6 +108,36 @@ describe("registerTypedTools", () => {
 			() => validateToolArguments(piTool, { name: tools[0]!.name, arguments: { op: "notARealOp" } } as never),
 			/allowed values/,
 		);
+	});
+
+	it("does not re-fetch a contract for a tool already registered", async () => {
+		const registry = new Set<string>(["divo_web_search"]);
+		const { host: pi } = host();
+		let fetched: string[] | undefined;
+		const result = await registerEagerTypedTools(pi, ["webSearch"], noopInvoke, registry, async (ids) => {
+			fetched = ids;
+			return { tools: [], failed: [] };
+		});
+		assert.equal(fetched, undefined, "an already-live tool must not cost a request");
+		assert.deepEqual(result.registered, []);
+	});
+
+	it("reports a contract that could not be fetched instead of failing the run", async () => {
+		const { host: pi, tools } = host();
+		const result = await registerEagerTypedTools(pi, ["webSearch", "zohoBooks"], noopInvoke, new Set(), async () => ({
+			tools: [{
+				id: "webSearch",
+				family: "context",
+				description: "Search the public web.",
+				parameterDocs: "query: the search text",
+				allowedActions: ["read"],
+				argsSchema: fixtures.webSearch,
+			}],
+			failed: [{ toolId: "zohoBooks", reason: "connection refused" }],
+		}));
+		assert.deepEqual(result.registered, ["divo_web_search"]);
+		assert.deepEqual(result.failed, [{ toolId: "zohoBooks", reason: "connection refused" }]);
+		assert.equal(tools.length, 1, "a partial typed surface is better than no run");
 	});
 
 	it("reports a rejected contract instead of registering a wrong one", () => {

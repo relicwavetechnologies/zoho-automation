@@ -28,7 +28,11 @@ import {
 	resolveDivoGatewayConfig,
 } from "./gateway-client.ts";
 import { executeGatewayRequest } from "./gateway-execution.ts";
-import { createGatewayTypedToolInvoker, registerTypedTools } from "./typed-tool-runtime.ts";
+import {
+	createGatewayTypedToolInvoker,
+	registerEagerTypedTools,
+	registerTypedTools,
+} from "./typed-tool-runtime.ts";
 import { registerDivoLlmProviders } from "../divo-llm/index.ts";
 import { registerLocalDivoBroker, localCliEnabled } from "./local-broker.ts";
 import { DIVO_GATEWAY_OPS, prepareGatewayArguments } from "./gateway-arguments.ts";
@@ -511,13 +515,39 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event) => {
 		refreshDivoRuntime(pi);
 		const correlation = await readDivoRunCorrelation().catch(() => undefined);
+		// Most runs never resolve work, so registering typed tools only from a
+		// work bootstrap would leave an ordinary request with no governed tools.
+		// The run context already names every reachable tool; fetch their
+		// contracts once and make the typed surface live from the first turn.
+		const departmentContext = await readDepartmentPersonaContext();
+		const reachableToolIds = departmentContext?.capabilityBootstrap?.availableTools
+			?.map((tool) => tool.toolId) ?? [];
+		if (reachableToolIds.length > 0) {
+			try {
+				const typed = await registerEagerTypedTools(
+					pi,
+					reachableToolIds,
+					typedToolInvoker,
+					typedToolRegistry,
+				);
+				console.error(`[divo-typed-tools] ${JSON.stringify({
+					registered: typed.registered.length,
+					rejected: typed.rejected,
+					failed: typed.failed,
+				})}`);
+			} catch (error) {
+				// An incomplete typed surface is recoverable; a run that cannot
+				// start is not. divo_gateway remains registered either way.
+				console.error(`[divo-typed-tools] eager registration failed: ${String(error)}`);
+			}
+		}
 		const nativeSkills = event.systemPromptOptions.skills?.some(
 			(skill) => skill.filePath.startsWith(NATIVE_DB_SKILL_ROOT),
 		) ?? false;
 		let systemPrompt = composeDivoSystemPrompt(
 			event.systemPrompt,
 			DIVO_COMPANY_PERSONA_PROMPT,
-			await readDepartmentPersonaContext(),
+			departmentContext,
 			{ nativeSkills },
 		);
 		systemPrompt = `${systemPrompt}\n\n${

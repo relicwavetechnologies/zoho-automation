@@ -1,5 +1,5 @@
 import type { WorkBootstrap } from "./work-bootstrap.ts";
-import { buildTypedTools, type TypedToolDefinition } from "./typed-tools.ts";
+import { buildTypedTools, typedToolName as typedToolNameFor, type TypedToolDefinition } from "./typed-tools.ts";
 import {
 	formatGatewayResponse,
 	isGatewayApprovalStatus,
@@ -104,6 +104,120 @@ export function registerTypedTools(
 	}
 
 	return { registered, skipped, rejected };
+}
+
+/**
+ * Fetches the contract for each reachable tool.
+ *
+ * The run context already names every tool the member can reach
+ * (`capabilityBootstrap.availableTools`), but carries no schema. The gateway
+ * only returns a contract for an exact `toolId`, so this asks once per tool and
+ * in parallel — one round trip of latency for the whole set.
+ *
+ * Folding these contracts into the runtime-context response would remove even
+ * that round trip. It needs the tool registry wired into the desktop route, so
+ * it stays an optimization to make once the cost has been measured.
+ */
+export async function fetchTypedToolContracts(
+	toolIds: string[],
+	toolCallId: string,
+): Promise<{ tools: WorkBootstrap["tools"]; failed: Array<{ toolId: string; reason: string }> }> {
+	const resolved = resolveDivoGatewayConfig();
+	if ("error" in resolved) {
+		return { tools: [], failed: toolIds.map((toolId) => ({ toolId, reason: resolved.error })) };
+	}
+	const correlation = await readDivoRunCorrelation();
+
+	type ContractFetch =
+		| { tool: WorkBootstrap["tools"][number] }
+		| { toolId: string; reason: string };
+
+	const settled: ContractFetch[] = await Promise.all(toolIds.map(async (toolId): Promise<ContractFetch> => {
+		try {
+			const { body } = await executeGatewayRequest(
+				resolved,
+				{
+					op: "tools.list",
+					...(correlation.departmentId ? { departmentId: correlation.departmentId } : {}),
+					payload: { toolId },
+					execution: {
+						version: 1,
+						threadId: correlation.threadId,
+						runId: correlation.runId,
+						actionId: toolCallId,
+					},
+				},
+				toolCallId,
+				{ ...(correlation.channel ? { runtimeChannel: correlation.channel } : {}) } as never,
+			);
+			if (!body.ok) {
+				return { toolId, reason: body.error?.message ?? body.status };
+			}
+			const data = body.data as { tools?: unknown } | undefined;
+			const entry = Array.isArray(data?.tools) ? data.tools[0] as Record<string, unknown> : undefined;
+			if (!entry || typeof entry.argsSchema !== "object" || entry.argsSchema === null) {
+				return { toolId, reason: "response carried no args schema" };
+			}
+			return {
+				tool: {
+					id: String(entry.id ?? toolId),
+					family: String(entry.family ?? "unknown"),
+					description: String(entry.description ?? ""),
+					parameterDocs: String(entry.parameterDocs ?? ""),
+					allowedActions: Array.isArray(entry.allowedActions)
+						? entry.allowedActions.filter((action): action is string => typeof action === "string")
+						: [],
+					argsSchema: entry.argsSchema,
+				} satisfies WorkBootstrap["tools"][number],
+			};
+		} catch (error) {
+			return { toolId, reason: error instanceof Error ? error.message : String(error) };
+		}
+	}));
+
+	return {
+		tools: settled.flatMap((entry) => ("tool" in entry ? [entry.tool] : [])),
+		failed: settled.flatMap((entry) => ("tool" in entry ? [] : [entry])),
+	};
+}
+
+/**
+ * Registers typed tools for every reachable tool before the agent starts.
+ *
+ * Work resolution is deliberately not called on most runs, so registering only
+ * from its bootstrap would leave an ordinary request with no governed tools at
+ * all. This makes the typed surface present from the first turn.
+ *
+ * A failure here is reported and swallowed: an incomplete typed surface is
+ * recoverable, a run that cannot start is not.
+ */
+export async function registerEagerTypedTools(
+	host: TypedToolHost,
+	toolIds: string[],
+	invoke: TypedToolInvoker,
+	registry: Set<string>,
+	fetchContracts: typeof fetchTypedToolContracts = fetchTypedToolContracts,
+): Promise<TypedToolRegistrationResult & { failed: Array<{ toolId: string; reason: string }> }> {
+	const pending = toolIds.filter((toolId) => !registry.has(typedToolNameFor(toolId)));
+	if (pending.length === 0) {
+		return { registered: [], skipped: [], rejected: [], failed: [] };
+	}
+	const { tools, failed } = await fetchContracts(pending, "typed-tools-eager");
+	const result = registerTypedTools(
+		host,
+		{
+			version: 1,
+			scope: "run",
+			registryRevision: 0,
+			tools,
+			nativeContracts: [],
+			connections: [],
+			advisories: [],
+		},
+		invoke,
+		registry,
+	);
+	return { ...result, failed };
 }
 
 /**
