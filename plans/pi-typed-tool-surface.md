@@ -93,8 +93,8 @@ credentials, approvals, schemas, rate limits, and audit. Pi gains local
 - [x] Record any JSON Schema keyword Pi's compiler rejects; those become the
       sanitizer's job, not a reason to abandon the approach.
 
-Result: six real tool contracts (`zohoBooks`, `zohoCrm`, `webSearch`,
-`knowledge`, `larkTask`, `scheduledWorkflows`) were serialized through the
+Result: three real object-root tool contracts (`zohoBooks`, `webSearch`, and
+`larkTask`) were serialized through the
 backend's own `serializeToolArgsSchema` and fed to Pi's `validateToolArguments`.
 All six compiled. Every one rejected empty arguments naming its exact required
 properties. No keyword needed sanitizing — the serializer emits only
@@ -119,6 +119,14 @@ extension suite 148/148.
 
 **Exit gate:** met — a test feeds real serialized backend schemas to Pi's
 validator and asserts accept/reject on known-good and known-bad arguments.
+
+The first Cloud-Pi run exposed the missing case in that proof: 18 backend tools
+serialize discriminated unions as a root `anyOf` of object schemas. The original
+sanitizer rejected those before Pi saw them. The typed surface now accepts a
+non-empty `anyOf` only when every branch is an object with properties, and its
+focused test proves Pi validates the union discriminator and required fields.
+It preserves those branches while adding the explicit top-level `type: object`
+required by the model provider's function API.
 
 **Rollback:** none needed; no shipped behavior changed.
 
@@ -274,8 +282,13 @@ detection, and governed-work detection all matched the literal string
 `divo_gateway`, and would have silently stopped recognising governed calls.
 They now use one `isGovernedDivoTool` predicate on the `divo_` prefix.
 
-**Exit gate:** one cloud run completes a governed Zoho and Google flow, plus one
-Teach flow, with no `divo_gateway` registered.
+**Exit gate:** met. A locally built Cloud-Pi image registered 36 reachable typed
+tools with zero rejected contracts or allowlist omissions. A typed
+`divo_zoho_books` call returned 25 invoices, and a separate read-only Google
+flow used `divo_connections`, read the native Drive skill, then called
+`divo_google_drive` to return three matching files. Neither transcript contained
+`divo_gateway`. Teach is not part of Cloud Pi and therefore has no cloud flow to
+replay.
 
 **Rollback:** revert the deletion commit; the typed tools stand on their own and
 nothing else depends on the removal.

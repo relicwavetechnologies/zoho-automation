@@ -91,11 +91,18 @@ export function sanitizeSchema(
 	if (!isRecord(value)) {
 		return { error: "args schema is not an object" };
 	}
-	if (value.type !== REQUIRED_ROOT_TYPE) {
-		return { error: `args schema root type must be "${REQUIRED_ROOT_TYPE}", got ${JSON.stringify(value.type)}` };
-	}
-	if (!isRecord(value.properties)) {
-		return { error: "args schema has no properties object" };
+	const objectRoot = value.type === REQUIRED_ROOT_TYPE && isRecord(value.properties);
+	const unionRoot = Array.isArray(value.anyOf)
+		&& value.anyOf.length > 0
+		&& value.anyOf.every((branch) =>
+			isRecord(branch)
+			&& branch.type === REQUIRED_ROOT_TYPE
+			&& isRecord(branch.properties));
+	if (!objectRoot && !unionRoot) {
+		if (value.type === REQUIRED_ROOT_TYPE) {
+			return { error: "args schema has no properties object" };
+		}
+		return { error: "args schema root must be an object or an anyOf union of objects" };
 	}
 	// `$refStrategy: 'none'` is what the backend serializer passes, so a
 	// surviving reference means the contract is not self-contained and the model
@@ -104,6 +111,11 @@ export function sanitizeSchema(
 		return { error: "args schema contains an unresolved $ref" };
 	}
 	const schema: Record<string, unknown> = { ...value };
+	// Model function APIs require an object root even though JSON Schema permits
+	// an object-only discriminated union to express that fact through `anyOf`.
+	// Keep the branches intact for validation and add only the equivalent root
+	// annotation the provider requires.
+	if (unionRoot) schema.type = REQUIRED_ROOT_TYPE;
 	for (const key of STRIPPED_ROOT_KEYS) delete schema[key];
 	return { schema };
 }

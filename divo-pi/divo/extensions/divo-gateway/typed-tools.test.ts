@@ -62,13 +62,55 @@ describe("sanitizeSchema", () => {
 		);
 	});
 
+	it("accepts a discriminated anyOf whose every branch is an argument object", () => {
+		const result = sanitizeSchema({
+			anyOf: [
+				{
+					type: "object",
+					properties: { op: { const: "describe" }, nativeTool: { type: "string" } },
+					required: ["op", "nativeTool"],
+					additionalProperties: false,
+				},
+				{
+					type: "object",
+					properties: { op: { const: "call" }, nativeTool: { type: "string" }, input: { type: "object" } },
+					required: ["op", "nativeTool", "input"],
+					additionalProperties: false,
+				},
+			],
+			$schema: "http://json-schema.org/draft-07/schema#",
+		});
+		assert.ok("schema" in result);
+		assert.equal(result.schema.type, "object", "function providers require an explicit object root");
+		assert.ok(Array.isArray(result.schema.anyOf), "the backend union must remain intact");
+		const tool = { name: "divo_google_sheets", description: "", parameters: result.schema } as never;
+		assert.deepEqual(
+			validateToolArguments(tool, {
+				name: "divo_google_sheets",
+				arguments: { op: "call", nativeTool: "read_sheet_values", input: {} },
+			} as never),
+			{ op: "call", nativeTool: "read_sheet_values", input: {} },
+		);
+		assert.throws(
+			() => validateToolArguments(tool, {
+				name: "divo_google_sheets",
+				arguments: { op: "call", nativeTool: "read_sheet_values" },
+			} as never),
+			/Validation failed/,
+		);
+	});
+
 	it("refuses a schema that is not a usable argument record", () => {
 		assert.deepEqual(sanitizeSchema(null), { error: "args schema is not an object" });
 		assert.match(
 			(sanitizeSchema({ type: "string" }) as { error: string }).error,
-			/root type must be "object"/,
+			/root must be an object or an anyOf union of objects/,
 		);
 		assert.deepEqual(sanitizeSchema({ type: "object" }), { error: "args schema has no properties object" });
+		assert.match(
+			(sanitizeSchema({ anyOf: [{ type: "object", properties: {} }, { type: "string" }] }) as { error: string }).error,
+			/anyOf union of objects/,
+		);
 	});
 
 	it("refuses a schema still carrying an unresolved reference", () => {
@@ -138,7 +180,7 @@ describe("buildTypedTools", () => {
 		assert.deepEqual(tools, []);
 		assert.equal(rejected.length, 1);
 		assert.equal(rejected[0]?.toolId, "brokenTool");
-		assert.match(rejected[0]?.reason ?? "", /root type must be "object"/);
+		assert.match(rejected[0]?.reason ?? "", /root must be an object or an anyOf union of objects/);
 	});
 
 	it("refuses a second tool that would claim an existing typed name", () => {
