@@ -2072,17 +2072,27 @@ export function canReusePiProcess({
 	enabled = process.env.DIVO_PI_KEEPALIVE !== "false",
 	ephemeral = false,
 	nativeSkills = false,
+	nativeSkillDigest = "",
 	sessionScope = "thread",
 	lifecycle,
 } = {}) {
-	return enabled && !ephemeral && !nativeSkills && sessionScope === "thread" && lifecycle === undefined;
+	const nativeSkillsCompatible = !nativeSkills || /^[a-f0-9]{64}$/.test(nativeSkillDigest);
+	return enabled && !ephemeral && nativeSkillsCompatible
+		&& sessionScope === "thread" && lifecycle === undefined;
 }
 
 export function nativeDbSkillsEnabled(value = process.env.DIVO_PI_NATIVE_DB_SKILLS) {
 	return value === "true";
 }
 
-function piProcessBinding({ profile, thread, backendUrl, departmentId, selectedModel }) {
+function piProcessBinding({
+	profile,
+	thread,
+	backendUrl,
+	departmentId,
+	selectedModel,
+	nativeSkillDigest,
+}) {
 	return {
 		profile,
 		thread,
@@ -2090,6 +2100,7 @@ function piProcessBinding({ profile, thread, backendUrl, departmentId, selectedM
 		departmentId: departmentId ?? "",
 		provider: selectedModel?.provider ?? "",
 		model: selectedModel?.model ?? "",
+		nativeSkillDigest: nativeSkillDigest ?? "",
 	};
 }
 
@@ -2100,7 +2111,8 @@ export function piProcessBindingMatches(current, next) {
 		&& current.backendUrl === next.backendUrl
 		&& current.departmentId === next.departmentId
 		&& current.provider === next.provider
-		&& current.model === next.model;
+		&& current.model === next.model
+		&& current.nativeSkillDigest === next.nativeSkillDigest;
 }
 
 function runtimeExitPromise(child) {
@@ -2448,9 +2460,17 @@ async function runPrompt({
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 	let resources = resourcesFor(profile);
 	const selectedModel = validateRuntimeModel(model);
+	const nativeSkillBootstrap = nativeSkills
+		? await fetchNativeSkillBootstrapOrEmpty({ backendUrl, token, departmentId })
+		: undefined;
+	const nativeSkillScope = { companyId, userId, departmentId, channel };
+	const nativeSkillDigest = nativeSkillBootstrap
+		? nativeSkillBootstrapDigest(nativeSkillBootstrap, nativeSkillScope)
+		: "";
 	const piKeepAlive = canReusePiProcess({
 		ephemeral,
 		nativeSkills,
+		nativeSkillDigest,
 		sessionScope: normalizedSessionScope,
 		lifecycle,
 	});
@@ -2477,12 +2497,13 @@ async function runPrompt({
 		backendUrl: bootstrap.backendUrl,
 		departmentId,
 		selectedModel,
+		nativeSkillDigest,
 	});
-	const nativeSkillBootstrap = nativeSkills
-		? await fetchNativeSkillBootstrapOrEmpty({ backendUrl, token, departmentId })
-		: undefined;
 	if (!ephemeral) await idleContainers.activate(profile);
-	if (!piKeepAlive) await discardWarmPiProcess(profile);
+	const cachedBinding = piKeepAlive ? warmPiProcesses.get(profile)?.binding : undefined;
+	if (!piKeepAlive || (cachedBinding && !piProcessBindingMatches(cachedBinding, binding))) {
+		await discardWarmPiProcess(profile);
+	}
 	let abortStop;
 	let bootstrapAttempted = false;
 	let child;
@@ -2512,7 +2533,7 @@ async function runPrompt({
 			await stageNativeSkillBootstrap(
 				resources.skillsVolume,
 				nativeSkillBootstrap,
-				{ companyId, userId, departmentId, channel },
+				nativeSkillScope,
 				{ force: runtime.created },
 			);
 		}
@@ -2543,10 +2564,6 @@ async function runPrompt({
 		await writeBootstrap(resources.container, bootstrap);
 		let piProcessReused = false;
 		let piPrepareMs = 0;
-		const cached = piKeepAlive ? warmPiProcesses.get(profile) : undefined;
-		if (cached && !piProcessBindingMatches(cached.binding, binding)) {
-			await discardWarmPiProcess(profile);
-		}
 		const reusable = piKeepAlive ? warmPiProcesses.get(profile) : undefined;
 		if (reusable) {
 			const prepareStartedAt = Date.now();

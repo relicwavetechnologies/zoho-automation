@@ -423,6 +423,11 @@ test("a warm runtime can prepare the cached Pi process through docker exec", () 
 test("Pi process reuse is limited to compatible private thread runs", () => {
 	assert.equal(canReusePiProcess({ sessionScope: "thread" }), true);
 	assert.equal(canReusePiProcess({ sessionScope: "thread", nativeSkills: true }), false);
+	assert.equal(canReusePiProcess({
+		sessionScope: "thread",
+		nativeSkills: true,
+		nativeSkillDigest: "a".repeat(64),
+	}), true);
 	assert.equal(canReusePiProcess({ sessionScope: "run" }), false);
 	assert.equal(canReusePiProcess({ sessionScope: "thread", ephemeral: true }), false);
 	assert.equal(canReusePiProcess({ sessionScope: "thread", lifecycle: "reset" }), false);
@@ -435,11 +440,16 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 		departmentId: "dep-1",
 		provider: "deepseek",
 		model: "deepseek-v4-flash",
+		nativeSkillDigest: "a".repeat(64),
 	};
 	assert.equal(piProcessBindingMatches(binding, { ...binding }), true);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, thread: "lark-2" }), false);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, departmentId: "dep-2" }), false);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, model: "gpt-5.6-luna" }), false);
+	assert.equal(piProcessBindingMatches(binding, {
+		...binding,
+		nativeSkillDigest: "b".repeat(64),
+	}), false);
 });
 
 test("native DB skills are opt-in and render as Pi skill resources", () => {

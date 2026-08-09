@@ -134,8 +134,9 @@ with no repeated skill-fetch loop.
 - [x] Use `registryRevision` plus a scope/catalogue digest to skip unchanged
       Docker staging within a controller lifetime and persist the digest beside
       the materialized catalogue.
-- [ ] Keep warm Pi reuse disabled until a measured test proves Pi can reload
-      startup-loaded native resources without stale descriptions.
+- [ ] Allow warm Pi reuse only for an identical startup catalogue digest;
+      discard and restart before staging any changed digest. Complete this item
+      only after the local latency and revision-change E2E passes.
 - [ ] Measure cold start, unchanged warm turn, and revision-change restart.
 - [x] Reject DB slugs reserved by bundled Pi skills before discovery.
 - [x] Directly test read-only tree cleanup, atomic swap, and failure preserving
