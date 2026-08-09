@@ -99,6 +99,37 @@ export class MailBriefRepository {
     }
   }
 
+  /**
+   * Make an existing active brief due immediately without disturbing schedules.
+   *
+   * `ensureBrief` deliberately preserves existing rows; reconnecting Google
+   * must not rewrite the member's 09:00/16:00 preference. Onboarding is the one
+   * place that needs a separate kick, so it moves only the next due instant and
+   * only when the row is idle and not already due.
+   */
+  async scheduleBriefNow(input: {
+    briefId: string;
+    now: Date;
+  }): Promise<Result<boolean, InfraError>> {
+    try {
+      const updated = await this.db.mailBrief.updateMany({
+        where: {
+          id: input.briefId,
+          status: 'active',
+          claimedAt: null,
+          OR: [
+            { nextRunAt: null },
+            { nextRunAt: { gt: input.now } },
+          ],
+        },
+        data: { nextRunAt: input.now },
+      });
+      return ok(updated.count > 0);
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailBrief.scheduleBriefNow', cause));
+    }
+  }
+
   /** This member's brief for a mailbox, or `null` if they have none yet. */
   async readBriefForUser(input: {
     companyId: string;

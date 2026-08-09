@@ -96,6 +96,7 @@ export class MailOpsRepository {
   // The standing summary of a mailbox, sent to its owner twice a day.
   readonly claimNextDueBrief: MailBriefRepository['claimNextDueBrief'];
   readonly ensureBrief: MailBriefRepository['ensureBrief'];
+  readonly scheduleBriefNow: MailBriefRepository['scheduleBriefNow'];
   readonly completeBrief: MailBriefRepository['completeBrief'];
   readonly releaseBrief: MailBriefRepository['releaseBrief'];
   readonly readBriefWindow: MailBriefRepository['readBriefWindow'];
@@ -152,6 +153,7 @@ export class MailOpsRepository {
 
     this.claimNextDueBrief = briefs.claimNextDueBrief.bind(briefs);
     this.ensureBrief = briefs.ensureBrief.bind(briefs);
+    this.scheduleBriefNow = briefs.scheduleBriefNow.bind(briefs);
     this.completeBrief = briefs.completeBrief.bind(briefs);
     this.releaseBrief = briefs.releaseBrief.bind(briefs);
     this.readBriefWindow = briefs.readBriefWindow.bind(briefs);

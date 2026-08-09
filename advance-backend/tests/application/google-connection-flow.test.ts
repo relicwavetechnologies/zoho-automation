@@ -165,7 +165,7 @@ describe('GoogleConnectionAuthorizationService', () => {
       } as any,
       mailBriefOnboarding: async (input: any) => {
         mailBriefInput = input;
-        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true } };
+        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true, firstBriefQueued: true } };
       },
       callbackUrl: 'https://app-dev.example/api/google/connection/callback',
       logger: noopLogger,
@@ -233,7 +233,7 @@ describe('GoogleConnectionAuthorizationService', () => {
       } as any,
       mailBriefOnboarding: async () => {
         mailBriefCalled = true;
-        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true } };
+        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true, firstBriefQueued: true } };
       },
       callbackUrl: 'https://app-dev.example/api/google/connection/callback',
       logger: noopLogger,
