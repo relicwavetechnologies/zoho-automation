@@ -44,6 +44,8 @@ export type MailSummary = {
   /** One entry per day in the window, oldest first, zeroes included. */
   series: { date: string; value: number }[]
   busiestDay: { date: string; value: number } | null
+  /** Days in the window that saw at least one message. */
+  activeDays: number
   latest: MailCaught[]
 }
 
@@ -86,6 +88,7 @@ export function summarizeMail(
     counts,
     series,
     busiestDay: busiest && busiest.value > 0 ? busiest : null,
+    activeDays: series.filter((day) => day.value > 0).length,
     latest: [...recent]
       .sort((a, b) => new Date(b.firstAttemptAt).getTime() - new Date(a.firstAttemptAt).getTime())
       .slice(0, 6),

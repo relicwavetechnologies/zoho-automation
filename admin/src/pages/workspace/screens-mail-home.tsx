@@ -71,12 +71,24 @@ export function MailHome() {
         </Panel>
       ) : null}
 
+      {/*
+        Side by side, because neither half fills a page on its own. The summary
+        is a 300px calendar and three figures; the feed is six rows. Stacked,
+        each one drew a band of empty panel as wide as the screen and pushed the
+        other below the fold — so the page read as sparse while answering
+        nothing more.
+      */}
       <section className="ws-band">
+        <div className="ws-cols-even">
         <Panel title={`Last ${WINDOW_DAYS} days`}>
           <div className="ws-panel-body">
             {!r1 || loading ? <SkelRows n={3} icon={false} /> : (
               <Fade>
-                <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
+                {/* A grid rather than a flex row. Wrapping put "Needs a look"
+                    on its own line under two figures, which left a hole beside
+                    them and read as a second, more important section. Three
+                    equal columns hold the line at half width. */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14 }}>
                   <div>
                     <div className="ws-lbl">Messages caught</div>
                     <div className="ws-num" style={{ marginTop: 8 }}>{summary.total}</div>
@@ -108,34 +120,34 @@ export function MailHome() {
                   </div>
                 </div>
 
+                {/*
+                  Filled rather than capped. At 300px inside a half-width panel
+                  the grid left a column of nothing beside it, and the obvious
+                  patch — parking two facts in that gap — only moved the problem,
+                  because 140px is too narrow for a label and wrapped every one.
+                */}
                 <div style={{ marginTop: 24 }}>
                   <Heatmap
+                    fill
                     data={summary.series}
                     format={(n) => `${n} message${n === 1 ? '' : 's'}`}
                   />
                 </div>
-                <div className="ws-sub" style={{ marginTop: 10 }}>
-                  {summary.busiestDay
-                    ? `Busiest day: ${dayLabel(summary.busiestDay.date)}, ${summary.busiestDay.value} message${summary.busiestDay.value === 1 ? '' : 's'}.`
-                    : 'No messages matched a rule in this window.'}
+                <div className="ws-sub" style={{ marginTop: 12 }}>
+                  {summary.total === 0
+                    ? 'No messages matched a rule in this window.'
+                    : `Busiest day ${dayLabel(summary.busiestDay!.date)}, ${summary.busiestDay!.value} message${summary.busiestDay!.value === 1 ? '' : 's'} · mail on ${summary.activeDays} of ${WINDOW_DAYS} days`}
                 </div>
               </Fade>
             )}
           </div>
         </Panel>
-      </section>
 
-      <section className="ws-band">
-        <div className="ws-band-hd">
-          <div>
-            <h2>Latest</h2>
-            <p>The most recent messages a rule of yours acted on</p>
-          </div>
-          <div className="ws-band-act">
-            <Link className="btn" to="/me/caught">Caught</Link>
-          </div>
-        </div>
-        <Panel>
+        <Panel
+          title="Latest"
+          description="The most recent messages a rule of yours acted on"
+          aside={<Link className="btn" to="/me/caught">Caught</Link>}
+        >
           {!r2 || loading ? <SkelRows n={4} /> : summary.latest.length === 0 ? (
             <Empty
               icon={Inbox}
@@ -174,6 +186,7 @@ export function MailHome() {
             </Fade>
           )}
         </Panel>
+        </div>
       </section>
     </div>
   )
