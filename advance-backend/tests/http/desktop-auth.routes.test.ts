@@ -1025,7 +1025,7 @@ describe('desktop auth routes', () => {
       },
       mailBriefOnboarding: async (input: Record<string, unknown>) => {
         mailBriefInput = input;
-        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true } };
+        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true, firstBriefQueued: true } };
       },
     }));
 
@@ -1088,7 +1088,7 @@ describe('desktop auth routes', () => {
       },
       mailBriefOnboarding: async (input: Record<string, unknown>) => {
         mailBriefInput = input;
-        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true } };
+        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true, firstBriefQueued: true } };
       },
     }));
 
@@ -1157,7 +1157,7 @@ describe('desktop auth routes', () => {
       },
       mailBriefOnboarding: async (input: Record<string, unknown>) => {
         mailBriefInput = input;
-        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true } };
+        return { ok: true, value: { subscriptionId: 'sub-1', briefId: 'brief-1', mailboxCreated: true, briefCreated: true, firstBriefQueued: true } };
       },
     }));
 

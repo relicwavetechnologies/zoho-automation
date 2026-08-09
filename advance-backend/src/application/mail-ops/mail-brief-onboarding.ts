@@ -18,6 +18,7 @@ export interface MailBriefOnboardingResult {
   briefId: string;
   mailboxCreated: boolean;
   briefCreated: boolean;
+  firstBriefQueued: boolean;
 }
 
 export const MAIL_BRIEF_GOOGLE_TOOL_ID = 'mailAutomations';
@@ -37,7 +38,7 @@ export function canStartMailBriefFromGoogleAuthorization(input: {
 }
 
 export function createMailBriefOnboarding(deps: {
-  repo: Pick<MailOpsRepository, 'ensureMailboxForConnection' | 'ensureBrief'>;
+  repo: Pick<MailOpsRepository, 'ensureMailboxForConnection' | 'ensureBrief' | 'scheduleBriefNow'>;
   wakeMailOps: () => void;
   logger: Logger;
   now?: () => Date;
@@ -64,6 +65,12 @@ export function createMailBriefOnboarding(deps: {
     });
     if (!brief.ok) return brief;
 
+    const scheduled = await deps.repo.scheduleBriefNow({
+      briefId: brief.value.briefId,
+      now: dueAt,
+    });
+    if (!scheduled.ok) return scheduled;
+
     deps.wakeMailOps();
     log.info('mail_brief.onboarding_started', {
       userId: input.userId,
@@ -72,6 +79,7 @@ export function createMailBriefOnboarding(deps: {
       briefId: brief.value.briefId,
       mailboxCreated: mailbox.value.created,
       briefCreated: brief.value.created,
+      firstBriefQueued: scheduled.value,
     });
 
     return ok({
@@ -79,6 +87,7 @@ export function createMailBriefOnboarding(deps: {
       briefId: brief.value.briefId,
       mailboxCreated: mailbox.value.created,
       briefCreated: brief.value.created,
+      firstBriefQueued: scheduled.value,
     });
   };
 }
