@@ -1,6 +1,6 @@
 # Pi-native skills and terminal-first export simplification
 
-> Status: **Phase 2 complete; Phase 3 in progress**
+> Status: **Phase 3 complete; Phase 4 ready**
 >
 > Last updated: **2026-08-10**
 >
@@ -126,7 +126,15 @@ with no repeated skill-fetch loop.
 - [x] Strip model/script-supplied `skillId`; skills are not authorization or
       execution provenance.
 - [x] Keep one persistent `.py` file, adjacent inputs, outputs, and checkpoint.
-- [ ] Verify create/write/read-back without moving rows through model context.
+- [x] Verify create/write/read-back through one governed Python execution.
+
+Proof: a fresh locally built Cloud-Pi container read the native Google Sheets
+and Python skills, wrote one persistent script, created a real disposable
+Sheet, wrote `A1:B4`, and read back the exact range. The final response repeated
+the canonical URL and reconciled `3` source data rows, `4` total written rows,
+and `4` verified rows. The transcript used no `dataExport` call, no custom skill
+loader, one file write, and one Bash execution; the script contained no token,
+credential, raw backend URL, or direct SaaS call.
 
 **Exit gate:** cloud Pi runs a Python file that invokes one governed read and
 one governed Google write through `divo-local`.
