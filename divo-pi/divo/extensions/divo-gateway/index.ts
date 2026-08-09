@@ -28,6 +28,7 @@ import { executeGatewayRequest } from "./gateway-execution.ts";
 import {
 	createGatewayPlatformInvoker,
 	createGatewayTypedToolInvoker,
+	inactiveRegisteredTools,
 	registerEagerTypedTools,
 	registerTypedTools,
 } from "./typed-tool-runtime.ts";
@@ -227,6 +228,13 @@ Do not mention resolver, routing, gateway, backend, OAuth tokens, local credenti
 const typedToolRegistry = new Set<string>();
 const typedToolInvoker = createGatewayTypedToolInvoker();
 
+function reportInactiveTypedTools(pi: ExtensionAPI, registered: readonly string[]): void {
+	const inactive = inactiveRegisteredTools(registered, pi.getActiveTools());
+	if (inactive.length > 0) {
+		console.error(`[divo-typed-tools] registered tools missing from allowlist: ${inactive.join(",")}`);
+	}
+}
+
 export default function divoGatewayExtension(pi: ExtensionAPI) {
 	registerApprovalGate(pi);
 	registerLocalDivoBroker(pi);
@@ -273,6 +281,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			// stringified into the prompt, so Pi can validate the next call.
 			if (result.bootstrap) {
 				const typed = registerTypedTools(pi, result.bootstrap, typedToolInvoker, typedToolRegistry);
+				reportInactiveTypedTools(pi, typed.registered);
 				if (typed.registered.length > 0 || typed.rejected.length > 0) {
 					console.error(`[divo-typed-tools] ${JSON.stringify(typed)}`);
 				}
@@ -303,6 +312,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 					typedToolInvoker,
 					typedToolRegistry,
 				);
+				reportInactiveTypedTools(pi, typed.registered);
 				console.error(`[divo-typed-tools] ${JSON.stringify({
 					registered: typed.registered.length,
 					rejected: typed.rejected,

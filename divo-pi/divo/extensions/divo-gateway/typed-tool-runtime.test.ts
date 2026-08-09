@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import type { WorkBootstrap } from "./work-bootstrap.ts";
 import {
+	inactiveRegisteredTools,
 	registerEagerTypedTools,
 	registerTypedTools,
 	type TypedToolHost,
@@ -44,6 +45,16 @@ function bootstrapWith(tools: Array<Partial<WorkBootstrap["tools"][number]>>): W
 const noopInvoke = async (): Promise<TypedToolResult> => ({ content: [{ type: "text", text: "ok" }], details: undefined });
 
 describe("registerTypedTools", () => {
+	it("reports a newly registered tool that Pi filtered from the active allowlist", () => {
+		assert.deepEqual(
+			inactiveRegisteredTools(
+				["divo_web_search", "divo_new_backend_tool"],
+				["read", "divo_web_search"],
+			),
+			["divo_new_backend_tool"],
+		);
+	});
+
 	it("registers one Pi tool per bootstrap contract", () => {
 		const { host: pi, tools } = host();
 		const result = registerTypedTools(pi, bootstrapWith([{}]), noopInvoke, new Set());

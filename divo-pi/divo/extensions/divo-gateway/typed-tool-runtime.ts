@@ -62,6 +62,15 @@ export interface TypedToolRegistrationResult {
 	rejected: Array<{ toolId: string; reason: string }>;
 }
 
+/** Registered definitions that Pi filtered out of the active tool surface. */
+export function inactiveRegisteredTools(
+	registered: readonly string[],
+	active: readonly string[],
+): string[] {
+	const activeNames = new Set(active);
+	return registered.filter((name) => !activeNames.has(name));
+}
+
 function promptSnippetFor(tool: TypedToolDefinition): string {
 	return tool.denied
 		? `${tool.name} is not permitted for you; report the permission decision instead of routing around it.`

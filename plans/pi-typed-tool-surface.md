@@ -201,10 +201,9 @@ executed, so "typed tools appear in the model tool list with real schemas" is
 still an expectation rather than an observation. Phase 3 must run before any
 claim that the typed surface works end to end.
 
-**Known gap:** nothing verifies that a newly added backend tool also reaches
-`toolAllowlist`. Tool 40 would be registered by the extension and then silently
-filtered by the manifest. Add a startup check that compares registered typed
-names against `getActiveTools()` and logs the difference.
+**Allowlist guard:** after eager or resolver-time registration, the extension
+compares the newly registered names with Pi's active tools and logs every name
+filtered by `toolAllowlist`. Tool 40 can no longer disappear silently.
 
 **Rollback:** remove the guarded block in `divo_skill_resolve`; the manifest
 additions are inert on their own.
