@@ -1344,6 +1344,15 @@
    its 11px size. 2.5em looked right and left the first figure 5px low. */
 .cur .ws-stat3 .ws-lbl { min-height: 3em; }
 
+/* The brief, as the lines it was written as. Markdown from the composer, so
+   the newlines are the structure and collapsing them would run a summary into
+   one paragraph. */
+.cur .ws-brief-text {
+  margin: 0; white-space: pre-wrap; font-size: 13px; line-height: 1.65;
+  color: var(--cur-body); max-width: 68ch;
+}
+.cur .ws-brief-text strong, .cur .ws-brief-text b { color: var(--cur-ink); font-weight: 500; }
+
 /* ── Toasts ───────────────────────────────────────────
    Divo's own surface and hairline rather than sonner's defaults, and small:
    a notice is a sentence, not a panel. `richColors` paints the whole card by

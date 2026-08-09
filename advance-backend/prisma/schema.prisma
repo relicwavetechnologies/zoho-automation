@@ -1783,6 +1783,18 @@ model MailBrief {
   coveredThrough DateTime?
   claimToken     String?
   claimedAt      DateTime?
+  /// The last brief's own words, as the markdown it was composed from.
+  ///
+  /// The runner used to compose this, hand it to Lark and drop it, so the only
+  /// copy of what Divo told somebody about their mail lived in a chat message.
+  /// Any surface other than that chat had nothing to show and no way to check
+  /// what was said.
+  ///
+  /// The text rather than the Lark card: the card is one renderer's envelope,
+  /// and the markdown is the source it is built from.
+  lastBriefText  String?
+  /// How many messages the last brief named. Zero is a real, deliverable brief.
+  lastBriefWantCount Int?
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 

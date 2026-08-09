@@ -42,6 +42,13 @@ export interface MailBriefRunnerDeps {
       coveredThrough: Date;
       nextRunAt: Date | null;
       ranAt: Date;
+      /**
+       * Omitted when the slot closed without composing anything — a member with
+       * no Lark identity still moves their window forward, and overwriting the
+       * last real brief with nothing would lose the only record of it.
+       */
+      briefText?: string;
+      wantCount?: number;
     }): Promise<{ ok: boolean; error?: { message: string } }>;
     releaseBrief(input: {
       briefId: string;
@@ -202,6 +209,11 @@ export function createMailBriefRunner(deps: MailBriefRunnerDeps) {
         coveredThrough: ranAt,
         nextRunAt: after,
         ranAt,
+        // The markdown, not the card: the card is Lark's envelope and the text
+        // is the source it was rendered from, so every other surface reads the
+        // same words the member did.
+        briefText: brief.text,
+        wantCount: brief.wantCount,
       });
       if (!done.ok) throw new Error(done.error?.message ?? 'The brief could not be recorded.');
 

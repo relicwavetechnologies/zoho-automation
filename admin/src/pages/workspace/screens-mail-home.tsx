@@ -17,7 +17,9 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { Ban, Check, Clock, Inbox, TriangleAlert } from 'lucide-react'
+import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useCaught, useCaughtActivity, useMailAutomations } from './data/use-mail-automations'
+import { useMailBrief } from './data/use-mail-governance'
 import {
   MAIL_LATEST_ROWS, MAIL_SUMMARY_WINDOW_DAYS as WINDOW_DAYS, mailBucketOf, summarizeMail,
 } from './data/mail-summary'
@@ -267,6 +269,64 @@ export function MailHome() {
         </Panel>
         </div>
       </section>
+
+      <BriefCard />
     </div>
+  )
+}
+
+/**
+ * The last brief Divo sent, in the app that sent it.
+ *
+ * The runner composed this twice a day, handed it to Lark and dropped it, so
+ * the only copy of what Divo told somebody about their own mail lived in a chat
+ * message they may have scrolled past. It is kept now, and this is where it is
+ * read back.
+ *
+ * Rendered as the plain lines it was written as. The Lark card is one
+ * renderer's envelope; re-implementing it here would give two surfaces two
+ * chances to disagree about the same brief.
+ */
+function BriefCard() {
+  const { token } = useAdminAuth()
+  const { brief, loading, error } = useMailBrief(token ?? undefined)
+
+  if (loading) {
+    return (
+      <section className="ws-band">
+        <Panel title="Your last brief"><div className="ws-panel-body"><Skel block h={92} /></div></Panel>
+      </section>
+    )
+  }
+  // Nothing to say and nothing wrong: a member with no brief yet is the normal
+  // first state, and an error here is not that.
+  if (error || !brief) return null
+
+  const sent = brief.lastRunAt ? `${dayLabel(brief.lastRunAt)} ${timeLabel(brief.lastRunAt)}` : null
+
+  return (
+    <section className="ws-band">
+      <Panel
+        title="Your last brief"
+        description={sent ? `Sent ${sent} to your Lark DM` : 'Sent to your Lark DM'}
+        aside={<Link className="btn" to="/me/settings">Change when</Link>}
+      >
+        <div className="ws-panel-body">
+          {brief.lastBriefText ? (
+            <Fade>
+              <p className="ws-brief-text">{brief.lastBriefText}</p>
+            </Fade>
+          ) : (
+            <Empty
+              icon={Clock}
+              title="No brief yet"
+              body={brief.nextRunAt
+                ? `The next one is due ${dayLabel(brief.nextRunAt)} ${timeLabel(brief.nextRunAt)}.`
+                : 'Divo sends one on a schedule you can change in Settings.'}
+            />
+          )}
+        </div>
+      </Panel>
+    </section>
   )
 }

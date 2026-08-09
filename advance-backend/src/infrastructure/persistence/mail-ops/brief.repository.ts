@@ -143,6 +143,9 @@ export class MailBriefRepository {
     status: string;
     nextRunAt: Date | null;
     lastRunAt: Date | null;
+    /** What the last brief said, so a surface other than Lark can show it. */
+    lastBriefText: string | null;
+    lastBriefWantCount: number | null;
   } | null, InfraError>> {
     try {
       const row = await this.db.mailBrief.findFirst({
@@ -151,6 +154,7 @@ export class MailBriefRepository {
         select: {
           id: true, timesJson: true, daysJson: true, timeZone: true,
           status: true, nextRunAt: true, lastRunAt: true,
+          lastBriefText: true, lastBriefWantCount: true,
           subscription: { select: { mailboxEmail: true } },
         },
       });
@@ -164,6 +168,8 @@ export class MailBriefRepository {
         status: row.status,
         nextRunAt: row.nextRunAt,
         lastRunAt: row.lastRunAt,
+        lastBriefText: row.lastBriefText,
+        lastBriefWantCount: row.lastBriefWantCount,
       });
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailBrief.readBriefForUser', cause));
@@ -273,6 +279,15 @@ export class MailBriefRepository {
     coveredThrough: Date;
     nextRunAt: Date | null;
     ranAt: Date;
+    /**
+     * What the brief said, kept alongside the fact that it ran.
+     *
+     * Written here rather than in a step of its own so the text and the window
+     * it covered move together: a brief recorded as delivered whose words came
+     * from the run before it would be worse than no record at all.
+     */
+    briefText?: string;
+    wantCount?: number;
   }): Promise<Result<void, InfraError>> {
     try {
       await this.db.mailBrief.update({
@@ -281,6 +296,11 @@ export class MailBriefRepository {
           coveredThrough: input.coveredThrough,
           lastRunAt: input.ranAt,
           nextRunAt: input.nextRunAt,
+          // Only when this run actually composed one. A slot that closed
+          // without a brief leaves the previous words in place rather than
+          // blanking the record of the last thing Divo said.
+          ...(input.briefText === undefined ? {} : { lastBriefText: input.briefText }),
+          ...(input.wantCount === undefined ? {} : { lastBriefWantCount: input.wantCount }),
           claimToken: null,
           claimedAt: null,
         },
