@@ -83,10 +83,11 @@ import { validateAttachmentPolicy }        from '../../email/attachment-policy';
 import { WriteNotDispatchedError }         from '../../../shared/errors';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
 import { normalizeInvoiceFields }          from '../../zoho/zoho-invoice-fields';
+import { refuseSelfDealing }               from '../../zoho/zoho-self-dealing';
 import { formatAmount, formatDate }        from '../../zoho/zoho-format.utils';
 import { normalizeStatus, parseDateFilter } from '../../zoho/zoho-filter.utils';
 import { handleZohoList, type ZohoListCsvColumn } from '../../zoho/zoho-list-handler';
-import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../infrastructure/zoho/zoho-books-paginated.client';
+import type { ZohoBooksPaginatedClient, ZohoBooksModule, ZohoBooksOrganization } from '../../../infrastructure/zoho/zoho-books-paginated.client';
 import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../infrastructure/zoho/zoho-books-schema.cache';
 import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
@@ -985,6 +986,33 @@ export const createZohoBooksTool = (deps: {
 
     /** Single-record GET. Unlike getRecord() this surfaces provider errors
      *  instead of turning an expired token into "not found". */
+    /**
+     * The organisation being written to, fetched once per call.
+     *
+     * Memoised because more than one guard wants it and the answer cannot
+     * change mid-operation; failure resolves to undefined so that not knowing
+     * who we are never blocks a write on its own.
+     */
+    let sellingOrganizationPromise: Promise<ZohoBooksOrganization | undefined> | null = null;
+    const sellingOrganization = (): Promise<ZohoBooksOrganization | undefined> => {
+      // try/catch rather than .catch(): a client without this method throws
+      // synchronously, before there is a promise to attach a handler to, and
+      // that would take down a write the guard was only meant to observe.
+      sellingOrganizationPromise ??= (async () => {
+        try {
+          const orgs = await deps.booksClient.listOrganizations(
+            companyId, { userId, connectionId: args.connectionId },
+          );
+          return args.organizationId
+            ? orgs.find(org => org.organizationId === args.organizationId)
+            : orgs.find(org => org.isDefault === true) ?? orgs[0];
+        } catch {
+          return undefined;
+        }
+      })();
+      return sellingOrganizationPromise;
+    };
+
     const getOne = async (
       moduleName: ZohoBooksModule,
       recordId: string,
@@ -2145,19 +2173,55 @@ export const createZohoBooksTool = (deps: {
 
         case 'create_bill': {
           if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_bill' }));
+          const billFields = args.fields as Record<string, unknown>;
+
+          // The vendor is a reference, so the party has to be read back before
+          // it can be recognised. Worth one lookup: the failure it catches
+          // writes a payable the company owes itself, and Zoho accepts it.
+          const vendorId = stringValue(billFields, 'vendor_id');
+          const vendor = vendorId
+            ? await getOne('contacts', vendorId, { connectionId: args.connectionId }).catch(() => undefined)
+            : undefined;
+          const billRefusal = refuseSelfDealing({
+            organization: await sellingOrganization(),
+            party: {
+              name: vendor ? stringValue(vendor, 'contact_name', 'company_name') : stringValue(billFields, 'vendor_name'),
+              gstNo: vendor ? stringValue(vendor, 'gst_no') : stringValue(billFields, 'gst_no'),
+            },
+            role: 'vendor',
+            act: 'Recording this bill',
+          });
+          if (billRefusal) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: billRefusal }));
+
           return ok(await writtenRecord('bills', 'created', {
             method: 'POST',
             path: '/bills',
-            body: args.fields as Record<string, unknown>,
+            body: billFields,
           }));
         }
 
         case 'create_contact': {
           if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_contact' }));
+          const contactFields = args.fields as Record<string, unknown>;
+
+          // Cheaper and earlier than the bill check: the party is named right
+          // here, so the organisation is refused before it exists as a contact
+          // at all rather than after a transaction has been hung off it.
+          const contactRefusal = refuseSelfDealing({
+            organization: await sellingOrganization(),
+            party: {
+              name: stringValue(contactFields, 'contact_name', 'company_name'),
+              gstNo: stringValue(contactFields, 'gst_no'),
+            },
+            role: stringValue(contactFields, 'contact_type') === 'vendor' ? 'vendor' : 'customer',
+            act: 'Creating this contact',
+          });
+          if (contactRefusal) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: contactRefusal }));
+
           return ok(await writtenRecord('contacts', 'created', {
             method: 'POST',
             path: '/contacts',
-            body: args.fields as Record<string, unknown>,
+            body: contactFields,
           }));
         }
 

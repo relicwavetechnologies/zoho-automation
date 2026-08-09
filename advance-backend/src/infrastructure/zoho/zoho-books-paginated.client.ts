@@ -54,6 +54,14 @@ export interface ZohoBooksOrganization {
    * table nobody would maintain.
    */
   readonly stateCode?:     string;
+  /**
+   * The organisation's own GST registration, when Zoho reports one.
+   *
+   * Best effort: the organisations endpoint does not always carry it, so a
+   * caller must treat its absence as "unknown" rather than "different". Present
+   * so that a party can be recognised as the selling organisation itself.
+   */
+  readonly gstNo?:         string;
 }
 
 export interface ZohoBooksListResult {
@@ -220,11 +228,15 @@ export class ZohoBooksPaginatedClient {
         // looking like an answer.
         const stateCode = nonBlank(isRecordValue(address) ? asString(address['state_code']) : undefined)
           ?? nonBlank(asString(org['state_code']));
+        const gstNo = nonBlank(asString(org['gst_no']))
+          ?? nonBlank(asString(org['tax_reg_no']))
+          ?? nonBlank(asString(org['gstin']));
         return {
           organizationId: asString(org['organization_id']) ?? asString(org['organizationId']) ?? '',
           ...(name      !== undefined ? { name }      : {}),
           ...(isDefault !== undefined ? { isDefault } : {}),
           ...(stateCode !== undefined ? { stateCode } : {}),
+          ...(gstNo     !== undefined ? { gstNo }     : {}),
         };
       }).filter(o => o.organizationId.length > 0);
     } catch {

@@ -131,6 +131,16 @@ export const zohoBooksBillSkill: Skill = {
   toolIds: ['zohoCrm', 'zohoBooks'],
   instructions: `${ZOHO_CONNECTION_METHOD}
 
+SCOPE — CHECK THIS BEFORE ANYTHING ELSE:
+- This is money WE OWE A SUPPLIER: a bill they issued to us. Money owed TO us is a customer invoice — load \`zoho-books-invoice\` instead.
+- If the member said "invoice", "raise", "bill a customer", or named someone we are charging, this is not the right skill. Stop and load \`zoho-books-invoice\`. Do not translate their word into a bill because a PDF is attached.
+
+WHICH WAY DOES THE DOCUMENT POINT:
+- Before resolving any vendor, say to yourself who ISSUED the document and who it is ADDRESSED TO. The issuer is the letterhead, the sender, the party whose GSTIN sits at the top; the addressee is under "Bill to", "Invoice to", or "Customer".
+- If the issuer is this Zoho organisation — our own name or our own GSTIN on the letterhead — then WE sent this document. It is an invoice we raised, never a bill we owe. Stop and load \`zoho-books-invoice\`, and treat the party under "Bill to" as the customer.
+- A vendor bill is a document somebody else issued TO us. If you cannot tell which direction it runs, ask the member rather than picking one; a bill booked backwards makes the company its own supplier and puts money it is owed on the wrong side of the books.
+- Divo refuses a bill or a contact whose party is this organisation. If you meet that refusal, it means the direction was read backwards — do not work around it by renaming the vendor.
+
 ${ZOHO_WRITE_SAFETY}
 
 ${ZOHO_BOOKS_BILL_WORKFLOW}
