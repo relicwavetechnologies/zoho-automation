@@ -1,6 +1,6 @@
 # Pi-native skills and terminal-first export simplification
 
-> Status: **Phase 1 complete; Phase 2 ready**
+> Status: **Phase 2 complete; Phase 3 in progress**
 >
 > Last updated: **2026-08-10**
 >
@@ -45,11 +45,10 @@ credentials, approvals, schemas, rate limits, and audit.
 
 - Bundled `divo-gateway` and `divo-chat-history` skills already load natively
   through Pi's `--skill` option.
-- DB skills are currently fetched by `divo_skill_view` and inserted as tool
-  result text. Pi can reason over that text, but it does not treat it as a
-  native skill resource.
-- A process-local ledger associates loaded DB skills with tools for audit
-  provenance. Ordinary tools are now advisory rather than hard-gated.
+- Authorized DB skills are materialized as runtime-owned `SKILL.md` files and
+  loaded by Pi's native resource loader.
+- The custom `divo_skill_view` tool and process-local skill provenance ledger
+  have been removed. Skills are guidance; backend policy remains authoritative.
 - `dataExport` still owns candidates, plans, samples, queues, Lark cards,
   workers, provider replay, Google delivery, and follow-up continuity.
 - Cloud `divo-local` enablement is committed in `0d1c083fe`. The launcher lives
@@ -101,27 +100,32 @@ native loader in an isolated cloud-Pi test.
 
 ### Phase 2 — Cut over DB skills to Pi-native loading
 
-- [ ] Materialize all RBAC-visible routers and specialists for the run.
-- [ ] Cache by company/user/department plus `registryRevision`; never reuse a
-      skill set across a different authorization scope.
-- [ ] Keep only compact persona/account context in the injected prompt.
-- [ ] Stop asking Pi to repeatedly load already-native skills.
-- [ ] Remove custom skill-loading provenance as an authorization concept;
+- [x] Materialize all RBAC-visible routers and specialists for the run.
+- [x] Build a fresh authorized catalogue per runtime instead of introducing a
+      cross-scope cache.
+- [x] Keep only compact persona/account/tool context in the injected prompt.
+- [x] Stop asking Pi to repeatedly load already-native skills.
+- [x] Remove custom skill-loading provenance as an authorization concept;
       retain backend audit metadata only where useful.
-- [ ] Remove `divo_skill_view` and resolver behavior only after transcript,
-      teach-profile, scheduled-work, and restart tests pass.
+- [x] Remove `divo_skill_view`; keep `divo_skill_resolve` only as a bounded
+      fallback when no native router covers a genuinely specialized workflow.
+
+Proof: the live Cloud-Pi transcript read the native Gmail, Google Workspace,
+Sheets, Mail Ops, and Schedule Divo Work files directly, with no resolver,
+compatibility loader, or governed mutation. Gateway extension tests pass
+140/140; controller projection tests 45/45; runtime boundary tests 34/34.
 
 **Exit gate:** DB routers and specialists use native Pi discovery in cloud Pi,
 with no repeated skill-fetch loop.
 
 ### Phase 3 — Finish the governed terminal foundation
 
-- [ ] Make `divo-local` available in cloud Pi through the Divo extension.
-- [ ] Keep scripts credential-free; the broker attaches runtime identity and
+- [x] Make `divo-local` available in cloud Pi through the Divo extension.
+- [x] Keep scripts credential-free; the broker attaches runtime identity and
       the backend rechecks RBAC, connection access, approval, and schema.
-- [ ] Strip model/script-supplied `skillId`; attach only trusted audit
-      provenance when available.
-- [ ] Keep one persistent `.py` file, adjacent inputs, outputs, and checkpoint.
+- [x] Strip model/script-supplied `skillId`; skills are not authorization or
+      execution provenance.
+- [x] Keep one persistent `.py` file, adjacent inputs, outputs, and checkpoint.
 - [ ] Verify create/write/read-back without moving rows through model context.
 
 **Exit gate:** cloud Pi runs a Python file that invokes one governed read and
