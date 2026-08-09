@@ -237,40 +237,220 @@ describe('composing a brief', () => {
    * which Lark does not interpret. The card is what makes the bold mean bold,
    * so it is asserted on rather than trusted.
    */
+  const readCard = (payload: string) => {
+    const envelope = JSON.parse(payload) as { msg_type: string; card: string };
+    assert.equal(envelope.msg_type, 'interactive');
+    return JSON.parse(envelope.card) as {
+      schema: string;
+      config: { summary?: { content: string } };
+      header: {
+        template?: string;
+        title: { content: string };
+        subtitle: { content: string };
+      };
+      body: { elements: Array<{ tag: string; content?: string }> };
+    };
+  };
+
+  const cardMarkdown = (payload: string): string =>
+    readCard(payload).body.elements
+      .filter(e => e.tag === 'markdown')
+      .map(e => e.content)
+      .join('\n\n');
+
   it('sends a card, so Lark renders the brief instead of printing its markup', async () => {
     const compose = createMailBriefComposer({
       model: modelReturning('{"wants":[]}') as never,
     });
 
-    const brief = await compose(window);
-    const envelope = JSON.parse(brief.card) as { msg_type: string; card: string };
-    assert.equal(envelope.msg_type, 'interactive');
-
-    const card = JSON.parse(envelope.card) as {
-      schema: string;
-      header: { subtitle: { content: string } };
-      body: { elements: Array<{ tag: string; content?: string }> };
-    };
+    const card = readCard((await compose(window)).card);
     assert.equal(card.schema, '2.0');
-    // The window and mailbox belong to the header, so the body opens on what
-    // the brief actually says rather than on its own timestamp.
-    assert.match(card.header.subtitle.content, /rahul@emiactech\.com/);
-
-    const markdown = card.body.elements.filter(e => e.tag === 'markdown');
-    assert.ok(markdown.length > 0, 'the brief must reach Lark as markdown elements');
     assert.ok(
-      markdown.some(e => /Nothing is waiting on you/.test(e.content ?? '')),
-      'the card must carry the same sections as the text',
+      card.body.elements.some(e => e.tag === 'markdown'),
+      'the brief must reach Lark as markdown elements',
     );
-    assert.ok(
-      markdown.some(e => /\*\*Vendor invoices → Finance\*\*/.test(e.content ?? '')),
-      'the rules section must survive into the card',
+    assert.match(
+      cardMarkdown((await compose(window)).card),
+      /\*\*Vendor invoices → Finance\*\*/,
+      'what the rules did must survive into the card',
     );
   });
 
-  it('says the same thing in the card as in the text', async () => {
-    // Two renderings of one set of sections. If a section is ever added to one
-    // path only, this is what notices.
+  /*
+   * The verdict is the line a reader decides on, so it is the header subtitle
+   * and the notification preview — and it appears in neither twice. The card
+   * this replaced spent its subtitle on a timestamp and its header on a block
+   * of blue, and put the one sentence that mattered in body grey underneath.
+   */
+  it('puts the verdict in the header and the notification, and not in the body', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[]}') as never,
+    });
+
+    const card = readCard((await compose(window)).card);
+    assert.equal(card.header.title.content, 'Your mail');
+    assert.equal(card.header.subtitle.content, 'Nothing is waiting on you');
+    assert.match(card.config.summary?.content ?? '', /Nothing is waiting on you/);
+    assert.doesNotMatch(
+      cardMarkdown((await compose(window)).card),
+      /Nothing is waiting on you/,
+      'the verdict belongs to the header only',
+    );
+  });
+
+  /*
+   * Colour is spent only where it means something, and this header's blue was
+   * the same blue on the morning a contract was waiting as on the morning
+   * nothing was. The mailbox and window are provenance, so they sit in the
+   * footer rather than in the widest line of the card.
+   */
+  it('does not colour the header, and keeps the mailbox out of it', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[]}') as never,
+    });
+
+    const brief = await compose(window);
+    const card = readCard(brief.card);
+    assert.equal(card.header.template, 'default');
+    assert.doesNotMatch(card.header.subtitle.content, /rahul@emiactech\.com/);
+    assert.match(cardMarkdown(brief.card), /04:00–09:00 · rahul@emiactech\.com/);
+  });
+
+  /*
+   * The model is shown the sixty newest messages. On a mailing-list morning
+   * that is a fraction of what arrived, and "Nothing is waiting on you" — read
+   * off a phone notification, with no body under it — would be a false
+   * all-clear about mail nobody looked at.
+   */
+  it('does not call it all clear over mail it never read', async () => {
+    const many = Array.from({ length: 90 }, (_, i) => ({
+      from: `Sender ${i} <s${i}@list.com>`, subject: `Subject ${i}`, snippet: '…',
+      occurredAt: at(`2026-08-10T02:00:0${i % 10}.000Z`),
+    }));
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[]}') as never,
+    });
+
+    const brief = await compose({ ...window, messages: many, handled: [] });
+    const card = readCard(brief.card);
+
+    assert.equal(card.header.subtitle.content, 'Nothing waiting in your newest 60');
+    assert.doesNotMatch(card.config.summary?.content ?? '', /Nothing is waiting on you/);
+    assert.match(
+      cardMarkdown(brief.card),
+      /90 messages arrived in all; Divo read the 60 newest\./,
+      'the count is what arrived, not what was read',
+    );
+  });
+
+  /*
+   * A brief whose model call failed read nothing at all, so it must not also
+   * claim to have read the sixty newest — that is precisely the "Divo checked
+   * and you are clear" reading the degraded verdict exists to refuse.
+   */
+  it('does not claim to have read anything when it could not read', async () => {
+    const many = Array.from({ length: 90 }, (_, i) => ({
+      from: `Sender ${i} <s${i}@list.com>`, subject: `Subject ${i}`, snippet: '…',
+      occurredAt: at(`2026-08-10T02:00:0${i % 10}.000Z`),
+    }));
+    const compose = createMailBriefComposer({
+      model: modelReturning('I could not do that.') as never,
+    });
+
+    const markdown = cardMarkdown(
+      (await compose({ ...window, messages: many, handled: [] })).card,
+    );
+    assert.match(markdown, /90 messages arrived\./);
+    assert.doesNotMatch(markdown, /Divo read the/);
+  });
+
+  /*
+   * With mail named and mail unread, the two counts have to agree: "58 others
+   * needed nothing" is a claim about what Divo read, and it cannot stand as
+   * the only number on a card where ninety arrived.
+   */
+  it('states both what it read and what arrived when they differ', async () => {
+    const many = Array.from({ length: 90 }, (_, i) => ({
+      from: `Sender ${i} <s${i}@list.com>`, subject: `Subject ${i}`, snippet: '…',
+      // Descending, so index 0 and 1 are the two newest and survive the cut.
+      occurredAt: new Date(Date.parse('2026-08-10T03:00:00.000Z') - i * 60_000),
+    }));
+    const compose = createMailBriefComposer({
+      model: modelReturning(JSON.stringify({
+        wants: [{ index: 0, want: 'Needs a decision.' }, { index: 1, want: 'Needs another.' }],
+      })) as never,
+    });
+
+    const markdown = cardMarkdown(
+      (await compose({ ...window, messages: many, handled: [] })).card,
+    );
+    assert.match(markdown, /58 other messages arrived and needed nothing from you\./);
+    assert.match(markdown, /90 messages arrived in all; Divo read the 60 newest\./);
+  });
+
+  /*
+   * Nothing limits how many rules a member writes, and they all render into
+   * one card element. A card over Lark's size ceiling is rejected outright,
+   * which costs the member the whole brief rather than the footnote's tail.
+   */
+  it('caps the rule footnote too, and counts what it left out', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[]}') as never,
+    });
+
+    const brief = await compose({
+      ...window,
+      handled: Array.from({ length: 30 }, (_, i) => ({
+        ruleName: `Rule number ${i} with a fairly long descriptive name`,
+        delivered: 2, held: 1, blocked: 0, failed: 0,
+      })),
+    });
+
+    const markdown = cardMarkdown(brief.card);
+    assert.match(markdown, /\+22 other rules also ran\./);
+    assert.equal((markdown.match(/Rule number/g) ?? []).length, 8);
+
+    // The boundary, where a count that is always plural reads as broken.
+    const one = await compose({
+      ...window,
+      handled: Array.from({ length: 9 }, (_, i) => ({
+        ruleName: `Rule ${i}`, delivered: 1, held: 0, blocked: 0, failed: 0,
+      })),
+    });
+    assert.match(cardMarkdown(one.card), /\+1 other rule also ran\./);
+    for (const element of readCard(brief.card).body.elements) {
+      assert.ok(
+        String(element.content ?? '').length <= 1200,
+        'no element may exceed what Lark renders in one block',
+      );
+    }
+  });
+
+  /*
+   * The quietest possible brief: no mail, no rules, nothing to divide. A card
+   * that opens on a horizontal rule reads as one whose top half failed to
+   * render, which is the wrong impression for the case that means "all clear".
+   */
+  it('draws no rule when there is nothing on either side of it', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[]}') as never,
+    });
+
+    const card = readCard((await compose({
+      ...window, messages: [], handled: [],
+    })).card);
+    assert.equal(card.header.subtitle.content, 'No mail arrived in this window');
+    assert.deepEqual(card.body.elements.map(e => e.tag), ['markdown']);
+  });
+
+  /*
+   * `text` is built by stripping the colour out of the card's own blocks, so
+   * the two cannot disagree by construction and asserting they match proves
+   * nothing. What is worth asserting is the part that is not structural: that
+   * the stripping is complete, so nothing carried to a surface without cards
+   * arrives wearing card markup.
+   */
+  it('carries no card markup into the text rendering', async () => {
     const compose = createMailBriefComposer({
       model: modelReturning(JSON.stringify({
         wants: [{ index: 0, want: 'Wants the revised cap confirmed before Friday.' }],
@@ -278,17 +458,279 @@ describe('composing a brief', () => {
     });
 
     const brief = await compose(window);
-    const card = JSON.parse(
-      (JSON.parse(brief.card) as { card: string }).card,
-    ) as { body: { elements: Array<{ tag: string; content?: string }> } };
+    assert.doesNotMatch(brief.text, /<\/?font/);
+    assert.match(brief.text, /Wants the revised cap confirmed before Friday\./);
+    assert.match(brief.text, /\*\*Vendor invoices → Finance\*\* — 3 passed on/);
+    // The opening line is the one thing the text says that the card puts in a
+    // header instead.
+    assert.equal(brief.text.split('\n\n')[0], '**Your mail** · 1 message needs you');
+    assert.equal(
+      readCard(brief.card).header.subtitle.content,
+      '1 message needs you',
+    );
+  });
 
-    const fromCard = card.body.elements
-      .filter(e => e.tag === 'markdown')
-      .map(e => e.content)
-      .join('\n\n');
-    // The text carries one extra leading line — the headline the card shows in
-    // its header instead — and the rest must match exactly.
-    assert.equal(brief.text.split('\n\n').slice(1).join('\n\n'), fromCard);
+  /*
+   * The degraded verdict is the one a member most needs to read without
+   * opening anything: it is the difference between "you are up to date" and
+   * "Divo did not look". It reaches them through the header and the phone
+   * notification, so both are asserted rather than the text alone.
+   */
+  it('carries the degraded verdict into the header and the notification', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('I could not do that.') as never,
+    });
+
+    const card = readCard((await compose(window)).card);
+    assert.equal(card.header.subtitle.content, 'Divo could not read your mail this time');
+    assert.match(card.config.summary?.content ?? '', /could not read your mail/);
+    assert.doesNotMatch(card.config.summary?.content ?? '', /Nothing is waiting/);
+  });
+
+  /*
+   * A subject is written by whoever sent the mail, and this card is
+   * unambiguously from Divo. A link in a subject would arrive bolded, in
+   * Divo's own message, with anchor text of the sender's choosing — the mail
+   * preview path strips URLs for exactly this reason.
+   */
+  it('takes a link in a subject down to the words, and drops where it pointed', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning(JSON.stringify({
+        wants: [{ index: 0, want: 'Needs a decision.' }],
+      })) as never,
+    });
+
+    const brief = await compose({
+      ...window,
+      messages: [{
+        from: '"[Divo Security](https://evil.example/p)" <ops@vendor.com>',
+        subject: '[Verify your mailbox](https://evil.example/phish) or www.evil.example/x',
+        snippet: '…',
+        occurredAt: at('2026-08-10T02:00:00.000Z'),
+      }],
+    });
+
+    const markdown = cardMarkdown(brief.card);
+    assert.match(markdown, /Verify your mailbox/, 'what it said survives');
+    for (const rendering of [markdown, brief.text]) {
+      assert.doesNotMatch(rendering, /evil\.example/, 'where it pointed does not');
+      assert.doesNotMatch(rendering, /\]\(/, 'and no link syntax is left to rebuild it');
+    }
+  });
+
+  /*
+   * Unwrapping the inner link of a nested one re-forms the outer link behind
+   * the regex, which never looks back. A single pass therefore handed back
+   * `[Click here](//evil.example)` — a live link, from a stripper whose whole
+   * purpose was that it could not produce one. A schemeless target also slips
+   * past any rule that only knows `https://`.
+   */
+  it('cannot be defeated by nesting the link or dropping its scheme', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never,
+    });
+
+    for (const subject of [
+      '[[Click here](/a)](//evil.example/phish)',
+      '[[[x](1)](2)](lark://applink.feishu.cn/client/web_url/open)',
+      // Characters that hide the link from every pass — until the pass that
+      // deletes them puts the link back together.
+      '[Verify your mailbox]<(ht<tps://evil.example/x)',
+      '[Verify your mailbox]*(https*://evil.example/x)',
+    ]) {
+      const brief = await compose({
+        ...window,
+        messages: [{
+          from: 'Vendor <v@vendor.com>', subject, snippet: '…',
+          occurredAt: at('2026-08-10T02:00:00.000Z'),
+        }],
+      });
+      const markdown = cardMarkdown(brief.card);
+      assert.doesNotMatch(markdown, /\]\(/, `link syntax survived: ${subject}`);
+      assert.doesNotMatch(markdown, /evil\.example|applink/, `a target survived: ${subject}`);
+    }
+  });
+
+  /*
+   * A subject is not markup just because it contains an angle bracket. The
+   * stripper matched every `<…>` pair and deleted the middle of this one,
+   * which is a subject rewritten to say something the sender did not.
+   */
+  it('leaves ordinary punctuation in a subject alone', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never,
+    });
+
+    const brief = await compose({
+      ...window,
+      messages: [{
+        from: 'Vendor <v@vendor.com>',
+        subject: 'Renewal: <500 USD, needs sign-off > today',
+        snippet: '…',
+        occurredAt: at('2026-08-10T02:00:00.000Z'),
+      }],
+    });
+
+    const markdown = cardMarkdown(brief.card);
+    assert.match(markdown, /500 USD/);
+    assert.match(markdown, /needs sign-off/);
+    assert.match(markdown, /today/);
+  });
+
+  /*
+   * A URL is bounded by the characters a URL can hold, not by the next space.
+   * Chinese and Japanese subjects contain no spaces, so a rule that ran to the
+   * next whitespace deleted everything after the link — on a Feishu install,
+   * for most of the mail.
+   */
+  it('removes a link from a subject without spaces without eating the subject', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never,
+    });
+
+    const brief = await compose({
+      ...window,
+      messages: [{
+        from: 'Vendor <v@vendor.com>',
+        subject: '请批准www.example.com/invoice上的发票，金额为12万元',
+        snippet: '…',
+        occurredAt: at('2026-08-10T02:00:00.000Z'),
+      }],
+    });
+
+    const markdown = cardMarkdown(brief.card);
+    assert.match(markdown, /请批准/);
+    assert.match(markdown, /上的发票/);
+    assert.match(markdown, /12万元/, 'the amount survives the link removal');
+    assert.doesNotMatch(markdown, /example\.com/);
+  });
+
+  /*
+   * Truncation cuts code points, not UTF-16 code units. A lone surrogate in a
+   * card element is at best a replacement glyph and at worst a card Lark
+   * refuses — which costs the member the entire brief.
+   */
+  it('never truncates through an emoji', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never,
+    });
+
+    const brief = await compose({
+      ...window,
+      messages: [{
+        from: 'Vendor <v@vendor.com>',
+        subject: `Q3 board pack ${'🔥'.repeat(60)}`,
+        snippet: '…',
+        occurredAt: at('2026-08-10T02:00:00.000Z'),
+      }],
+    });
+
+    const markdown = cardMarkdown(brief.card);
+    assert.match(markdown, /…/, 'it did truncate, so the check is meaningful');
+    for (const unit of markdown) {
+      const code = unit.charCodeAt(0);
+      assert.ok(
+        code < 0xd800 || code > 0xdfff || unit.length === 2,
+        'no unpaired surrogate may reach the card',
+      );
+    }
+  });
+
+  /*
+   * The footnote exists so a member can see which rules are working. A row
+   * naming no rule defeats it, and a rule name is member-authored — it can be
+   * nothing but markup.
+   */
+  it('names a rule whose name is nothing but markup', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[]}') as never,
+    });
+
+    const brief = await compose({
+      ...window,
+      handled: [{ ruleName: '***', delivered: 3, held: 0, blocked: 0, failed: 0 }],
+    });
+
+    const markdown = cardMarkdown(brief.card);
+    assert.doesNotMatch(markdown, /\*\*\*\*/);
+    assert.match(markdown, /\*\*Unnamed rule\*\* — 3 passed on/);
+  });
+
+  /*
+   * A subject is written by whoever sent the mail, and it lands inside markup
+   * the card opened — a `<` closes the grey font tag it sits in and takes the
+   * rest of the card's structure with it, and an asterisk opens a bold the
+   * card never closes.
+   */
+  it('cannot have its markup broken by a subject line', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning(JSON.stringify({
+        wants: [{ index: 0, want: 'Needs a decision.' }],
+      })) as never,
+    });
+
+    const brief = await compose({
+      ...window,
+      messages: [{
+        from: '"Ops <hostile>" <ops@vendor.com>',
+        subject: 'Re: </font>**everything** <b>now</b>',
+        snippet: '…',
+        occurredAt: at('2026-08-10T02:00:00.000Z'),
+      }],
+    });
+
+    const markdown = cardMarkdown(brief.card);
+    // Exactly the tags the card opened for itself, and no stray asterisks that
+    // could swallow the sender's name into a bold run.
+    assert.equal(
+      (markdown.match(/<font color='grey'>/g) ?? []).length,
+      (markdown.match(/<\/font>/g) ?? []).length,
+      'every font tag the card opens must be one it closes',
+    );
+    assert.doesNotMatch(markdown, /<b>|<\/b>/);
+    assert.match(markdown, /Re: everything now/);
+  });
+
+  /*
+   * The model may name up to forty messages. Forty entries is not a brief, and
+   * a card over Lark's element or size ceiling is rejected outright — which
+   * would cost the member the whole brief rather than its tail. What is cut is
+   * said out loud rather than dropped.
+   */
+  it('caps how many messages it names, and says how many it left out', async () => {
+    // `Sender 0` is the newest, `Sender 19` the oldest.
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      from: `Sender ${i} <s${i}@client.com>`,
+      subject: `Subject ${i}`,
+      snippet: '…',
+      occurredAt: at(`2026-08-10T02:${String(59 - i).padStart(2, '0')}:00.000Z`),
+    }));
+    // Oldest named first. Nothing in the prompt or the schema makes the model's
+    // order recency, so the composer must not inherit it — slicing it directly
+    // showed the twelve oldest and hid every one of the newest eight.
+    const compose = createMailBriefComposer({
+      model: modelReturning(JSON.stringify({
+        wants: [...many.keys()].reverse().map(i => ({
+          index: i, want: `Needs a decision ${i}.`,
+        })),
+      })) as never,
+    });
+
+    const brief = await compose({ ...window, messages: many, handled: [] });
+    const card = readCard(brief.card);
+    const markdown = cardMarkdown(brief.card);
+
+    assert.equal(brief.wantCount, 20, 'the count is what the model found, not what fit');
+    assert.deepEqual(
+      markdown.match(/Sender \d+/g),
+      Array.from({ length: 12 }, (_, i) => `Sender ${i}`),
+      'the twelve newest, newest first — the cut falls on the oldest',
+    );
+    assert.match(markdown, /8 more are waiting in your mail\./);
+    assert.ok(
+      card.body.elements.length <= 20,
+      `a card Lark will accept, got ${card.body.elements.length} elements`,
+    );
   });
 
   it('leaves out rules that did nothing', async () => {
