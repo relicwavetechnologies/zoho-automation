@@ -164,7 +164,7 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
                       <div className="ws-sub" style={{ marginTop: 5 }}>{money(usage.spendTodayUsd)} today</div>
                     </div>
                   </div>
-                  <div style={{ marginTop: 22 }}><Heatmap data={usage.series} /></div>
+                  <div style={{ marginTop: 22 }}><Heatmap data={usage.series.map((p) => ({ date: p.date, value: p.spendUsd }))} /></div>
                 </Fade>
               )}
             </div>

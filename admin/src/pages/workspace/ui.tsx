@@ -409,9 +409,13 @@ export const Spark = ({ data }: { data: number[] }) => {
  * Weeks run down the page and weekdays across, which matches the card's own
  * "last 30 days" framing better than the year-long strip this borrows from.
  */
-export const Heatmap = ({ data }: { data: { date: string; spendUsd: number }[] }) => {
+export const Heatmap = ({ data, format = money }: {
+  data: { date: string; value: number }[]
+  /** How a cell's value reads on hover. Dollars here, message counts in Mail. */
+  format?: (value: number) => string
+}) => {
   if (data.length === 0) return null
-  const max = Math.max(...data.map((p) => p.spendUsd), 0)
+  const max = Math.max(...data.map((p) => p.value), 0)
   // Parsed at local midnight. Letting the runtime read a bare date as UTC
   // shifts every cell a day west of the timezone the numbers were billed in.
   const dayOf = (iso: string) => new Date(`${iso}T00:00:00`)
@@ -423,12 +427,12 @@ export const Heatmap = ({ data }: { data: { date: string; spendUsd: number }[] }
     const date = dayOf(point.date)
     cells.push({
       key: point.date,
-      label: `${date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · ${money(point.spendUsd)}`,
-      // Zero keeps its own step. A day that cost nothing is a fact worth
-      // showing, and shading it like a cheap day would erase it.
-      level: point.spendUsd <= 0 || max <= 0
+      label: `${date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · ${format(point.value)}`,
+      // Zero keeps its own step. A quiet day is a fact worth showing, and
+      // shading it like a busy one would erase the difference.
+      level: point.value <= 0 || max <= 0
         ? 0
-        : Math.max(1, Math.ceil((point.spendUsd / max) * 4)),
+        : Math.max(1, Math.ceil((point.value / max) * 4)),
     })
   }
 

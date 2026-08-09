@@ -30,6 +30,7 @@ import { MailRuleDetail, MailRules } from "@/pages/workspace/screens-mail"
 import { MailRuleEdit, MailRuleNew } from "@/pages/workspace/screens-mail-new"
 import { MailSettings } from "@/pages/workspace/screens-mail-settings"
 import { MailCaught } from "@/pages/workspace/screens-mail-caught"
+import { MailHome } from "@/pages/workspace/screens-mail-home"
 import {
   TeamApprovalPolicy, TeamHome, TeamPeople, TeamRoles, TeamUsage,
 } from "@/pages/workspace/screens-team"
@@ -301,6 +302,7 @@ export function App() {
           <Route path="me/mail/:ruleId/edit" element={<MeMailEdit />} />
           {/* Not under `me/mail`, because it is not about one rule and not a
               step in making one — it is the other half of the same question. */}
+          <Route path="me/home" element={<MailHome />} />
           <Route path="me/caught" element={<MailCaught />} />
           {/* Workspace features. A member on the mail surface is told they are
               not theirs rather than being redirected — see `RequireWorkspace`. */}
