@@ -280,18 +280,10 @@ function shellQuote(value: string): string {
 /**
  * Whether this runtime offers the `divo-local` CLI at all.
  *
- * The CLI exists so a desktop workflow can page through a large record set
+ * The CLI exists so a workflow can page through a large record set
  * from one persistent Python file without every row landing in the model's
- * context. A server channel has no use for it: the backend's own export path
- * already owns complete data sets, and the cloud container mounts `/tmp`
- * `noexec`, so a staged launcher cannot even be executed.
- *
- * Leaving it there anyway was not neutral. A run that had already read its
- * data through the governed tool would find the binary on `PATH`, conclude it
- * must be the intended route, and spend turns discovering `Permission denied`
- * and working around it. Telling the agent not to use it did not help while
- * the binary was still discoverable — so the runtime stops offering it, and
- * there is nothing left to find.
+ * context. Cloud `/tmp` is `noexec`, so launchers are staged in the
+ * runtime-owned home there; the socket itself can remain under `/tmp`.
  */
 export function localCliEnabled(): boolean {
 	return process.env["DIVO_LOCAL_CLI_DISABLED"] !== "1";
@@ -366,8 +358,8 @@ export function registerLocalDivoBroker(
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (server) return;
-		// No socket, no launchers, no PATH entry: on a server channel the CLI is
-		// not merely unused, it is absent. Say so in the log, because an absence
+		// No socket, no launchers, no PATH entry: when explicitly disabled the CLI
+		// is absent. Say so in the log, because an absence
 		// nobody records is one nobody notices — this stayed invisible for four
 		// days while the prompt kept prescribing the client it had removed.
 		if (!localCliEnabled()) {
@@ -381,7 +373,8 @@ export function registerLocalDivoBroker(
 			return;
 		}
 		try {
-			cliDirectory = await mkdtemp(join(tmpdir(), "divo-cli-"));
+			const launcherRoot = process.env["DIVO_HOME"] || tmpdir();
+			cliDirectory = await mkdtemp(join(launcherRoot, "divo-cli-"));
 			await writeCliLaunchers(cliDirectory);
 			socketPath = socketAddress();
 			server = createServer((socket) => {

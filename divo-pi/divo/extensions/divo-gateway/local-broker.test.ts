@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, it } from "node:test";
 import {
@@ -401,12 +404,18 @@ describe("Divo local broker protocol", () => {
 	});
 });
 
-async function pathAfterSessionStart(disabled: string | undefined): Promise<string | undefined> {
+async function pathAfterSessionStart(
+	disabled: string | undefined,
+	runtimeHome?: string,
+): Promise<string | undefined> {
 	const originalDisabled = process.env.DIVO_LOCAL_CLI_DISABLED;
+	const originalRuntimeHome = process.env.DIVO_HOME;
 	const originalPath = process.env.PATH;
 	const originalSocket = process.env.DIVO_LOCAL_BROKER_SOCKET;
 	if (disabled === undefined) delete process.env.DIVO_LOCAL_CLI_DISABLED;
 	else process.env.DIVO_LOCAL_CLI_DISABLED = disabled;
+	if (runtimeHome === undefined) delete process.env.DIVO_HOME;
+	else process.env.DIVO_HOME = runtimeHome;
 	captureDivoGatewayConfig({
 		DIVO_BACKEND_URL: "http://localhost:4000",
 		DIVO_MEMBER_TOKEN: "member-token",
@@ -430,11 +439,13 @@ async function pathAfterSessionStart(disabled: string | undefined): Promise<stri
 		else process.env.DIVO_LOCAL_BROKER_SOCKET = originalSocket;
 		if (originalDisabled === undefined) delete process.env.DIVO_LOCAL_CLI_DISABLED;
 		else process.env.DIVO_LOCAL_CLI_DISABLED = originalDisabled;
+		if (originalRuntimeHome === undefined) delete process.env.DIVO_HOME;
+		else process.env.DIVO_HOME = originalRuntimeHome;
 	}
 }
 
 describe("divo-local CLI availability", () => {
-	it("offers the CLI by default, for desktop workflows that page through data", () => {
+	it("offers the CLI by default for desktop and cloud workflows", () => {
 		const original = process.env.DIVO_LOCAL_CLI_DISABLED;
 		delete process.env.DIVO_LOCAL_CLI_DISABLED;
 		try {
@@ -466,5 +477,15 @@ describe("divo-local CLI availability", () => {
 
 		const withheld = await pathAfterSessionStart("1");
 		assert.equal(withheld, process.env.PATH);
+	});
+
+	it("stages the cloud launcher outside turn-scoped run directories", async () => {
+		const runtimeHome = await mkdtemp(join(tmpdir(), "divo-home-"));
+		try {
+			const staged = await pathAfterSessionStart(undefined, runtimeHome);
+			assert.match(String(staged), new RegExp(`^${runtimeHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/divo-cli-`));
+		} finally {
+			await rm(runtimeHome, { recursive: true, force: true });
+		}
 	});
 });

@@ -101,11 +101,11 @@ Use the department id only when the user has selected or implied a department co
 
 ## Local Python Workflows
 
-> **The runtime `<divo_local_execution>` block is authoritative about whether this path exists at all.** This file is shared across channels; the runtime knows which one you are on. When that block says there is no `divo-local` client here, this whole section does not apply — use a governed source that aggregates server-side, or the backend export pipeline, and never rebuild a record set by copying rows out of earlier tool results.
+The runtime `<divo_local_execution>` block is authoritative. The client is credential-free and available in desktop and cloud Pi; the backend still owns identity, permissions, approvals, audit, and provider credentials.
 
 Use `divo_gateway` directly for one straightforward, independently meaningful connected-service action. Use one persistent Python workflow only when work has pagination, a record set plus parsing/transformation/grouping/deduplication/joining, related writes, or more than one connected product. Gmail/CRM → Sheets is always this local-workflow path:
 
-1. Call `divo_skill_resolve` once with the user's complete original request, plus at most one source-oriented and one destination-oriented intent-preserving variant. Do not load the local Python recipe alone: the unified result must preload it together with relevant source/destination recipes, exact governed contracts, and accessible accounts. Resolve anything separately only when that bootstrap explicitly says it is missing. Never mutate data to discover a response shape.
+1. Use the injected catalogue's exact source and destination recipes. Call `divo_skill_resolve` once only when that route is unclear. Loading recommended guidance improves execution but is not an authorization gate. Never mutate data to discover a response shape.
 2. Create one descriptive `.py` file under the exact `DIVO_RUN_DIR` with `write`. Keep non-secret inputs, outputs, and `checkpoint.json` beside it.
 3. Run the file with `bash` and `python3`. Connected company calls inside the program must use the credential-free `divo-local` command through `subprocess`, normally with `--args-file` for generated payloads.
 4. If the program or provider contract fails, inspect the structured result, patch the same `.py` file with `edit`, and rerun the same Bash command. Do not rewrite the complete source, generate source inside a tool argument, or create a new retry script.

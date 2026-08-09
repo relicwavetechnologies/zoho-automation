@@ -104,6 +104,7 @@ describe("Divo Pi runtime boundary", () => {
 	it("removes direct provider keys and injects only Divo authentication", () => {
 		const environment = buildChildEnvironment(
 			{
+				DIVO_LOCAL_CLI_DISABLED: "1",
 				OPENAI_API_KEY: "openai-secret",
 				DEEPSEEK_API_KEY: "deepseek-secret",
 				PATH: "/usr/bin",
@@ -114,6 +115,7 @@ describe("Divo Pi runtime boundary", () => {
 		assert.equal(environment.DEEPSEEK_API_KEY, undefined);
 		assert.equal(environment.DIVO_MEMBER_TOKEN, "member-token");
 		assert.equal(environment.DIVO_BACKEND_URL, "https://divo.example.com");
+		assert.equal(environment.DIVO_LOCAL_CLI_DISABLED, undefined);
 		assert.equal(environment.PATH, "/usr/bin");
 	});
 

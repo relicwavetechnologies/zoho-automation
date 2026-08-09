@@ -385,6 +385,7 @@ function renderWorkspacePrompt(values) {
 export function buildChildEnvironment(baseEnvironment, values) {
 	const environment = { ...baseEnvironment };
 	for (const key of PROVIDER_ENV_KEYS) delete environment[key];
+	delete environment.DIVO_LOCAL_CLI_DISABLED;
 	return {
 		...environment,
 		DIVO_BACKEND_URL: values.backendUrl,
@@ -398,12 +399,6 @@ export function buildChildEnvironment(baseEnvironment, values) {
 		DIVO_BUNDLED_SKILLS_DIR: path.join(divoDir, "skills"),
 		DIVO_WORKSPACE_DIR: values.workspace,
 		DIVO_INTERNAL_DIR: values.internalDir,
-		// The `divo-local` CLI is a desktop execution shape. A server channel's
-		// complete-data path is the backend's own export pipeline, and this
-		// container mounts /tmp noexec, so a staged launcher could never run.
-		// Leaving one on PATH only gave the agent something to find, fail to
-		// execute, and route around.
-		...(values.channel === "lark" ? { DIVO_LOCAL_CLI_DISABLED: "1" } : {}),
 		DIVO_RUN_ID: values.runId,
 		DIVO_RUN_DIR: values.runDir,
 		DIVO_SCRATCH_DIR: values.scratchDir,
@@ -436,7 +431,6 @@ export const RUNTIME_ENVIRONMENT_PATCH_KEYS = [
 	"DIVO_BUNDLED_SKILLS_DIR",
 	"DIVO_WORKSPACE_DIR",
 	"DIVO_INTERNAL_DIR",
-	"DIVO_LOCAL_CLI_DISABLED",
 	"DIVO_RUN_ID",
 	"DIVO_RUN_DIR",
 	"DIVO_SCRATCH_DIR",

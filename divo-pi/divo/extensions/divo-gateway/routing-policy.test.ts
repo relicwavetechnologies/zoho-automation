@@ -167,6 +167,11 @@ describe("divo-local prompt tracks the runtime flag", () => {
 		assert.equal(typeof offered, "boolean");
 	});
 
+	it("keeps skill provenance out of model-authored broker requests", () => {
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Never supply skillId/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /runtime attaches trusted provenance/i);
+	});
+
 	it("names the replacement route instead of leaving a hole", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /aggregates server-side/i);
 		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /backend export pipeline/i);
