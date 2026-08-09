@@ -294,7 +294,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	});
 
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async (event, ctx) => {
 		refreshDivoRuntime(pi);
 		const correlation = await readDivoRunCorrelation().catch(() => undefined);
 		// Most runs never resolve work, so registering typed tools only from a
@@ -328,7 +328,9 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			(skill) => skill.filePath.startsWith(NATIVE_DB_SKILL_ROOT),
 		) ?? false;
 		let systemPrompt = composeDivoSystemPrompt(
-			event.systemPrompt,
+			// Eager registration refreshes Pi's base prompt with each new tool's
+			// guidelines. The event snapshot predates that refresh.
+			ctx.getSystemPrompt(),
 			DIVO_COMPANY_PERSONA_PROMPT,
 			departmentContext,
 			{ nativeSkills },

@@ -175,6 +175,28 @@ describe("buildTypedTools", () => {
 		assert.match(tools[0]?.promptGuidelines[0] ?? "", /a company admin can grant it/);
 	});
 
+	it("tells every nested native wrapper to seek clarity instead of probing operation names", () => {
+		const { tools } = buildTypedTools(bootstrapWith([{
+			id: "futureMcp",
+			argsSchema: {
+				type: "object",
+				anyOf: [{
+					type: "object",
+					properties: {
+						op: { type: "string", enum: ["describe", "call"] },
+						nativeTool: { type: "string" },
+						input: { type: "object" },
+					},
+					required: ["op", "nativeTool"],
+					additionalProperties: false,
+				}],
+			},
+		}]));
+
+		assert.match(tools[0]!.promptGuidelines.at(-1)!, /Never guess or probe nativeTool names/);
+		assert.match(tools[0]!.promptGuidelines.at(-1)!, /ask one focused clarification/);
+	});
+
 	it("rejects an unusable schema with a reason rather than registering a wrong contract", () => {
 		const { tools, rejected } = buildTypedTools(bootstrapWith([{ id: "brokenTool", argsSchema: { type: "string" } }]));
 		assert.deepEqual(tools, []);

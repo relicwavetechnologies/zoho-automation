@@ -23,26 +23,36 @@ import {
 } from '../../data-export/google-drive-xlsx-resource-reference';
 import type { GoogleDriveXlsxResourceResolution } from '../../data-export/google-drive-xlsx-resource-resolver';
 
-const ArgsSchema = z.discriminatedUnion('op', [
-  z.object({
-    connectionId: z.string().uuid().optional(),
-    op: z.literal('describe'),
-    nativeTool: z.string().min(1),
-    input: z.record(z.unknown()).optional(),
-  }),
-  z.object({
-    connectionId: z.string().uuid(),
-    op: z.literal('call'),
-    nativeTool: z.string().min(1),
-    input: z.record(z.unknown()).optional(),
-  }),
-  z.object({
-    connectionId: z.string().uuid().optional(),
-    op: z.literal('resolve_reference'),
-    url: z.string().trim().min(1).max(2_048),
-  }),
-]);
+function createArgsSchema(nativeTool: z.ZodType<string>) {
+  return z.discriminatedUnion('op', [
+    z.object({
+      connectionId: z.string().uuid().optional(),
+      op: z.literal('describe'),
+      nativeTool,
+      input: z.record(z.unknown()).optional(),
+    }),
+    z.object({
+      connectionId: z.string().uuid(),
+      op: z.literal('call'),
+      nativeTool,
+      input: z.record(z.unknown()).optional(),
+    }),
+    z.object({
+      connectionId: z.string().uuid().optional(),
+      op: z.literal('resolve_reference'),
+      url: z.string().trim().min(1).max(2_048),
+    }),
+  ]);
+}
+
+const ArgsSchema = createArgsSchema(z.string().min(1));
 type Args = z.infer<typeof ArgsSchema>;
+
+function nativeToolEnum(values: readonly string[]): z.ZodEnum<[string, ...string[]]> {
+  const [first, ...rest] = values;
+  if (!first) throw new Error('Google Workspace product must publish at least one native tool');
+  return z.enum([first, ...rest]);
+}
 
 const ResultSchema = z.object({
   success: z.boolean(),
@@ -166,7 +176,7 @@ function createProductTool(
     id: asToolId(product.toolId),
     family: 'google',
     actionGroups: supportedActions,
-    argsSchema: ArgsSchema,
+    argsSchema: createArgsSchema(nativeToolEnum(product.tools)),
     resultSchema: ResultSchema,
     description: product.description,
     parameterDocs: [

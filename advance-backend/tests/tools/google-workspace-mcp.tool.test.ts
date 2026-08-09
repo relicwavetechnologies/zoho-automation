@@ -20,6 +20,15 @@ describe('Google Workspace MCP product tools', () => {
     assert.equal(tools.length, 11);
   });
 
+  it('publishes only each product\'s approved native operation names to Pi', () => {
+    const sheets = createGoogleWorkspaceMcpTools({ getConnection: async () => null })
+      .find(tool => tool.id === 'googleSheets')!;
+
+    assert.equal(sheets.argsSchema.safeParse({ op: 'describe', nativeTool: 'format_sheet_range' }).success, true);
+    assert.equal(sheets.argsSchema.safeParse({ op: 'describe', nativeTool: 'send_gmail_message' }).success, false);
+    assert.equal(sheets.argsSchema.safeParse({ op: 'describe', nativeTool: 'get_values' }).success, false);
+  });
+
   it('rejects a native operation owned by another Google product', () => {
     const [gmail] = createGoogleWorkspaceMcpTools({ getConnection: async () => null });
     const result = gmail!.permissionCheck({

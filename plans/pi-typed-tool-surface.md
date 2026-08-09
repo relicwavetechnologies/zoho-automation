@@ -1,6 +1,6 @@
 # Pi typed tool surface
 
-> Status: **Phases 0–2 and 4 complete and unit-proven; `divo_gateway` deleted. Phase 3 (cloud measurement) deferred to one combined test.**
+> Status: **Phases 0–2 and 4 complete; `divo_gateway` deleted. Phase 3 has its first real Cloud-Pi proof, with the broader prompt matrix still pending.**
 >
 > Last updated: **2026-08-10**
 >
@@ -226,7 +226,28 @@ additions are inert on their own.
       `tools.invoke` with wrong `args` shape.
 - [ ] Confirm the provider constrains generation against the registered
       schemas rather than only post-validating.
-- [ ] Record the numbers in this document, not in a commit message.
+- [x] Record the first Cloud-Pi numbers in this document, not only in a commit message.
+
+Cloud-Pi evidence from 2026-08-10 (same idempotent Google Sheet formatting
+prompt, Development only):
+
+- Pi registered 36 reachable governed tools; zero contracts were rejected or
+  filtered from the active surface.
+- Fixing first-turn prompt composition reduced the trace from 16 tool calls and
+  85.8 seconds to 10 tool calls. The final run used only approved Google Sheets
+  operations; the earlier speculative `get_values`, `read`, `format_cells`, and
+  `batchUpdate` probes disappeared.
+- Google Workspace's 11 products and Airtable's 4 products now publish their
+  exact per-product `nativeTool` enums. The other current governed tools already
+  publish their complete operation enums directly.
+- The final run resolved the Sheet, read A1:B1, applied bold + centered
+  formatting, and read the same values back. Its 288-second wall time was caused
+  by two explicit provider-rate-limit waits of about 108 seconds, not tool
+  discovery. One nested `input` field-name correction remained; those external
+  MCP input objects are still describe-driven and are not yet native Pi schemas.
+
+The same-run evidence is therefore strong for operation selection and weak for
+wall-clock comparison. Keep the broader Phase 3 matrix open.
 
 **Exit gate:** typed path is measurably better on retries and invalid
 arguments, or the plan stops here with the evidence written down.

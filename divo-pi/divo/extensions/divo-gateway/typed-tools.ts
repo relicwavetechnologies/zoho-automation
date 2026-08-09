@@ -79,6 +79,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function hasNativeOperationWrapper(schema: Record<string, unknown>): boolean {
+	const branches = Array.isArray(schema.anyOf) ? schema.anyOf : [schema];
+	return branches.some((value) => {
+		if (!isRecord(value) || !isRecord(value.properties)) return false;
+		const op = value.properties.op;
+		return isRecord(op)
+			&& (op.const === "describe" || (Array.isArray(op.enum) && op.enum.includes("describe")))
+			&& isRecord(value.properties.nativeTool);
+	});
+}
+
 /**
  * Accepts the backend schema or explains why it cannot be used. A schema that
  * cannot be trusted must not become a tool, because a tool with a wrong
@@ -165,13 +176,21 @@ export function buildTypedTools(bootstrap: WorkBootstrap): TypedToolBuildResult 
 		}
 		claimed.add(name);
 		const denied = tool.allowedActions.length === 0;
+		const promptGuidelines = denied
+			? [describeDenial(tool)]
+			: guidelinesFromParameterDocs(tool.parameterDocs);
+		if (!denied && hasNativeOperationWrapper(sanitized.schema)) {
+			promptGuidelines.push(
+				"Never guess or probe nativeTool names. Use the exact operation named by the matching Pi skill or an unambiguous schema entry; otherwise read that skill, then ask one focused clarification if the operation is still unclear. Describe that exact operation at most once and use the returned field names.",
+			);
+		}
 		tools.push({
 			name,
 			toolId: tool.id,
 			family: tool.family,
 			label: `Divo ${tool.id}`,
 			description: denied ? describeDenial(tool) : tool.description,
-			promptGuidelines: denied ? [describeDenial(tool)] : guidelinesFromParameterDocs(tool.parameterDocs),
+			promptGuidelines,
 			parameters: sanitized.schema,
 			allowedActions: [...tool.allowedActions],
 			denied,
