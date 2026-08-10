@@ -1845,9 +1845,26 @@
 
    A button rather than a `<select>`, because a select's popup is drawn by the
    operating system and ignores every token here. */
+/* Four fixed columns, so a manager's row and a member's end on the same edge.
+   Flexed, one had no menu and a text role while the other had a control and a
+   button, and the list's right margin zig-zagged by 100px between them. */
+.cur .ws-people-act {
+  display: grid; grid-template-columns: 76px 62px 116px 28px;
+  align-items: center; gap: 12px;
+}
+.cur .ws-people-act > .ws-sub { text-align: right; white-space: nowrap; }
+/* The role column, whether it holds a control or a word. */
+.cur .ws-role-fixed {
+  font-size: 12.5px; color: var(--cur-muted); white-space: nowrap;
+  padding-left: 9px;
+}
+
 .cur .ws-role-pick {
   display: inline-flex; align-items: center; gap: 5px; justify-content: space-between;
-  height: 28px; padding: 0 8px 0 9px; min-width: 104px; max-width: 150px;
+  /* Never wraps. "Member" and its chevron broke onto two lines at a narrow
+     window, which doubled that row's height against its neighbours. */
+  white-space: nowrap; width: 100%;
+  height: 28px; padding: 0 8px 0 9px;
   border: 1px solid transparent; border-radius: var(--cur-r-cta);
   background: transparent; color: var(--cur-body);
   font: inherit; font-size: 12.5px; cursor: pointer;

@@ -374,7 +374,9 @@ function RoleSelect({ person, roles, busy, onPick }: {
 }) {
   if (person.roleSlug === 'MANAGER') {
     return (
-      <span className="ws-sub" title="Only a company admin can change who leads this team">
+      // Padded to sit on the same left edge as the pickers below it — the text
+      // and the control occupy one column, so the list has one right margin.
+      <span className="ws-role-fixed" title="Only a company admin can change who leads this team">
         {person.roleName ?? 'Manager'}
       </span>
     )
@@ -383,7 +385,7 @@ function RoleSelect({ person, roles, busy, onPick }: {
   // here — the same rule the drawer and the roles page already apply.
   const assignable = roles.filter((r) => r.slug !== 'MANAGER')
   if (assignable.length === 0) {
-    return <span className="ws-sub">{person.roleName ?? 'Member'}</span>
+    return <span className="ws-role-fixed">{person.roleName ?? 'Member'}</span>
   }
   return (
     <RolePicker
@@ -598,7 +600,16 @@ export function TeamPeople({ replay, toast }: Props) {
                           is not printed twice on one line. */}
                       <p>{p.email}{spend && spend.runs === 0 ? ' · never used Divo' : ''}</p>
                     </div>
-                    <div className="ws-row-act">
+                    {/*
+                      A fixed grid, not a flex row.
+                      Flexed, a manager's row had no menu and a plain-text role
+                      while a member's had a 104px control and a button — so the
+                      two kinds of row ended their columns 100px apart and the
+                      right-hand edge of the list zig-zagged. Every row now
+                      reserves the same four columns whether or not it fills
+                      them.
+                    */}
+                    <div className="ws-row-act ws-people-act">
                       <span className="ws-sub">{spend?.runs ?? 0} tasks</span>
                       <span className="ws-sub">{money(spend?.spendUsd ?? 0)}</span>
                       {/*
@@ -614,21 +625,22 @@ export function TeamPeople({ replay, toast }: Props) {
                         busy={busyUser === p.userId}
                         onPick={(roleId, roleName) => void changeRole(p, roleId, roleName)}
                       />
-                      <RowMenu
-                        busy={busyUser === p.userId}
-                        label={`Actions for ${displayName(p.name, p.email)}`}
-                        items={p.roleSlug === 'MANAGER'
-                          // A manager's membership is the backend's to change —
-                          // `ordinaryMember` refuses it — so the menu is empty
-                          // rather than offering something that will be refused.
-                          ? []
-                          : [{
-                              label: 'Remove from team',
-                              icon: Trash2,
-                              danger: true,
-                              onSelect: () => setRemoving(p),
-                            }]}
-                      />
+                      {/* A manager's membership is the backend's to change —
+                          `ordinaryMember` refuses it — so there is no menu, and
+                          an empty span holds the column so the rows above and
+                          below it still line up. */}
+                      {p.roleSlug === 'MANAGER' ? <span /> : (
+                        <RowMenu
+                          busy={busyUser === p.userId}
+                          label={`Actions for ${displayName(p.name, p.email)}`}
+                          items={[{
+                            label: 'Remove from team',
+                            icon: Trash2,
+                            danger: true,
+                            onSelect: () => setRemoving(p),
+                          }]}
+                        />
+                      )}
                     </div>
                   </ClickRow>
                 )
@@ -657,7 +669,9 @@ export function TeamPeople({ replay, toast }: Props) {
           search={findCandidates}
           onAdd={async (userId, roleId, name) => {
             try { await addMember(userId, roleId); toast(`${name} added`) }
-            catch { toast('Could not add them', 'error') }
+            // The server's own sentence: it refuses somebody already in the
+            // team, and somebody with no Divo account, for different reasons.
+            catch (e) { notify.failed('They were not added', e instanceof Error ? e.message : null) }
           }}
           onClose={() => setAdding(false)}
         />
@@ -674,7 +688,7 @@ export function TeamPeople({ replay, toast }: Props) {
           roles={snapshot?.roles ?? []}
           onSetRole={async (userId, roleId, roleName, who) => {
             try { await setMemberRole(userId, roleId); toast(`${who} is now ${roleName}`) }
-            catch { toast('Could not change their role', 'error') }
+            catch (e) { notify.failed(`${who}'s role was not changed`, e instanceof Error ? e.message : null) }
           }}
           onRemove={async (userId, who) => {
             try { await removeMember(userId); toast(`${who} removed from ${dept.name}`); setOpen(null) }
@@ -911,8 +925,8 @@ function PersonDrawer({
     try {
       await matrix.clearMemberAction(toolId, userId, action)
       toast('Exception removed — they follow the role again')
-    } catch {
-      toast('Could not remove that exception', 'error')
+    } catch (e) {
+      notify.failed('That exception was not removed', e instanceof Error ? e.message : null)
     }
   }
 
@@ -1345,7 +1359,9 @@ export function TeamRoles({ replay, toast }: Props) {
           onClose={() => setRenaming(false)}
           onConfirm={async (name) => {
             try { await renameRole(selected.id, name); toast(`Renamed to ${name}`) }
-            catch { toast('Could not rename that role', 'error') }
+            // "Built-in department roles cannot be managed here" is the whole
+            // answer, and it was being replaced with a shrug.
+            catch (e) { notify.failed('That role was not renamed', e instanceof Error ? e.message : null) }
           }}
         />
       ) : null}
@@ -1383,7 +1399,7 @@ export function TeamRoles({ replay, toast }: Props) {
           onClose={() => setCreatingRole(false)}
           onConfirm={async (name) => {
             try { await createRole(name); toast(`${name} created`) }
-            catch { toast('Could not create that role', 'error') }
+            catch (e) { notify.failed('That role was not created', e instanceof Error ? e.message : null) }
           }}
         />
       ) : null}
@@ -1422,8 +1438,8 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
     try {
       await save({ enabled, requiredActions: [...byTool].map(([toolId, actions]) => ({ toolId, actions })) })
       toast('Approval policy updated')
-    } catch {
-      toast('Could not update the approval policy', 'error')
+    } catch (e) {
+      notify.failed('The approval policy was not saved', e instanceof Error ? e.message : null)
     }
   }
 

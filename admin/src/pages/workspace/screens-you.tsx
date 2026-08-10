@@ -1742,7 +1742,9 @@ export function YouUsage({ replay }: ScreenProps) {
     <>
       <PageHeader
         eyebrow="Your workspace"
-        title="Usage"
+        // Matches its rail entry, which had to become "Your usage" to be told
+        // apart from the team's at a glance.
+        title="Your usage"
         description="What Divo has done for you and what it cost. Cost is priced from real token counts, not estimated."
       />
       <div className="ws-stack">
