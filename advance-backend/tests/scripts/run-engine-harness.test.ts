@@ -3,9 +3,17 @@ import { describe, it } from 'node:test';
 import {
   assertHarnessChatBinding,
   parseEngineHarnessArgs,
+  persistedExecutionRequestId,
 } from '../../scripts/run-engine-harness';
 
 describe('run-engine-harness delivery binding', () => {
+  it('uses the signed Pi trace id as the persisted execution request id', () => {
+    assert.equal(
+      persistedExecutionRequestId('om_harness_1-123'),
+      'om_harness_1-123',
+    );
+  });
+
   it('requires an explicit chat for every non-default principal even without final delivery', () => {
     assert.throws(
       () => parseEngineHarnessArgs([
