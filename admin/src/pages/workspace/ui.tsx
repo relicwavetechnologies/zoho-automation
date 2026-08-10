@@ -8,7 +8,8 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  AlertTriangle, Check, ChevronRight, Inbox, Lock, MoreHorizontal, X,
+  AlertTriangle, Boxes, CalendarClock, Check, ChevronRight, FileDown, Globe, Inbox, Library,
+  Lock, MoreHorizontal, X,
   type LucideIcon,
 } from 'lucide-react'
 import {
@@ -848,29 +849,73 @@ const TOOL_PREFIX: Record<string, Provider> = {
 export const toolProvider = (toolName: string): Provider | null =>
   TOOL_PREFIX[toolName.trim().split(/[\s_-]/)[0]?.toLowerCase() ?? ''] ?? null
 
+/**
+ * Third-party apps that carry real artwork but are not in `Provider`.
+ *
+ * Shopify is company-owned and reaches the app through its own hook; Semrush is
+ * a tool grant with no connection object at all. Both are somebody else's
+ * product with a published mark, so both get it.
+ */
+const TOOL_ASSET: Array<{ match: string; asset: string; short: string; tint: string; ink: string; fill?: boolean }> = [
+  { match: 'shopify', asset: '/brand/shopify.png', short: 'S', tint: '#008060', ink: '#FFFFFF', fill: true },
+  { match: 'semrush', asset: '/brand/semrush.png', short: 'Se', tint: '#FF642D', ink: '#FFFFFF' },
+]
+
+/**
+ * Divo's own capabilities, which belong to no third party.
+ *
+ * These were left blank on the grounds that inventing a logo would imply an
+ * integration that does not exist — true, but a blank in a column of marks
+ * reads as a row that failed to load rather than as one that has nothing to
+ * load. A glyph from Divo's own icon set says what the tool does without
+ * borrowing anybody's brand.
+ */
+const TOOL_GLYPH: Array<{ match: string; icon: LucideIcon }> = [
+  { match: 'web search', icon: Globe },
+  { match: 'scheduled workflows', icon: CalendarClock },
+  { match: 'oms site', icon: Boxes },
+  { match: 'secure data export', icon: FileDown },
+  { match: 'mail ops', icon: Inbox },
+  { match: 'divo knowledge', icon: Library },
+]
+
 /** A tool's app mark, at the size a table row can carry. */
 export const ToolMark = ({ toolName }: { toolName: string }) => {
+  const key = toolName.trim().toLowerCase()
   const provider = toolProvider(toolName)
   if (provider) {
     return <span className="ws-toolmark"><ProviderMark provider={provider} size={24} /></span>
   }
-  // Shopify has artwork but is not a `Provider` — it is company-owned and
-  // reaches the app through its own hook — so it comes through `AppMark`.
-  if (toolName.trim().toLowerCase().startsWith('shopify')) {
+
+  const asset = TOOL_ASSET.find((a) => key.startsWith(a.match))
+  if (asset) {
     return (
       <span className="ws-toolmark">
-        <AppMark short="S" asset="/brand/shopify.png" fill tint="#008060" ink="#FFFFFF" size={24} />
+        <AppMark
+          short={asset.short}
+          asset={asset.asset}
+          {...(asset.fill ? { fill: true } : {})}
+          tint={asset.tint}
+          ink={asset.ink}
+          size={24}
+        />
       </span>
     )
   }
-  /*
-   * A blank of the same width, and deliberately blank.
-   *
-   * The rest are Divo's own capabilities — Mail Ops, Scheduled Workflows, Web
-   * Search — which belong to no third party, so there is no logo to show and
-   * inventing a generic one would suggest an integration that does not exist.
-   * The space keeps the names in one column.
-   */
+
+  const own = TOOL_GLYPH.find((g) => key.startsWith(g.match))
+  if (own) {
+    return (
+      <span className="ws-toolmark">
+        <span className="ws-app ws-app-own" aria-hidden style={{ ['--ws-app' as string]: '24px' }}>
+          <own.icon size={14} />
+        </span>
+      </span>
+    )
+  }
+
+  // A tool nobody has claimed yet still holds the column, so a name added to the
+  // registry tomorrow does not shift every row left until somebody maps it.
   return <span className="ws-toolmark" aria-hidden />
 }
 

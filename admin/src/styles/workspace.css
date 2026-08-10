@@ -2321,3 +2321,11 @@
    column instead of stepping left on every unknown row. */
 .cur .ws-mx-tool { display: inline-flex; align-items: center; gap: 9px; }
 .cur .ws-toolmark { width: 24px; height: 24px; flex-shrink: 0; display: inline-flex; }
+
+/* Divo's own capabilities in the tool matrix. A neutral tile with a glyph from
+   our own set — it says what the tool does without borrowing a brand, and it
+   stops the column reading as rows that failed to load. */
+.cur .ws-app.ws-app-own {
+  background: var(--cur-surface-strong); border-color: var(--cur-hairline);
+  color: var(--cur-muted);
+}
