@@ -35,6 +35,20 @@ function bootstrapWith(tools: Array<Partial<WorkBootstrap["tools"][number]>>): W
 	};
 }
 
+function nativeWrapperSchema(): Record<string, unknown> {
+	return {
+		type: "object",
+		properties: {
+			connectionId: { type: "string" },
+			op: { type: "string", enum: ["describe", "call"] },
+			nativeTool: { type: "string", enum: ["read_rows", "write_rows"] },
+			input: { type: "object", additionalProperties: {} },
+		},
+		required: ["op", "nativeTool"],
+		additionalProperties: false,
+	};
+}
+
 describe("typedToolName", () => {
 	it("converts canonical camelCase IDs to a stable prefixed name", () => {
 		assert.equal(typedToolName("zohoBooks"), "divo_zoho_books");
@@ -195,6 +209,45 @@ describe("buildTypedTools", () => {
 
 		assert.match(tools[0]!.promptGuidelines.at(-1)!, /Never guess or probe nativeTool names/);
 		assert.match(tools[0]!.promptGuidelines.at(-1)!, /ask one focused clarification/);
+	});
+
+	it("binds a preloaded native input schema before Pi validates the first call", () => {
+		const bootstrap = bootstrapWith([{ id: "futureMcp", argsSchema: nativeWrapperSchema() }]);
+		bootstrap.nativeContracts = [{
+			toolId: "futureMcp",
+			nativeTool: "read_rows",
+			inputSchema: {
+				type: "object",
+				properties: { table_id: { type: "string" } },
+				required: ["table_id"],
+				additionalProperties: false,
+			},
+		}];
+		const { tools, rejected } = buildTypedTools(bootstrap);
+		assert.deepEqual(rejected, []);
+		const piTool = { name: tools[0]!.name, description: "", parameters: tools[0]!.parameters } as never;
+		assert.deepEqual(
+			validateToolArguments(piTool, {
+				name: tools[0]!.name,
+				arguments: { op: "call", nativeTool: "read_rows", input: { table_id: "tbl_1" } },
+			} as never),
+			{ op: "call", nativeTool: "read_rows", input: { table_id: "tbl_1" } },
+		);
+		assert.throws(
+			() => validateToolArguments(piTool, {
+				name: tools[0]!.name,
+				arguments: { op: "call", nativeTool: "read_rows", input: { tableId: "tbl_1" } },
+			} as never),
+			/Validation failed/,
+		);
+		assert.deepEqual(
+			validateToolArguments(piTool, {
+				name: tools[0]!.name,
+				arguments: { op: "call", nativeTool: "write_rows", input: { provider_specific: true } },
+			} as never),
+			{ op: "call", nativeTool: "write_rows", input: { provider_specific: true } },
+			"an operation not preloaded for this prompt keeps the governed fallback",
+		);
 	});
 
 	it("rejects an unusable schema with a reason rather than registering a wrong contract", () => {

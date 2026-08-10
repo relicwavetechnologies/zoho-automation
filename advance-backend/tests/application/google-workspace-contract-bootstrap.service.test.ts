@@ -109,6 +109,19 @@ describe('Google Workspace work-contract bootstrap', () => {
     );
   });
 
+  it('preloads formatting before the first call for ordinary spreadsheet editing language', () => {
+    assert.deepEqual(
+      suggestedGoogleWorkspaceNativeTools(
+        'Tidy this existing Google Sheet: bold and center the header, then read back to verify it',
+        ['googleSheets'],
+      ),
+      [
+        { toolId: 'googleSheets', nativeTool: 'format_sheet_range' },
+        { toolId: 'googleSheets', nativeTool: 'read_sheet_values' },
+      ],
+    );
+  });
+
   it('loads schemas through one accessible connection without selecting it for execution', async () => {
     const resolutions: Array<Record<string, unknown>> = [];
     const described: string[] = [];

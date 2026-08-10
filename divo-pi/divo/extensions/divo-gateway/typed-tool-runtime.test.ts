@@ -128,9 +128,9 @@ describe("registerTypedTools", () => {
 		const registry = new Set<string>(["divo_web_search"]);
 		const { host: pi } = host();
 		let fetched: string[] | undefined;
-		const result = await registerEagerTypedTools(pi, ["webSearch"], noopInvoke, registry, async (ids) => {
+		const result = await registerEagerTypedTools(pi, ["webSearch"], "find it", noopInvoke, registry, async (ids) => {
 			fetched = ids;
-			return { tools: [], failed: [] };
+			return { failed: [] };
 		});
 		assert.equal(fetched, undefined, "an already-live tool must not cost a request");
 		assert.deepEqual(result.registered, []);
@@ -138,15 +138,10 @@ describe("registerTypedTools", () => {
 
 	it("reports a contract that could not be fetched instead of failing the run", async () => {
 		const { host: pi, tools } = host();
-		const result = await registerEagerTypedTools(pi, ["webSearch", "zohoBooks"], noopInvoke, new Set(), async () => ({
-			tools: [{
+		const result = await registerEagerTypedTools(pi, ["webSearch", "zohoBooks"], "find it", noopInvoke, new Set(), async () => ({
+			bootstrap: bootstrapWith([{
 				id: "webSearch",
-				family: "context",
-				description: "Search the public web.",
-				parameterDocs: "query: the search text",
-				allowedActions: ["read"],
-				argsSchema: fixtures.webSearch,
-			}],
+			}]),
 			failed: [{ toolId: "zohoBooks", reason: "connection refused" }],
 		}));
 		assert.deepEqual(result.registered, ["divo_web_search"]);

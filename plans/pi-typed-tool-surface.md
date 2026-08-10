@@ -1,13 +1,13 @@
 # Pi typed tool surface
 
-> Status: **Phases 0–2 and 4 complete; `divo_gateway` deleted. Phase 3 has its first real Cloud-Pi proof, with the broader prompt matrix still pending.**
+> Status: **Typed outer tools and prompt-relevant nested provider contracts are live in Cloud Pi; `divo_gateway` is deleted. The broader Phase 3 measurement matrix remains pending.**
 >
 > Last updated: **2026-08-10**
 >
-> Confidence: **88%**
+> Confidence: **94%**
 >
-> Scope: cloud Pi extension layer only. No backend schema, route, or
-> permission change. Runs beside
+> Scope: cloud Pi extension plus one backward-compatible backend discovery
+> payload. No execution, permission, credential, or approval change. Runs beside
 > `pi-native-skills-and-terminal-export-simplification.md` without sharing a
 > file.
 
@@ -32,8 +32,9 @@ credentials, approvals, schemas, rate limits, and audit. Pi gains local
 
 ## 2. Locked decisions
 
-1. **No backend changes.** The schemas already ship. `serializeToolArgsSchema`
-   feeds both `tools.list` and the run bootstrap. Consume what exists.
+1. **One backend schema source.** `serializeToolArgsSchema` still owns outer
+   contracts. One batched `tools.list` discovery payload now adds the existing
+   prompt-selected `nativeContracts`; it does not create another executor.
 2. **Flat surface, one Pi tool per canonical backend tool ID.** Not per family,
    not one per operation. `CANONICAL_TOOL_IDS` is a compile-time constant, so
    tool *names* are static even though *registration* is per-run and
@@ -224,7 +225,7 @@ additions are inert on their own.
 - [ ] Include the cases that motivated the guideline bullets: a missing
       `provider` on `connections.list`, a guessed `connectionId`, a
       `tools.invoke` with wrong `args` shape.
-- [ ] Confirm the provider constrains generation against the registered
+- [x] Confirm the provider constrains generation against the registered
       schemas rather than only post-validating.
 - [x] Record the first Cloud-Pi numbers in this document, not only in a commit message.
 
@@ -240,14 +241,21 @@ prompt, Development only):
 - Google Workspace's 11 products and Airtable's 4 products now publish their
   exact per-product `nativeTool` enums. The other current governed tools already
   publish their complete operation enums directly.
-- The final run resolved the Sheet, read A1:B1, applied bold + centered
-  formatting, and read the same values back. Its 288-second wall time was caused
-  by two explicit provider-rate-limit waits of about 108 seconds, not tool
-  discovery. One nested `input` field-name correction remained; those external
-  MCP input objects are still describe-driven and are not yet native Pi schemas.
+- A single authenticated batch now loads all 36 outer contracts and only the
+  prompt-relevant nested Google/Airtable input schemas before first inference.
+  Pi binds each loaded `nativeTool` to its exact `input` branch; unselected
+  operations retain the governed describe fallback.
+- A fresh Development run created a disposable Sheet, wrote `A1:B4`, formatted
+  `A1:B1`, and read back four rows in four governed calls and 76.27 seconds.
+  It made zero describe calls, invalid-argument retries, `dataExport` calls, or
+  terminal calls.
+- A second fresh run edited the same Sheet and verified all values unchanged in
+  three governed calls and 54.25 seconds, again with zero describe calls or
+  argument corrections. All 36 tools registered with zero rejection/failure.
 
-The same-run evidence is therefore strong for operation selection and weak for
-wall-clock comparison. Keep the broader Phase 3 matrix open.
+The evidence is now strong for both operation and nested-field selection. Keep
+the broader Phase 3 matrix open for provider/connection error cases, prompt
+tokens, and controlled wall-clock comparison.
 
 **Exit gate:** typed path is measurably better on retries and invalid
 arguments, or the plan stops here with the evidence written down.

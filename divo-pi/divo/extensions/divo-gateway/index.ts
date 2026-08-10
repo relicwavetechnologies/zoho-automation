@@ -309,6 +309,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				const typed = await registerEagerTypedTools(
 					pi,
 					reachableToolIds,
+					event.prompt,
 					typedToolInvoker,
 					typedToolRegistry,
 				);

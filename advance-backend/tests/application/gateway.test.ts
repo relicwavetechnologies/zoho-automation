@@ -2617,6 +2617,22 @@ describe('GatewayDispatcher', () => {
     assert.equal(typeof selectedTools[0]?.parameterDocs, 'string');
     assert.equal(typeof selectedTools[0]?.argsSchema, 'object');
 
+    const batch = await dispatcher.dispatch({
+      op: 'tools.list',
+      payload: { toolIds: ['fakeTool'], query: 'find the requested records' },
+    }, member);
+    assert.equal(batch.ok, true);
+    assert.deepEqual(
+      (batch.data as { bootstrap: { tools: Array<{ id: string }> } }).bootstrap.tools.map(tool => tool.id),
+      ['fakeTool'],
+    );
+
+    const invalidBatch = await dispatcher.dispatch({
+      op: 'tools.list',
+      payload: { toolId: 'fakeTool', query: 'find the requested records' },
+    }, member);
+    assert.equal(invalidBatch.status, 'bad_request');
+
     // runCommand is registered but never offered through the company gateway,
     // so this is a refusal, not an absence — the same answer tools.invoke has
     // always given for it.

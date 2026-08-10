@@ -318,6 +318,16 @@ export class GatewayDispatcher {
     }
 
     const discoveryPerm = withGatewayDiscoveryPermissions(perm);
+    if (parsed.data.toolIds) {
+      const bootstrap = await this.buildWorkBootstrap({
+        member,
+        permission: perm,
+        registryRevision: await this.skillRegistryRevision(member.companyId),
+        ...(parsed.data.query ? { query: parsed.data.query } : {}),
+        toolIds: parsed.data.toolIds,
+      });
+      return gatewaySuccess({ bootstrap });
+    }
     const permittedTools = this.deps.toolRegistry
       .forRuntime(discoveryPerm)
       .filter((tool) => tool.id !== 'runCommand');

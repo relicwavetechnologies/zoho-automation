@@ -165,6 +165,9 @@ function suggestedProductOperations(
     ) {
       operations.push('modify_sheet_values');
     }
+    if (containsAny(query, ['format', 'bold', 'center', 'align', 'style', 'tidy', 'beautif', 'header'])) {
+      operations.push('format_sheet_range');
+    }
     if (containsAny(query, ['verify', 'read back', 'reconcile', 'check'])) {
       operations.push('read_sheet_values');
     }

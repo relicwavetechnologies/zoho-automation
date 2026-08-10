@@ -79,6 +79,89 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function literalProperty(value: unknown, literal: string, description?: string): Record<string, unknown> {
+	const property = isRecord(value) ? { ...value } : { type: "string" };
+	delete property.enum;
+	property.const = literal;
+	if (description) property.description = description;
+	return property;
+}
+
+function nativeToolValues(branch: Record<string, unknown>): string[] | undefined {
+	if (!isRecord(branch.properties)) return undefined;
+	const nativeTool = branch.properties.nativeTool;
+	if (!isRecord(nativeTool)) return undefined;
+	if (typeof nativeTool.const === "string") return [nativeTool.const];
+	if (!Array.isArray(nativeTool.enum)) return undefined;
+	return nativeTool.enum.filter((value): value is string => typeof value === "string");
+}
+
+function exactNativeCallBranch(
+	branch: Record<string, unknown>,
+	contract: WorkBootstrap["nativeContracts"][number],
+): Record<string, unknown> | undefined {
+	if (!isRecord(contract.inputSchema) || JSON.stringify(contract.inputSchema).includes("\"$ref\"")) return undefined;
+	const properties = isRecord(branch.properties) ? { ...branch.properties } : undefined;
+	if (!properties) return undefined;
+	properties.op = literalProperty(properties.op, "call");
+	properties.nativeTool = literalProperty(properties.nativeTool, contract.nativeTool, contract.description);
+	properties.input = contract.inputSchema;
+	return {
+		...branch,
+		properties,
+		required: [...new Set([
+			...(Array.isArray(branch.required) ? branch.required.filter((value): value is string => typeof value === "string") : []),
+			"op",
+			"nativeTool",
+			"input",
+		])],
+	};
+}
+
+function genericNativeCallBranch(
+	branch: Record<string, unknown>,
+	preloaded: ReadonlySet<string>,
+): Record<string, unknown> | undefined {
+	const values = nativeToolValues(branch);
+	if (!values) return branch;
+	const remaining = values.filter((value) => !preloaded.has(value));
+	if (remaining.length === 0) return undefined;
+	const properties = { ...(branch.properties as Record<string, unknown>) };
+	properties.nativeTool = { ...(properties.nativeTool as Record<string, unknown>), enum: remaining };
+	return { ...branch, properties };
+}
+
+function operationIncludes(branch: Record<string, unknown>, operation: string): boolean {
+	if (!isRecord(branch.properties) || !isRecord(branch.properties.op)) return false;
+	return branch.properties.op.const === operation
+		|| (Array.isArray(branch.properties.op.enum) && branch.properties.op.enum.includes(operation));
+}
+
+/** Binds preloaded native input contracts into the parent tool Pi already exposes. */
+export function bindNativeContracts(
+	schema: Record<string, unknown>,
+	contracts: readonly WorkBootstrap["nativeContracts"][number][],
+): Record<string, unknown> {
+	if (contracts.length === 0) return schema;
+	const branches = Array.isArray(schema.anyOf) ? schema.anyOf.filter(isRecord) : [schema];
+	const callBranches = branches.filter(branch => operationIncludes(branch, "call"));
+	if (callBranches.length === 0) return schema;
+	const preloaded = new Set(contracts.map(contract => contract.nativeTool));
+	const exact = callBranches.flatMap(branch => contracts.flatMap(contract => {
+		const branchValues = nativeToolValues(branch);
+		if (branchValues && !branchValues.includes(contract.nativeTool)) return [];
+		const bound = exactNativeCallBranch(branch, contract);
+		return bound ? [bound] : [];
+	}));
+	if (exact.length === 0) return schema;
+	const preserved = branches.flatMap(branch => {
+		if (!operationIncludes(branch, "call")) return [branch];
+		const fallback = genericNativeCallBranch(branch, preloaded);
+		return fallback ? [fallback] : [];
+	});
+	return { ...schema, anyOf: [...preserved, ...exact] };
+}
+
 function hasNativeOperationWrapper(schema: Record<string, unknown>): boolean {
 	const branches = Array.isArray(schema.anyOf) ? schema.anyOf : [schema];
 	return branches.some((value) => {
@@ -169,7 +252,11 @@ export function buildTypedTools(bootstrap: WorkBootstrap): TypedToolBuildResult 
 			rejected.push({ toolId: tool.id, reason: `duplicate typed tool name ${name}` });
 			continue;
 		}
-		const sanitized = sanitizeSchema(tool.argsSchema);
+		const matchingNativeContracts = bootstrap.nativeContracts.filter(contract => contract.toolId === tool.id);
+		const enrichedSchema = isRecord(tool.argsSchema)
+			? bindNativeContracts(tool.argsSchema, matchingNativeContracts)
+			: tool.argsSchema;
+		const sanitized = sanitizeSchema(enrichedSchema);
 		if ("error" in sanitized) {
 			rejected.push({ toolId: tool.id, reason: sanitized.error });
 			continue;

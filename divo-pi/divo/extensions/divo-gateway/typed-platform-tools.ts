@@ -48,15 +48,10 @@ export const DIVO_IMAGE_READ_PARAMS = Type.Object({
 /**
  * Preflight survives the mega-tool because typed tools do not replace it.
  *
- * A typed tool validates the backend wrapper contract, but the MCP families
- * declare `input` as a free-form record, so the actual Google or Airtable
- * operation arguments are still unvalidated locally. Preflight is what checks
- * them — along with connection eligibility and OAuth scopes — without
- * executing anything.
- *
- * Registering a typed tool per native contract would close that gap properly;
- * the bootstrap already carries `nativeContracts[].inputSchema`. Until then,
- * this stays.
+ * Prompt-relevant Google and Airtable input schemas are now bound into their
+ * parent typed tools before inference. Preflight remains useful for operations
+ * outside that bounded preload and for checking connection eligibility, OAuth
+ * scopes, and permissions without executing anything.
  */
 export const DIVO_PREFLIGHT_PARAMS = Type.Object({
 	invocations: Type.Array(
