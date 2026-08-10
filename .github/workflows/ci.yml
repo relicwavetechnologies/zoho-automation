@@ -73,10 +73,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        # Three divo-pi files below, because three backend tests reach across
+        # into the Pi runtime to check the two halves still agree — the model
+        # catalogue, the governed tool allowlist, and capability finalization.
+        # They are static imports, so a missing file is not a skipped test but a
+        # suite that cannot load: `advance-backend` has been red on main and dev
+        # since the allowlist parity test arrived without the two paths it reads.
         with:
           sparse-checkout: |
             advance-backend
             divo-pi/divo/runtime-models.mjs
+            divo-pi/divo/runtime-manifest.json
+            divo-pi/divo/extensions/divo-gateway/typed-tools.ts
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
