@@ -24,6 +24,7 @@ import {
   Switch, listPhrase, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
+import { notify } from '@/lib/notify'
 import {
   candidateBlock, candidateLabel,
   useApprovalPolicy, useDepartment, useDepartmentMatrix, useManagedDepartments, useTeamUsage,
@@ -624,7 +625,21 @@ function PersonDrawer({
   }
 
   const toggle = (tool: ToolScopeSnapshot, action: string, cell: Cell) => {
-    if (cell.blocked) return
+    /*
+     * A press that does nothing at all is indistinguishable from a broken one.
+     *
+     * This returned in silence, so somebody clicking a locked cell got no
+     * movement, no message, and no reason — the explanation lived in a hover
+     * title and a banner at the top of the tab. Pressing is how a person asks
+     * why, and `blockNote` is already the exact answer.
+     */
+    if (cell.blocked) {
+      notify.refused(
+        'Company policy holds this one down',
+        `${cell.blockNote ?? 'This action is switched off above your level'}. Turning it on here would change nothing.`,
+      )
+      return
+    }
     const configured = Boolean(stateOf(tool, action)?.effectiveAllowed)
     setPending((prev) => {
       const without = prev.filter((c) => !(c.toolId === tool.tool.toolId && c.action === action))
@@ -848,11 +863,28 @@ function PersonDrawer({
         </>
       ) : (
         <>
+          {/*
+            Two different reasons, and this said the first one for both.
+
+            On a fellow manager every cell is locked because they are a manager
+            — `readOnly` below — and the banner still blamed company policy. The
+            per-cell tooltip falls through to the plain action name in that case,
+            so the wrong sentence here was the only sentence there was.
+          */}
           <div className="ws-ceiling" style={{ marginBottom: 16 }}>
             <TriangleAlert size={14} />
             <div>
-              Locked cells are held down by <b>company policy</b>, above your level. The backend clamps a team grant to
-              the company ceiling, so turning one on here would change nothing.
+              {isManager ? (
+                <>
+                  Nothing here is editable because {firstName(person.name, person.email)} leads this team.
+                  A manager&rsquo;s access is set at company level — this is what they currently hold.
+                </>
+              ) : (
+                <>
+                  Locked cells are held down by <b>company policy</b>, above your level. The backend clamps a team grant to
+                  the company ceiling, so turning one on here would change nothing.
+                </>
+              )}
             </div>
           </div>
           <ToolMatrix tools={matrix.tools} cellFor={cellFor} onToggle={isManager ? undefined : toggle} readOnly={isManager} />
@@ -954,7 +986,15 @@ export function TeamRoles({ replay, toast }: Props) {
   }
 
   const toggle = (tool: ToolScopeSnapshot, action: string, cell: Cell) => {
-    if (cell.blocked) return
+    // Same silence as the person drawer's, and the same answer — see the note
+    // there. A locked cell here reports on everybody currently in the role.
+    if (cell.blocked) {
+      notify.refused(
+        'Company policy holds this one down',
+        `${cell.blockNote ?? 'This action is switched off above your level'}. Turning it on here would change nothing.`,
+      )
+      return
+    }
     const configured = Boolean(roleState(tool, action)?.configuredAllowed)
     setPending((prev) => {
       const without = prev.filter((c) => !(c.toolId === tool.tool.toolId && c.action === action))
@@ -1169,11 +1209,40 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
     }
   }
 
+  /*
+   * Enabled follows the list, because the backend already decides it that way.
+   *
+   * It stores `enabled && requiredActions.length > 0`, so a policy that is on
+   * with nothing ticked cannot exist. Sending `enabled` independently let the
+   * UI ask for a state the server would silently rewrite — the save succeeded,
+   * the toast said so, and the switch flipped back on the next render.
+   */
   const toggle = (key: string) => {
     const next = new Set(gated)
     if (next.has(key)) next.delete(key)
     else next.add(key)
-    void commit(next, policy?.enabled ?? true)
+    void commit(next, next.size > 0)
+  }
+
+  /**
+   * The master switch, which could previously only ever be turned off.
+   *
+   * Turning it on saved `enabled: true` with an empty list, the server rewrote
+   * that to false, and the gated-action list was hidden behind `enabled` — so
+   * there was no way to tick the first action and no way to reach the state the
+   * switch was offering. Now the list is always readable and this refuses with
+   * the reason instead of appearing to work.
+   */
+  const toggleAll = () => {
+    if (!policy) { toast('The approval policy has not loaded yet'); return }
+    if (!policy.enabled && gated.size === 0) {
+      notify.refused(
+        'Choose what needs asking first',
+        'An approval policy with nothing in it is the same as no policy, so Divo will not store one. Tick an action below and this switches on by itself.',
+      )
+      return
+    }
+    void commit(gated, !policy.enabled)
   }
 
   return (
@@ -1199,11 +1268,7 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
             {loading ? <Skel w={38} h={22} /> : policy === null ? (
               <span className="ws-sub">Could not read the policy</span>
             ) : (
-              <Switch
-                on={policy.enabled}
-                onToggle={() => void commit(gated, !policy.enabled)}
-                label="Approvals"
-              />
+              <Switch on={policy.enabled} onToggle={toggleAll} label="Approvals" />
             )}
           </div>
         </Panel>
@@ -1216,8 +1281,21 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
           <Panel><div className="ws-panel-body">{loading ? <SkelRows n={3} icon={false} /> : (
             <span className="ws-sub">Whether anything needs your approval could not be read, so it is not stated here.</span>
           )}</div></Panel>
-        ) : policy.enabled ? (
-          <Panel title="Gated actions" description={`${gated.size} of ${gateable.length} actions need you`} source="permissions">
+        ) : (
+          /*
+            Shown whether or not the policy is on, which is what makes the
+            switch above reachable. Hidden behind `enabled`, there was no way to
+            tick the first action and the server refuses to store a policy with
+            none — so "Ask me before risky actions" could be turned off and
+            never back on.
+          */
+          <Panel
+            title="Gated actions"
+            description={policy.enabled
+              ? `${gated.size} of ${gateable.length} actions need you`
+              : `Nothing is being asked. Tick one and this switches on.`}
+            source="permissions"
+          >
             {!r1 || loading || matrix.loading ? <SkelRows n={5} icon={false} /> : (
               <Fade>
                 <div className="ws-rows">
@@ -1238,8 +1316,6 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
               Requests expire after an hour. If you miss one, Divo stops and does nothing.
             </div>
           </Panel>
-        ) : (
-          <Empty icon={ShieldCheck} title="Nothing is gated" body="Divo will act without asking, limited only by each person's role." />
         )}
       </div>
     </>

@@ -1159,7 +1159,7 @@
 }
 
 .cur .ws-appcard {
-  display: flex; flex-direction: column; padding: 18px;
+  display: flex; flex-direction: column; padding: 20px;
   border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
   background: var(--cur-surface); box-shadow: var(--cur-shadow-card);
 }
@@ -1170,8 +1170,9 @@
 }
 /* The mark sits on its own line with room under it, which is the proportion the
    reference card gets its calm from — the logo is the first thing read, not a
-   bullet beside the title. */
-.cur .ws-appcard-h { flex-shrink: 0; margin-bottom: 16px; }
+   bullet beside the title. Smaller than it was: at 40px it competed with the
+   name instead of introducing it. */
+.cur .ws-appcard-h { flex-shrink: 0; margin-bottom: 20px; }
 .cur .ws-appcard h3 {
   font-size: 14px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink);
 }
@@ -1181,8 +1182,24 @@
 .cur .ws-appcard p {
   margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--cur-muted);
 }
-.cur .ws-appcard-act { margin-top: auto; padding-top: 16px; }
-.cur .ws-appcard-act .ws-tag { width: 100%; justify-content: center; height: 32px; }
+.cur .ws-appcard-act { margin-top: auto; padding-top: 20px; }
+
+/* The action reads as a bar, not an outline.
+   `.btn` is `--cur-surface` with a hairline, which is the card's own colour —
+   so on a card the fill vanished and only the border was left, where the
+   reference has a filled control you can see at a glance. A step up the surface
+   scale puts it back without spending the primary on it. */
+.cur .ws-appcard-act > .btn {
+  height: 38px;
+  background: var(--cur-surface-strong);
+  border-color: var(--cur-hairline);
+}
+.cur .ws-appcard-act > .btn:hover {
+  background: var(--cur-canvas-soft); border-color: var(--cur-hairline-strong);
+}
+.cur .ws-appcard-act .ws-tag {
+  width: 100%; justify-content: center; height: 38px; box-sizing: border-box;
+}
 
 /* The accounts under an app. Compact rows, because the card is about the app
    and these are what it currently holds. */

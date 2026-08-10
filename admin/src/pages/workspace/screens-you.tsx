@@ -323,7 +323,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
       return {
         key: def.provider,
         name: def.name,
-        mark: <ProviderMark provider={def.provider} size={40} />,
+        mark: <ProviderMark provider={def.provider} size={30} />,
         blurb: status?.error
           ? status.error
           : accounts.length === 0
@@ -356,7 +356,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
     built.push({
       key: 'shopify',
       name: 'Shopify',
-      mark: <AppMark short="S" asset="/brand/shopify.png" fill tint="#008060" ink="#FFFFFF" size={40} />,
+      mark: <AppMark short="S" asset="/brand/shopify.png" fill tint="#008060" ink="#FFFFFF" size={30} />,
       blurb: shopifyStatus.loading
         ? 'Loading Shopify stores…'
         : shopifyStatus.failed
