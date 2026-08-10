@@ -58,7 +58,15 @@ describe('Lark system skill provisioning', () => {
     }
   });
 
-  it('keeps every family skill operation list identical to its tool schema', () => {
+  /*
+   * Each skill used to open with an "## Implemented operations" list, and this
+   * test asserted it equalled the tool's own `op` enum. Its only job was to
+   * keep a copy in sync with its original — which is the argument for deleting
+   * the copy. Every Lark tool prints that enum in parameterDocs, so the skills
+   * now say what a schema cannot: which capabilities are absent, so Divo tells
+   * the member instead of inventing a workaround.
+   */
+  it('leaves the operation enum to the tool that declares it', () => {
     const tools = [
       createLarkTaskTool({} as never),
       createLarkMessagingTool({} as never),
@@ -73,10 +81,13 @@ describe('Lark system skill provisioning', () => {
     for (const tool of tools) {
       const skill = LARK_SYSTEM_SKILLS.find((candidate) => candidate.toolIds.includes(String(tool.id)));
       assert(skill, `missing skill for ${tool.id}`);
-      const section = skill.markdown.match(/## Implemented operations\s+([^\n]+)/);
-      assert(section, `${skill.slug} must declare implemented operations`);
-      const declared = [...section[1]!.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
-      assert.deepEqual(declared, [...operationOptions(tool.argsSchema)], `${skill.slug} operation drift`);
+      assert.doesNotMatch(skill.markdown, /## Implemented operations/, `${skill.slug} reprints its tool enum`);
+      const ops = [...operationOptions(tool.argsSchema)];
+      assert.ok(ops.length > 0);
+      assert.match(tool.parameterDocs, /op:/, `${tool.id} must declare its own operations`);
+      for (const op of ops) {
+        assert.ok(tool.parameterDocs.includes(op), `${tool.id} parameterDocs omit ${op}`);
+      }
     }
   });
 
@@ -101,9 +112,11 @@ describe('Lark system skill provisioning', () => {
       skill.toolIds.some((toolId) => userScopedTools.has(toolId)));
 
     for (const skill of userScopedSkills) {
-      assert.match(skill.markdown, /Otherwise omit `connectionId`/);
-      assert.match(skill.markdown, /backend selects an account only when exactly one accessible account qualifies/);
       assert.doesNotMatch(skill.markdown, /List accessible connections|pass its `connectionId`|include its `connectionId` on every action/);
+      // How connectionId resolves is the tools' contract, not six skills'.
+      assert.doesNotMatch(skill.markdown, /backend selects an account only when exactly one/);
+      assert.match(skill.markdown, /Never invent a `connectionId` or call `connections\.list`/);
+      assert.match(skill.markdown, /ask which account to use\. Never pick for the member/);
     }
   });
 
