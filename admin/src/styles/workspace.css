@@ -1138,6 +1138,93 @@
   background: var(--cur-surface-strong); color: var(--cur-muted-soft);
   cursor: default; opacity: .75;
 }
+/* ── Connected apps ───────────────────────────────────
+   A grid of cards rather than a list of rows. Seven full-width rows all the
+   same height read as a settings table, and the question this page is opened
+   with — which of these already works — took reading every one of them.
+
+   `auto-fill` with a 250px floor rather than a fixed column count, so the
+   section reflows instead of squeezing three cards into a rail width nobody
+   tested. */
+.cur .ws-appsec { margin-top: 26px; }
+.cur .ws-appsec:first-of-type { margin-top: 18px; }
+.cur .ws-appsec-h {
+  display: flex; align-items: baseline; gap: 9px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.cur .ws-appsec-h h2 {
+  font-size: 13px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink);
+}
+/* The count is a pill, not a parenthetical — it is scanned, not read. */
+.cur .ws-appsec-n {
+  display: inline-grid; place-items: center; min-width: 19px; height: 19px; padding: 0 6px;
+  border-radius: 999px; background: var(--cur-surface-strong);
+  font-size: 11px; font-variant-numeric: tabular-nums; color: var(--cur-muted);
+}
+.cur .ws-appsec-h p { margin: 0 0 0 2px; font-size: 12px; color: var(--cur-muted); }
+
+/* `auto-fit`, not `auto-fill`.
+   `auto-fill` keeps every track it can fit whether or not anything is in it, so
+   a section holding two cards in a three-column width left a 334px column of
+   nothing beside them — twice, once per section. `auto-fit` collapses the empty
+   tracks and the cards take the room back. */
+.cur .ws-appgrid {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  align-items: stretch;
+}
+
+.cur .ws-appcard {
+  display: flex; gap: 13px; padding: 15px 16px;
+  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
+  background: var(--cur-surface); box-shadow: var(--cur-shadow-card);
+}
+.cur .ws-appcard-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* Only when something under this card needs attention — a revoked account. The
+   card is not toned for being unconnected, which is an ordinary state. */
+.cur .ws-appcard[data-tone="warn"] {
+  border-color: color-mix(in srgb, var(--ws-warning) 30%, var(--cur-hairline));
+}
+.cur .ws-appcard-h { flex-shrink: 0; }
+.cur .ws-appcard h3 {
+  font-size: 13.5px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink);
+}
+/* No `min-height` any more. It existed to line the buttons up, which the card
+   now does by stretching and pushing the action to its floor — so a one-line
+   blurb takes one line instead of reserving two and leaving the second empty. */
+.cur .ws-appcard p {
+  margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: var(--cur-muted);
+}
+.cur .ws-appcard-act { margin-top: auto; padding-top: 13px; }
+.cur .ws-appcard-act .ws-tag { width: 100%; justify-content: center; height: 32px; }
+
+/* The accounts under an app. Compact rows, because the card is about the app
+   and these are what it currently holds. */
+.cur .ws-appcard-accs { list-style: none; margin: 13px 0 0; padding: 0; }
+.cur .ws-appcard-accs li { border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-appcard-accs li:first-child { border-top: 0; }
+.cur .ws-appcard-accs button,
+.cur .ws-appcard-accs > li > div {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  gap: 4px 8px; width: 100%; padding: 8px 0; text-align: left;
+  border: 0; background: none; font: inherit; color: inherit;
+}
+.cur .ws-appcard-accs button { cursor: pointer; }
+.cur .ws-appcard-accs button:hover .ws-appcard-acc-t { color: var(--cur-ink); }
+.cur .ws-appcard-acc-t {
+  font-size: 12.5px; color: var(--cur-body);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cur .ws-appcard-acc-s {
+  grid-column: 1 / -1; font-size: 11.5px; color: var(--cur-muted-soft);
+}
+/* Placed, not left to auto-flow. The subtitle spans both columns, so the
+   chevron after it in source order landed on a third row under the address
+   instead of beside it. */
+.cur .ws-appcard-accs svg {
+  grid-column: 2; grid-row: 1; color: var(--cur-muted-soft); flex-shrink: 0;
+}
+.cur .ws-appcard-accs li[data-dead="true"] .ws-appcard-acc-s { color: var(--cur-error); }
+
 /* ── App icons ────────────────────────────────────────
    The tile every provider mark sits in, so a drawn logo, a PNG and a lettered
    fallback occupy the same square and a mixed list still lines up.
@@ -1246,16 +1333,33 @@
    scrolls once the list outgrows it, which keeps Getting started and the foot
    pinned to the bottom where they belong. */
 .cur .ws-recent { padding: 0 2px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* A card rather than a bare line. Five flush-left rows under a heading read as
+   a list of links; a surface makes each one an object you can aim at, and gives
+   the status dot somewhere to sit that is not the page background. */
 .cur .ws-recent-item {
-  display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer;
-  font-family: inherit; padding: 5px 10px; border-radius: var(--cur-r-cta); color: var(--cur-body);
+  display: block; width: 100%; text-align: left; border: 1px solid transparent; cursor: pointer;
+  font-family: inherit; padding: 8px 10px; margin-bottom: 4px;
+  border-radius: 10px; background: var(--cur-canvas-soft); color: var(--cur-body);
+  transition: background .12s ease, border-color .12s ease;
 }
-.cur .ws-recent-item:hover { background: var(--cur-surface-strong); }
+.cur .ws-recent-item:hover {
+  background: var(--cur-surface-strong); border-color: var(--cur-hairline);
+}
 .cur .ws-recent-item b {
   display: block; font-size: 13px; line-height: 1.35; font-weight: 400; color: var(--cur-ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.cur .ws-recent-item span { display: block; font-size: 11.5px; line-height: 1.25; color: var(--cur-muted); }
+.cur .ws-recent-item span {
+  display: flex; align-items: center; gap: 6px; margin-top: 3px;
+  font-size: 11.5px; line-height: 1.25; color: var(--cur-muted);
+}
+.cur .ws-recent-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: var(--cur-muted-soft);
+}
+.cur .ws-recent-item span[data-state="ok"] .ws-recent-dot { background: var(--cur-success); }
+.cur .ws-recent-item span[data-state="err"] .ws-recent-dot { background: var(--cur-error); }
+.cur .ws-recent-item span[data-state="run"] .ws-recent-dot { background: var(--cur-primary); }
 .cur .ws-recent-empty { padding: 4px 10px; font-size: 12px; color: var(--cur-muted-soft); line-height: 1.5; }
 
 .cur .ws-onb {

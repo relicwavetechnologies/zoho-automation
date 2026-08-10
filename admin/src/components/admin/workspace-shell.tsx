@@ -336,6 +336,20 @@ function shortAgo(iso: string): string {
   return `${Math.round(days / 7)}w`
 }
 
+/**
+ * Which colour the dot takes.
+ *
+ * `running` is deliberately unreachable for Lark: the backend never closes a
+ * Lark run, so every one of them reports `running` indefinitely — see the
+ * "status unknown" note the run lists carry for the same reason. A rail of five
+ * permanently-live dots would say nothing at all, so those read as done.
+ */
+function runDotState(run: { status: string; channel: string }): 'ok' | 'err' | 'run' {
+  if (run.status === 'failed') return 'err'
+  if (run.status === 'running' && run.channel !== 'lark') return 'run'
+  return 'ok'
+}
+
 function RecentRuns({ onOpen, onSearch }: { onOpen: () => void; onSearch: () => void }) {
   const { runs, loading } = useRecentRuns(5)
 
@@ -356,7 +370,20 @@ function RecentRuns({ onOpen, onSearch }: { onOpen: () => void; onSearch: () => 
       {runs.map((run) => (
         <button type="button" className="ws-recent-item" key={run.id} onClick={onOpen}>
           <b>{run.summary ?? run.entrypoint}</b>
-          <span>{shortAgo(run.startedAt)}</span>
+          {/*
+            A dot before the time, because the age of a run is only half of what
+            somebody scanning this rail wants — "22h" reads the same whether it
+            worked or failed, and a failure sitting quietly in the list is the
+            one entry they would have wanted to notice.
+
+            Lark runs are excluded from `running` on purpose: the backend never
+            closes them, so every Lark run stays "running" forever and a live
+            dot on all five would mean nothing.
+          */}
+          <span data-state={runDotState(run)}>
+            <i className="ws-recent-dot" />
+            {shortAgo(run.startedAt)}
+          </span>
         </button>
       ))}
     </div>

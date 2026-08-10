@@ -5,7 +5,7 @@
  * console shrunk down. An employee comes here because something is blocked,
  * because they want to know what Divo can see, or to take access back.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Activity, ArrowUpRight, Ban, BookOpen, Brain, Building2, Check, CircleAlert, Clock,
   ChevronRight, Eye, Gauge, Globe, Link2, Lock, MessageSquare, Plus, RotateCw, Search, ShieldCheck,
@@ -292,6 +292,149 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
   // settled would either flash empty rows or defeat the staging entirely.
   const ready = r1 && !loading
 
+  /*
+   * Every app in one shape, then split three ways.
+   *
+   * Shopify is company-owned and arrives through its own status hook, so it had
+   * a parallel component that drew the same row by hand — and drifted, most
+   * visibly into being the only app without a logo. Normalising first means the
+   * card is written once and Shopify cannot look like a different product.
+   */
+  const cards = useMemo(() => {
+    const built: AppCardModel[] = CONNECTORS.map((def) => {
+      const status = byProvider.get(def.provider)
+      const accounts = status?.connections ?? []
+      /*
+       * Two different questions, and one flag was answering both.
+       *
+       * `memberCanConnect` says whether an ordinary member may connect this for
+       * themselves. A provider connected once for the whole company answers no
+       * — but it is still connectable, by an admin, and reading the flag as
+       * "nobody may add one here" left an admin looking at Zoho with no way to
+       * add an account to the very thing they administer.
+       */
+      const canAdd = def.memberCanConnect || isCompanyAdmin
+      // Counted rather than derived from `accounts.length`: the card's job is to
+      // say how many of these actually work, and "2 accounts" over one live and
+      // one revoked is the sentence this whole distinction exists to stop.
+      const dead = accounts.filter((c) => c.reconnectRequired === true).length
+
+      return {
+        key: def.provider,
+        name: def.name,
+        mark: <ProviderMark provider={def.provider} size={40} />,
+        blurb: status?.error
+          ? status.error
+          : accounts.length === 0
+            ? def.blurb
+            : dead === accounts.length
+              ? `Not connected — ${dead === 1 ? 'this account needs' : `all ${dead} accounts need`} reconnecting`
+              : `${accounts.length} account${accounts.length === 1 ? '' : 's'}${dead > 0 ? ` · ${dead} needs reconnecting` : ''}`,
+        accounts: accounts.map((conn) => ({
+          id: conn.connectionId,
+          title: conn.accountEmail ?? conn.label,
+          company: conn.ownerType === 'company',
+          dead: conn.reconnectRequired === true,
+          sub: conn.reconnectRequired === true
+            ? `${def.name} ended this authorisation. Sign in again to use it.`
+            : `Last used ${since(conn.lastUsedAt)}`,
+          onOpen: () => setOpen({ provider: def.provider, connectionId: conn.connectionId }),
+        })),
+        canAdd,
+        busy: connecting === def.provider,
+        onAdd: () => startConnect(def.provider, accounts.length),
+        ...(dead > 0 ? { tone: 'warn' as const } : {}),
+      }
+    })
+
+    // Shopify, through the same shape. `canManage` is the backend's answer
+    // rather than a role guess, so an admin sees Connect and a member does not.
+    const shop = shopifyStatus.status
+    const shopAccounts = shop?.connections ?? []
+    const shopDead = shopAccounts.filter((c) => c.reconnectRequired === true).length
+    built.push({
+      key: 'shopify',
+      name: 'Shopify',
+      mark: <AppMark short="S" asset="/brand/shopify.png" fill tint="#008060" ink="#FFFFFF" size={40} />,
+      blurb: shopifyStatus.loading
+        ? 'Loading Shopify stores…'
+        : shopifyStatus.failed
+          ? 'Could not read Shopify connections.'
+          : shopAccounts.length === 0
+            ? 'Company-owned store access. Save Dev Dashboard credentials once; Divo keeps tokens refreshed.'
+            : `${shopAccounts.length} store${shopAccounts.length === 1 ? '' : 's'}${shopDead > 0 ? ` · ${shopDead} needs reconnecting` : ''}`,
+      accounts: shopAccounts.map((conn) => ({
+        id: conn.connectionId,
+        title: shopifyConnectionLabel(conn),
+        company: true,
+        dead: conn.reconnectRequired === true,
+        sub: conn.reconnectRequired === true
+          ? 'Shopify ended this authorisation. An admin must connect it again.'
+          : `Last used ${since(conn.lastUsedAt)}`,
+        // Managed by admins, so a member has nothing to open.
+        onOpen: shop?.canManage === true ? () => setShopifyOpen(true) : undefined,
+      })),
+      canAdd: shop?.canManage === true,
+      busy: false,
+      onAdd: () => setShopifyOpen(true),
+      ...(shopDead > 0 ? { tone: 'warn' as const } : {}),
+    })
+
+    return {
+      connected: built.filter((c) => c.accounts.length > 0),
+      available: built.filter((c) => c.accounts.length === 0 && c.canAdd),
+      admin: built.filter((c) => c.accounts.length === 0 && !c.canAdd),
+    }
+  }, [byProvider, isCompanyAdmin, connecting, shopifyStatus, startConnect])
+
+  const renderCard = (card: AppCardModel) => (
+    <AppCard
+      key={card.key}
+      mark={card.mark}
+      name={card.name}
+      blurb={card.blurb}
+      {...(card.tone ? { tone: card.tone } : {})}
+      accounts={card.accounts.length > 0 ? (
+        <ul className="ws-appcard-accs">
+          {card.accounts.map((acc) => (
+            <li key={acc.id} data-dead={acc.dead ? 'true' : undefined}>
+              {acc.onOpen ? (
+                <button type="button" onClick={acc.onOpen}>
+                  <span className="ws-appcard-acc-t">{acc.title}</span>
+                  <span className="ws-appcard-acc-s">{acc.sub}</span>
+                  <ChevronRight size={13} />
+                </button>
+              ) : (
+                <div>
+                  <span className="ws-appcard-acc-t">{acc.title}</span>
+                  <span className="ws-appcard-acc-s">{acc.sub}</span>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      ) : undefined}
+      action={card.canAdd ? (
+        <button
+          type="button"
+          className="btn wide"
+          disabled={connecting !== null || card.busy}
+          onClick={card.onAdd}
+        >
+          {card.busy
+            ? 'Waiting…'
+            : card.accounts.length === 0 ? 'Connect' : <><Plus size={13} />Add account</>}
+        </button>
+      ) : (
+        /* Shown whether or not accounts already exist. It used to appear only on
+           an empty provider, so somebody looking at one that already had
+           accounts got no button and no reason — a dead end that read as a
+           missing feature rather than a deliberate rule. */
+        <span className="ws-tag"><Lock size={11} />Admin connects this</span>
+      )}
+    />
+  )
+
   return (
     <>
       <PageHeader
@@ -325,114 +468,42 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
           </div>
         ) : null}
 
-        <Panel title="Your connections" source="connections">
-          {!ready ? <SkelRows n={4} /> : (
-            <Fade>
-              <div className="ws-conns">
-                {CONNECTORS.map((def) => {
-                  const status = byProvider.get(def.provider)
-                  const accounts = status?.connections ?? []
-                  /*
-                   * Two different questions, and one flag was answering both.
-                   *
-                   * `memberCanConnect` says whether an ordinary member may
-                   * connect this for themselves. A provider connected once for
-                   * the whole company answers no — but it is still connectable,
-                   * by an admin, and reading the flag as "nobody may add one
-                   * here" left an admin looking at Zoho with no way to add an
-                   * account to the very thing they administer.
-                   */
-                  const canAdd = def.memberCanConnect || isCompanyAdmin
-                  // Counted rather than derived from `accounts.length`: the
-                  // header's job is to say how many of these actually work, and
-                  // "2 accounts" over one live and one revoked is the sentence
-                  // this whole change exists to stop printing.
-                  const dead = accounts.filter((c) => c.reconnectRequired === true).length
+        {!ready ? <Panel title="Your connections"><SkelRows n={4} /></Panel> : (
+          <Fade>
+            {/*
+              Grouped by what you can do about it, not by a fixed order.
 
-                  /*
-                   * Provider is a group, accounts are its rows.
-                   *
-                   * A provider can hold several accounts — Google keys one per
-                   * Google user id — and the first attempt at this rendered a
-                   * full-width "Add another X account" row after every single
-                   * provider. Five of those in a flat list drowned the accounts
-                   * they belonged to. The add action belongs to the provider,
-                   * so it sits in the provider's own header, once.
-                   */
-                  return (
-                    <div className="ws-conn-group" key={def.provider}>
-                      <div className="ws-conn-h">
-                        <ProviderMark provider={def.provider} />
-                        <div className="ws-conn-h-main">
-                          <b>{def.name}</b>
-                          <p>
-                            {status?.error
-                              ? status.error
-                              : accounts.length === 0
-                                ? def.blurb
-                                : dead === accounts.length
-                                  ? `Not connected — ${dead === 1 ? 'this account needs' : `all ${dead} accounts need`} reconnecting`
-                                  : `${accounts.length} account${accounts.length === 1 ? '' : 's'}${dead > 0 ? ` · ${dead} needs reconnecting` : ''}`}
-                          </p>
-                        </div>
-                        {canAdd ? (
-                          <button
-                            type="button"
-                            className="btn"
-                            disabled={connecting !== null}
-                            onClick={() => startConnect(def.provider, accounts.length)}
-                          >
-                            {connecting === def.provider
-                              ? 'Waiting…'
-                              : accounts.length === 0 ? 'Connect' : <><Plus size={13} />Add account</>}
-                          </button>
-                        ) : (
-                          /* Shown whether or not accounts already exist. It used
-                             to appear only on an empty provider, so a member
-                             looking at one that already had accounts got no
-                             button and no reason — a dead end that read as a
-                             missing feature rather than a deliberate rule. */
-                          <span className="ws-tag"><Lock size={11} />Admin connects this</span>
-                        )}
-                      </div>
+              A flat list made every app look alike, so the question this page
+              is opened with — which of these already works — took reading all
+              seven rows. Three headings answer it before any card is read, and
+              each one disappears when it is empty rather than standing there
+              saying none.
+            */}
+            <AppSection
+              title="Connected"
+              hint="Divo can act through these now"
+              count={cards.connected.length}
+            >
+              {cards.connected.map(renderCard)}
+            </AppSection>
 
-                      {accounts.length > 0 ? (
-                        <div className="ws-conn-accounts">
-                          {accounts.map((conn) => (
-                            <ClickRow
-                              key={conn.connectionId}
-                              onOpen={() => setOpen({ provider: def.provider, connectionId: conn.connectionId })}
-                            >
-                              <div className="ws-row-main">
-                                <b>
-                                  {conn.accountEmail ?? conn.label}
-                                  {conn.ownerType === 'company' ? <span className="ws-tag">Company</span> : null}
-                                </b>
-                                <p>
-                                  {conn.reconnectRequired === true
-                                    ? `${def.name} ended this authorisation. Nothing can run on it until you sign in again.`
-                                    : `Last used ${since(conn.lastUsedAt)}`}
-                                </p>
-                              </div>
-                              <div className="ws-row-act">
-                                {conn.reconnectRequired === true ? (
-                                  <span className="badge b-err"><span className="dot" />Reconnect</span>
-                                ) : null}
-                                <span className="ws-sub">Manage</span>
-                                <ChevronRight size={14} className="muted" />
-                              </div>
-                            </ClickRow>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  )
-                })}
-                <ShopifyConnectionGroup status={shopifyStatus} onOpen={() => setShopifyOpen(true)} />
-              </div>
-            </Fade>
-          )}
-        </Panel>
+            <AppSection
+              title="Available to connect"
+              hint="You can connect these yourself"
+              count={cards.available.length}
+            >
+              {cards.available.map(renderCard)}
+            </AppSection>
+
+            <AppSection
+              title="Connected by your admin"
+              hint="Set up once for the whole company"
+              count={cards.admin.length}
+            >
+              {cards.admin.map(renderCard)}
+            </AppSection>
+          </Fade>
+        )}
 
         <Panel title="Health">
           <div className="ws-panel-body">
@@ -518,72 +589,95 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
   )
 }
 
-function ShopifyConnectionGroup({ status, onOpen }: {
-  status: {
-    status: ShopifyCompanyStatus | null
-    loading: boolean
-    failed: boolean
-  }
-  onOpen: () => void
-}) {
-  const accounts = status.status?.connections ?? []
-  const canManage = status.status?.canManage === true
-  const dead = accounts.filter((c) => c.reconnectRequired === true).length
-  return (
-    <div className="ws-conn-group">
-      <div className="ws-conn-h">
-        {/* Shopify's published app icon — a finished mark with its own
-            background, so it fills the tile. It was the one app in this list
-            without a colour, which read as an unfinished row rather than as a
-            different kind of connection. */}
-        <AppMark short="S" asset="/brand/shopify.png" fill tint="#008060" ink="#FFFFFF" />
-        <div className="ws-conn-h-main">
-          <b>Shopify</b>
-          <p>
-            {status.loading
-              ? 'Loading Shopify stores…'
-              : status.failed
-                ? 'Could not read Shopify connections.'
-                : accounts.length === 0
-                  ? 'Company-owned store access. Save Dev Dashboard credentials once; Divo keeps tokens refreshed.'
-                  : `${accounts.length} store${accounts.length === 1 ? '' : 's'}${dead > 0 ? ` · ${dead} needs reconnecting` : ''}`}
-          </p>
-        </div>
-        {canManage ? (
-          <button type="button" className="btn" onClick={onOpen}>
-            {accounts.length === 0 ? 'Connect' : <><Plus size={13} />Add store</>}
-          </button>
-        ) : accounts.length === 0 ? (
-          <span className="ws-tag"><Lock size={11} />Admin connects this</span>
-        ) : null}
-      </div>
+/**
+ * Every app in one shape, whether it is a `Provider` or not.
+ *
+ * Written down as a type rather than left implicit because Shopify reaches this
+ * page through a different hook, and the last time the two were built
+ * separately they drifted until one of them had no logo.
+ */
+type AppCardModel = {
+  key: string
+  name: string
+  blurb: string
+  mark: ReactNode
+  accounts: Array<{
+    id: string
+    title: string
+    sub: string
+    company: boolean
+    dead: boolean
+    /** Absent when there is nothing this person may open. */
+    onOpen?: () => void
+  }>
+  /** Whether this person may add an account here at all. */
+  canAdd: boolean
+  busy: boolean
+  onAdd: () => void
+  tone?: 'warn'
+}
 
-      {accounts.length > 0 ? (
-        <div className="ws-conn-accounts">
-          {accounts.map((conn) => (
-            <div className="ws-row" key={conn.connectionId}>
-              <div className="ws-row-main">
-                <b>
-                  {shopifyConnectionLabel(conn)}
-                  <span className="ws-tag">Company</span>
-                </b>
-                <p>
-                  {conn.reconnectRequired === true
-                    ? 'Shopify ended this authorisation. Nothing can run on it until an admin connects it again.'
-                    : `Last used ${since(conn.lastUsedAt)}`}
-                </p>
-              </div>
-              <div className="ws-row-act">
-                {conn.reconnectRequired === true ? (
-                  <span className="badge b-err"><span className="dot" />Reconnect</span>
-                ) : null}
-                {canManage ? <span className="ws-sub">Managed by admins</span> : null}
-              </div>
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </div>
+/**
+ * One app, as a card.
+ *
+ * The page was a flat list of full-width rows: every app the same height,
+ * every logo the same 34px, and a description that had to be short enough not
+ * to push the button off the line. Seven of them read as a settings table
+ * rather than as a set of things you can pick from — and the one question
+ * somebody opens this page with, *which of these is already working*, took
+ * reading every row to answer.
+ *
+ * A card holds a bigger mark, a description that can breathe, the accounts
+ * that belong to it, and one action pinned to the bottom so a row of them
+ * shares a baseline whatever their text does.
+ */
+function AppCard({ mark, name, blurb, accounts, action, tone }: {
+  mark: ReactNode
+  name: string
+  blurb: string
+  /** The live accounts under this app, if any. */
+  accounts?: ReactNode
+  /** The one thing this card offers — a button, or a reason there is none. */
+  action: ReactNode
+  /** `warn` when something under this card needs attention. */
+  tone?: 'warn'
+}) {
+  return (
+    <article className="ws-appcard" data-tone={tone}>
+      {/* The mark beside the text rather than stacked over it. Stacked, a card
+          wide enough to hold two accounts left a band of nothing under a
+          one-line blurb; alongside, the width the card has is the width the
+          sentence uses. */}
+      <div className="ws-appcard-h">{mark}</div>
+      <div className="ws-appcard-body">
+        <h3>{name}</h3>
+        <p>{blurb}</p>
+        {accounts}
+        {/* `margin-top: auto`, so the action sits on the card's floor however
+            tall its neighbours make it — no filler needed above it. */}
+        <div className="ws-appcard-act">{action}</div>
+      </div>
+    </article>
+  )
+}
+
+/** A run of cards under a heading that says how many. */
+function AppSection({ title, hint, count, children }: {
+  title: string
+  hint?: string
+  count: number
+  children: ReactNode
+}) {
+  if (count === 0) return null
+  return (
+    <section className="ws-appsec">
+      <div className="ws-appsec-h">
+        <h2>{title}</h2>
+        <span className="ws-appsec-n">{count}</span>
+        {hint ? <p>{hint}</p> : null}
+      </div>
+      <div className="ws-appgrid">{children}</div>
+    </section>
   )
 }
 
