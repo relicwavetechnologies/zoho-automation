@@ -13,21 +13,8 @@ import { createLarkDocTool } from '../../src/application/tools/families/lark-doc
 import { createLarkMeetingTool } from '../../src/application/tools/families/lark-meeting.tool.ts';
 import { createLarkMessagingTool } from '../../src/application/tools/families/lark-messaging.tool.ts';
 import { createLarkTaskTool } from '../../src/application/tools/families/lark-task.tool.ts';
+import { assertOpEnumMatchesDocs } from '../support/op-enum.ts';
 
-function operationOptions(schema: unknown): readonly string[] {
-  type SchemaNode = {
-    _def?: {
-      schema?: SchemaNode;
-      shape?: (() => { op?: { options?: readonly string[] } }) | { op?: { options?: readonly string[] } };
-    };
-  };
-  let node = schema as SchemaNode;
-  while (node._def?.schema) node = node._def.schema;
-  const rawShape = node._def?.shape;
-  const shape = typeof rawShape === 'function' ? rawShape() : rawShape;
-  assert(shape?.op?.options, 'tool schema must expose an op enum');
-  return shape.op.options;
-}
 
 describe('Lark system skill provisioning', () => {
   it('covers every governed Lark tool as a focused company skill', () => {
@@ -82,22 +69,7 @@ describe('Lark system skill provisioning', () => {
       const skill = LARK_SYSTEM_SKILLS.find((candidate) => candidate.toolIds.includes(String(tool.id)));
       assert(skill, `missing skill for ${tool.id}`);
       assert.doesNotMatch(skill.markdown, /## Implemented operations/, `${skill.slug} reprints its tool enum`);
-      /*
-       * `parameterDocs.includes(op)` looked like a check and was not: op names
-       * are ordinary words that recur throughout the prose, so "create",
-       * "update", "list" and "delete" pass against docs whose op line has been
-       * truncated. Parse the declared line and compare it to the schema, which
-       * is the strength the deleted skill-vs-tool assertion had.
-       */
-      const declared = tool.parameterDocs.match(/(?:^|\n)[-\s]*op:\s*([^\n.]+)/)?.[1];
-      assert.ok(declared, `${tool.id} must declare its own operations`);
-      // Compared as sets: larkMessaging documents its ops in a different order
-      // than the schema declares them, and reading order carries no meaning.
-      assert.deepEqual(
-        declared.split('|').map(op => op.trim()).sort(),
-        [...operationOptions(tool.argsSchema)].sort(),
-        `${tool.id} op drift between parameterDocs and schema`,
-      );
+      assertOpEnumMatchesDocs(tool);
     }
   });
 

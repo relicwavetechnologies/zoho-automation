@@ -731,7 +731,7 @@ export const createZohoBooksTool = (deps: {
     // `fields` is z.record(z.unknown()), so the serialized schema says nothing
     // about its shape. Without this line the model has to guess the payload and
     // finds out from a blocking reviewer verdict, one model call later.
-    'stage_invoice fields: customer_id, date, due_date or payment_terms, and line_items, each carrying item_id or name, quantity, rate, and tax_id.',
+    'stage_invoice fields, at minimum: customer_id, date, due_date or payment_terms, and line_items, each carrying item_id or name, quantity, rate, and tax_id. Include place_of_supply whenever the draft carries tax — without it the IGST-versus-CGST check cannot run and only warns that it did not. The zoho-books-invoice recipe states the rest.',
     'create_invoice takes ONLY stagingId. It replays the approved payload, so what the member saw is what Zoho receives. It refuses a draft that failed review, one already created, and one with no stagingId.',
     'When review.outcome is fail, fix the exact fields named in review.issues and call stage_invoice again with supersedesStagingId. review.attemptsRemaining says how many corrections are left; at zero, put the objection to the member instead of re-staging.',
     'stage_invoice: supply invoice_number only when the member gave one — the tool then overrides Zoho auto-numbering. Omit it to let Zoho number the invoice.',

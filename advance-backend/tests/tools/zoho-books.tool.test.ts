@@ -16,6 +16,7 @@ import {
   ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE,
   ZOHO_BOOKS_ROW_CONTRACT,
 } from '../../src/shared/zoho-books-row-contract.ts';
+import { assertOpEnumMatchesDocs } from '../support/op-enum.ts';
 import { assertLosslessPagingFixture } from './lossless-paging.fixture.ts';
 
 /** What Zoho answers a write with, keyed by the module path being written to. */
@@ -610,6 +611,31 @@ describe('zohoBooks expanded execution', () => {
     assert.ok(rowFields > 0 && rowFields < scriptMode);
     assert.ok(tool.parameterDocs.includes(ZOHO_BOOKS_ROW_CONTRACT));
     assert.ok(tool.parameterDocs.includes(ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE));
+  });
+
+  /*
+   * `fields` is z.record(z.unknown()), so the serialized schema says nothing
+   * about a staged invoice's payload and no other layer states it. Without
+   * this the model guesses and learns from a blocking reviewer verdict, one
+   * model call later.
+   */
+  it('states the staged invoice payload the schema cannot', () => {
+    const tool = makeTool();
+    assert.match(tool.parameterDocs, /stage_invoice fields, at minimum: customer_id/);
+    assert.match(tool.parameterDocs, /line_items, each carrying item_id or name, quantity, rate, and tax_id/);
+    // Omitting place_of_supply does not block: checkInvoice degrades to the
+    // non-blocking gst_direction_unchecked warning, so the one check the
+    // staging pipeline exists for silently does not run.
+    assert.match(tool.parameterDocs, /Include place_of_supply whenever the draft carries tax/);
+  });
+
+  /*
+   * This tool is where op drift was actually found: the documented op line had
+   * no stage_invoice while the enum did, so the documented and the validated
+   * surface disagreed about whether an invoice could be staged at all.
+   */
+  it('documents exactly the ops its schema validates', () => {
+    assertOpEnumMatchesDocs(makeTool());
   });
 
   it('bounds script results inline', async () => {

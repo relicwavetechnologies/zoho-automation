@@ -14,11 +14,20 @@ import { LARK_SYSTEM_SKILLS } from './lark-system-skills';
 import { MAIL_OPS_SYSTEM_SKILLS } from './mail-ops-system-skills';
 import { MENHOOD_DATA_SYSTEM_SKILL } from './menhood-data-system-skill';
 import { DIVO_OMS_SITE_DATA_SYSTEM_SKILL } from './oms-site-data-system-skill';
-import { DIVO_LOCAL_PYTHON_SKILL_SLUG } from './divo-local-python-system-skill';
+import {
+  DIVO_LOCAL_PYTHON_SKILL_SLUG,
+  DIVO_LOCAL_PYTHON_SYSTEM_SKILL,
+} from './divo-local-python-system-skill';
 import { DIVO_PRESENTATIONS_SYSTEM_SKILL } from './divo-presentations-system-skill';
-import { SCHEDULE_DIVO_WORK_SKILL_SLUG } from './scheduled-work-system-skill';
+import {
+  SCHEDULE_DIVO_WORK_SKILL_MARKDOWN,
+  SCHEDULE_DIVO_WORK_SKILL_SLUG,
+} from './scheduled-work-system-skill';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from './semrush-system-skill';
-import { KNOWLEDGE_MANAGEMENT_SKILL_SLUG } from './knowledge-system-skill';
+import {
+  KNOWLEDGE_MANAGEMENT_SKILL_MARKDOWN,
+  KNOWLEDGE_MANAGEMENT_SKILL_SLUG,
+} from './knowledge-system-skill';
 import { ZOHO_FINANCE_SYSTEM_SKILLS } from './zoho-finance-system-skills';
 
 export const ROUTING_SYSTEM_SKILLS = [
@@ -332,10 +341,17 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
 ] as const;
 
 /**
- * Every seeded skill a router could reach, tools or not. `unroutedSeededSystemSkillSlugs`
- * checks against this rather than the tool-bearing subset.
+ * Every seeded skill a router could reach, tools or not, as slug plus the exact
+ * body that ships to the model.
+ *
+ * One list, because two lists drift. `unroutedSeededSystemSkillSlugs` reads it,
+ * and so does the guard that no skill teaches a removed call surface — which
+ * was a separate hand-written array until four families turned out to be
+ * missing from it, including the scheduler that kept a dead gateway protocol
+ * through an entire sweep. A definition absent from here is exempt from both
+ * checks at once, which is the only way it should ever be exempt from either.
  */
-export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = [
+export const SEEDED_SYSTEM_SKILLS: readonly { slug: string; markdown: string }[] = [
   ...LARK_SYSTEM_SKILLS,
   ...GOOGLE_WORKSPACE_SYSTEM_SKILLS,
   ...CONNECTED_PROVIDER_SYSTEM_SKILLS,
@@ -345,8 +361,7 @@ export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = [
   /*
    * Absent from this list, `unroutedSeededSystemSkillSlugs` returned [] while
    * `divo-presentations` sat unrouted — the guard was not passing, it could
-   * not see the skill. A definition that provisions but never appears here is
-   * exempt from the only check that would notice.
+   * not see the skill.
    */
   DIVO_PRESENTATIONS_SYSTEM_SKILL,
   DIVO_SEMRUSH_SYSTEM_SKILL,
@@ -354,12 +369,14 @@ export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = [
   MENHOOD_DATA_SYSTEM_SKILL,
   ...ROUTING_SYSTEM_SKILLS,
 ]
-  .map(skill => skill.slug)
+  .map(skill => ({ slug: skill.slug, markdown: skill.markdown }))
   .concat(
-    SCHEDULE_DIVO_WORK_SKILL_SLUG,
-    KNOWLEDGE_MANAGEMENT_SKILL_SLUG,
-    DIVO_LOCAL_PYTHON_SKILL_SLUG,
+    { slug: SCHEDULE_DIVO_WORK_SKILL_SLUG, markdown: SCHEDULE_DIVO_WORK_SKILL_MARKDOWN },
+    { slug: KNOWLEDGE_MANAGEMENT_SKILL_SLUG, markdown: KNOWLEDGE_MANAGEMENT_SKILL_MARKDOWN },
+    { slug: DIVO_LOCAL_PYTHON_SKILL_SLUG, markdown: DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown },
   );
+
+export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = SEEDED_SYSTEM_SKILLS.map(skill => skill.slug);
 
 type SystemSkillRouteStore = Pick<
   Prisma.TransactionClient,
