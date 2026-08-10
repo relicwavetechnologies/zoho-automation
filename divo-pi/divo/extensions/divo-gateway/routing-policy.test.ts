@@ -5,13 +5,15 @@ import { Check } from "typebox/value";
 import {
 	DIVO_COMPANY_PERSONA_PROMPT,
 	DIVO_DIRECT_WEB_SEARCH_POLICY,
-	DIVO_GATEWAY_PARAMS,
 	DIVO_GOVERNED_DIRECT_ACTION_CRITERION,
 	DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION,
 	DIVO_LOCAL_EXECUTION_PROMPT,
 	DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT,
+	hasNativeDbSkills,
+	nativeSkillPromptSummary,
 } from "./index.ts";
 import { localCliEnabled } from "./local-broker.ts";
+import { DIVO_CONNECTIONS_PARAMS } from "./typed-platform-tools.ts";
 
 const ROUTER_SKILL = readFileSync(
 	new URL("../../skills/divo-gateway/SKILL.md", import.meta.url),
@@ -19,8 +21,39 @@ const ROUTER_SKILL = readFileSync(
 );
 
 describe("Divo normal-session routing policy", () => {
+	it("reports native skills that survive into Pi's model prompt", () => {
+		assert.deepEqual(
+			nativeSkillPromptSummary(
+				[
+					{ filePath: "/app/divo/skills/divo-gateway/SKILL.md" },
+					{ filePath: "/run/divo-skills/current/google-sheets/SKILL.md" },
+				],
+				"<available_skills><skill></skill><skill></skill></available_skills>",
+			),
+			{ loaded: 2, native: 1, exposed: 2 },
+		);
+	});
+
+	it("recognizes native DB skills from Pi's live prompt when the event snapshot is stale", () => {
+		assert.equal(
+			hasNativeDbSkills(
+				undefined,
+				"<available_skills><skill><location>/run/divo-skills/current/google-sheets/SKILL.md</location></skill></available_skills>",
+			),
+			true,
+		);
+		assert.equal(
+			hasNativeDbSkills(
+				[{ filePath: "/app/divo/skills/divo-gateway/SKILL.md" }],
+				"<available_skills><skill><location>/app/divo/skills/divo-gateway/SKILL.md</location></skill></available_skills>",
+			),
+			false,
+		);
+	});
+
 	it("routes an ordinary current-information comparison directly to webSearch", () => {
-		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /load the exact Web Search DB skill/i);
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /read the exact Web Search skill from Pi's available_skills/i);
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /missing guidance as permission denial/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /then call webSearch/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /Do not run fuzzy discovery/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /cheapest.*do not by themselves/i);
@@ -32,12 +65,10 @@ describe("Divo normal-session routing policy", () => {
 		);
 	});
 
-	it("keeps the bundled router skill aligned with catalogue-first routing", () => {
+	it("keeps the bundled router skill aligned with Pi-native routing", () => {
 		assert.match(ROUTER_SKILL, /using no skill is correct/i);
-		// The gateway refuses a tools.invoke whose skill was not loaded in the same
-		// run, so the router must send the model through divo_skill_view first.
-		// It previously said "immediately invoke", which was a guaranteed refusal.
-		assert.match(ROUTER_SKILL, /load the exact web-search skill .* with `divo_skill_view`, then invoke `tools\.invoke`/i);
+		assert.match(ROUTER_SKILL, /read the exact Web Search skill from Pi's `available_skills`/i);
+		assert.match(ROUTER_SKILL, /missing guidance as permission denial/i);
 		assert.doesNotMatch(ROUTER_SKILL, /immediately invoke `tools\.invoke`/i);
 		assert.match(ROUTER_SKILL, /without fuzzy skill discovery/i);
 		assert.doesNotMatch(ROUTER_SKILL, /before planning every meaningful company task/i);
@@ -46,6 +77,17 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(ROUTER_SKILL, /drive\.google\.com\/file\/d/);
 		assert.match(ROUTER_SKILL, /Never derive a Google ID, request a download URL, or call `import_to_google_sheets` directly/i);
 		assert.match(ROUTER_SKILL, /backend delivers the confirmation card and owns creation/i);
+		assert.doesNotMatch(ROUTER_SKILL, /compact capability catalogue as the normal routing map/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /exact location from available_skills/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /never derive a skill path under \/app/i);
+		assert.match(ROUTER_SKILL, /\/run\/divo-skills\/current\/<slug>\/SKILL\.md/i);
+	});
+
+	it("requires artifact links and verified counts in the terminal answer", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /final answer is the only result the user is guaranteed to receive/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Repeat every canonical artifact link and requested verified count/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never say "the link above"/i);
+		assert.match(ROUTER_SKILL, /Repeat every canonical artifact link and requested verified count/i);
 	});
 
 	it("always routes a pasted Drive Excel workbook through the Sheets resolver", () => {
@@ -63,17 +105,8 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /do not search Drive, resolve the URL, choose an account, or ask which file/i);
 	});
 
-	it("marks raw skill operations as inspection paths rather than normal routing", () => {
-		const schema = JSON.stringify(DIVO_GATEWAY_PARAMS);
-		assert.match(schema, /only for explicit registry inspection/i);
-		assert.match(schema, /do not use them as a routing loop/i);
-	});
-
 	it("treats Airtable as an exact governed connection family", () => {
-		assert.equal(Check(DIVO_GATEWAY_PARAMS, {
-			op: "connections.list",
-			payload: { provider: "airtable" },
-		}), true);
+		assert.equal(Check(DIVO_CONNECTIONS_PARAMS, { provider: "airtable" }), true);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /airtable for Airtable/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /never omit provider/i);
 		assert.match(ROUTER_SKILL, /airtable.*for Airtable/i);
@@ -81,10 +114,7 @@ describe("Divo normal-session routing policy", () => {
 	});
 
 	it("treats Shopify as an exact governed connection family", () => {
-		assert.equal(Check(DIVO_GATEWAY_PARAMS, {
-			op: "connections.list",
-			payload: { provider: "shopify" },
-		}), true);
+		assert.equal(Check(DIVO_CONNECTIONS_PARAMS, { provider: "shopify" }), true);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /shopify for Shopify/i);
 	});
 
@@ -100,14 +130,46 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /rerun the same Bash command/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local client/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Gmail\/CRM → Sheets is always this path/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /explicit request for Python, terminal, a script, or a file-backed workflow selects this path before the first connected call/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /do not probe a registered provider tool first/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Keep all connected reads, writes, and verification.*inside the file through divo-local/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /automatically saves.*DIVO_RUN_DIR.*never print or cat rows/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /read the exact source recipe and the native divo-python-automation skill in this turn/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /a tool schema is not a source recipe/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Do not write or run until those reads succeed/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /ask one short clarifying question instead of guessing a provider contract/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local invoke --tool <toolId> --args-file <path>/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /provider result is under data.*Never count keys/is);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never print preview or row values/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /provider schema describe also runs once inside this same file through divo-local/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never call the registered provider tool first and then rediscover the same schema/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local owns one safe exact retry/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never add sleeps or retry rate_limited yourself/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /retired divo_python_automation tool is unavailable/i);
 		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /use one divo_python_automation call/i);
 		assert.match(ROUTER_SKILL, /Create one descriptive `.py` file/i);
 		assert.match(ROUTER_SKILL, /patch the same `.py` file with `edit`/i);
 		assert.match(ROUTER_SKILL, /Gmail\/CRM → Sheets is always this local-workflow path/i);
+		assert.match(ROUTER_SKILL, /explicit request for Python, terminal, a script, or a file-backed workflow selects this path before the first connected call/i);
 		assert.match(ROUTER_SKILL, /all connected reads, writes, and verification inside the same file through `divo-local`/i);
+		assert.match(ROUTER_SKILL, /divo-local.*owns one safe exact retry/is);
+		assert.match(ROUTER_SKILL, /never add sleeps or retry `rate_limited` yourself/i);
 		assert.match(ROUTER_SKILL, /retired `divo_python_automation` tool is unavailable/i);
+	});
+
+	it("asks once instead of executing materially ambiguous work", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /CHASE MATERIAL CLARITY BEFORE EXECUTION/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /at most one bounded read-only discovery call.*ask one short question and stop/is);
+		assert.match(ROUTER_SKILL, /missing detail that could make the user reasonably reject the result/i);
+		assert.match(ROUTER_SKILL, /Never choose the first plausible option/i);
+		assert.match(ROUTER_SKILL, /one clear safe default.*presentation only/is);
+	});
+
+	it("does not ask again after the user explicitly requested a complete artifact", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /DO NOT RECONFIRM AN EXPLICIT OUTCOME/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /never insert a preview-first or “shall I proceed\?” gate/i);
+		assert.match(ROUTER_SKILL, /Do not reconfirm an explicit outcome/i);
+		assert.match(ROUTER_SKILL, /ask only for a still-missing material choice/i);
 	});
 
 	it("keeps direct provider access forbidden while permitting the governed local bridge", () => {
@@ -116,7 +178,7 @@ describe("Divo normal-session routing policy", () => {
 			DIVO_COMPANY_PERSONA_PROMPT,
 			/credential-free divo-local from one persistent Python file.*pagination.*record set/s,
 		);
-		assert.doesNotMatch(JSON.stringify(DIVO_GATEWAY_PARAMS), /google\.plan/);
+		assert.doesNotMatch(JSON.stringify(DIVO_CONNECTIONS_PARAMS), /google\.plan/);
 	});
 
 	it("keeps Lark outcomes in chat while local artifact delivery is disabled", () => {
@@ -166,6 +228,11 @@ describe("divo-local prompt tracks the runtime flag", () => {
 		// A disabled channel must not be told the absence is a fault to work around.
 		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /absent by design, not broken/i);
 		assert.equal(typeof offered, "boolean");
+	});
+
+	it("keeps skill provenance out of model-authored broker requests", () => {
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Never supply skillId/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /runtime attaches trusted provenance/i);
 	});
 
 	it("names the replacement route instead of leaving a hole", () => {

@@ -14,6 +14,11 @@ import type { RunContext } from '../../domain/orchestration/run-context';
 export interface ToolExecutionContext {
   readonly runContext: RunContext;
   readonly perm: PermissionResult;
+  /**
+   * Trusted backend transport audience. Only the signed Cloud-Pi local broker
+   * may request `local_file`; model-facing calls leave this unset.
+   */
+  readonly resultAudience?: 'local_file';
   readonly correlationId: string;
   readonly logger: Logger;
   readonly clock: Clock;

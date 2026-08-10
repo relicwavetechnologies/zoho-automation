@@ -4,9 +4,9 @@ Not a skill. This directory is deliberately absent from `trustedSkills`, so Pi
 never discovers or auto-loads it.
 
 File-handling *capability* lives in the skill registry as the DB rows
-`read-understand-files` and `create-edit-files`, reached router-first through
-`files-router` → `divo_skill_view`. Those rows carry the instructions and name
-the commands below.
+`read-understand-files` and `create-edit-files`. Pi discovers those rows as
+native skills and reads their `SKILL.md` files when relevant. They carry the
+instructions and name the commands below.
 
 What lives here is only what a DB row cannot hold: executable assets. They are
 reachable in the container at:

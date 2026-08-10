@@ -4,10 +4,10 @@ import {
   ZOHO_BOOKS_OUTSTANDING_RULE,
   ZOHO_BOOKS_ROW_CONTRACT,
 } from '../../shared/zoho-books-row-contract';
-import { GOVERNED_LOCAL_DESKTOP_ONLY } from './governed-local-routing';
+import { GOVERNED_LOCAL_AVAILABLE_RUNTIME } from './governed-local-routing';
 
 const ZOHO_CONNECTION_METHOD = `DIVO-GOVERNED ZOHO CONNECTION:
-- Invoke Zoho only through the Divo tool surface available in the current runtime: server channels use call_tool; desktop uses divo_gateway. Never call Zoho directly, use local credentials, or switch to an unavailable tool surface.
+- Invoke Zoho only through the matching registered Divo Zoho tool for a direct action. Inside a governed terminal workflow, ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use \`divo-local\` with the source recipe's exact toolId. Never call Zoho directly, use local credentials, or switch to an unavailable tool surface.
 - Reuse an exact connectionId already supplied by the current run. Otherwise omit it: the backend selects an account only when exactly one accessible account qualifies.
 - If Divo returns structured connection choices, ask one short account-choice question using those labels, then retry with the selected exact ID. Do not guess.
 - Do not call connections.list merely to rediscover an account the backend can select.
@@ -54,6 +54,7 @@ export const zohoCrmReadAnalysisSkill: Skill = {
 READ ROUTING:
 - Use zohoCrm read operations for customer, lead, contact, account, deal, case, owner, and relationship context.
 - Use narrow search/list filters before fetching a specific record.
+- For a complete CRM artifact, load \`divo-python-automation\`; fetch \`page=1\` through \`page=10\`, follow \`nextPage\` and then any \`nextPageToken\`, and write rows to disk without carrying them through model context.
 - Stay read-only unless the user explicitly requests a CRM mutation and an approved write specialist is available.
 
 WRITES ARE NOT THIS SKILL:
@@ -74,14 +75,18 @@ export const zohoBooksReadAnalysisSkill: Skill = {
   instructions: `${ZOHO_CONNECTION_METHOD}
 
 READ ROUTING:
-- Bounded lookup or preview -> use the matching zohoBooks read operation with narrow filters.
-- For a list request, omit the limit argument unless the user explicitly requested a numeric maximum. The backend keeps the model preview bounded and may attach \`exportCandidate\` when additional rows can be replayed through governed export.
-- When a list result is truncated, do not retry with a larger limit, fetch source pages manually, or switch to a scripted workflow merely to enumerate the remaining rows. Summarize the bounded preview; when \`exportCandidate\` is present and the member wants Sheet, Excel, CSV, all rows, or a full export, call \`dataExport\` with \`op=plan\` for that candidate instead of rerunning the list.
-- If a list result contains \`exportCandidate\` and the member did not ask for a file, you may end a useful table or report answer with one soft follow-up asking whether to export it to Google Sheets, Excel, or CSV, unless the member explicitly said not to export, not now, or chat-only. Do not call \`dataExport\` until the member says yes or names a format.
-- For an explicit complete-data request, use \`exportAll=true\` only to publish a Zoho \`exportCandidate\`, then call \`dataExport op=plan\`. Never rebuild the Zoho query, copy rows, or use Python merely to create that one-source artifact.
+- For complete paginated Zoho Books reads, set \`limit=100\` on every page (the validated maximum) unless the tool rejects that exact value. Do not copy a small chat-preview limit such as 10 or 25 into the terminal workflow; follow \`nextPage\` until \`hasMore=false\`.
+- Zoho Books terminal arguments are top-level: for example \`{"op":"list_expenses","connectionId":"<exact bootstrap UUID>","dateFrom":"2026-04-01","dateTo":"2026-07-31","page":1,"limit":100}\`. Never wrap them in Google-style \`input\`, and do not probe an unsupported \`describe\` op.
+- Bounded lookup or preview, with no requested artifact or destination -> use the matching zohoBooks read operation with narrow filters.
+- For an ordinary list request, keep the direct model preview bounded. Do not fetch additional pages unless the member asked for a complete artifact, a whole-account calculation, or another workflow that genuinely needs them.
+- For a complete artifact or multi-page calculation, ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, load \`divo-python-automation\`; fetch pages through \`divo-local\` into one local JSONL/Parquet file, transform there, write through the destination skill, and verify source/written/read-back counts.
+- A request such as “export all expenses for this date range from this account into a new Google Sheet” is already a clear complete-artifact instruction. Do not call the registered zohoBooks tool for a preview first and do not ask whether to proceed. Begin the local workflow, load the destination skill, and let backend RBAC or approval stop it if required.
+- When the member gives a bounded date range, pass its exact ISO boundaries as \`dateFrom\` and \`dateTo\` on the first call and every paginated call. Never fetch the whole Zoho account and filter it locally when the provider operation accepts those filters.
+- For that artifact workflow, do not use the Zoho \`script\` parameter and do not return or stringify source rows from a provider-side script. \`script\` is for bounded server-side analysis, not paging or transfer. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use \`page\`, \`hasMore\`, and \`nextPage\` through \`divo-local\` so each saved response keeps the documented structured page envelope.
 - Latest/recent bounded invoices -> use zohoBooks op="list_invoices" with the requested limit; it is already sorted by invoice date newest-first. Do not scan or sort thousands of rows.
 - Human invoice number -> use zohoBooks op="get_invoice" with that exact number, or list_invoices with searchQuery and accept only an exact normalized invoice_number match before using its invoice_id. Never substitute a fuzzy result.
-- Exact whole-account or potentially large aggregate -> ${GOVERNED_LOCAL_DESKTOP_ONLY}, use the scripted workflow: fetch pages through divo-local, write them to a file, and aggregate over that file. On server channels there is no divo-local: stay on the governed zohoBooks operations and let the backend's export path own the complete set. Never go looking for a local CLI there. Either way, do not start with zohoBooks script mode; it is capped at 4,000 records, and pulling pages into context to add them up is how totals silently come out short.
+- Exact whole-account, complete artifact, or potentially large aggregate -> ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, load \`divo-python-automation\`, fetch \`page=1\` then each returned \`nextPage\` through the same persistent Python file, and write rows to disk before transforming or sending them to a destination. Do not pull pages into model context. If page 100 still reports more rows, state that the source cap was reached rather than claiming completeness.
+- ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, read the result file path returned by \`divo-local invoke\`; its governed Zoho result is at \`data\`, list rows are \`data.preview.rows\`, the reported count is \`data.report.returnedCount\`, and pagination is \`data.hasMore\` plus \`data.nextPage\`. Never count keys in \`data\` as records.
 - Aging/overdue report -> use zohoBooks op="build_overdue_report".
 - Product, item, SKU, or standard rate question -> zohoBooks op="list_items". Report the item_id and rate it returns; never quote a price from memory or from an earlier conversation.
 - GST or tax rate question, and any tax decision that will be written to a record -> zohoBooks op="list_taxes". Use the tax_id it returns. Never infer a percentage from an invoice you read, and never guess a rate.
@@ -103,7 +108,7 @@ OUTPUT:
 - State the account used, material filters, count, total, and whether all pages were processed.
 - Preserve Zoho identifiers exactly as returned, including invoice numbers; never add, remove, or reformat identifier characters.
 - Report only figures returned by the tool computation. Do not add uncomputed remainders, percentages, or other derived claims.
-- Never create, update, delete, schedule, message, email, or save anything in Zoho for a read-only request. Presenting the bounded preview is allowed; if \`exportCandidate\` is present and the member wants a file, call \`dataExport op=plan\`. The central export owns pagination, sample/full decisions, destination access, delivery, and verification.`,
+- Never create, update, delete, schedule, message, email, or save anything in Zoho for a read-only request. A requested export may write only to the explicitly requested destination, after all source pages are on disk and counts reconcile.`,
 };
 
 const ZOHO_BOOKS_BILL_WORKFLOW = `ZOHO BOOKS BILL RECORDING:

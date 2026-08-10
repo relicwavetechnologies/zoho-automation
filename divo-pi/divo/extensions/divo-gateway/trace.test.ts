@@ -244,14 +244,11 @@ describe("Divo trace correlation", () => {
 		await handlers.get("agent_start")?.({ type: "agent_start" }, {});
 		handlers.get("tool_execution_start")?.({
 			toolCallId: "call-1",
-			args: {
-				op: "tools.invoke",
-				payload: { toolId: "shopifyCustomers", args: { operation: "count_customers" } },
-			},
+			args: { operation: "count_customers" },
 		}, {});
 		handlers.get("tool_execution_end")?.({
 			toolCallId: "call-1",
-			toolName: "divo_gateway",
+			toolName: "divo_shopify_customers",
 			result: { data: { count: 0 } },
 			isError: false,
 		}, {});

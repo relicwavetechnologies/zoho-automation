@@ -48,6 +48,9 @@ export function validateBootstrap(value) {
 	) {
 		throw new Error("Bootstrap sessionScope is invalid");
 	}
+	if (value.nativeSkills !== undefined && value.nativeSkills !== true) {
+		throw new Error("Bootstrap nativeSkills is invalid");
+	}
 	if (
 		value.interruptionTask !== undefined
 		&& (typeof value.interruptionTask !== "string" || value.interruptionTask.length > 8_000)

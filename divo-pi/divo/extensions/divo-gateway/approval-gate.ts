@@ -7,9 +7,6 @@ import type {
 import { readDivoRunCorrelation, type DivoRunCorrelationV1 } from "./run-correlation.ts";
 
 export const DIVO_APPROVAL_PROTOCOL_TITLE = "divo_approval_v1";
-export const DIVO_TOOLS_INVOKE_ENVELOPE =
-	'{ "op": "tools.invoke", "payload": { "skillId": "<loaded exact DB skill ID>", "toolId": "<tool declared by that skill>", "args": { ...tool arguments } } }';
-
 type JsonRecord = Record<string, unknown>;
 
 export interface ApprovalPresentationV1 {
@@ -60,7 +57,7 @@ function gateObviousLocalLarkFallback(event: ToolCallEvent): ToolCallEventResult
 		const command = nonEmptyString(input.command);
 		if (command && LARK_CLI_COMMAND.test(command)) {
 			return approvalBlock(
-				"lark-cli is disabled in Divo. Use the governed Lark capability through divo_gateway; there is no local fallback.",
+				"lark-cli is disabled in Divo. Use the governed Divo Lark tools; there is no local fallback.",
 			);
 		}
 		if (command && LOCAL_LARK_SKILL_PATH.test(command)) {
@@ -160,48 +157,27 @@ function localApprovalRequest(
 	return undefined;
 }
 
-function gateDivoInvocation(event: ToolCallEvent): ToolCallEventResult | undefined {
-	const input = event.input as JsonRecord;
-	const op = nonEmptyString(input.op);
-	if (op === "tools.commit") {
-		return approvalBlock(
-			"Direct tools.commit calls are not allowed; a prepared action must be approved first.",
-		);
-	}
-	if (op !== "tools.invoke") return undefined;
+/**
+ * Routing rules that outlive the mega-tool.
+ *
+ * The envelope checks this used to perform — payload is an object, toolId is
+ * non-empty, args is an object — are now enforced by the typed tool's own
+ * schema before the call ever reaches here, so only the genuine routing rules
+ * remain: knowledge reads and writes belong on their dedicated surfaces, where
+ * the exact content and target are reviewed.
+ */
+function gateTypedKnowledgeInvocation(event: ToolCallEvent): ToolCallEventResult | undefined {
+	const args = asRecord(event.input);
+	if (!args) return undefined;
+	const operation = nonEmptyString(args.operation);
 
-	const payload = asRecord(input.payload);
-	if (!payload) {
-		return approvalBlock(
-			`payload must be an object. Expected ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
-		);
-	}
-	const toolId = nonEmptyString(payload?.toolId);
-	if (!toolId) {
-		return approvalBlock(
-			`payload.toolId must be a non-empty approved backend tool ID. Expected ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
-		);
-	}
-	if (!("args" in payload)) {
-		return approvalBlock(
-			`payload.args is required. Expected ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
-		);
-	}
-	const args = asRecord(payload.args);
-	if (!args) {
-		return approvalBlock(
-			`payload.args must be an object. Expected ${DIVO_TOOLS_INVOKE_ENVELOPE}`,
-		);
-	}
-	if (toolId === "knowledge" && nonEmptyString(args?.operation) === "recall") {
+	if (operation === "recall") {
 		return approvalBlock(
 			"Memory recall must use divo_memory_recall with a query and optional exact department-name ranking preferences. The backend derives and searches all active memberships; names do not select or grant scope.",
 		);
 	}
-	if (
-		toolId === "knowledge" && ["propose", "apply"].includes(nonEmptyString(args?.operation) ?? "")
-	) {
-		if (nonEmptyString(args?.scope) === "personal" && nonEmptyString(args?.kind) === "memory") {
+	if (operation === "propose" || operation === "apply") {
+		if (nonEmptyString(args.scope) === "personal" && nonEmptyString(args.kind) === "memory") {
 			return approvalBlock(
 				"Raw personal-memory proposals are disabled. Use divo_memory for an explicit personal save, correction, or deletion; implicit learning remains a separate backend process.",
 			);
@@ -210,7 +186,6 @@ function gateDivoInvocation(event: ToolCallEvent): ToolCallEventResult | undefin
 			"Personal skills/files and all shared knowledge changes must use the dedicated review surface so the exact content and target are reviewed before backend policy can apply them.",
 		);
 	}
-
 	return undefined;
 }
 
@@ -269,8 +244,8 @@ export async function handleApprovalToolCall(
 	const local = localApprovalRequest(event, ctx);
 	if (local) return askForApproval(ctx, local);
 
-	if (event.toolName === "divo_gateway") {
-		return gateDivoInvocation(event);
+	if (event.toolName === "divo_knowledge") {
+		return gateTypedKnowledgeInvocation(event);
 	}
 	return undefined;
 }

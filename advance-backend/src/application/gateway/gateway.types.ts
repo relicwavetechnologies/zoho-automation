@@ -104,7 +104,7 @@ export const personalMemoryCommandPayloadSchema = z.discriminatedUnion('action',
 export type PersonalMemoryCommandPayload = z.infer<typeof personalMemoryCommandPayloadSchema>;
 
 const memoryKnowledgeReviewOpenPayloadSchema = z.object({
-  skillId: z.string().trim().min(1).max(200),
+  skillId: z.string().trim().min(1).max(200).optional(),
   requestId: z.string().trim().min(1).max(120),
   kind: z.literal('memory'),
   bullets: z.array(z.string().trim().min(1).max(500)).min(1).max(10),
@@ -112,7 +112,7 @@ const memoryKnowledgeReviewOpenPayloadSchema = z.object({
 }).strict();
 
 const resourceKnowledgeReviewOpenPayloadSchema = z.object({
-  skillId: z.string().trim().min(1).max(200),
+  skillId: z.string().trim().min(1).max(200).optional(),
   requestId: z.string().trim().min(1).max(120),
   kind: z.enum(['skill', 'file']),
   action: z.enum(['create', 'update', 'publish', 'delete']),
@@ -231,15 +231,22 @@ export const connectionsListPayloadSchema = z.object({
 
 export const toolsListPayloadSchema = z.object({
   toolId: z.string().min(1).optional(),
+  toolIds: z.array(z.string().min(1)).min(1).max(100).optional(),
   family: z.enum(TOOL_FAMILY_IDS).optional(),
+  query: z.string().trim().min(3).max(2_000).optional(),
 }).strict().refine(
-  value => !(value.toolId && value.family),
-  { message: 'Use either toolId or family, not both.' },
+  value => [value.toolId, value.toolIds, value.family].filter(Boolean).length <= 1,
+  { message: 'Use one selector: toolId, toolIds, or family.' },
+).refine(
+  value => !value.query || Boolean(value.toolIds),
+  { message: 'query is supported only with toolIds.' },
 );
 
 export interface GatewayErrorBody {
   readonly code: GatewayStatus;
   readonly message: string;
+  /** Present only when the exact rejected call is safe to retry after this delay. */
+  readonly retryAfterSeconds?: number;
 }
 
 export interface GatewayApprovalBody {
@@ -274,6 +281,8 @@ export interface GatewayMemberContext {
   readonly runtimeRunId?: string;
   readonly runtimeThreadId?: string;
   readonly sessionId: string;
+  /** Trusted transport hint set only by the signed Cloud-Pi local-file route. */
+  readonly resultAudience?: 'local_file';
   /**
    * How the session was issued. `scheduled_workflow` marks a machine-issued
    * session for a scheduled run, whose result the runtime delivers to the
@@ -293,12 +302,18 @@ export function gatewaySuccess<T>(data: T): GatewayResponse<T> {
 export function gatewayFailure(
   status: GatewayStatus,
   message: string,
-  extra?: { approval?: GatewayApprovalBody },
+  extra?: { approval?: GatewayApprovalBody; retryAfterSeconds?: number },
 ): GatewayResponse {
   return {
     ok: false,
     status,
-    error: { code: status, message },
+    error: {
+      code: status,
+      message,
+      ...(extra?.retryAfterSeconds !== undefined
+        ? { retryAfterSeconds: extra.retryAfterSeconds }
+        : {}),
+    },
     ...(extra?.approval ? { approval: extra.approval } : {}),
   };
 }

@@ -30,6 +30,7 @@ export interface GatewayRequestBody {
 export interface GatewayErrorBody {
 	code?: string;
 	message?: string;
+	retryAfterSeconds?: number;
 }
 
 export interface GatewayApprovalBody {
@@ -287,7 +288,7 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 				message,
 				"",
 				"Next action: wait. Do not submit another approval request and do not claim the action completed.",
-				"After approval, retry the exact same divo_gateway tools.invoke request once with the same departmentId, toolId, and args.",
+				"After approval, retry the exact same Divo tool call once with the same arguments.",
 				"Changed args require a fresh approval.",
 			].join("\n"),
 			isError: true,
@@ -397,7 +398,7 @@ export async function callDivoGateway(
 	config: DivoGatewayConfig,
 	request: GatewayRequestBody,
 	fetchImpl: typeof fetch = fetch,
-	options: { signal?: AbortSignal } = {},
+	options: { signal?: AbortSignal; resultMode?: "local-file" } = {},
 ): Promise<{ body: GatewayResponseBody; httpStatus: number }> {
 	const preparedRequest = await prepareDivoGatewayRequest(request);
 	const departmentId = request.departmentId ?? config.defaultDepartmentId;
@@ -428,6 +429,7 @@ export async function callDivoGateway(
 			Authorization: `Bearer ${config.memberToken}`,
 			"Content-Type": "application/json",
 			Accept: "application/json",
+			...(options.resultMode ? { "X-Divo-Result-Mode": options.resultMode } : {}),
 		},
 		body: JSON.stringify(payload),
 		signal,
@@ -463,7 +465,7 @@ export async function callDivoGateway(
 		writeSkillResponseCache(cacheKey, { body, httpStatus: response.status });
 	}
 	if (body.ok && body.status === "success" && (
-		request.op === "teach.learning.apply" || request.op === "tools.commit"
+		request.op === "tools.commit"
 	)) {
 		// These operations may change persona/skill routing. Never serve a
 		// pre-mutation bootstrap afterward, even inside the same desktop run.

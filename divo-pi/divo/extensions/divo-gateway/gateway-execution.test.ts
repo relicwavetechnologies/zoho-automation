@@ -30,6 +30,24 @@ describe("gateway execution protocol", () => {
 		assert.equal(requests.length, 1);
 	});
 
+	it("forwards the broker-owned local-file result mode", async () => {
+		let resultMode: unknown;
+		await executeGatewayRequest(
+			config,
+			{ op: "tools.invoke", payload: { toolId: "zohoBooks", args: {} } },
+			"call-file",
+			{ ...ctx, runtimeChannel: "lark", resultMode: "local-file" },
+			{
+				callGateway: async (_config, _request, _fetch, options) => {
+					resultMode = options.resultMode;
+					return { body: { ok: true, status: "success", data: {} }, httpStatus: 200 };
+				},
+			},
+		);
+
+		assert.equal(resultMode, "local-file");
+	});
+
 	it("never opens desktop-local approval from the cloud runtime", async () => {
 		const requests: GatewayRequestBody[] = [];
 		const original: GatewayRequestBody = {

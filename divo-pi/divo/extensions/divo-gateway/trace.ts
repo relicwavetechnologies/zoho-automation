@@ -365,12 +365,8 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 	});
 }
 
-function isProtectedShopifyInvocation(toolName: string, input: unknown): boolean {
-	if (toolName !== "divo_gateway") return false;
-	const request = asRecord(input);
-	if (request?.op !== "tools.invoke") return false;
-	const toolId = asRecord(request.payload)?.toolId;
-	return toolId === "shopifyOrders" || toolId === "shopifyCustomers";
+function isProtectedShopifyInvocation(toolName: string, _input: unknown): boolean {
+	return toolName === "divo_shopify_orders" || toolName === "divo_shopify_customers";
 }
 
 /** Extract only bounded text needed for the backend's manager-learning pass. */

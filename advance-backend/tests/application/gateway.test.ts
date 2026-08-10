@@ -266,6 +266,34 @@ describe('ToolExecutor', () => {
     assert.equal(result.truncation.returnedBytes, Buffer.byteLength(JSON.stringify(result), 'utf8'));
   });
 
+  it('keeps a large result intact only for the trusted local-file audience', async () => {
+    const large = 'x'.repeat(MODEL_FACING_RESULT_MAX_BYTES * 3);
+    let seenAudience: string | undefined;
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool({
+      execute: async (_args, ctx) => {
+        seenAudience = ctx.resultAudience;
+        return ok({ result: large });
+      },
+    }));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(),
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const response = await executor.invoke({
+      member: { ...member, resultAudience: 'local_file' },
+      toolId: 'fakeTool',
+      args: { query: 'large result' },
+    });
+
+    assert.equal(response.ok, true);
+    assert.equal(seenAudience, 'local_file');
+    assert.equal((response.data as { result: { result: string } }).result.result, large);
+  });
+
   it('returns unknown_tool for missing registry entry', async () => {
     const executor = new ToolExecutor({
       toolRegistry: new ToolRegistry(),
@@ -659,6 +687,7 @@ describe('ToolExecutor', () => {
         policySource: 'manager_policy',
         check: { allowed: false, windows: [] },
         message: 'Connection budget reached.',
+        retryAfterSeconds: 17,
       },
       status: 'rate_limited',
     },
@@ -711,6 +740,9 @@ describe('ToolExecutor', () => {
       });
 
       assert.equal(result.status, blocked.status);
+      if (blocked.status === 'rate_limited') {
+        assert.equal(result.error?.retryAfterSeconds, 17);
+      }
       assert.equal(executions, 0);
       assert.equal(releases, 1);
     });
@@ -1961,7 +1993,6 @@ describe('GatewayDispatcher', () => {
         actionId: 'memory-review:1',
       },
       payload: {
-        skillId: 'share-memory-skill',
         requestId: 'proposal-1',
         kind: 'memory',
         bullets: ['The finance close completes by day five.'],
@@ -2470,7 +2501,6 @@ describe('GatewayDispatcher', () => {
       departmentId: 'dept-finance',
       execution: { version: 1, runId: 'run-1', threadId: 'thread-1', actionId: 'knowledge-review:1' },
       payload: {
-        skillId: 'knowledge-skill',
         requestId: 'knowledge:request-1',
         kind: 'skill',
         action: 'publish',
@@ -2494,7 +2524,7 @@ describe('GatewayDispatcher', () => {
     assert.deepEqual(input.content, content);
   });
 
-  it('rejects memory review from desktop, malformed payloads, and an unbound skill', async () => {
+  it('rejects memory review from desktop, malformed payloads, and an unbound runtime', async () => {
     let openCount = 0;
     const registry = new ToolRegistry();
     const dispatcher = new GatewayDispatcher({
@@ -2516,7 +2546,6 @@ describe('GatewayDispatcher', () => {
       logger: noopLogger,
     });
     const payload = {
-      skillId: 'allowed-skill',
       requestId: 'proposal-1',
       kind: 'memory',
       bullets: ['Company fact'],
@@ -2534,11 +2563,11 @@ describe('GatewayDispatcher', () => {
     }, { ...member, channel: 'lark', runtimeChatId: 'oc_source_chat' });
     assert.equal(malformed.status, 'bad_request');
 
-    const unboundSkill = await dispatcher.dispatch({
+    const unboundRuntime = await dispatcher.dispatch({
       op: 'knowledge.review.open',
       payload,
     }, { ...member, channel: 'lark', runtimeChatId: 'oc_source_chat' });
-    assert.equal(unboundSkill.status, 'permission_denied');
+    assert.equal(unboundRuntime.status, 'permission_denied');
     assert.equal(openCount, 0);
   });
 
@@ -2599,12 +2628,85 @@ describe('GatewayDispatcher', () => {
     assert.equal(typeof selectedTools[0]?.parameterDocs, 'string');
     assert.equal(typeof selectedTools[0]?.argsSchema, 'object');
 
+    const batch = await dispatcher.dispatch({
+      op: 'tools.list',
+      payload: { toolIds: ['fakeTool'], query: 'find the requested records' },
+    }, member);
+    assert.equal(batch.ok, true);
+    assert.deepEqual(
+      (batch.data as { bootstrap: { tools: Array<{ id: string }> } }).bootstrap.tools.map(tool => tool.id),
+      ['fakeTool'],
+    );
+
+    const invalidBatch = await dispatcher.dispatch({
+      op: 'tools.list',
+      payload: { toolId: 'fakeTool', query: 'find the requested records' },
+    }, member);
+    assert.equal(invalidBatch.status, 'bad_request');
+
+    // runCommand is registered but never offered through the company gateway,
+    // so this is a refusal, not an absence — the same answer tools.invoke has
+    // always given for it.
     const unavailable = await dispatcher.dispatch({
       op: 'tools.list',
       payload: { toolId: 'runCommand' },
     }, member);
     assert.equal(unavailable.ok, false);
-    assert.equal(unavailable.status, 'unknown_tool');
+    assert.equal(unavailable.status, 'permission_denied');
+    assert.match(String(unavailable.error?.message), /exists but is not permitted/);
+
+    // A selector nothing is registered under is the only unknown_tool.
+    const missing = await dispatcher.dispatch({
+      op: 'tools.list',
+      payload: { toolId: 'noSuchToolAnywhere' },
+    }, member);
+    assert.equal(missing.ok, false);
+    assert.equal(missing.status, 'unknown_tool');
+    assert.match(String(missing.error?.message), /No tool or family is registered/);
+  });
+
+  /**
+   * The distinction this exists for.
+   *
+   * A denied tool used to come back as unknown_tool, which reads as "this was
+   * never built". An agent that believes a capability does not exist stops
+   * asking for permission and starts inventing a way around it — in one real
+   * session it rebuilt an export by hand against an explicit prohibition. The
+   * refusal has to be legible as a refusal.
+   */
+  it('separates a denied tool from one that does not exist', async () => {
+    const registry = new ToolRegistry();
+    registry.register(makeFakeTool());
+    registry.register({
+      ...makeFakeTool(),
+      id: asToolId('dataExport'),
+      family: 'data',
+      description: 'Governed export',
+    } as Tool<{ query: string }, { result: string }>);
+
+    const dispatcher = new GatewayDispatcher({
+      permissions: makePermissionService(),
+      toolRegistry: registry,
+      skillCatalog: makeSkillCatalog([allowedSkill]),
+      toolExecutor: new ToolExecutor({
+        toolRegistry: registry,
+        permissions: makePermissionService(),
+        logger: noopLogger,
+        clock: { now: () => new Date(), nowMs: () => Date.now() },
+      }),
+      logger: noopLogger,
+    });
+
+    // The member's permissions cover fakeTool only, so dataExport is real but
+    // out of reach.
+    const denied = await dispatcher.dispatch({
+      op: 'tools.list',
+      payload: { toolId: 'dataExport' },
+    }, member);
+    assert.equal(denied.status, 'permission_denied');
+    assert.match(String(denied.error?.message), /permission decision, not a missing capability/);
+    // And it must not suggest a detour.
+    assert.match(String(denied.error?.message), /Do not substitute another route/);
   });
 
   it('lists a permitted family without exposing every child contract and keeps invocation exact', async () => {

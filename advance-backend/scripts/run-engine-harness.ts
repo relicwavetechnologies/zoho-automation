@@ -118,6 +118,15 @@ export function isolateHarnessPiThread(
 }
 
 /**
+ * Cloud Pi signs the correlation trace as its runtime run ID. Trace ingest
+ * persists that run ID in ExecutionRun.requestId; the inbound Lark message ID
+ * remains useful request metadata, but is not the persistence lookup key.
+ */
+export function persistedExecutionRequestId(traceId: string): string {
+  return traceId;
+}
+
+/**
  * Bind the selected principal to the provider-authoritative chat before any
  * model or tool execution. A configured label is not proof of either chat
  * type or membership, so both facts fail closed.
@@ -544,7 +553,7 @@ async function printPersistedTrace(input: {
   let run: HarnessTrace | null = null;
   for (let attempt = 0; attempt < 8; attempt++) {
     run = await input.db.executionRun.findUnique({
-      where: { requestId: input.requestId },
+      where: { requestId: persistedExecutionRequestId(input.traceId) },
       select: {
         id: true,
         status: true,
@@ -586,7 +595,7 @@ async function printPersistedTrace(input: {
 
   console.log('\n=== persisted agent lifecycle ===');
   if (!run) {
-    console.log(`trace unavailable for requestId=${input.requestId}`);
+    console.log(`trace unavailable for runId=${persistedExecutionRequestId(input.traceId)}`);
     return;
   }
 

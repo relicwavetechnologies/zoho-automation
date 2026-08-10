@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, it } from "node:test";
 import {
@@ -24,15 +27,6 @@ const correlation = {
 	departmentId: "dept-1",
 };
 const execFileAsync = promisify(execFile);
-
-/**
- * Stands in for the skill registry the extension owns. In a real run a tool is
- * only invocable because divo_skill_view loaded the skill that declares it, so
- * the tests below say which skill authorized each call.
- */
-function loadedSkills(skillId = "gmail-read"): (toolId: string) => { runId: string; skillId: string } | undefined {
-	return () => ({ runId: correlation.runId, skillId });
-}
 
 function activeCalls(signal?: AbortSignal): Map<string, ActiveBashCall> {
 	return new Map([["bash-1", {
@@ -59,7 +53,7 @@ describe("Divo local broker protocol", () => {
 		}), /not exposed/);
 	});
 
-	it("sends the loaded skill with a scripted tool call", async () => {
+	it("does not attach skill provenance to a scripted tool call", async () => {
 		const gatewayRequests: GatewayRequestBody[] = [];
 		await executeLocalBrokerRequest({
 			version: 1,
@@ -67,34 +61,55 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills("gmail-read"),
 			executeGateway: async (_resolved, request) => {
 				gatewayRequests.push(request);
 				return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
 			},
 		});
 
-		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, "gmail-read");
+		assert.equal((gatewayRequests[0]?.payload as { skillId?: string })?.skillId, undefined);
 	});
 
-	it("rejects a scripted tool call when no matching skill was loaded", async () => {
-		let gatewayCalls = 0;
-		await assert.rejects(
-			executeLocalBrokerRequest({
+	it("requests the trusted local-file transport only for an explicit file result", async () => {
+		let resultMode: unknown;
+		await executeLocalBrokerRequest({
+			version: 1,
+			resultMode: "local-file",
+			request: { op: "tools.invoke", payload: { toolId: "zohoBooks", args: {} } },
+		}, activeCalls(), {
+			resolveConfig: () => config,
+			readCorrelation: async () => correlation,
+			executeGateway: async (_config, _request, _toolCallId, ctx) => {
+				resultMode = ctx.resultMode;
+				return { body: { ok: true, status: "success", data: {} }, httpStatus: 200 };
+			},
+		});
+
+		assert.equal(resultMode, "local-file");
+		assert.throws(() => parseLocalBrokerRequest({
+			version: 1,
+			resultMode: "local-file",
+			request: { op: "connections.list", payload: {} },
+		}), /only for tools.invoke/);
+	});
+
+	it("sends an ordinary scripted call without invented skill provenance", async () => {
+		let sentPayload: unknown;
+		await executeLocalBrokerRequest({
 				version: 1,
-				request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
+				request: {
+					op: "tools.invoke",
+					payload: { skillId: "self-asserted", toolId: "googleGmail", args: {} },
+				},
 			}, activeCalls(), {
 				resolveConfig: () => config,
 				readCorrelation: async () => correlation,
-				lookupLoadedSkill: () => undefined,
-				executeGateway: async () => {
-					gatewayCalls += 1;
+				executeGateway: async (_resolved, request) => {
+					sentPayload = request.payload;
 					return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
 				},
-			}),
-			/Exact company skill required/,
-		);
-		assert.equal(gatewayCalls, 0);
+			});
+		assert.deepEqual(sentPayload, { toolId: "googleGmail", args: {} });
 	});
 
 	it("rejects protected Shopify records before Bash can receive them", async () => {
@@ -105,32 +120,11 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills("shopify-commerce"),
 			executeGateway: async () => {
 				gatewayCalls += 1;
 				return { body: { ok: true, status: "success" }, httpStatus: 200 };
 			},
-		}), /must be called directly through divo_gateway/);
-		assert.equal(gatewayCalls, 0);
-	});
-
-	it("rejects stale skill provenance from an earlier run", async () => {
-		let gatewayCalls = 0;
-		await assert.rejects(
-			executeLocalBrokerRequest({
-				version: 1,
-				request: { op: "tools.invoke", payload: { toolId: "googleGmail", args: {} } },
-			}, activeCalls(), {
-				resolveConfig: () => config,
-				readCorrelation: async () => correlation,
-				lookupLoadedSkill: () => ({ runId: "run-0", skillId: "gmail-read" }),
-				executeGateway: async () => {
-					gatewayCalls += 1;
-					return { body: { ok: true, status: "ok", data: {} }, httpStatus: 200 };
-				},
-			}),
-			/Exact company skill required/,
-		);
+		}), /must be called directly through their Divo tool/);
 		assert.equal(gatewayCalls, 0);
 	});
 
@@ -156,7 +150,6 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills(),
 			executeGateway: async (resolved, request, toolCallId, ctx) => executeGatewayRequest(
 				resolved,
 				request,
@@ -200,7 +193,6 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills(),
 			executeGateway: async (resolved, request, toolCallId, ctx) => executeGatewayRequest(
 				resolved,
 				request,
@@ -241,20 +233,25 @@ describe("Divo local broker protocol", () => {
 
 	it("preserves backend RBAC and rate-limit failures without inventing success", async () => {
 		for (const status of ["permission_denied", "rate_limited"]) {
+			const retryAfterSeconds = status === "rate_limited" ? 17 : undefined;
 			const result = await executeLocalBrokerRequest({
 				version: 1,
 				request: { op: "tools.invoke", payload: { toolId: "googleSheets", args: { operation: "read" } } },
 			}, activeCalls(), {
 				resolveConfig: () => config,
 				readCorrelation: async () => correlation,
-				lookupLoadedSkill: loadedSkills(),
 				executeGateway: async () => ({
-					body: { ok: false, status, error: { code: status, message: `Backend ${status}` } },
+					body: {
+						ok: false,
+						status,
+						error: { code: status, message: `Backend ${status}`, retryAfterSeconds },
+					},
 					httpStatus: status === "rate_limited" ? 429 : 403,
 				}),
 			});
 			assert.equal(result.ok, false);
 			assert.equal(result.status, status);
+			assert.equal(result.error?.retryAfterSeconds, retryAfterSeconds);
 			assert.equal(result.error?.code, status);
 		}
 	});
@@ -266,7 +263,6 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills(),
 			executeGateway: async () => ({
 				body: {
 					ok: false,
@@ -299,7 +295,6 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills(),
 			executeGateway: async (_config, _request, _toolCallId, ctx) => {
 				observedSignal = ctx.signal;
 				if (ctx.signal?.aborted) throw new DOMException("cancelled", "AbortError");
@@ -323,7 +318,6 @@ describe("Divo local broker protocol", () => {
 		}, activeCalls(), {
 			resolveConfig: () => config,
 			readCorrelation: async () => ({ ...correlation, departmentId: "dept-2" }),
-			lookupLoadedSkill: loadedSkills(),
 			executeGateway: async () => {
 				executions += 1;
 				throw new Error("unreachable");
@@ -335,12 +329,17 @@ describe("Divo local broker protocol", () => {
 	it("installs a credential-free CLI, serves one active Bash call, and cleans up its process state", async () => {
 		const originalPath = process.env.PATH;
 		const originalSocket = process.env.DIVO_LOCAL_BROKER_SOCKET;
+		const originalRunDir = process.env.DIVO_RUN_DIR;
+		const runDir = await mkdtemp(join(tmpdir(), "divo-run-"));
+		process.env.DIVO_RUN_DIR = runDir;
 		captureDivoGatewayConfig({
 			DIVO_BACKEND_URL: "http://localhost:4000",
 			DIVO_MEMBER_TOKEN: "member-token",
 		});
 		delete process.env.DIVO_MEMBER_TOKEN;
 		const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+		const resultModes: unknown[] = [];
+		let rateAttempts = 0;
 		registerLocalDivoBroker({
 			on(name: string, handler: (event: any, ctx: any) => unknown) {
 				const existing = handlers.get(name) ?? [];
@@ -350,11 +349,30 @@ describe("Divo local broker protocol", () => {
 		} as never, {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			lookupLoadedSkill: loadedSkills(),
-			executeGateway: async (_resolved, request) => ({
-				body: { ok: true, status: "success", data: { op: request.op } },
-				httpStatus: 200,
-			}),
+			executeGateway: async (_resolved, request, _actionId, ctx) => {
+				if (request.op === "tools.invoke") resultModes.push(ctx.resultMode);
+				const toolId = request.op === "tools.invoke"
+					? (request.payload as { toolId?: string })?.toolId
+					: undefined;
+				if (toolId === "rateTool" && rateAttempts++ === 0) {
+					return {
+						body: {
+							ok: false,
+							status: "rate_limited",
+							error: { code: "rate_limited", message: "Wait once", retryAfterSeconds: 1 },
+						},
+						httpStatus: 429,
+					};
+				}
+				return {
+					body: toolId === "badTool"
+						? { ok: false, status: "invalid_args", error: { code: "invalid_args", message: "Bad test args" } }
+						: { ok: true, status: "success", data: request.op === "tools.invoke"
+						? { toolId: "zohoBooks", action: "read", result: { rows: [{ id: "row-1", secret: "file-only" }] } }
+						: { op: request.op } },
+					httpStatus: 200,
+				};
+			},
 		});
 		try {
 			await handlers.get("session_start")?.[0]?.({}, {});
@@ -382,6 +400,37 @@ describe("Divo local broker protocol", () => {
 			assert.equal(output.trace.actionId, "bash-cli:broker:1");
 			assert.match(result.stderr, /\[Divo\] List connections/);
 			assert.doesNotMatch(`${result.stdout}${result.stderr}`, /member-token/);
+			await assert.rejects(execFileAsync("divo-local", [
+				"request", "--op", " tools.invoke ", "--payload-json", "{}",
+			], { env: process.env }), (error: { stderr?: string }) => {
+				assert.match(error.stderr ?? "", /use invoke for tool execution/i);
+				return true;
+			});
+			await assert.rejects(execFileAsync("divo-local", [
+				"invoke", "--tool", "badTool", "--args-json", "{}",
+			], { env: process.env }), (error: { stdout?: string }) => {
+				assert.match(error.stdout ?? "", /invalid_args/);
+				return true;
+			});
+			await assert.rejects(access(join(runDir, "page.json")), { code: "ENOENT" });
+			const fileResult = await execFileAsync("divo-local", [
+				"invoke", "--tool", "zohoBooks", "--args-json", "{}",
+			], { env: process.env });
+			const summary = JSON.parse(fileResult.stdout);
+			assert.match(summary.output, new RegExp(`^${runDir}/divo-zohoBooks-[a-f0-9-]+\\.json$`));
+			assert.doesNotMatch(fileResult.stdout, /file-only/);
+			assert.match(await readFile(summary.output, "utf8"), /file-only/);
+			const explicitResult = await execFileAsync("divo-local", [
+				"invoke", "--tool", "zohoBooks", "--args-json", "{}", "--output", "page.json",
+			], { env: process.env });
+			assert.equal(JSON.parse(explicitResult.stdout).output, join(runDir, "page.json"));
+			const retriedResult = await execFileAsync("divo-local", [
+				"invoke", "--tool", "rateTool", "--args-json", "{}", "--output", "retried.json",
+			], { env: process.env });
+			assert.equal(JSON.parse(retriedResult.stdout).output, join(runDir, "retried.json"));
+			assert.match(retriedResult.stderr, /retrying this exact call once in 1s/i);
+			assert.equal(rateAttempts, 2);
+			assert.deepEqual(resultModes, ["local-file", "local-file", "local-file", "local-file", "local-file"]);
 			await handlers.get("tool_execution_end")?.[0]?.({
 				toolName: "bash",
 				toolCallId: "bash-cli",
@@ -391,16 +440,25 @@ describe("Divo local broker protocol", () => {
 			clearCapturedDivoGatewayConfig();
 			assert.equal(process.env.PATH, originalPath);
 			assert.equal(process.env.DIVO_LOCAL_BROKER_SOCKET, originalSocket);
+			if (originalRunDir === undefined) delete process.env.DIVO_RUN_DIR;
+			else process.env.DIVO_RUN_DIR = originalRunDir;
+			await rm(runDir, { recursive: true, force: true });
 		}
 	});
 });
 
-async function pathAfterSessionStart(disabled: string | undefined): Promise<string | undefined> {
+async function pathAfterSessionStart(
+	disabled: string | undefined,
+	runtimeHome?: string,
+): Promise<string | undefined> {
 	const originalDisabled = process.env.DIVO_LOCAL_CLI_DISABLED;
+	const originalRuntimeHome = process.env.DIVO_HOME;
 	const originalPath = process.env.PATH;
 	const originalSocket = process.env.DIVO_LOCAL_BROKER_SOCKET;
 	if (disabled === undefined) delete process.env.DIVO_LOCAL_CLI_DISABLED;
 	else process.env.DIVO_LOCAL_CLI_DISABLED = disabled;
+	if (runtimeHome === undefined) delete process.env.DIVO_HOME;
+	else process.env.DIVO_HOME = runtimeHome;
 	captureDivoGatewayConfig({
 		DIVO_BACKEND_URL: "http://localhost:4000",
 		DIVO_MEMBER_TOKEN: "member-token",
@@ -424,11 +482,13 @@ async function pathAfterSessionStart(disabled: string | undefined): Promise<stri
 		else process.env.DIVO_LOCAL_BROKER_SOCKET = originalSocket;
 		if (originalDisabled === undefined) delete process.env.DIVO_LOCAL_CLI_DISABLED;
 		else process.env.DIVO_LOCAL_CLI_DISABLED = originalDisabled;
+		if (originalRuntimeHome === undefined) delete process.env.DIVO_HOME;
+		else process.env.DIVO_HOME = originalRuntimeHome;
 	}
 }
 
 describe("divo-local CLI availability", () => {
-	it("offers the CLI by default, for desktop workflows that page through data", () => {
+	it("offers the CLI by default for desktop and cloud workflows", () => {
 		const original = process.env.DIVO_LOCAL_CLI_DISABLED;
 		delete process.env.DIVO_LOCAL_CLI_DISABLED;
 		try {
@@ -460,5 +520,15 @@ describe("divo-local CLI availability", () => {
 
 		const withheld = await pathAfterSessionStart("1");
 		assert.equal(withheld, process.env.PATH);
+	});
+
+	it("stages the cloud launcher outside turn-scoped run directories", async () => {
+		const runtimeHome = await mkdtemp(join(tmpdir(), "divo-home-"));
+		try {
+			const staged = await pathAfterSessionStart(undefined, runtimeHome);
+			assert.match(String(staged), new RegExp(`^${runtimeHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/divo-cli-`));
+		} finally {
+			await rm(runtimeHome, { recursive: true, force: true });
+		}
 	});
 });

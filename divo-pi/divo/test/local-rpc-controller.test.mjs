@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
 	assertExpectedLogin,
@@ -7,6 +11,7 @@ import {
 	backendUrlForContainer,
 	buildBootstrapWriteArgs,
 	buildContainerCreateArgs,
+	buildNativeSkillStagingArgs,
 	buildInterruptionWriteArgs,
 	buildContainerPrepareArgs,
 	buildContainerRunArgs,
@@ -15,20 +20,28 @@ import {
 	createIdleContainerScheduler,
 	deleteProtectedRuntimeSession,
 	finalizeRuntimeLifecycle,
+	fetchNativeSkillBootstrap,
+	fetchNativeSkillBootstrapOrEmpty,
 	loadToken,
 	logCompletedRun,
+	nativeSkillBootstrapDigest,
+	nativeSkillLifecycleEvent,
+	nativeDbSkillsEnabled,
 	piProcessBindingMatches,
 	RUNTIME_IDLE_TIMEOUT_MS,
 	RUNTIME_STOP_RETRY_MS,
 	resourcesFor,
+	renderNativeSkillFiles,
 	runtimeIdentityNames,
 	runtimeContainerNeedsReplacement,
 	runtimeStartupProgress,
 	settleAll,
+	stageNativeSkillBootstrap,
 	trackRuntimeReclamation,
 	trustedRuntimeSession,
 	validateProfileName,
 	validateRuntimeModel,
+	validateNativeSkillBootstrap,
 	validateThread,
 } from "../local-rpc-controller.mjs";
 
@@ -86,7 +99,7 @@ test("protected metadata comes only from a linked successful gateway tool result
 			role: "assistant",
 			content: [
 				{ type: "text", text: 'protectedData: { "used": true }' },
-				{ type: "toolCall", id: "call-1", name: "divo_gateway", arguments: {} },
+				{ type: "toolCall", id: "call-1", name: "divo_zoho_books", arguments: {} },
 			],
 		},
 		{
@@ -123,7 +136,7 @@ test("protected metadata comes only from a linked successful gateway tool result
 test("zero-match protected gateway results still mark the run protected", () => {
 	assert.deepEqual(collectProtectedRunMetadata([
 		{ role: "user", content: [] },
-		{ role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "divo_gateway" }] },
+		{ role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "divo_zoho_books" }] },
 		{
 			role: "toolResult",
 			toolCallId: "call-1",
@@ -154,7 +167,7 @@ test("a protected gateway attempt remains protected when the tool returns an err
 			content: [{
 				type: "toolCall",
 				id: "call-1",
-				name: "divo_gateway",
+				name: "divo_zoho_books",
 				arguments: {
 					op: "tools.invoke",
 					payload: { toolId: "shopifyOrders", args: { operation: "list_orders" } },
@@ -239,6 +252,7 @@ test("two profiles receive distinct Docker resources", () => {
 	assert.notEqual(abhishek.network, anish.network);
 	assert.notEqual(abhishek.volume, anish.volume);
 	assert.notEqual(abhishek.authVolume, anish.authVolume);
+	assert.notEqual(abhishek.skillsVolume, anish.skillsVolume);
 	assert.equal(abhishek.volume, "divo-pi-local-abhishek");
 	assert.equal(anish.volume, "divo-pi-local-anish");
 });
@@ -306,6 +320,10 @@ test("shared runtimes receive a unique disposable profile instead of the private
 	assert.match(firstShared.profile, /^shared-[a-f0-9]{20}$/);
 	assert.notEqual(firstShared.profile, privateRuntime.profile);
 	assert.notEqual(firstShared.profile, secondShared.profile);
+	assert.notEqual(
+		resourcesFor(firstShared.profile).skillsVolume,
+		resourcesFor(secondShared.profile).skillsVolume,
+	);
 	assert.throws(
 		() => runtimeIdentityNames("company-1", "user-1", "lark:chat-1", { contextAudience: "shared" }),
 		/shared runtime requires a run identity/i,
@@ -341,9 +359,13 @@ test("container creation is hardened and contains no member secret", () => {
 		serialized,
 		/type=volume,src=divo-pi-local-abhishek-auth,dst=\/run\/divo-auth/,
 	);
+	assert.match(
+		serialized,
+		/type=volume,src=divo-pi-local-abhishek-skills,dst=\/run\/divo-skills,readonly/,
+	);
 	assert.match(serialized, /--network divo-pi-local-abhishek/);
 	assert.match(serialized, /--add-host host\.docker\.internal:host-gateway/);
-	assert.match(serialized, /dev\.divo\.runtime-mode=exec-v1/);
+	assert.match(serialized, /dev\.divo\.runtime-mode=exec-v2/);
 	assert.match(serialized, /divo-pi:test sleep infinity$/);
 	assert.doesNotMatch(serialized, /token|password|secret/i);
 });
@@ -405,6 +427,12 @@ test("a warm runtime can prepare the cached Pi process through docker exec", () 
 
 test("Pi process reuse is limited to compatible private thread runs", () => {
 	assert.equal(canReusePiProcess({ sessionScope: "thread" }), true);
+	assert.equal(canReusePiProcess({ sessionScope: "thread", nativeSkills: true }), false);
+	assert.equal(canReusePiProcess({
+		sessionScope: "thread",
+		nativeSkills: true,
+		nativeSkillDigest: "a".repeat(64),
+	}), true);
 	assert.equal(canReusePiProcess({ sessionScope: "run" }), false);
 	assert.equal(canReusePiProcess({ sessionScope: "thread", ephemeral: true }), false);
 	assert.equal(canReusePiProcess({ sessionScope: "thread", lifecycle: "reset" }), false);
@@ -417,11 +445,263 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 		departmentId: "dep-1",
 		provider: "deepseek",
 		model: "deepseek-v4-flash",
+		nativeSkillDigest: "a".repeat(64),
 	};
 	assert.equal(piProcessBindingMatches(binding, { ...binding }), true);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, thread: "lark-2" }), false);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, departmentId: "dep-2" }), false);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, model: "gpt-5.6-luna" }), false);
+	assert.equal(piProcessBindingMatches(binding, {
+		...binding,
+		nativeSkillDigest: "b".repeat(64),
+	}), false);
+});
+
+test("native DB skills are on by default with an explicit rollback switch", () => {
+	assert.equal(nativeDbSkillsEnabled(undefined), true);
+	assert.equal(nativeDbSkillsEnabled(""), true);
+	assert.equal(nativeDbSkillsEnabled("true"), true);
+	assert.equal(nativeDbSkillsEnabled("false"), false);
+	assert.equal(nativeDbSkillsEnabled("1"), false);
+
+	const bootstrap = validateNativeSkillBootstrap({
+		registryRevision: 7,
+		skills: [{
+			id: "skill-1",
+			slug: "google-sheets",
+			name: "Google Sheets",
+			description: "Edit sheets safely: read, then write.",
+			instructions: "# Google Sheets\n\nUse governed tools.",
+			revision: 3,
+		}],
+	});
+	assert.deepEqual(renderNativeSkillFiles(bootstrap), [{
+		slug: "google-sheets",
+		content: [
+			"---",
+			"name: google-sheets",
+			'description: "Edit sheets safely: read, then write."',
+			"---",
+			"",
+			"# Google Sheets",
+			"",
+			"Use governed tools.",
+			"",
+		].join("\n"),
+	}]);
+});
+
+test("native DB skill bootstrap rejects unsafe or ambiguous resources", () => {
+	const skill = {
+		id: "skill-1",
+		slug: "safe-skill",
+		name: "Safe skill",
+		description: "Safe description",
+		instructions: "Use governed tools.",
+		revision: 1,
+	};
+	assert.throws(
+		() => validateNativeSkillBootstrap({ registryRevision: 1, skills: [{ ...skill, slug: "../escape" }] }),
+		/slug is invalid/,
+	);
+	assert.throws(
+		() => validateNativeSkillBootstrap({ registryRevision: 1, skills: [skill, { ...skill, id: "skill-2" }] }),
+		/Duplicate native skill slug/,
+	);
+	assert.throws(
+		() => validateNativeSkillBootstrap({
+			registryRevision: 1,
+			skills: [{ ...skill, slug: "divo-gateway" }],
+		}),
+		/slug is reserved by the runtime/,
+	);
+	assert.throws(
+		() => validateNativeSkillBootstrap({
+			registryRevision: 1,
+			skills: [{ ...skill, instructions: "x".repeat(100_001) }],
+		}),
+		/instructions are invalid/,
+	);
+});
+
+test("native DB skills are fetched only through the authenticated runtime endpoint", async () => {
+	let request;
+	const bootstrap = await fetchNativeSkillBootstrap({
+		backendUrl: "https://divo.example.com/",
+		token: "member-token",
+		departmentId: "department-1",
+		fetchImpl: async (url, options) => {
+			request = { url, options };
+			return {
+				ok: true,
+				status: 200,
+				json: async () => ({ success: true, data: { nativeSkillBootstrap: {
+					registryRevision: 1,
+					skills: [{
+						id: "skill-1",
+						slug: "safe-skill",
+						name: "Safe skill",
+						description: "Safe description",
+						instructions: "Use governed tools.",
+						revision: 1,
+					}],
+				} } }),
+			};
+		},
+	});
+	assert.equal(bootstrap.skills[0].slug, "safe-skill");
+	assert.match(request.url, /nativeSkills=1/);
+	assert.match(request.url, /departmentId=department-1/);
+	assert.deepEqual(request.options.headers, { Authorization: "Bearer member-token" });
+});
+
+test("transient native skill bootstrap failure degrades to an empty DB catalogue", async () => {
+	const originalError = console.error;
+	console.error = () => {};
+	try {
+		const bootstrap = await fetchNativeSkillBootstrapOrEmpty({
+			backendUrl: "https://divo.example.com/",
+			token: "member-token",
+			departmentId: "department-1",
+			fetchImpl: async () => ({
+				ok: false,
+				status: 503,
+				json: async () => ({ success: false, message: "catalogue unavailable" }),
+			}),
+		});
+		assert.deepEqual(bootstrap, { registryRevision: 0, skills: [] });
+	} finally {
+		console.error = originalError;
+	}
+});
+
+test("native skill bootstrap authorization failure remains fatal", async () => {
+	await assert.rejects(fetchNativeSkillBootstrapOrEmpty({
+		backendUrl: "https://divo.example.com/",
+		token: "member-token",
+		departmentId: "department-1",
+		fetchImpl: async () => ({
+			ok: false,
+			status: 403,
+			json: async () => ({ success: false, message: "department denied" }),
+		}),
+	}), /department denied/);
+});
+
+test("native DB skills are staged by an isolated root helper", () => {
+	const args = buildNativeSkillStagingArgs("divo-pi-local-abhishek-skills", "divo-pi:test");
+	const serialized = args.join(" ");
+	assert.match(serialized, /--network none/);
+	assert.match(serialized, /--user 0:0/);
+	assert.match(serialized, /--read-only/);
+	assert.match(serialized, /type=volume,src=divo-pi-local-abhishek-skills,dst=\/run\/divo-skills/);
+	assert.doesNotMatch(serialized, /member-token|password|secret/i);
+});
+
+test("native DB skill staging swaps atomically and preserves current on failure", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "divo-native-staging-"));
+	const current = path.join(root, "current", "old-skill");
+	fs.mkdirSync(current, { recursive: true });
+	fs.writeFileSync(path.join(current, "SKILL.md"), "old", { mode: 0o444 });
+	const script = buildNativeSkillStagingArgs("unused", "unused").at(-1);
+	const run = (files, digest = "a".repeat(64)) => spawnSync(process.execPath, ["-e", script], {
+		encoding: "utf8",
+		env: { ...process.env, DIVO_NATIVE_SKILLS_ROOT: root },
+		input: JSON.stringify({ digest, files }),
+	});
+
+	const failed = run([
+		{ slug: "new-skill", content: "new" },
+		{ slug: "../escape", content: "unsafe" },
+	]);
+	assert.notEqual(failed.status, 0);
+	assert.equal(fs.readFileSync(path.join(current, "SKILL.md"), "utf8"), "old");
+
+	const succeeded = run([{ slug: "new-skill", content: "new" }]);
+	assert.equal(succeeded.status, 0, succeeded.stderr);
+	const staged = path.join(root, "current", "new-skill", "SKILL.md");
+	assert.equal(fs.readFileSync(staged, "utf8"), "new");
+	assert.equal(fs.statSync(staged).mode & 0o777, 0o444);
+	assert.equal(fs.existsSync(path.join(root, ".previous")), false);
+	assert.equal(fs.existsSync(path.join(root, "current", "old-skill")), false);
+	assert.deepEqual(
+		JSON.parse(fs.readFileSync(path.join(root, "current", ".bootstrap.json"), "utf8")),
+		{ digest: "a".repeat(64) },
+	);
+	fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("native DB skill staging skips only an identical scoped catalogue", async () => {
+	const bootstrap = {
+		registryRevision: 7,
+		skills: [{
+			id: "skill-1",
+			slug: "safe-skill",
+			name: "Safe Skill",
+			description: "Safe description",
+			instructions: "Use governed tools.",
+			revision: 1,
+		}],
+	};
+	const scope = {
+		companyId: "company-1",
+		userId: "user-1",
+		departmentId: "department-1",
+		channel: "lark",
+	};
+	const calls = [];
+	const runStaging = async (...args) => { calls.push(args); };
+	const volume = `test-skills-${Date.now()}`;
+
+	const first = await stageNativeSkillBootstrap(volume, bootstrap, scope, { runStaging });
+	const unchanged = await stageNativeSkillBootstrap(volume, bootstrap, scope, { runStaging });
+	const changedScope = await stageNativeSkillBootstrap(
+		volume,
+		bootstrap,
+		{ ...scope, departmentId: "department-2" },
+		{ runStaging },
+	);
+	const changedCatalogue = await stageNativeSkillBootstrap(
+		volume,
+		{
+			...bootstrap,
+			skills: [{ ...bootstrap.skills[0], instructions: "Use the revised governed recipe." }],
+		},
+		scope,
+		{ runStaging },
+	);
+
+	assert.equal(first.staged, true);
+	assert.equal(unchanged.staged, false);
+	assert.equal(changedScope.staged, true);
+	assert.equal(changedCatalogue.staged, true);
+	assert.equal(calls.length, 3);
+	assert.notEqual(first.digest, changedScope.digest);
+	assert.equal(first.digest, nativeSkillBootstrapDigest(bootstrap, scope));
+});
+
+test("native skill lifecycle telemetry contains counts and timing, never skill content", () => {
+	const event = nativeSkillLifecycleEvent({
+		bootstrap: { registryRevision: 7, skills: [{ instructions: "private recipe" }] },
+		digest: "a".repeat(64),
+		staged: false,
+		fetchMs: 12,
+		stageMs: 1,
+		ephemeral: true,
+		sessionScope: "run",
+	});
+	assert.deepEqual(event, {
+		event: "native_skills.ready",
+		registryRevision: 7,
+		skillCount: 1,
+		digest: "a".repeat(12),
+		staged: false,
+		fetchMs: 12,
+		stageMs: 1,
+		audience: "shared",
+		sessionScope: "run",
+	});
+	assert.doesNotMatch(JSON.stringify(event), /private recipe/);
 });
 
 test("a shared container mounts only its run-specific disposable volumes", () => {
@@ -451,7 +731,7 @@ test("a runtime container is replaced only when its image changes", () => {
 		Image: "sha256:old-image",
 		Config: {
 			Image: "ghcr.io/relicwavetechnologies/divo-pi:dev-old",
-			Labels: { "dev.divo.runtime-mode": "exec-v1" },
+			Labels: { "dev.divo.runtime-mode": "exec-v2" },
 		},
 	};
 	assert.equal(

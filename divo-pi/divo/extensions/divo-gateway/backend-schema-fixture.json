@@ -1,0 +1,233 @@
+{
+ "webSearch": {
+  "type": "object",
+  "properties": {
+   "query": {
+    "type": "string",
+    "minLength": 1
+   },
+   "limit": {
+    "type": "integer",
+    "minimum": 1,
+    "maximum": 10
+   }
+  },
+  "required": [
+   "query"
+  ],
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+ },
+ "larkTask": {
+  "type": "object",
+  "properties": {
+   "op": {
+    "type": "string",
+    "enum": [
+     "create",
+     "update",
+     "complete",
+     "delete",
+     "list",
+     "listMine",
+     "listOpenMine",
+     "get",
+     "list_tasklists",
+     "create_tasklist",
+     "add_to_tasklist",
+     "remove_from_tasklist",
+     "list_subtasks",
+     "create_subtask"
+    ]
+   },
+   "title": {
+    "type": "string"
+   },
+   "taskId": {
+    "type": "string"
+   },
+   "dueDate": {
+    "type": "string"
+   },
+   "assigneeIds": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    }
+   },
+   "assigneeNames": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    }
+   },
+   "followerIds": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    }
+   },
+   "notes": {
+    "type": "string"
+   },
+   "tasklist": {
+    "type": "string"
+   },
+   "limit": {
+    "type": "integer",
+    "minimum": 1,
+    "maximum": 100
+   },
+   "tasklistId": {
+    "type": "string"
+   },
+   "parentTaskId": {
+    "type": "string"
+   },
+   "connectionId": {
+    "type": "string",
+    "format": "uuid"
+   }
+  },
+  "required": [
+   "op"
+  ],
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+ },
+ "zohoBooks": {
+  "type": "object",
+  "properties": {
+   "connectionId": {
+    "type": "string",
+    "format": "uuid"
+   },
+   "op": {
+    "type": "string",
+    "enum": [
+     "list_invoices",
+     "get_invoice",
+     "stage_invoice",
+     "create_invoice",
+     "list_contacts",
+     "get_contact",
+     "list_expenses",
+     "list_bills",
+     "list_payments",
+     "get_chart_of_accounts",
+     "get_account_balance",
+     "list_bank_transactions",
+     "search_transactions",
+     "get_tax_summary",
+     "list_items",
+     "list_taxes",
+     "send_invoice",
+     "record_payment",
+     "create_expense",
+     "create_bill",
+     "create_contact",
+     "update_invoice",
+     "mark_invoice_sent",
+     "attach_document",
+     "void_invoice",
+     "build_overdue_report"
+    ]
+   },
+   "invoiceId": {
+    "type": "string"
+   },
+   "contactId": {
+    "type": "string"
+   },
+   "accountId": {
+    "type": "string"
+   },
+   "recordType": {
+    "type": "string",
+    "enum": [
+     "invoice",
+     "bill"
+    ]
+   },
+   "recordId": {
+    "type": "string"
+   },
+   "fileName": {
+    "type": "string"
+   },
+   "stagingId": {
+    "type": "string",
+    "format": "uuid"
+   },
+   "supersedesStagingId": {
+    "type": "string",
+    "format": "uuid"
+   },
+   "searchQuery": {
+    "type": "string"
+   },
+   "email": {
+    "type": "string",
+    "format": "email"
+   },
+   "fields": {
+    "type": "object",
+    "additionalProperties": {}
+   },
+   "limit": {
+    "type": "integer",
+    "minimum": 1,
+    "maximum": 100
+   },
+   "page": {
+    "type": "integer",
+    "minimum": 1,
+    "maximum": 20
+   },
+   "exportAll": {
+    "type": "boolean"
+   },
+   "organizationId": {
+    "type": "string"
+   },
+   "dateFrom": {
+    "type": "string"
+   },
+   "dateTo": {
+    "type": "string"
+   },
+   "status": {
+    "type": "string"
+   },
+   "taxYear": {
+    "type": "string"
+   },
+   "asOfDate": {
+    "type": "string"
+   },
+   "minOverdueDays": {
+    "type": "integer",
+    "minimum": 0
+   },
+   "invoiceDateFrom": {
+    "type": "string"
+   },
+   "invoiceDateTo": {
+    "type": "string"
+   },
+   "script": {
+    "type": "string"
+   },
+   "scriptArgs": {
+    "type": "object",
+    "additionalProperties": {}
+   }
+  },
+  "required": [
+   "connectionId",
+   "op"
+  ],
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+ }
+}

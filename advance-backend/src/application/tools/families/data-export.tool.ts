@@ -59,16 +59,6 @@ const PlanSchema = exportPlanRequestSchema.extend({
   op: z.literal('plan'),
 }).strict();
 
-const SampleSchema = z.object({
-  op: z.literal('sample'),
-  planId: z.string().uuid(),
-}).strict();
-
-const ConfirmSampleSchema = z.object({
-  op: z.literal('confirm_sample'),
-  sampleRunId: z.string().uuid(),
-}).strict();
-
 const ListCandidatesSchema = z.object({
   op: z.literal('list_candidates'),
   scope: z.enum(['chat', 'run']).optional(),
@@ -78,16 +68,12 @@ const Schema = z.union([
   RecipeSchema,
   ConfirmSchema,
   PlanSchema,
-  SampleSchema,
-  ConfirmSampleSchema,
   ListCandidatesSchema,
 ]);
 
 type Args = z.infer<typeof Schema>;
 type ConfirmArgs = z.infer<typeof ConfirmSchema>;
 type PlanArgs = z.infer<typeof PlanSchema>;
-type SampleArgs = z.infer<typeof SampleSchema>;
-type ConfirmSampleArgs = z.infer<typeof ConfirmSampleSchema>;
 type ListCandidatesArgs = z.infer<typeof ListCandidatesSchema>;
 
 const CreateResultSchema = z.object({
@@ -128,15 +114,11 @@ const ConfirmResultSchema = z.object({
 }).strict();
 
 const OrchestrationResultSchema = z.object({
-  operation: z.enum(['plan', 'sample', 'confirm_sample']),
+  operation: z.literal('plan'),
   success: z.boolean(),
   exportQueued: z.boolean(),
   status: z.enum([
     'direct_queue',
-    'sample_required',
-    'sample_queued',
-    'full_queued',
-    'already_confirmed',
     'choose_destination',
     'connect_pending',
     'connect_required',
@@ -144,9 +126,7 @@ const OrchestrationResultSchema = z.object({
     'ambiguous',
   ]),
   planId: z.string().uuid().optional(),
-  sampleRunId: z.string().uuid().optional(),
   exportJobId: z.string().optional(),
-  sampleRows: z.number().int().positive().optional(),
   reason: z.string().optional(),
   message: z.string(),
   connections: z.array(z.object({
@@ -186,7 +166,7 @@ type DataExportOffers = Pick<DataExportOfferService, 'submitAuthorized'>
   & Partial<Pick<DataExportOfferService, 'confirmForActor' | 'confirmLatestForActor'>>;
 type DataExportOrchestration = Pick<
   DataExportOrchestrationService,
-  'planForActor' | 'queueSample' | 'confirmSample' | 'listCandidatesForActor'
+  'planForActor' | 'listCandidatesForActor'
 >;
 
 export function createDataExportTool(deps: {
@@ -201,17 +181,16 @@ export function createDataExportTool(deps: {
     argsSchema: Schema,
     resultSchema: ResultSchema,
     description:
-      `Export up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} governed rows through Divo's queued pipeline, or confirm an existing provider export offer from a natural-language format choice. Source pages and sandboxed transforms stay server-side; only a verified invoker-only Google Sheet, Excel file, or Drive CSV is returned.`,
+      `Complete an opaque exportCandidate for a provider whose specialist explicitly lacks terminal-safe paging, up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} governed rows, or confirm an existing provider export offer. Never use this compatibility tool for Zoho Books or CRM; complete Zoho artifacts use one governed local Python workflow. Source pages and sandboxed transforms stay server-side; only a verified invoker-only Google Sheet, Excel file, or Drive CSV is returned.`,
     parameterDocs: [
       `Format limits: Excel ${DATA_EXPORT_XLSX_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_XLSX_CELL_LIMIT.toLocaleString('en-IN')} cells; Google Sheets ${DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT.toLocaleString('en-IN')} cells; CSV/auto ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user requests more or every row, disclose the applicable cap and never call a truncated result complete.`,
       'When a source result returns exportCandidate, use op=plan to export that candidate. If the user did not ask for a file, do not call dataExport.',
       'op=list_candidates: list active export candidates for this chat or current run so you can plan op=plan from the table you showed. Never show candidate IDs to the member.',
-      'op=plan: use one or more backend-returned candidate IDs plus the requested format/title. Assign tabName per dataset when exporting multiple tables to Sheet or Excel. The backend may queue directly, ask for a Google account, require Google connection, require a 100-row sample, or block unsafe plans.',
-      'op=sample: queue the backend-held 100-row sample for a plan that returned sample_required. op=confirm_sample: queue the full export after the member confirms the sample.',
+      'op=plan: use one or more backend-returned candidate IDs plus the requested format/title. Assign tabName per dataset when exporting multiple tables to Sheet or Excel. A valid explicit plan queues the full governed export after destination and policy checks; do not create a sample or ask for another confirmation.',
       'Legacy op=confirm remains only for old provider offers that returned preview.exportOfferId. Do not use it for exportCandidate results.',
       'op=confirm.format: use google_sheet for Google Sheet/Sheet, csv for CSV, and xlsx for Excel/XL/XLSX. Do not invent source rows, filters, accounts, or a new offer. The backend resolves the active offer in the current authenticated Lark chat when offerId is omitted.',
       'op=confirm.offerId: optional opaque offer ID from the preceding governed result; use it to disambiguate a listed offer but never show it to the user. op=confirm.connectionId is allowed only when Divo returned that exact account choice.',
-      'Direct source.kind is for legacy/manual recipes: prefer airtable_records. zoho_books direct recipes are compatibility-only; when a provider result returns exportCandidate, use op=plan instead. Always use the exact source connection UUID.',
+      'Direct source.kind is legacy/manual compatibility only. Never construct a direct zoho_books source; Zoho Books and CRM complete artifacts use terminal-safe paging through divo-python-automation. Always use the exact source connection UUID for supported compatibility sources.',
       'transform.script: optional JavaScript function body. It receives row, index, and args. Return an object, an array of objects, or null to filter.',
       'destination.format: auto chooses Google Sheets for manageable datasets and CSV in Google Drive for large datasets.',
       'Use destination.format=xlsx only when the user explicitly requests Excel. Excel is limited to 5,000 rows and 100,000 cells; use CSV for wider datasets.',
@@ -224,7 +203,7 @@ export function createDataExportTool(deps: {
       if (!perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
         return err(new PermissionError({ toolId: 'dataExport', action: 'create', reason: 'not_allowed' }));
       }
-      if (isConfirmArgs(args) || isPlanArgs(args) || isSampleArgs(args) || isConfirmSampleArgs(args) || isListCandidatesArgs(args)) {
+      if (isConfirmArgs(args) || isPlanArgs(args) || isListCandidatesArgs(args)) {
         return ok('create' as ToolActionGroup);
       }
       const sourceToolId = datasetSourceToolId(args.source);
@@ -244,8 +223,6 @@ export function createDataExportTool(deps: {
       }
       if (isConfirmArgs(args)) return executeConfirmation(args, ctx, deps);
       if (isPlanArgs(args)) return executePlan(args, ctx, deps);
-      if (isSampleArgs(args)) return executeSample(args, ctx, deps);
-      if (isConfirmSampleArgs(args)) return executeConfirmSample(args, ctx, deps);
       if (isListCandidatesArgs(args)) return executeListCandidates(args, ctx, deps);
       try {
         const source: DataExportOfferPayload['source'] = args.source.kind === 'airtable_records'
@@ -317,14 +294,6 @@ function isConfirmArgs(args: Args): args is ConfirmArgs {
 
 function isPlanArgs(args: Args): args is PlanArgs {
   return 'op' in args && args.op === 'plan';
-}
-
-function isSampleArgs(args: Args): args is SampleArgs {
-  return 'op' in args && args.op === 'sample';
-}
-
-function isConfirmSampleArgs(args: Args): args is ConfirmSampleArgs {
-  return 'op' in args && args.op === 'confirm_sample';
 }
 
 function isListCandidatesArgs(args: Args): args is ListCandidatesArgs {
@@ -418,122 +387,6 @@ async function executePlan(
       reason: 'upstream_failure',
       cause,
       message: `Could not plan data export: ${cause instanceof Error ? cause.message : String(cause)}`,
-    }));
-  }
-}
-
-async function executeSample(
-  args: SampleArgs,
-  ctx: ToolExecutionContext,
-  deps: {
-    readonly orchestration?: DataExportOrchestration;
-    readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
-  },
-): Promise<Result<Res, ToolError>> {
-  if (!deps.orchestration) {
-    return err(new ToolError({
-      toolId: 'dataExport',
-      reason: 'upstream_failure',
-      message: 'AI-controlled export samples are not available in this environment.',
-    }));
-  }
-  try {
-    const result = await deps.orchestration.queueSample({
-      planId: args.planId,
-      companyId: ctx.runContext.companyId,
-      userId: ctx.runContext.userId,
-      chatId: ctx.runContext.chatId!,
-    });
-    if (result.status === 'connect_required') {
-      return requestGoogleConnectionForPlan(ctx, deps, {
-        operation: 'sample',
-        planId: result.planId,
-        format: 'google_sheet',
-      });
-    }
-    if (result.status === 'sample_queued') {
-      return ok({
-        operation: 'sample',
-        success: true,
-        exportQueued: true,
-        status: 'sample_queued',
-        planId: result.planId,
-        sampleRunId: result.sampleRunId,
-        exportJobId: result.exportJobId,
-        sampleRows: result.sampleRows,
-        message: `Queued a ${result.sampleRows.toLocaleString('en-IN')}-row private sample. Review it, then confirm if it looks right and Divo will run the full export.`,
-      });
-    }
-    return ok(planResultToToolResult(
-      { ...result, planId: args.planId } as DataExportPlanResult,
-      'google_sheet',
-      'sample',
-      args.planId,
-    ));
-  } catch (cause) {
-    return err(new ToolError({
-      toolId: 'dataExport',
-      reason: 'upstream_failure',
-      cause,
-      message: `Could not queue data export sample: ${cause instanceof Error ? cause.message : String(cause)}`,
-    }));
-  }
-}
-
-async function executeConfirmSample(
-  args: ConfirmSampleArgs,
-  ctx: ToolExecutionContext,
-  deps: {
-    readonly orchestration?: DataExportOrchestration;
-    readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
-  },
-): Promise<Result<Res, ToolError>> {
-  if (!deps.orchestration) {
-    return err(new ToolError({
-      toolId: 'dataExport',
-      reason: 'upstream_failure',
-      message: 'AI-controlled export sample confirmation is not available in this environment.',
-    }));
-  }
-  try {
-    const result = await deps.orchestration.confirmSample({
-      sampleRunId: args.sampleRunId,
-      companyId: ctx.runContext.companyId,
-      userId: ctx.runContext.userId,
-      chatId: ctx.runContext.chatId!,
-    });
-    if (result.status === 'connect_required') {
-      return requestGoogleConnectionForPlan(ctx, deps, {
-        operation: 'confirm_sample',
-        planId: result.planId,
-        format: 'google_sheet',
-      });
-    }
-    if (result.status === 'full_queued' || result.status === 'already_confirmed') {
-      return ok({
-        operation: 'confirm_sample',
-        success: true,
-        exportQueued: result.status === 'full_queued',
-        status: result.status,
-        planId: result.planId,
-        exportJobId: result.exportJobId,
-        message: result.status === 'full_queued'
-          ? 'Full export queued from the approved sample plan. Divo will deliver the verified private artifact to this Lark chat. The selected format caps still apply; the completion card will say if rows were omitted.'
-          : 'The full export for this sample was already confirmed.',
-      });
-    }
-    return ok(planResultToToolResult(
-      { ...result, planId: args.sampleRunId } as DataExportPlanResult,
-      'google_sheet',
-      'confirm_sample',
-      args.sampleRunId,
-    ));
-  } catch (cause) {
-    return err(new ToolError({
-      toolId: 'dataExport',
-      reason: 'upstream_failure',
-      cause,
-      message: `Could not confirm data export sample: ${cause instanceof Error ? cause.message : String(cause)}`,
     }));
   }
 }
@@ -739,12 +592,10 @@ async function requestGoogleConnection(
 function planResultToToolResult(
   result: DataExportPlanResult,
   format: DataExportFormat,
-  operation: 'plan' | 'sample' | 'confirm_sample' = 'plan',
-  planIdFallback?: string,
 ): Res {
   if (result.status === 'direct_queue') {
     return {
-      operation,
+      operation: 'plan',
       success: true,
       exportQueued: true,
       status: 'direct_queue',
@@ -753,21 +604,9 @@ function planResultToToolResult(
       message: `${formatLabel(format)} export queued. Divo will deliver the verified private artifact to this Lark chat. ${formatLimitReminder(format)}`,
     };
   }
-  if (result.status === 'sample_required') {
-    return {
-      operation,
-      success: false,
-      exportQueued: false,
-      status: 'sample_required',
-      planId: result.planId,
-      sampleRows: result.sampleRows,
-      reason: result.reason,
-      message: `This export needs a ${result.sampleRows.toLocaleString('en-IN')}-row sample first. Queue the sample, review it, then confirm if it looks right.`,
-    };
-  }
   if (result.status === 'choose_destination') {
     return {
-      operation,
+      operation: 'plan',
       success: false,
       exportQueued: false,
       status: 'choose_destination',
@@ -778,7 +617,7 @@ function planResultToToolResult(
   }
   if (result.status === 'connect_required') {
     return {
-      operation,
+      operation: 'plan',
       success: false,
       exportQueued: false,
       status: 'connect_required',
@@ -787,11 +626,10 @@ function planResultToToolResult(
     };
   }
   return {
-    operation,
+    operation: 'plan',
     success: false,
     exportQueued: false,
     status: result.status,
-    ...(planIdFallback ? { planId: planIdFallback } : {}),
     reason: result.status === 'blocked' ? result.reason : undefined,
     message: result.message,
   };
@@ -803,7 +641,7 @@ async function requestGoogleConnectionForPlan(
     readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
   },
   input: {
-    readonly operation: 'plan' | 'sample' | 'confirm_sample';
+    readonly operation: 'plan';
     readonly planId: string;
     readonly format: DataExportFormat;
   },

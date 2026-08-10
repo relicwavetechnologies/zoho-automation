@@ -223,7 +223,7 @@ describe("formatGatewayResponse", () => {
 		assert.match(result.text, /Finance Manager/);
 		assert.match(result.text, /existing request was reused|request state: reused/i);
 		assert.match(result.text, /next action: wait/i);
-		assert.match(result.text, /exact same divo_gateway tools\.invoke request/i);
+		assert.match(result.text, /exact same Divo tool call/i);
 		assert.match(result.text, /changed args require a fresh approval/i);
 	});
 
@@ -336,7 +336,7 @@ describe("callDivoGateway", () => {
 				version: 1 as const,
 				threadId: "thread-1",
 				runId: "run-1",
-				actionId: "skill-view-1",
+				actionId: "skill-get-1",
 			},
 		};
 
@@ -464,6 +464,19 @@ describe("callDivoGateway", () => {
 			actionId: "tool-call-1",
 		});
 		assert.equal(result.body.status, "success");
+	});
+
+	it("marks only explicit local-file calls for the backend", async () => {
+		let headers: Record<string, string> | undefined;
+		await callDivoGateway({ backendUrl: "http://localhost:4000", memberToken: "member-jwt" }, {
+			op: "tools.invoke",
+			payload: { toolId: "zohoBooks", args: { operation: "list_records" } },
+		}, async (_url, init) => {
+			headers = init?.headers as Record<string, string>;
+			return new Response(JSON.stringify({ ok: true, status: "success", data: {} }), { status: 200 });
+		}, { resultMode: "local-file" });
+
+		assert.equal(headers?.["X-Divo-Result-Mode"], "local-file");
 	});
 });
 

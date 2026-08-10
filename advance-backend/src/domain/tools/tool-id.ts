@@ -219,10 +219,24 @@ export const TOOL_DERIVED_PERMISSIONS = [
   {
     toolId: 'dataExport',
     action: 'create',
+    // Every family whose results can carry an `exportCandidate` belongs here.
+    // A reader of a family that is missing does not merely lose the export —
+    // dataExport disappears from their tool list entirely, and an agent asked
+    // to export their data concludes the capability was never built. That is
+    // exactly what happened to a Shopify-only member: the skill told it to use
+    // `dataExport op=plan`, the tool was absent, and it rebuilt the file by
+    // hand against an explicit prohibition rather than say "you lack access".
     anyOf: [
       { toolId: 'airtableBase', action: 'read' },
       { toolId: 'airtableRecords', action: 'read' },
       { toolId: 'zohoBooks', action: 'read' },
+      { toolId: 'zohoCrm', action: 'read' },
+      { toolId: 'shopifyAnalytics', action: 'read' },
+      { toolId: 'shopifyOrders', action: 'read' },
+      { toolId: 'shopifyCustomers', action: 'read' },
+      { toolId: 'semrush', action: 'read' },
+      { toolId: 'omsSiteData', action: 'read' },
+      { toolId: 'menhoodData', action: 'read' },
     ],
   },
 ] as const satisfies readonly {

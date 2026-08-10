@@ -21,6 +21,7 @@ const DEFAULT_DEPENDENCIES: GatewayExecutionDependencies = {
 
 export interface GatewayExecutionContext extends ApprovalContext {
 	runtimeChannel?: "lark";
+	resultMode?: "local-file";
 }
 
 /**
@@ -36,7 +37,10 @@ export async function executeGatewayRequest(
 	dependencies: GatewayExecutionDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<{ body: GatewayResponseBody; httpStatus: number }> {
 	if (ctx.signal?.aborted) throw new DOMException("The Divo action was cancelled.", "AbortError");
-	let result = await dependencies.callGateway(config, request, fetch, { signal: ctx.signal });
+	let result = await dependencies.callGateway(config, request, fetch, {
+		signal: ctx.signal,
+		...(ctx.resultMode ? { resultMode: ctx.resultMode } : {}),
+	});
 	if (result.body.status !== "local_approval_required" || ctx.runtimeChannel === "lark") {
 		return result;
 	}

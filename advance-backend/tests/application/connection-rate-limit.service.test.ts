@@ -61,7 +61,11 @@ describe('ConnectionRateLimitService', () => {
 
     assert.equal((await limits.preflight(input)).kind, 'allowed');
     assert.equal((await limits.preflight(input)).kind, 'allowed');
-    assert.equal((await limits.consume(input)).kind, 'allowed');
+    const first = await limits.consume(input);
+    assert.equal(first.kind, 'allowed');
+    if (first.kind === 'allowed') {
+      assert.equal(first.check.windows[0]?.ttlSeconds, 40);
+    }
     assert.equal((await limits.consume(input)).kind, 'allowed');
 
     const blocked = await limits.consume(input);
@@ -69,6 +73,7 @@ describe('ConnectionRateLimitService', () => {
     if (blocked.kind === 'limited') {
       assert.match(blocked.message, /2-request rate limit/);
       assert.equal(blocked.policySource, 'company_admin_override');
+      assert.equal(blocked.retryAfterSeconds, 40);
     }
   });
 
@@ -83,6 +88,21 @@ describe('ConnectionRateLimitService', () => {
     assert.equal(first.kind, 'allowed');
     if (first.kind === 'allowed') assert.equal(first.policySource, 'manager_policy');
     assert.equal((await limits.consume(input)).kind, 'limited');
+  });
+
+  it('returns the longest exact retry when both minute and daily windows are exhausted', async () => {
+    const limits = service({
+      admin: policy({ mode: 'enforced', requestsPerMinute: 1, requestsPerDay: 1, approval: 'none' }),
+    });
+    const input = { companyId: 'company-1', connectionId: 'connection-1', action: 'read' as const };
+
+    assert.equal((await limits.consume(input)).kind, 'allowed');
+    const blocked = await limits.consume(input);
+    assert.equal(blocked.kind, 'limited');
+    if (blocked.kind === 'limited') {
+      assert.equal(blocked.retryAfterSeconds, 41_140);
+      assert.match(blocked.message, /41140 seconds/);
+    }
   });
 
   it('does not impose a connection policy when an invocation has no exact connection identity', async () => {

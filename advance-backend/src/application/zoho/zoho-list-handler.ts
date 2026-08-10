@@ -14,6 +14,7 @@ export interface ZohoListCsvColumn<T extends Record<string, unknown>> {
 
 export interface ListHandlerResult<T extends Record<string, unknown> = Record<string, unknown>> {
   readonly items: T[];
+  readonly page: number;
   readonly totalCount?: number;
   readonly summary: string;
   readonly truncated: boolean;
@@ -31,6 +32,7 @@ export interface HandleZohoListInput<T extends Record<string, unknown> = Record<
   readonly moduleLabel: string;
   readonly filters?: Record<string, unknown>;
   readonly query?: string;
+  readonly page?: number;
   readonly suggestExportOnOverflow?: boolean;
   readonly inlineThreshold?: number;
   readonly postFilter?: (items: readonly T[]) => T[];
@@ -50,7 +52,7 @@ export async function handleZohoList<T extends Record<string, unknown> = Record<
     ...(input.organizationId ? { organizationId: input.organizationId } : {}),
     ...(input.filters ? { filters: input.filters } : {}),
     ...(input.query ? { query: input.query } : {}),
-    page: 1,
+    page: input.page ?? 1,
     perPage: Math.max(inlineThreshold, 25),
   });
   const fetchedItems = firstPage.items as T[];
@@ -76,6 +78,7 @@ export async function handleZohoList<T extends Record<string, unknown> = Record<
     : { kind: 'complete', totalRows: visible.length };
   return {
     items: visible,
+    page: firstPage.page,
     ...(!firstPage.hasMore ? { totalCount: firstItems.length } : {}),
     summary,
     truncated: hasOverflow,

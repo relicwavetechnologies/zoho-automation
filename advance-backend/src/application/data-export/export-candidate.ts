@@ -6,10 +6,6 @@ import {
   parseDataExportOfferPayload,
   type DataExportOfferPayload,
 } from './export-offer';
-import { DATA_EXPORT_XLSX_ROW_LIMIT } from './data-export-limits';
-
-export const DATA_EXPORT_SAMPLE_ROW_LIMIT = 100;
-export const DATA_EXPORT_SAMPLE_THRESHOLD_ROWS = DATA_EXPORT_XLSX_ROW_LIMIT;
 export const DATA_EXPORT_CANDIDATE_TTL_MS = DATA_EXPORT_OFFER_TTL_MS;
 
 export const exportCandidateColumnSchema = z.object({
@@ -42,7 +38,7 @@ export const exportPlanRequestSchema = z.object({
       connectionId: z.string().uuid().optional(),
     })
     .strict(),
-  userIntent: z.enum(['explicit_export', 'sample_then_confirm']),
+  userIntent: z.literal('explicit_export'),
 }).strict();
 
 export type ExportPlanRequest = z.infer<typeof exportPlanRequestSchema>;
@@ -72,6 +68,8 @@ export interface DataExportCandidateRecord {
 
 export type DataExportPlanStatus =
   | 'planned'
+  // Legacy states remain readable while pre-cutover sample jobs drain. New
+  // plans can only move from planned to full_queued.
   | 'sample_queued'
   | 'sample_ready'
   | 'full_queued'

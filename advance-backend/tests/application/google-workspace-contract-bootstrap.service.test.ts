@@ -109,6 +109,35 @@ describe('Google Workspace work-contract bootstrap', () => {
     );
   });
 
+  it('preloads formatting before the first call for ordinary spreadsheet editing language', () => {
+    assert.deepEqual(
+      suggestedGoogleWorkspaceNativeTools(
+        'Tidy this existing Google Sheet: bold and center the header, then read back to verify it',
+        ['googleSheets'],
+      ),
+      [
+        { toolId: 'googleSheets', nativeTool: 'format_sheet_range' },
+        { toolId: 'googleSheets', nativeTool: 'resize_sheet_dimensions' },
+        { toolId: 'googleSheets', nativeTool: 'read_sheet_values' },
+      ],
+    );
+  });
+
+  it('preloads conditional formatting only when the requested styling needs it', () => {
+    assert.deepEqual(
+      suggestedGoogleWorkspaceNativeTools(
+        'Beautify this spreadsheet with alternating row shading',
+        ['googleSheets'],
+      ),
+      [
+        { toolId: 'googleSheets', nativeTool: 'modify_sheet_values' },
+        { toolId: 'googleSheets', nativeTool: 'format_sheet_range' },
+        { toolId: 'googleSheets', nativeTool: 'resize_sheet_dimensions' },
+        { toolId: 'googleSheets', nativeTool: 'manage_conditional_formatting' },
+      ],
+    );
+  });
+
   it('loads schemas through one accessible connection without selecting it for execution', async () => {
     const resolutions: Array<Record<string, unknown>> = [];
     const described: string[] = [];

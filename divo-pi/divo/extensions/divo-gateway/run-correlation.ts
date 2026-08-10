@@ -7,8 +7,6 @@ export interface DivoRunCorrelationV1 {
 	threadId: string;
 	runId: string;
 	channel?: "lark";
-	profile?: "teach";
-	teachSessionId?: string;
 	departmentId?: string;
 }
 
@@ -49,10 +47,6 @@ export async function readDivoRunCorrelation(
 		threadId: identifier(record.threadId, "threadId"),
 		runId: identifier(record.runId, "runId"),
 		...(record.channel === "lark" ? { channel: "lark" as const } : {}),
-		...(record.profile === "teach" ? { profile: "teach" as const } : {}),
-		...(typeof record.teachSessionId === "string"
-			? { teachSessionId: identifier(record.teachSessionId, "teachSessionId") }
-			: {}),
 		...(typeof record.departmentId === "string"
 			? { departmentId: identifier(record.departmentId, "departmentId") }
 			: {}),
