@@ -815,6 +815,41 @@ This track is complete only when:
   test holding stale prose in place.
 - Tests: 3,371 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
 
+### Waves 6 and 8: the deleted call surface, and the shared Google preamble — 2026-08-11
+
+- **Wave 6** removed the last `divo_gateway` references, from `shopify.skill.ts`
+  (three) and `aitable.skill.ts` (one). The Shopify rules mattered beyond the
+  name: "call `shopifyOrders` only as a direct tool invocation" exists to keep
+  protected record results on the runtime path that deletes the session and
+  suppresses learning, which a `divo-local` or Bash path does not do. That rule
+  is kept with its reason spelled out. A catalogue-wide guard now fails if
+  `divo_gateway`, `call_tool`, `tools.invoke`, or `payload.args` reappears in
+  any skill body.
+- **Wave 8 is the largest single change in this track.** The shared preamble in
+  `buildProductSkillMarkdown` fell 3,398 → 1,848 bytes, and eleven skills carry
+  it: catalogue **232,155 → 208,154 bytes**, −24,001 bytes, roughly −6,000
+  tokens from one edit. Google family 76,861 → 49,824.
+- What it was duplicating, all from the `googleWorkspace` tool's own
+  `parameterDocs`: reuse the bootstrap `connectionId` and reuse it across
+  describe and call; prefer the schema already in `bootstrap.nativeContracts`
+  and describe once only when absent; `input` may be omitted for describe; the
+  approved-operation list, which is the `nativeTool` enum verbatim; and the
+  canonical argument object, which is the zod schema. Step 7 was
+  `GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance` — **the same constant the
+  tool already emits** in its `input` doc, so eleven copies shipped beside the
+  original.
+- Kept: the no-account OAuth protocol (describe once, wait for
+  `google_workspace_authorization_pending`, end the run), never rotating
+  accounts after an error, the Bash/CLI/curl/SDK refusal, the `divo-local`
+  args-file transport and its no-envelope rule, and the whole reliability
+  section — pending is not completed, never guess resource IDs, verify with a
+  read, satisfy `level: "required"` advisories.
+- Two over-cuts caught by the suite and restored: the `divo_connections`
+  routing rule, which the Google tool cannot state because it governs when to
+  call a *different* tool, and the availability criterion that every line
+  mentioning `divo-local` must carry.
+- Tests: 3,372 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
+
 Append one block per pair:
 
 ```md

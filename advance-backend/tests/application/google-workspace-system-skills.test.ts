@@ -4,7 +4,10 @@ import {
   GOOGLE_WORKSPACE_SYSTEM_SKILLS,
   provisionGoogleWorkspaceSystemSkills,
 } from '../../src/application/skills/google-workspace-system-skills';
-import { GOOGLE_WORKSPACE_TOOL_IDS } from '../../src/application/google/google-workspace-mcp-manifest';
+import {
+  GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT,
+  GOOGLE_WORKSPACE_TOOL_IDS,
+} from '../../src/application/google/google-workspace-mcp-manifest';
 import {
   GOVERNED_DIRECT_ACTION_CRITERION,
   GOVERNED_LOCAL_WORKFLOW_CRITERION,
@@ -43,6 +46,8 @@ describe('Google Workspace system skills', () => {
       GOOGLE_WORKSPACE_TOOL_IDS,
     );
     assert.equal(GOOGLE_WORKSPACE_SYSTEM_SKILLS.length, 11);
+    assert.match(GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance, /OAuth bearer token/);
+    assert.match(GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance, /never send identity fields such as user_google_email/);
     for (const skill of GOOGLE_WORKSPACE_SYSTEM_SKILLS) {
       assert.match(skill.markdown, /Never call Google directly from Bash/);
       assert.match(skill.markdown, /credential-free `divo-local`/);
@@ -50,15 +55,24 @@ describe('Google Workspace system skills', () => {
       assert.match(skill.markdown, new RegExp(GOVERNED_LOCAL_WORKFLOW_CRITERION));
       assert.match(skill.markdown, /governed Divo wrapper, not a Google client/);
       assert.doesNotMatch(skill.markdown, /start_google_auth/);
-      assert.match(skill.markdown, /OAuth bearer token/);
+      /*
+       * The auth contract — OAuth bearer token, never send user_google_email,
+       * no sidecar-local paths in native input — is one constant,
+       * GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance. Every product skill
+       * pasted it as a numbered step while the googleWorkspace tool already
+       * emits the same constant in its `input` parameterDoc, so eleven copies
+       * shipped alongside the original. Asserted below against the tool.
+       */
+      assert.doesNotMatch(skill.markdown, /OAuth bearer token|user_google_email/);
       assert.match(skill.markdown, /result advisory.*level: "required"/);
       assert.match(skill.markdown, /no Google account is accessible/);
       assert.match(skill.markdown, /loading this skill has not sent a card/);
       assert.match(skill.markdown, /Invoke the registered Divo .* capability exactly once/);
       assert.match(skill.markdown, /Call `divo_connections` only when/);
       assert.doesNotMatch(skill.markdown, /`call_tool`|`divo_gateway`/);
-      assert.match(skill.markdown, /perform that describe inside the same persistent Python file through `divo-local`/);
-      assert.match(skill.markdown, /never describe through the registered tool first and then repeat it in the script/);
+      // One describe, on whichever path the work is running. Doing it through
+      // the registered tool and again inside the script pays for it twice.
+      assert.match(skill.markdown, /Never describe through the registered tool and then repeat the describe inside the script/);
       assert.match(skill.markdown, /google_workspace_authorization_pending/);
       assert.match(skill.markdown, /Never invent a Lark operation/);
       assert.doesNotMatch(skill.markdown, /Divo (injects|derives) user_google_email/);

@@ -211,27 +211,14 @@ Use this skill for ${product.description.toLowerCase()}
 
 ## Governed execution
 
-1. Reuse the exact connected/shared Google account already returned by the current unified run bootstrap. Call \`divo_connections\` only when that bootstrap explicitly says Google account discovery is missing. Before any \`op: "call"\`, include the chosen UUID as \`connectionId\`; this is required for RBAC, owner policy, and connection rate limits.
-   If the bootstrap says no Google account is accessible, loading this skill has not sent a card. Invoke the registered Divo ${product.name} capability exactly once with \`{"op":"describe","nativeTool":"${product.tools[0]}"}\`; do not include \`connectionId\`. Only a returned \`google_workspace_authorization_pending\` proves the backend sent the Connect Google card. Then end the current run; OAuth completion starts a fresh run automatically. Never invent a Lark operation, claim a card was sent without that tool result, or send the user to a settings page.
-2. Never choose a model default or rotate through accounts after an error. A text reply is an exact choice only when it uniquely identifies one returned option by number or account email.
-3. Reuse the same exact \`connectionId\` for both \`op: "describe"\` and \`op: "call"\` when the bootstrap provides it. It may be omitted for \`describe\` only when there is no selected account and account resolution is unambiguous. Never use an email address or label itself as \`connectionId\`.
-4. Use only Divo's governed \`${product.toolId}\` route. For ${GOVERNED_DIRECT_ACTION_CRITERION}, call the runtime's governed wrapper directly. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use one persistent Python file and invoke this same tool through credential-free \`divo-local\` only when the work has ${GOVERNED_LOCAL_WORKFLOW_CRITERION}. Never call Google directly from Bash: no Google CLI, curl, browser automation, direct Google API call, local OAuth token, or credential-bearing SDK. \`divo-local\` is a governed Divo wrapper, not a Google client.
-5. If the current run bootstrap already contains the exact \`nativeTool\` input schema, use it and do not call \`describe\` again. Otherwise call \`op: "describe"\` once before that unfamiliar operation. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, perform that describe inside the same persistent Python file through \`divo-local\`; never describe through the registered tool first and then repeat it in the script. \`input\` may be omitted for describe; follow the returned MCP input schema exactly.
-6. Call \`op: "call"\` with the same \`nativeTool\` and its arguments under \`input\`.
-7. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}
-
-## Canonical governed call shape
-
-For a direct ${GOVERNED_DIRECT_ACTION_CRITERION}, call the registered Divo ${product.name} capability with this argument object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID required for call>", "input": {} }\`. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, when the local-workflow criterion above applies, put that same object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. The file holds the argument object alone — a wrapper envelope carrying \`toolId\`, \`args\`, or \`skillId\` is rejected. Keep \`connectionId\` inside that argument object.
-
-## Approved operations
-
-${product.tools.map((tool) => `- \`${tool}\``).join('\n')}
+1. Call \`divo_connections\` only when the run bootstrap explicitly says Google account discovery is missing; otherwise reuse the account it already returned. If the run bootstrap says no Google account is accessible, loading this skill has not sent a card. Invoke the registered Divo ${product.name} capability exactly once with \`{"op":"describe","nativeTool":"${product.tools[0]}"}\` and no \`connectionId\`. Only a returned \`google_workspace_authorization_pending\` proves the backend sent the Connect Google card. Then end the current run; OAuth completion starts a fresh run automatically. Never invent a Lark operation, claim a card was sent without that tool result, or send the user to a settings page.
+2. Never choose a model default or rotate through accounts after an error. A text reply is an exact choice only when it uniquely identifies one returned option by number or account email. Never use an email address or label itself as \`connectionId\`.
+3. Use only Divo's governed \`${product.toolId}\` route. For ${GOVERNED_DIRECT_ACTION_CRITERION}, call the runtime's governed wrapper directly. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use one persistent Python file and invoke this same tool through credential-free \`divo-local\` only when the work has ${GOVERNED_LOCAL_WORKFLOW_CRITERION}. Never call Google directly from Bash: no Google CLI, curl, browser automation, direct Google API call, local OAuth token, or credential-bearing SDK. \`divo-local\` is a governed Divo wrapper, not a Google client.
+4. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, and the local-workflow criterion above applies, put the same argument object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. The file holds the argument object alone — a wrapper envelope carrying \`toolId\`, \`args\`, or \`skillId\` is rejected. Keep \`connectionId\` inside that argument object. Never describe through the registered tool and then repeat the describe inside the script.
 ${productWorkflow}
 
 ## Reliability and safety
 
-- The operation contract is pinned to Workspace MCP ${GOOGLE_WORKSPACE_MCP_SOURCE.version}. Do not invent operations outside the list above.
 - Preserve Divo RBAC, sharing, approval, and audit results. Pending or denied is not completed.
 - Never guess Google resource IDs. Discover or read the target before an ambiguous mutation.
 - Verify important content changes with a read operation and return canonical Google URLs from successful responses.
