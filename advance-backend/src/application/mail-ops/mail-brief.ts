@@ -220,6 +220,18 @@ const RULE_MAX    = 60;
 
 export interface MailBriefDeps {
   readonly model: LanguageModel;
+  /**
+   * Where the member manages their mail rules, e.g. `https://divo.example.com`.
+   *
+   * Passed in rather than read from the environment here, on the same reasoning
+   * every other link in this codebase follows: a composer that reaches for
+   * `process.env` cannot be rendered in a test or a preview without one.
+   *
+   * Omitted, the card simply carries no button. A brief with a dead link is
+   * worse than a brief with none — this is a standing report a member reads
+   * twice a day, and a button that goes nowhere teaches them to stop pressing.
+   */
+  readonly appBaseUrl?: string;
 }
 
 export interface MailBrief {
@@ -273,7 +285,32 @@ interface BriefContent {
   readonly aside: string | null;
   /** `**Rule name** — 3 passed on, 2 held back`, already composed. */
   readonly handled: readonly string[];
+  /** Where "Manage mail" goes, or `null` when the card carries no button. */
+  readonly manageUrl: string | null;
 }
+
+/**
+ * The rules page a member manages their mail from.
+ *
+ * Built here rather than at the call site so the path lives next to the card
+ * that links to it — if the route moves, one string moves with it.
+ *
+ * A base URL that does not parse yields no button rather than a broken one.
+ * This is deployment configuration, and a misconfigured environment should cost
+ * a button, not the whole brief.
+ */
+const manageMailUrl = (appBaseUrl: string | undefined): string | null => {
+  if (!appBaseUrl?.trim()) return null;
+  try {
+    const url = new URL('/me/mail', appBaseUrl.trim());
+    // Only over HTTP(S). A `javascript:` or `data:` base would put a scheme of
+    // somebody else's choosing behind a button inside Divo's own card.
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+};
 
 const GREY = (text: string): string => `<font color='grey'>${text}</font>`;
 
@@ -371,6 +408,31 @@ const briefBody = (content: BriefContent): Array<Record<string, unknown>> => {
     margin: '2px 0 0 0',
   });
 
+  /*
+   * The one thing a member ever wants to do from this card.
+   *
+   * Every question the brief raises — why did that rule hold it, why is this
+   * mailbox paused, can I stop being told about newsletters — is answered on
+   * the rules page and nowhere else, and until now the card named the problem
+   * and left them to find it. `default` rather than `primary`: the brief is a
+   * report, not a request, and a filled button would read as one.
+   *
+   * Below the footer on purpose. It is a door out of the card, not part of what
+   * the card says, and above the provenance line it would compete with the mail
+   * for the same first glance.
+   */
+  if (content.manageUrl) {
+    elements.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: 'Manage mail' },
+      type: 'default',
+      size: 'small',
+      width: 'default',
+      margin: '10px 0 0 0',
+      behaviors: [{ type: 'open_url', default_url: content.manageUrl }],
+    });
+  }
+
   return elements;
 };
 
@@ -418,15 +480,37 @@ const briefCard = (content: BriefContent): string =>
  * of that line — it is a body block now, so repeating it here would state it
  * twice in a rendering whose whole purpose is that it cannot drift from the
  * card.
+ *
+ * The button becomes a markdown link rather than being filtered out. Dropping
+ * it would be exactly the drift this shape exists to prevent: a reader on a
+ * surface without cards would be told what their rules did and never told where
+ * to change them.
  */
 const briefText = (content: BriefContent): string => [
   `**${BRIEF_BADGE}**`,
-  ...briefBody(content)
-    .filter(element => element.tag === 'markdown')
-    .map(element => String(element.content).replace(/<\/?font[^<>]*>/g, '')),
+  ...briefBody(content).flatMap(element => {
+    if (element.tag === 'markdown') {
+      return [String(element.content).replace(/<\/?font[^<>]*>/g, '')];
+    }
+    if (element.tag === 'button') {
+      const label = (element['text'] as { content?: string } | undefined)?.content ?? '';
+      const url = (element['behaviors'] as Array<{ default_url?: string }> | undefined)
+        ?.[0]?.default_url;
+      return url ? [`[${label}](${url})`] : [];
+    }
+    // `hr` and anything added later. A separator is card structure, not
+    // something the brief says, and inventing a text form for it would put
+    // punctuation into a log line.
+    return [];
+  }),
 ].join('\n\n');
 
 export function createMailBriefComposer(deps: MailBriefDeps) {
+  // Resolved once, at construction. The link is the same on every brief this
+  // process sends, and validating a fixed string twice a day per member is work
+  // that buys nothing.
+  const manageUrl = manageMailUrl(deps.appBaseUrl);
+
   /**
    * Which of these want something. Returns `null` when the model could not say,
    * which is different from "none of them" and is rendered differently.
@@ -652,6 +736,7 @@ export function createMailBriefComposer(deps: MailBriefDeps) {
       notes,
       aside: asides.length > 0 ? asides.join(' ') : null,
       handled,
+      manageUrl,
     };
 
     return {

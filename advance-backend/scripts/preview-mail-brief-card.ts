@@ -106,6 +106,7 @@ async function main() {
   for (const state of STATES) {
     const compose = createMailBriefComposer({
       model: modelReturning(state.modelText) as never,
+      appBaseUrl: process.env['APP_BASE_URL'] ?? 'https://divo.outreachdeal.com',
     });
     const brief = await compose(state.window);
     const sent = await client.sendCardToChat(chatId, brief.card);
