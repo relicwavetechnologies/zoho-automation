@@ -12,7 +12,10 @@ describe('retireDataExportCapability', () => {
       skill: {
         findMany: async ({ where }: any) => {
           if (where?.isSystem === true) {
-            return [{ id: 'retired-system', companyId: 'company-b' }];
+            return [
+              { id: 'retired-system', companyId: 'company-b' },
+              { id: 'stale-system', companyId: 'company-a' },
+            ];
           }
           affectedSkillWhere = where;
           return [
@@ -20,12 +23,24 @@ describe('retireDataExportCapability', () => {
               id: 'system-router',
               companyId: 'company-a',
               isSystem: true,
+              slug: 'system-router',
+              markdown: 'Current direct workflow.',
               toolIds: ['dataExport', 'zohoBooks'],
+            },
+            {
+              id: 'stale-system',
+              companyId: 'company-a',
+              isSystem: true,
+              slug: 'data-processing',
+              markdown: 'Route this work through secure-data-export.',
+              toolIds: [],
             },
             {
               id: 'custom-recipe',
               companyId: 'company-b',
               isSystem: false,
+              slug: 'custom-recipe',
+              markdown: 'Use dataExport for this workflow.',
               toolIds: ['dataExport'],
             },
           ];
@@ -69,7 +84,6 @@ describe('retireDataExportCapability', () => {
       OR: [
         { toolIds: { has: 'dataExport' } },
         {
-          isSystem: false,
           status: { not: 'archived' },
           OR: [
             { markdown: { contains: 'dataExport', mode: 'insensitive' } },
@@ -107,7 +121,7 @@ describe('retireDataExportCapability', () => {
     );
     assert.deepEqual(result, {
       registeredToolsDeleted: 1,
-      systemSkillsDeleted: 1,
+      systemSkillsDeleted: 2,
       skillsRewritten: 2,
       companiesInvalidated: 2,
     });

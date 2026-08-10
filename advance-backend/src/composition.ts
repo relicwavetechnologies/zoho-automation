@@ -1979,6 +1979,7 @@ export async function buildContainer(
 
   const composeMailBrief = createMailBriefComposer({
     model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+    appBaseUrl: env.APP_BASE_URL,
   });
 
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));

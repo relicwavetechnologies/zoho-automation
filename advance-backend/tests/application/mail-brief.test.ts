@@ -250,7 +250,14 @@ describe('composing a brief', () => {
         subtitle?: { content: string };
         text_tag_list?: Array<{ text: { content: string } }>;
       };
-      body: { elements: Array<{ tag: string; content?: string }> };
+      body: {
+        elements: Array<{
+          tag: string;
+          content?: string;
+          text?: { content: string };
+          behaviors?: Array<{ type: string; default_url?: string }>;
+        }>;
+      };
     };
   };
 
@@ -497,6 +504,61 @@ describe('composing a brief', () => {
     assert.equal(cardVerdict(brief.card), 'Divo could not read your mail this time');
     assert.match(card.config.summary?.content ?? '', /could not read your mail/);
     assert.doesNotMatch(card.config.summary?.content ?? '', /Nothing is waiting/);
+  });
+
+  /*
+   * Every question this card raises is answered on the rules page and nowhere
+   * else: why a rule held something, why a mailbox is paused, how to stop being
+   * told about newsletters. Without the button the brief names the problem and
+   * leaves the member to go looking for where to fix it.
+   */
+  it('offers a way through to the rules page', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[]}') as never,
+      appBaseUrl: 'https://divo.example.com',
+    });
+
+    const brief = await compose(window);
+    const elements = readCard(brief.card).body.elements;
+    const button = elements.find(e => e.tag === 'button');
+    assert.equal(button?.text?.content, 'Manage mail');
+    assert.equal(
+      button?.behaviors?.[0]?.default_url,
+      'https://divo.example.com/me/mail',
+    );
+    assert.equal(
+      elements.at(-1)?.tag,
+      'button',
+      'a door out of the card sits below what the card says',
+    );
+    // The text rendering has no buttons, so the link has to survive as a link —
+    // otherwise a surface without cards is told everything except where to act.
+    assert.match(brief.text, /\[Manage mail\]\(https:\/\/divo\.example\.com\/me\/mail\)/);
+  });
+
+  /*
+   * A brief with a dead button is worse than one with none: this is a standing
+   * report read twice a day, and a button that goes nowhere teaches a member to
+   * stop pressing the ones that work. A base URL is deployment configuration,
+   * so getting it wrong must cost a button rather than the whole brief.
+   */
+  it('drops the button rather than pointing it somewhere useless', async () => {
+    for (const appBaseUrl of [undefined, '', '   ', 'not a url', 'javascript:alert(1)']) {
+      const compose = createMailBriefComposer({
+        model: modelReturning('{"wants":[]}') as never,
+        ...(appBaseUrl === undefined ? {} : { appBaseUrl }),
+      });
+
+      const brief = await compose(window);
+      assert.equal(
+        readCard(brief.card).body.elements.some(e => e.tag === 'button'),
+        false,
+        `${JSON.stringify(appBaseUrl)} must not produce a button`,
+      );
+      assert.doesNotMatch(brief.text, /Manage mail/);
+      // Still a brief. The mail is the point; the button is a convenience.
+      assert.match(cardMarkdown(brief.card), /Vendor invoices → Finance/);
+    }
   });
 
   /*
