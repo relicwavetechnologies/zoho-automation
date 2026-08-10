@@ -133,17 +133,19 @@ describe('governed local-workflow instruction contract', () => {
 
   it('uses provider candidates for exports and native Python for bespoke work', () => {
     const dataRouter = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'data-router')!;
-    assert.match(dataRouter.markdown, /Complete provider export with an `exportCandidate`/);
-    assert.match(dataRouter.markdown, /backend owns\s+paging, company-account destination policy, exact invoker sharing/s);
-    assert.match(dataRouter.markdown, /scripted workflow for bespoke calculations, transformations, joins/);
+    assert.match(dataRouter.markdown, /`exportCandidate` →\s+`secure-data-export`/s);
+    assert.match(dataRouter.markdown, /company-account\s+destination policy, exact invoker sharing/s);
+    assert.match(dataRouter.markdown, /Calculate, group, join, reshape, or move data/);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /source skill exposes real page or\s+continuation fields/);
     assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /how data of any size is processed/);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /supported source tools return bounded chat evidence plus an\s+`exportCandidate`/s);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /`exportCandidate` when their recipe is replayable/);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /`op=plan`/i);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Use a direct `dataExport` recipe only.*backend-replayable source/s);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Airtable MCP is not\s+a bulk-export source/s);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Menhood, Zoho Books, and Zoho CRM governed exports/);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /administrator-approved company Google account/);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /never ask for or choose a personal Google account/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /direct recipe only when a backend-replayable source/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Airtable MCP is not a bulk-export source/);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Menhood, Zoho Books, and Zoho CRM/);
+    // The company-owns/invoker-reads policy is stated once, by the registered
+    // `dataExport` tool. What the skill keeps is the part no tool contract can
+    // express: which *other* tools Divo must not reach for instead.
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Never start personal Google OAuth, choose an account, or call a Google\s+permission tool/s);
   });
 });

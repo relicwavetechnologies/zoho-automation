@@ -10,8 +10,8 @@ describe('shy answer + model-planned export guardrails', () => {
   it('steers Semrush toward one comparison table and op=plan export without pickers', () => {
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /backlinks_comparison/i);
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Do not also call.*domain_overview.*per domain/i);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /table you showed/i);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Never list.*dataset picker/i);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /in your last answer/i);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /dataset picker table/i);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /op=plan/i);
   });
 

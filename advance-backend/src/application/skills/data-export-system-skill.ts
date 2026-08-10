@@ -3,14 +3,13 @@ import {
   provisionDivoProductivitySystemSkill,
   type DivoProductivitySystemSkillDefinition,
 } from './divo-productivity-system-skills';
-import {
-  DATA_EXPORT_CSV_ROW_LIMIT,
-  DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT,
-  DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT,
-  DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT,
-  DATA_EXPORT_XLSX_CELL_LIMIT,
-  DATA_EXPORT_XLSX_ROW_LIMIT,
-} from '../data-export/data-export-limits';
+/*
+ * Only the Menhood spool cap is imported. The Excel/Sheets/CSV row and cell
+ * caps are already stated by the registered `dataExport` tool's own parameter
+ * docs, and a second copy here is one that can drift from the constants the
+ * worker actually enforces.
+ */
+import { DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT } from '../data-export/data-export-limits';
 
 export const DATA_EXPORT_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   slug: 'secure-data-export',
@@ -18,98 +17,91 @@ export const DATA_EXPORT_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   summary: `Complete an opaque backend-replayable provider exportCandidate through Divo's company-owned export destination.`,
   markdown: `# Secure Data Export
 
-In Lark, supported source tools return bounded chat evidence plus an
-\`exportCandidate\` when the same backend-held recipe can be replayed as a
-private file. This includes Shopify analytics, order lists, and customer lists
-(\`shopify_snapshot\`) as well as
-Semrush, OMS, Menhood, Zoho Books, and Zoho CRM governed exports. Preserve that opaque candidate and do not mention its ID to the
-member. If the member asks for Excel/XL/XLSX, CSV, Sheet, all rows, full data,
-or an export artifact, plan the export from the **table you showed** in your
-last answer:
+Finish a provider export the backend can replay. Shopify (\`shopify_snapshot\`),
+Semrush, OMS, Menhood, Zoho Books, and Zoho CRM results carry an
+\`exportCandidate\` when their recipe is replayable.
 
-1. Export only after the member names a format or asks for a file.
-2. Identify which \`exportCandidate\` matches that table — not every tool call
-   in the run.
-3. If unsure, call \`dataExport\` \`op=list_candidates\` (scope \`run\` when the
-   answer spans this turn), then \`op=plan\` with one dataset by default.
-4. Use multiple \`datasets[]\` only when the member explicitly asked for
-   multiple tables earlier in the thread; assign \`tabName\` per dataset for
-   Sheet or Excel.
-5. Never list \`exportCandidate\` IDs, shape keys, or internal dataset picker
-   tables to the member.
-6. Tell the member plainly: "Exporting [what they saw] to Excel/Sheet — Divo
-   will send the file here when ready."
-7. If \`op=plan\` returns \`ambiguous\`, repair the plan (one dataset, or explicit
-   \`tabName\` per dataset) — do not dump candidates on the member.
+## Use when
 
-Do not rerun the source query, page source rows manually, build a local file,
-call Google tools, or reconstruct provider filters.
+The member names a format or asks for a file — Excel/XL/XLSX, CSV, Sheet, "all
+rows", "full data", "the whole thing". Not before that.
 
-If a source result has \`exportCandidate\` but the member did not ask for a
-file, the provider skill may end with one concise follow-up such as “Want me to
-export this to Google Sheets, Excel, or CSV?” Do not call \`dataExport\` until
-the member says yes or names a format. Skip the follow-up for empty results,
-errors, one-number answers, an explicit "do not export / not now / chat only"
-instruction, or sources that have no backend-replayable export candidate.
+If they asked for a file without naming a format, ask which of Sheet, Excel, or
+CSV before planning. A plan has no "auto": you would be choosing for them, and
+Excel is capped far lower than CSV, so a quiet guess is how a large result
+arrives truncated in a format nobody picked.
 
-\`dataExport op=plan\` is the only place that decides whether to queue the full
-export through the configured company Google account or block an unsafe plan.
-A valid explicit plan queues the full
-export immediately; do not create a sample or ask for another confirmation. If it returns
-\`unavailable\`, report that an administrator must reconnect or configure the
-company export account; never start personal Google OAuth for an export. The final artifact
-is created in Google Drive/Sheets; the database stores only the control receipt
-and replay plan.
+## Workflow
 
-When \`dataExport\` queues a full export, say it has started or been
-queued; do not say the export is finished. The completion or failure card is
-the source of truth for the final artifact. If the member asked for all rows or
-a complete dataset, still say the queued export will run under the selected
-format caps until the completion card reports final row coverage. If
-\`dataExport\` or the final card
-names a permanent source problem such as exhausted API units, rejected provider
-credentials, or an expired web session, explain that reason and do not retry
-the same export manually.
+1. Export the table you actually showed in your last answer, not every tool call
+   in the run. Call \`op=list_candidates\` (scope \`run\` when the answer spans this
+   turn) only when which table is meant is genuinely unclear.
+2. \`op=plan\` with one dataset. Use several \`datasets[]\` only when the member
+   asked for several tables earlier in the thread, and give each a \`tabName\`.
+3. Say plainly what is being exported and where: "Exporting [what they saw] to
+   Excel — Divo will send the file here when it is ready."
+4. On \`ambiguous\`, repair your own plan. Never show the member a candidate ID, a
+   shape key, or a dataset picker table.
 
-The file and the chat answer are not the same artifact, and you must not
-describe them as if they were. Answer in whatever shape actually helps —
-a summary, a ranking, a handful of highlighted rows — while the export carries
-the underlying backend recipe behind that answer. Never say the file holds only
-what is shown, and never invent a total row count: Divo reports the measured
-rows, cap cause, and omitted rows after the worker runs.
+Never rerun the source query, page the source yourself, build the file locally,
+or call Google tools to produce the artifact.
 
-Use a direct \`dataExport\` recipe only for a backend-replayable source when no
-provider candidate was returned and the exact backend-resolved source
-identifiers are already available. Never construct provider identifiers,
-filters, account ownership, or rows from the conversation. Airtable MCP is not
-a bulk-export source: use it only for discovery or a bounded preview. If an
-Airtable request has no backend REST/connector replay path, ask for a bounded
-preview or block the full export clearly.
+## Offering an export
 
-Format limits are explicit: Excel ${DATA_EXPORT_XLSX_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_XLSX_CELL_LIMIT.toLocaleString('en-IN')} cells, Google Sheets ${DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT.toLocaleString('en-IN')} cells, and CSV/auto ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows. Menhood also stops before its spool exceeds ${DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT} MB. If the user asks for more or every row, state the applicable limit. Never claim that a capped artifact is complete; the completion card says when source rows were omitted.
+When a result carries \`exportCandidate\` and the member did not ask for a file,
+the provider skill may end with one short offer: "Want this as a Google Sheet,
+Excel, or CSV?" Skip the offer for an empty result, an error, a one-number
+answer, an explicit "not now" or "chat only", and any source with no replayable
+candidate.
 
-1. Keep a provider \`exportCandidate\` opaque and let \`dataExport op=plan\`
-   complete it; never reconstruct its query, pagination, filters, account, or
-   rows.
-2. One direct recipe exports exactly one dataset. If a supported backend export
-   needs a table the member did not name, list the table names and ask one
-   concise question. Never fan out one request into separate table exports.
-3. Use a direct recipe only when the exact backend-resolved source identifiers
-   are already available and the source did not provide a candidate. Never use
-   Airtable MCP pagination as the replay mechanism for a full export.
-4. A recipe is replayed later, so every filter that narrowed your answer must
-   also be in it. Zoho Books bank transactions are scoped per account: pass
-   \`accountId\` when reading them, and a status filter without one is refused
-   rather than silently widened to every account in the organisation.
-5. Use \`destination.format="google_sheet"\` for Sheet, \`"xlsx"\` for Excel,
-   and \`"csv"\` for CSV. If the user did not name a format, ask which format
-   they want before planning.
-6. For mapping, filtering, renaming, flattening, or calculated columns, provide a row transform. It receives \`row\`, \`index\`, and \`args\`; return one object, an array of objects, or \`null\`. A transform shapes rows; it is not a substitute for a source filter the provider supports.
-7. Never fetch source pages manually, paste bulk rows into model context, or invoke Google Drive/Sheets directly for the export.
+## The file and the chat answer are different artifacts
 
-Every new export is created in the administrator-approved company Google account. The backend derives that account from company policy and grants reader access only to the verified invoking user; never ask for or choose a personal Google account, owner email, recipient email, or connection ID. Access changes are not supported. If asked to share an export with another user, group, department, company, domain, or public link, refuse clearly; do not call Google permission tools.
+Answer in whatever shape actually helps — a summary, a ranking, a few
+highlighted rows. The export carries the backend recipe behind that answer, so
+it normally holds more than you displayed. Never say the file contains only what
+is on screen, and never state a total row count of your own: the completion card
+reports measured rows, cap cause, and omitted rows.
 
-The backend re-checks dataExport permission, source read permission, invoker access to the exact source connection, the exact selected Google destination, the resulting owner-or-reader access, and artifact integrity.`,
+## Queued is not finished
+
+A queued export has started. The completion or failure card is the only source
+of truth for the final artifact, including whether the format cap omitted rows,
+so never call the export complete before it arrives. Menhood carries one cap the
+tool does not name: it stops before its spool exceeds ${DATA_EXPORT_MENHOOD_SPOOL_MB_LIMIT} MB.
+Some failures arrive before any card does: \`op=plan\` can come back \`blocked\`
+with a reason of its own, and a revoked grant or a stale replay candidate never
+produces a card at all. When either \`dataExport\` itself or the card names a
+permanent problem — a revoked permission, a stale candidate, exhausted API
+units, rejected provider credentials, an expired web session — explain that
+reason and do not retry the same export by hand.
+
+## Direct recipes
+
+Use a direct recipe only when a backend-replayable source returned no candidate
+and the exact backend-resolved identifiers are already in hand. Never build
+provider identifiers, filters, account ownership, or rows out of the
+conversation, and never fan one request out into separate per-table exports.
+
+One direct recipe exports exactly one dataset. If the source needs a table the
+member never named, list the table names and ask one short question rather than
+picking one.
+
+A recipe is replayed later, so every filter that narrowed your answer must also
+be in it. Zoho Books bank transactions are scoped per account: pass
+\`accountId\`, because a status filter without one is refused rather than
+silently widened to every account in the organisation.
+
+Airtable MCP is not a bulk-export source. Use it for discovery or a bounded
+preview only; when an Airtable request has no backend REST/connector replay
+path, offer a bounded preview or say plainly that the full export is blocked.
+
+## Access is not yours to arrange
+
+Never start personal Google OAuth, choose an account, or call a Google
+permission tool for an export. If \`op=plan\` reports the company export
+destination is unavailable, say an administrator must configure or reconnect it.
+If asked to share an export with another person, group, department, company,
+domain, or a public link, refuse plainly: access is fixed when the file is made.`,
   toolIds: ['dataExport'],
   tags: ['divo', 'data', 'export', 'google-drive', 'google-sheets'],
   aliases: [

@@ -9,6 +9,7 @@
     "prestart": "pnpm capabilities:reconcile",
     "start": "node --import tsx src/index.ts",
     "capabilities:reconcile": "tsx scripts/reconcile-capabilities.ts",
+    "skills:inventory": "tsx scripts/skill-inventory.ts",
     "build": "prisma generate",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",

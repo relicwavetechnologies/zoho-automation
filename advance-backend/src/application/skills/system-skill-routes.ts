@@ -106,74 +106,48 @@ The Shopify specialist is read-only and routes every request through governed Di
     summary: 'Routes data work between a scripted workflow, a governed export, and reading a file already in the workspace.',
     markdown: `# Data Work Router
 
-Choose the exact approved specialist returned by this router.
+Choose exactly one specialist below. Loading this router is never permission to
+process or export anything.
 
-- One bounded provider lookup or preview → load that provider's specialist and
-  keep the response in chat.
-- Complete provider export with an \`exportCandidate\` → \`secure-data-export\`.
-  Keep the handle opaque and use \`dataExport op=plan\`; the backend owns
-  paging, company-account destination policy, exact invoker sharing, and
-  measured coverage.
-- Produce a governed complete-data artifact without a provider candidate →
-  \`secure-data-export\`. Its direct recipes are only for backend-replayable
-  sources with exact backend-resolved identifiers. Airtable MCP pagination is
-  not a full-export source.
-- Fetch across pages to calculate, group, join, reshape, or move data between
-  connected products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. Write one script,
-  run it, edit and rerun it.
-- Read, inspect, or look up a row or value from an exact pasted
-  \`https://docs.google.com/spreadsheets/d/...\` URL or
-  \`https://drive.google.com/file/d/...\` URL → \`google-drive\` first. Use
-  \`get_drive_file_content\` with the file ID from the URL or from
-  \`RECENT DIVO EXPORTS\` \`artifactUrl\`. Never answer from an earlier
-  provider query when the member references that link.
-- Edit as a native Sheet, add columns, or convert an Excel workbook to Google
-  Sheet from a pasted \`spreadsheets/d/...\` or \`drive.google.com/file/d/...\`
-  URL → \`google-sheets\`. Resolve the reference first. A Sheet URL alone proves
-  only metadata/access, so ask what the member wants to do next. A resolved Excel
-  workbook prepares the Lark confirmation for a new Google Sheet copy; never
-  request a download URL or import it directly.
-- Read or analyse a file that is already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
+- Bounded lookup or preview → that provider's specialist; keep the answer in chat.
+- The member wants a file, or a result carried an \`exportCandidate\` →
+  \`secure-data-export\`. The backend owns paging, the company-account
+  destination policy, exact invoker sharing, and measured coverage.
+- Calculate, group, join, reshape, or move data across pages or between
+  connected products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. One script: run it,
+  edit it, rerun it.
+- Read or look up a value from a pasted
+  \`https://docs.google.com/spreadsheets/d/...\` or
+  \`https://drive.google.com/file/d/...\` URL → \`google-drive\` first, with
+  \`get_drive_file_content\` and the file ID from that URL or from a
+  \`RECENT DIVO EXPORTS\` \`artifactUrl\`. Never answer a pasted link from an
+  earlier provider query.
+- Edit as a native Sheet, add columns, or convert an Excel workbook to a Google
+  Sheet from such a URL → \`google-sheets\`. Resolve the reference first: a URL
+  alone proves only access, so ask what the member wants done next, and never
+  request a download URL or import the workbook directly.
+- Read or analyse a file already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
 
-Use the scripted workflow for bespoke calculations, transformations, joins, or
-related cross-product work. Use the governed export for a provider-backed file
-whenever its result contains \`exportCandidate\`. Neither route carries a record
-set through the conversation.
+An opaque handle belongs to one route, and is never turned into provider IDs,
+source rows, or Python input:
 
-Keep each opaque handle in its owning route:
-
-- legacy \`preview.exportOfferId\` → Divo's verified Lark final-response card, then
-  \`dataExport\` \`op=confirm\` for an explicit later natural-language format;
-- \`exportCandidate\` → \`dataExport\` \`op=plan\`; a valid explicit plan queues
-  the full governed export without a sample or another confirmation;
-  never rebuild the provider request.
+- \`exportCandidate\` → \`secure-data-export\`.
+- a legacy \`preview.exportOfferId\` → Divo's verified Lark final-response card,
+  then \`secure-data-export\`. Never rebuild one as an \`exportCandidate\`.
 - \`destinationReferenceId\` or \`resourceRef\` for a **google_sheet** →
-  \`google-sheets\` for the exact resolved or recent Sheet.
-- \`RECENT DIVO EXPORTS\` **xlsx** or **csv** read/inspect → \`google-drive\`
-  with \`get_drive_file_content\` and the file ID from \`artifactUrl\`.
-- \`exportJobId\` → status and safe retry/resume only.
+  \`google-sheets\`.
+- an **xlsx** or **csv** under \`RECENT DIVO EXPORTS\` → \`google-drive\`.
+- \`exportJobId\` → status and safe retry or resume only.
 
-Never turn one of these handles into provider IDs, source rows, or Python input.
+Examples, kept because each one is a boundary the bullets alone decide slowly:
 
-Examples:
-
-- “Show me our best keywords” → research specialist and bounded preview.
-- “Put the complete keyword result in a Sheet” → use the provider
-  \`exportCandidate\` with \`dataExport op=plan\`.
-- “Put every Zoho invoice in a Sheet” → exact Zoho candidate, then
-  \`secure-data-export\` with \`dataExport op=plan\`.
-- “Combine invoices with Airtable owners and calculate totals” → relevant
-  provider specialists plus \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`.
-- A pasted spreadsheet or Drive file URL to **read or inspect** → \`google-drive\`
-  and \`get_drive_file_content\`.
-- A Sheet URL by itself with no read intent yet → \`google-sheets\`, resolve
-  metadata, then ask what the member wants to do.
+- “Show me our best keywords” → research specialist, answer in chat.
+- “Put the complete keyword result in a Sheet” → the same result's
+  \`exportCandidate\`, through \`secure-data-export\`.
+- “Combine invoices with Airtable owners and calculate totals” → the provider
+  specialists plus \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`, not an export.
 - “Add a Notes column to that Sheet” after a Divo export → \`google-sheets\`
-  with its recent opaque resource reference and read-back verification.
-- No company Google export destination → report that an administrator must
-  configure or reconnect it; never select or connect a personal account for an export.
-
-Never treat this router as permission to process or export data. Load the specialist first.`,
+  with the recent opaque resource reference and a read-back check.`,
     toolIds: [],
     tags: ['data', 'router', 'processing', 'analysis', 'export', 'python'],
     aliases: [

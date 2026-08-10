@@ -173,23 +173,113 @@ between “provider returned no row” and “measured zero.”
 
 ## 7. Phase 0 — inventory before rewriting
 
-- [ ] Wait until the current company-export-policy slice is committed; the live
+- [x] Wait until the current company-export-policy slice is committed; the live
       worktree already modifies several skill source files.
-- [ ] Enumerate every seeded system skill dynamically from the definitions.
-- [ ] Record slug, human title, summary, aliases, tags, tool IDs, router edges,
-      Markdown bytes, and current DB revision.
+      *Landed 2026-08-10 as `72e32448d` and `1042e01ec`.*
+- [x] Enumerate every seeded system skill dynamically from the definitions.
+- [x] Record slug, human title, summary, aliases, tags, tool IDs, router edges,
+      and Markdown bytes. **Current DB revision is not recorded** — that needs
+      the Development tunnel and belongs to the first reconciliation, not here.
 - [ ] Classify every paragraph as routing, domain semantics, workflow,
       completion proof, backend-owned policy, duplicated schema, historical
-      explanation, or contradiction.
+      explanation, or contradiction. *Done per pair, recorded in §15; a
+      catalogue-wide paragraph pass ahead of the rewrites was not attempted.*
 - [ ] Map every skill to at least one natural prompt and expected tool sequence.
 - [ ] Map every tool-bearing skill to the actual current typed contract.
+      *Done for `dataExport` only, in Wave 1.*
 - [ ] Record capability gaps in the non-skills plan instead of writing imagined
-      workarounds.
+      workarounds. *None found yet.*
 - [ ] Capture a baseline: prompt tokens, skill reads, tool calls, corrections,
       time, and final-answer truthfulness for the first two pairs.
+      *Not captured — needs the local harness.*
 
-Deliverable: an inventory table appended to this file or a linked evidence
-file, with no skill body changed yet.
+### 7.1 Inventory, 2026-08-10
+
+54 seeded system skills, 256,710 bytes of Markdown, roughly 64,000 tokens if
+every body were read. Sizes are heavily skewed: the top twelve skills hold about
+half the catalogue and the smallest twenty hold under 12,000 bytes together. The
+catalogue is not the problem; a dozen files are.
+
+Regenerate with the read-only script recorded in §16.
+
+| slug | family | bytes | ~tok | tools | aliases | routed by |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| mail-ops | mail | 16627 | 4157 | 1 | 12 | google-workspace-router |
+| google-sheets | google | 14871 | 3718 | 1 | 12 | google-workspace-router, data-router |
+| airtable-core | provider | 12960 | 3240 | 1 | 3 | airtable-router |
+| shopify-commerce | provider | 12432 | 3108 | 3 | 10 | shopify-router |
+| menhood-data | data | 11595 | 2899 | 1 | 14 | airtable-router |
+| google-gmail | google | 10135 | 2534 | 1 | 3 | google-workspace-router |
+| divo-python-automation | productivity | 9110 | 2278 | 0 | 9 | data-router |
+| schedule-divo-work | productivity | 8375 | 2094 | 0 | 15 | google-workspace-router, work-automation-router |
+| divo-semrush-seo-research | research | 8020 | 2005 | 1 | 4 | research-router |
+| google-drive | google | 7858 | 1965 | 1 | 5 | google-workspace-router, data-router |
+| zoho-books-read-analysis | zoho | 7769 | 1942 | 1 | 17 | finance-zoho-router |
+| zoho-books-invoice | zoho | 7385 | 1846 | 1 | 15 | finance-zoho-router |
+| google-docs | google | 7073 | 1768 | 1 | 2 | google-workspace-router |
+| zoho-books-bill | zoho | 6857 | 1714 | 2 | 7 | finance-zoho-router |
+| secure-data-export | data | 6638 | 1660 | 1 | 6 | data-router |
+| google-calendar | google | 6606 | 1652 | 1 | 3 | google-workspace-router |
+| google-contacts | google | 6402 | 1601 | 1 | 2 | google-workspace-router |
+| read-understand-files | files | 6146 | 1537 | 0 | 10 | data-router, files-router |
+| google-appscript | google | 5319 | 1330 | 1 | 2 | google-workspace-router |
+| google-slides | google | 5110 | 1278 | 1 | 2 | google-workspace-router |
+| google-chat | google | 5060 | 1265 | 1 | 2 | google-workspace-router |
+| google-forms | google | 5039 | 1260 | 1 | 2 | google-workspace-router |
+| google-tasks | google | 5026 | 1257 | 1 | 2 | google-workspace-router |
+| divo-oms-site-inventory | research | 4913 | 1228 | 1 | 7 | research-router |
+| airtable-automation-ops | provider | 4552 | 1138 | 2 | 3 | airtable-router |
+| airtable-schema-ops | provider | 4366 | 1092 | 2 | 3 | airtable-router |
+| aitable-datasheets | provider | 3922 | 981 | 1 | 3 | aitable-router |
+| data-router | routing | 3907 | 977 | 0 | 14 | (is a router) |
+| zoho-books-money | zoho | 3855 | 964 | 1 | 12 | finance-zoho-router |
+| create-edit-files | files | 3696 | 924 | 0 | 8 | files-router |
+| share-memory | memory | 3601 | 900 | 0 | 0 | memory-router |
+| lark-documents | lark | 3529 | 882 | 1 | 0 | lark-router |
+| divo-presentations | productivity | 2648 | 662 | 0 | 7 | **UNROUTED** |
+| zoho-bill-notify-accounts | zoho | 2570 | 643 | 3 | 3 | finance-zoho-router |
+| zoho-crm-read-analysis | zoho | 2365 | 591 | 1 | 5 | finance-zoho-router |
+| aitable-fields | provider | 2124 | 531 | 1 | 2 | aitable-router |
+| airtable-router | routing | 1747 | 437 | 0 | 17 | (is a router) |
+| lark-tasks | lark | 1708 | 427 | 1 | 0 | lark-router |
+| lark-router | lark | 1648 | 412 | 0 | 4 | (is a router) |
+| lark-calendar | lark | 1520 | 380 | 1 | 0 | lark-router |
+| lark-messaging | lark | 1471 | 368 | 1 | 0 | lark-router |
+| finance-zoho-router | zoho | 1387 | 347 | 0 | 38 | (is a router) |
+| google-workspace-router | mail | 1379 | 345 | 0 | 8 | (is a router) |
+| lark-base | lark | 1274 | 319 | 1 | 0 | lark-router |
+| lark-meetings | lark | 1264 | 316 | 1 | 0 | lark-router |
+| lark-contacts | lark | 917 | 229 | 1 | 5 | lark-router |
+| research-router | routing | 859 | 215 | 0 | 6 | (is a router) |
+| lark-approvals | lark | 842 | 211 | 1 | 0 | lark-router |
+| files-router | routing | 565 | 141 | 0 | 7 | (is a router) |
+| shopify-router | routing | 425 | 106 | 0 | 5 | (is a router) |
+| memory-router | routing | 422 | 106 | 0 | 7 | (is a router) |
+| aitable-router | routing | 310 | 78 | 0 | 4 | (is a router) |
+| web-search | routing | 302 | 76 | 1 | 4 | research-router |
+| work-automation-router | routing | 209 | 52 | 0 | 5 | (is a router) |
+
+#### Findings that are not about size
+
+1. **`divo-presentations` is unrouted, and the guard cannot see it.**
+   `unroutedSeededSystemSkillSlugs()` returns `[]`, because
+   `ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS` never lists the skill. It is
+   provisioned for every company by `admin-auth.routes.ts`, appears in the
+   registry, and no router points at it — precisely the failure that function's
+   own doc comment describes for `divo-python-automation`. The guard is
+   incomplete, not passing. Fix in Wave 4, with `divo-presentations`.
+2. **Eight skills carry no aliases at all**, all in the Lark family
+   (`lark-documents`, `lark-tasks`, `lark-calendar`, `lark-messaging`,
+   `lark-base`, `lark-meetings`, `lark-approvals`). Router search scores an
+   alias phrase far above a summary, so these are reachable only through
+   `lark-router`. Confirm in Wave 9 that this is intended rather than inherited.
+3. **Four skills sit under two routers** (`google-sheets`, `google-drive`,
+   `read-understand-files`, `schedule-divo-work`). That is legitimate — the
+   same specialist genuinely serves two task classes — but each pair of routers
+   must give the same answer, or the choice depends on which router loaded.
+4. **`finance-zoho-router` carries 38 aliases**, more than any other skill and
+   roughly the whole Zoho vocabulary. Worth checking in Wave 7 that the
+   specialists below it are still reachable on their own terms.
 
 ## 8. Rewrite waves — no more than two coupled skills at once
 
@@ -198,8 +288,11 @@ not rewrite more than two skill definitions.
 
 ### Wave 1 — central data decision
 
-- [ ] `data-router`
-- [ ] `secure-data-export`
+- [x] `data-router`
+- [x] `secure-data-export`
+
+Rewritten 2026-08-10; see §15. Static, unit, and graph gates pass. The Agent
+Seat and native Cloud-Pi gates are still open, so this pair is not reconciled.
 
 Goal: one unambiguous distinction between bounded chat work, replayable
 provider export, bespoke local transformation, and reading/editing an existing
@@ -458,6 +551,64 @@ This track is complete only when:
 
 ## 15. Rolling evidence
 
+### Pair: data-router + secure-data-export — 2026-08-10
+
+- Commit / environment: local worktree on `dev`, not yet reconciled to any DB.
+- Before → after bytes: `secure-data-export` 6,638 → 4,376 (1,660 → 1,094 tok);
+  `data-router` 3,907 → 2,349 (977 → 587 tok). Pair total −3,820 bytes,
+  −956 tokens. Catalogue 256,710 → 252,890 bytes.
+- What was removed and why: every fact the registered `dataExport` tool already
+  states through its zod schema, description, or `parameterDocs` — the format
+  row/cell caps, the `destination.format` enum meanings, `transform.script`
+  receiving `row`/`index`/`args`, the legacy `op=confirm` path, "do not create a
+  sample or ask for another confirmation", and the verbatim "the backend
+  re-checks…" paragraph. The skill imported four limit constants purely to print
+  numbers the tool already prints; only the Menhood spool cap, which the tool
+  does not publish, is still imported.
+- What was deliberately kept: candidate attribution to the table the member was
+  actually shown, the single-offer rule and its skip list, "the file and the
+  chat answer are different artifacts", queued-is-not-finished and the
+  completion card as sole truth, permanent-source-failure handling, the Zoho
+  Books `accountId` scoping rule, Airtable MCP not being a bulk-export source,
+  and the cross-tool refusals (no personal OAuth, no Google permission tool, no
+  reshare) that no single tool contract can express.
+- Router/specialist boundary: `op=plan` mechanics and the missing-destination
+  message moved out of `data-router` into `secure-data-export`, which owns the
+  tool. The router keeps task-class selection, the opaque-handle ownership
+  table, and four examples that each decide a boundary the bullets decide
+  slowly; three examples that merely restated a bullet were dropped.
+- Tests: exact-sentence assertions across three suites replaced with
+  wrap-insensitive invariant tokens, plus a new guard,
+  `leaves the dataExport contract to the dataExport tool`, that fails if any of
+  the removed tool-owned facts is pasted back. Backend suite 3,597 pass /
+  0 fail / 30 skipped; `tsc --noEmit` clean.
+- Cold review: found the first cut too deep in two places, both restored before
+  any commit. (a) **Both ask/stop conditions had been deleted** — ask which
+  format when the member named none, and ask which table when a direct recipe
+  needs one they never named. Neither is deducible from the contract:
+  `exportPlanRequestSchema` has no `auto` format, so a silent choice is a silent
+  choice of row cap, and `parameterDocs` never tells the model to stop and ask.
+  This is the general lesson for later waves — a tool contract states what an
+  argument *means* and never that Divo should decline to fill it in.
+  (b) The permanent-failure stop rule had been narrowed to the completion card,
+  but `op=plan` returns terminal `blocked` outcomes (revoked grant, stale replay
+  candidate) that produce no card at all. (c) The legacy
+  `preview.exportOfferId` handle row was restored to the router, since Wave 1
+  requires preserving that boundary and `gateway-dispatcher.ts` still reads it.
+  Each restored rule now has its own regression test. The review independently
+  verified every "the tool already says this" claim against
+  `data-export.tool.ts`; all held.
+- Agent Seat result: not run.
+- Cloud-Pi Development result: not run.
+- DB revisions / registry revision: not reconciled.
+- Cross-plan dependencies discovered: none.
+- Pre-existing defect noticed, not fixed here: the skill says pass `accountId`
+  for Zoho Books bank transactions, while the backend rule keys on the source
+  filter `account_id` and its refusal message says "Add account_id"
+  (`data-export.types.ts:105-113`). Same wording before the rewrite, so not a
+  regression; worth settling in Wave 7.
+- Decision: content complete; **gates §9.3 and §9.4 still open.**
+
 Append one block per pair:
 
 ```md
@@ -484,5 +635,8 @@ Append one block per pair:
 - `advance-backend/docs/cloud-pi-testing/06-agent-seat.md`
 - `advance-backend/docs/cloud-pi-testing/07-local-runtime-harness-framework.md`
 - `advance-backend/scripts/reconcile-capabilities.ts`
+- `advance-backend/scripts/skill-inventory.ts` (`pnpm skills:inventory`) — the
+  read-only enumeration behind §7.1; rerun it after every pair to record the
+  byte delta the acceptance gate asks for
 - `advance-backend/src/application/skills/`
 - `learnings/hermes-memory-persona-architecture.md`
