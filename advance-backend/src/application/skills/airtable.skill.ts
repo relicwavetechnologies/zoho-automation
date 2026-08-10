@@ -20,7 +20,7 @@ const AIRTABLE_ID_DISCIPLINE = `IDENTIFIER DISCIPLINE:
 - Airtable IDs have fixed prefixes: bases are app..., tables tbl..., fields fld..., records rec..., views viw....
 - Never invent, guess, or reconstruct an ID, and never pass a user-facing name where an ID is required.
 - Resolve IDs first: search_bases or list_bases for a base, list_tables_for_base for tables, list_fields_for_table for the complete field ID/name index of one table, get_table_schema for detailed selected-field schemas, and list_records_for_table or search_records for records.
-- get_table_schema input is { baseId, tables: [{ tableId, fieldIds: ["fld..."] }] }. Resolve field IDs with list_fields_for_table first; never guess this shape.
+- Resolve field IDs with list_fields_for_table before asking get_table_schema for detail. Divo synthesizes list_fields_for_table rather than Airtable serving it, so no contract is ever bound for that one.
 - Some operations accept a table or field NAME as well as an ID. Table names resolve case-insensitively; field names resolve case-SENSITIVELY. When a name has failed once, resolve the ID and use it.
 - To act on specific records, filter or search for them first and use the returned record IDs. Never assume a record ID from context.`;
 
@@ -39,18 +39,30 @@ UNDO:
 - Only calls that explicitly returned an actionId can be reverted, one actionId per call.
 - Record UPDATES are NOT revertible. Never promise a member that an update can be undone; if the previous values matter, read and report them before updating.`;
 
+/*
+ * The `filters` tree and the date VALUE/RANGE objects used to be written out
+ * here in full. `AirtableContractBootstrapService` binds
+ * `list_records_for_table` before inference for every record run, and its own
+ * comment gives the reason: the filter tree is a deeply nested union that no
+ * model reconstructs correctly from prose, and each failed guess costs a larger
+ * validation dump than the schema itself. Prose was the losing copy.
+ *
+ * What stays is what the schema cannot encode: which operator suits which field
+ * type, why a choice ID beats a choice name, and — the one that changes an
+ * answer rather than a call — that a named calendar month is not a rolling
+ * window. `list_fields_for_table` guidance also stays: Divo synthesizes that
+ * operation, so no contract is ever bound for it.
+ */
 const AIRTABLE_READ_CRAFT = `READING AND FILTERING:
-- list_records_for_table input uses \`filters\` plural, not \`filter\`: \`{ baseId, tableId, fieldIds, filters, sort?, pageSize? }\`. \`filters\` is a structured tree, not a formula string: an operator ("and"/"or") plus operands, each with its own comparison operator (=, !=, <, >, <=, >=, contains, doesNotContain, isAnyOf, isNoneOf, hasAnyOf, hasAllOf, isWithin, isEmpty, isNotEmpty). Build the filter tree; never hand-write or URL-encode a formula.
-- Each leaf condition is \`{ operator, operands: [fieldId, value] }\`, and the first operand must be a \`fld...\` ID. isEmpty and isNotEmpty take the field ID alone.
-- For single-select and multiple-select operands, prefer the choice ID from get_table_schema (\`sel...\`) over the choice name. The contract is the ID; a renamed or near-duplicate option makes a name silently wrong.
-- search_records has a different input shape: \`{ baseId, table, query, fields?, resultFieldIds?, filters?, sort?, limit? }\`. Never pass \`tableId\`, \`fieldIds\`, \`filter\`, or \`pageSize\` to search_records. Prefer list_records_for_table when you already have exact table and field IDs.
+- Build the \`filters\` tree from the bound \`list_records_for_table\` contract. Never hand-write or URL-encode an Airtable formula string, and never send \`filter\` singular.
 - Match the operator to the field type: single select and single collaborator use =, !=, isAnyOf, isNoneOf; multiple selects and multiple collaborators use hasAnyOf, hasAllOf, =, doesNotContain; linked records use hasAnyOf, hasAllOf, =, isNoneOf, contains, doesNotContain.
+- For single-select and multiple-select operands, prefer the choice ID from get_table_schema (\`sel...\`) over the choice name. The contract is the ID; a renamed or near-duplicate option makes a name silently wrong.
+- \`search_records\` and \`list_records_for_table\` take different inputs and are not interchangeable. Prefer \`list_records_for_table\` whenever you already hold exact table and field IDs.
 - Always pass fieldIds with only the fields the answer needs. Pulling every field on a wide table wastes the run's context for no benefit.
 - Prefer sort plus a small page over fetching everything when the member asked for a top-N answer.
 
 DATE WINDOWS:
-- A date operand is never a bare date string. For =, !=, <, >, <=, >= on a date or dateTime field the second operand is a date VALUE object. Fixed points use \`{ mode: "exactDate", exactDate: "2026-07-01", timeZone: "Asia/Kolkata" }\`; relative points use mode today, tomorrow, yesterday, oneWeekAgo, oneWeekFromNow, oneMonthAgo, oneMonthFromNow, or \`{ mode: "daysAgo"|"daysFromNow", numberOfDays, timeZone }\`. \`timeZone\` is always required.
-- isWithin takes a date RANGE object instead: \`{ mode: "pastWeek"|"pastMonth"|"pastYear"|"nextWeek"|"nextMonth"|"nextYear"|"thisWeekToDate"|"thisMonthToDate"|"thisYearToDate"|"thisCalendarWeek"|"thisCalendarMonth"|"thisCalendarYear", timeZone }\` or \`{ mode: "pastNumberOfDays"|"nextNumberOfDays", numberOfDays, timeZone }\`.
+- A date operand is never a bare date string, and \`timeZone\` is always required. Take the exact value and range shapes from the bound contract.
 - When the member named a specific month, quarter, year, or date range, express it as two exactDate comparisons — \`>=\` the first day and \`<\` the first day of the NEXT period — and never substitute a relative mode. \`pastMonth\` is a rolling window ending today, not a calendar month, and \`thisCalendarMonth\` is the current month, not the one the member named. Filtering July with pastMonth answers a different question and returns a different number.
 - Use the time zone the business keeps its dates in, not UTC. Menhood order dates are Asia/Kolkata.
 

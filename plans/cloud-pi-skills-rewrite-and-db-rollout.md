@@ -338,9 +338,9 @@ connected destination. Keep export ownership in the export boundary.
 
 ### Wave 5 — Airtable and Menhood
 
-- [ ] `airtable-router` + `airtable-core`
-- [ ] `airtable-schema-ops` + `airtable-automation-ops`
-- [ ] `menhood-data` + the router it actually depends on after inventory
+- [x] `airtable-router` + `airtable-core`
+- [x] `airtable-schema-ops` + `airtable-automation-ops`
+- [x] `menhood-data` + the router it actually depends on after inventory
 
 Goal: distinguish live Airtable record work from settled Menhood analytics;
 never infer totals from bounded previews or serialize unresolved objects into a
@@ -781,6 +781,39 @@ This track is complete only when:
   once verified against `airtable-contract-bootstrap.service.ts`.
 - Tests: 3,371 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
 - Cold review: pending, to cover Waves 3-5 together.
+
+### Wave 5, slice 2: Airtable bodies + menhood-data — 2026-08-11
+
+- `airtable-core` 12,544 → 11,435; `menhood-data` 11,132 → 10,764. Airtable
+  family total 20,390 → 19,369. Catalogue now 232,374 bytes.
+- **The filter tree and date objects had an owner already.**
+  `AirtableContractBootstrapService` binds `list_records_for_table` before
+  inference for every record run, and its own comment states why: the filter
+  tree is a deeply nested union that no model reconstructs correctly from
+  prose, and each failed guess costs a larger validation dump than the schema
+  itself. The skill wrote out the tree, the leaf-condition shape, the full
+  operator list, and the date VALUE/RANGE mode enumerations regardless — the
+  losing copy of a contract the runtime was already binding. Same for
+  `get_table_schema` input.
+- **Kept, because no schema encodes it:** which operator suits which field
+  type, why a `sel...` choice ID beats a choice name, and the one that changes
+  an answer rather than a call — a named calendar month is not a rolling
+  window, so filtering July with `pastMonth` returns a different number.
+  `list_fields_for_table` guidance stays too: Divo synthesizes that operation,
+  so no contract is ever bound for it.
+- `menhood-data`: dropped the single-SELECT rule, bound-parameter rule, table
+  allow-list, and the `ORDER BY o.order_date, o.order_number, o.id` example —
+  all in `menhoodData`'s `parameterDocs`. Kept the reason stable ordering
+  matters (a sample is only reviewable if the full replay matches it), the
+  never-through-local-Python routing rule, the zero-row schema probe technique,
+  and the spend-claim consequence of the unavailable ad-cost table. Its
+  coverage and data-model sections were left intact — that is the domain
+  semantics §5 exists to protect.
+- **Four more fossilized assertions** removed across two suites, pinning the
+  gateway envelope, the filter tree, the leaf-condition shape, and the ORDER BY
+  column list. Running total for the session: every wave has found at least one
+  test holding stale prose in place.
+- Tests: 3,371 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
 
 Append one block per pair:
 

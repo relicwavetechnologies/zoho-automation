@@ -15,18 +15,28 @@ describe('Menhood data system skill', () => {
   it('keeps the specialist read-only, bounded, and separate from Airtable connections', () => {
     assert.deepEqual(MENHOOD_DATA_SYSTEM_SKILL.toolIds, ['menhoodData']);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /needs no Airtable connection ID/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /one `SELECT` or read-only `WITH \.\.\. SELECT`/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /bound parameters/);
+    /*
+     * "one SELECT or read-only WITH", bound parameters, the table allow-list,
+     * and the deterministic ORDER BY example are all stated by the menhoodData
+     * tool's own parameterDocs. The skill keeps what the tool cannot say: that
+     * this analysis never goes through local Python, and why stable ordering
+     * matters — a sample is only reviewable if the full replay matches it.
+     */
+    assert.doesNotMatch(MENHOOD_DATA_SYSTEM_SKILL.markdown, /never interpolate|ORDER BY o\.order_date/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /never .*route Menhood analysis through local Python/i);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /only reviewable if the full replay returns rows in the same order/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Context first, then query/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /SELECT \* FROM menhood_orders LIMIT 0/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /order-line grain/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /`menhood_advertisement_costs` is intentionally unavailable/);
+    // The tool's parameterDocs declare the table unavailable. The skill owns
+    // the consequence: no spend claim sourced from somewhere else instead.
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /`menhood_advertisement_costs` is unavailable/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /bounded preview/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Choose `final_amount`, `collectable_value`, or `declared_value`/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Never page bulk rows through the conversation/);
     assert.doesNotMatch(MENHOOD_DATA_SYSTEM_SKILL.markdown, /exportCandidate|dataExport/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /deterministic `ORDER BY`/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /ORDER BY o\.order_date, o\.order_number, o\.id/);
+    // The exact column list is the tool's example; the skill keeps the reason.
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /sample is only reviewable if the full replay returns rows in the same order/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /current-month, and previous-month questions before reporting maturity cannot be answered here as final numbers/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /do not ask whether to check live data/);
@@ -98,8 +108,10 @@ describe('Menhood data system skill', () => {
     assert.match(cookbook, /final-amount\/gross order value/);
     assert.match(cookbook, /do not silently call it “revenue”/);
     assert.match(cookbook, /trim.*remove non-digits.*six-digit.*join/s);
-    assert.match(cookbook, /`menhood_advertisement_costs` is intentionally unavailable/);
-    assert.match(cookbook, /never query it or make advertising-cost, ROAS, or spend claims/);
+    // The tool states the table is unavailable; the skill states the
+    // consequence it cannot -- do not source that claim from anywhere else.
+    assert.match(cookbook, /never make advertising-cost, ROAS, or spend claims/);
+    assert.match(cookbook, /not from another table, and not from memory/);
     assert.match(cookbook, /Make at most one schema\/context probe and one corrected retry/);
   });
 

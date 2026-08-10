@@ -75,9 +75,22 @@ describe('system skill routes', () => {
     assert.match(airtableCoreSkill.instructions, /goes through `airtableRecords`/);
     assert.match(airtableSchemaOpsSkill.instructions, /goes through `airtableSchema`/);
     assert.match(airtableAutomationOpsSkill.instructions, /goes through `airtableAutomation`/);
-    assert.match(airtableCoreSkill.instructions, /list_records_for_table input uses `filters` plural, not `filter`/);
-    assert.match(airtableCoreSkill.instructions, /search_records has a different input shape/);
-    assert.match(airtableCoreSkill.instructions, /Each leaf condition is `\{ operator, operands: \[fieldId, value\] \}`/);
+    /*
+     * AirtableContractBootstrapService binds list_records_for_table before
+     * inference for every record run, precisely because its filter tree is a
+     * nested union no model rebuilds correctly from prose. The skill wrote the
+     * tree, the leaf-condition shape, and the date value/range objects out in
+     * full anyway, and this test pinned them there. What the skill still owes
+     * is the part no schema encodes.
+     */
+    assert.match(airtableCoreSkill.instructions, /Build the `filters` tree from the bound `list_records_for_table` contract/);
+    assert.match(airtableCoreSkill.instructions, /never send `filter` singular/);
+    assert.match(airtableCoreSkill.instructions, /are not interchangeable/);
+    assert.doesNotMatch(airtableCoreSkill.instructions, /operands: \[fieldId, value\]|mode: "exactDate"|thisCalendarYear/);
+    // Divo synthesizes list_fields_for_table, so nothing is ever bound for it.
+    assert.match(airtableCoreSkill.instructions, /no contract is ever bound for that one/);
+    // A named calendar month is not a rolling window: this one changes the answer.
+    assert.match(airtableCoreSkill.instructions, /Filtering July with pastMonth answers a different question/);
   });
 
   it('keeps direct Airtable reads bounded while naming trusted local page mode', () => {

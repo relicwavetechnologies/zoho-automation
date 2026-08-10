@@ -18,12 +18,11 @@ Use this skill for analytical questions over the company-managed Menhood Airtabl
 ## Query discipline
 
 1. Query only through the Divo \`menhoodData\` tool. Never connect to PostgreSQL directly, expose database details, or route Menhood analysis through local Python.
-2. Send one \`SELECT\` or read-only \`WITH ... SELECT\`. Put every user value in bound parameters such as \`$1\`; never interpolate it into SQL.
-3. Context first, then query. If the answer needs a join, an unfamiliar column, or any field you have not already observed in this run, first call \`menhoodData\` with a zero-row schema probe such as \`SELECT * FROM menhood_orders LIMIT 0\` for each needed table, or a tiny single-table preview. Build the real query from the returned column names.
-4. Use only \`menhood_orders\`, \`menhood_customers\`, \`menhood_products\`, and \`all_cities_with_pincode\`. \`menhood_advertisement_costs\` is intentionally unavailable: never query it or make advertising-cost, ROAS, or spend claims from it.
-5. Keep chat results to the bounded preview and disclose \`coverage.truncated\`. Never page bulk rows through the conversation or claim a complete artifact unless the returned coverage proves it.
-6. For row-level previews or exportable raw datasets, always include a deterministic \`ORDER BY\` on stable columns. For order-line exports use \`ORDER BY o.order_date, o.order_number, o.id\` unless the member requested a different stable order. A sample is only reviewable if the full replay returns rows in the same order.
-7. If a Menhood query fails with a SQL, schema, or generic tool error, do not loop. Make at most one schema/context probe and one corrected retry for the same request. If it still fails, stop and explain the failure plainly.
+2. Context first, then query. If the answer needs a join, an unfamiliar column, or any field you have not already observed in this run, first call \`menhoodData\` with a zero-row schema probe such as \`SELECT * FROM menhood_orders LIMIT 0\` for each needed table, or a tiny single-table preview. Build the real query from the returned column names.
+3. \`menhood_advertisement_costs\` is unavailable, so never make advertising-cost, ROAS, or spend claims — not from another table, and not from memory.
+4. Keep chat results to the bounded preview and disclose \`coverage.truncated\`. Never page bulk rows through the conversation or claim a complete artifact unless the returned coverage proves it.
+5. A sample is only reviewable if the full replay returns rows in the same order, which is why the deterministic \`ORDER BY\` the tool asks for matters on any row-level preview.
+6. If a Menhood query fails with a SQL, schema, or generic tool error, do not loop. Make at most one schema/context probe and one corrected retry for the same request. If it still fails, stop and explain the failure plainly.
 
 ## Coverage: this data trails real orders
 
