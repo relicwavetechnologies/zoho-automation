@@ -166,6 +166,7 @@ export function createMailBriefRunner(deps: MailBriefRunnerDeps) {
 
       const brief = await deps.compose({
         mailboxEmail: claim.mailboxEmail,
+        mailboxActive: claim.mailboxActive,
         from,
         to: ranAt,
         timeZone: claim.timeZone,
