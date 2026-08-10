@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 import { Search } from "lucide-react"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { compact } from "@/cursor/use-spend"
+import { Skel } from "@/pages/workspace/ui"
 import { type WebSearchConnection, type WebSearchConnectionHealth, useWebSearchConnections } from "@/cursor/use-web-search"
 
 const HEALTH_META: Record<WebSearchConnectionHealth, { label: string; className: string }> = {
@@ -89,7 +90,19 @@ export function WebSearchPage() {
           </thead>
           <tbody>
             {connectionsQ.isLoading ? (
-              <tr><td colSpan={isSuper ? 7 : 6} className="muted" style={{ padding: "24px", textAlign: "center" }}>Loading web search connections…</td></tr>
+              /* Rows the width of the columns they stand in, so the table does
+                 not collapse to one centred line and then snap back open. */
+              [0, 1, 2].map((i) => (
+                <tr key={`skeleton-${i}`}>
+                  {isSuper ? <td><Skel w="70%" h={12} /></td> : null}
+                  <td><Skel w="80%" h={12} /><div style={{ height: 6 }} /><Skel w="55%" h={9} /></td>
+                  <td><Skel w="65%" h={12} /></td>
+                  <td><Skel w={64} h={12} /></td>
+                  <td className="right"><Skel w={48} h={12} /></td>
+                  <td className="right"><Skel w={56} h={12} /></td>
+                  <td><Skel w={84} h={12} /></td>
+                </tr>
+              ))
             ) : connections.length === 0 ? (
               <tr><td colSpan={isSuper ? 7 : 6} className="muted" style={{ padding: "28px", textAlign: "center" }}>{filter ? "No connections match this filter." : "No company Serper connections have been added yet."}</td></tr>
             ) : connections.map((connection) => {

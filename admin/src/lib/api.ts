@@ -576,6 +576,15 @@ export type SkillRegistrySkillNode = {
   isSystem: boolean;
   revision: number;
   updatedAt: string;
+  /**
+   * How many people or groups this skill is shared with.
+   *
+   * Zero means it cannot be run by anybody — the one fact about a skill that
+   * used to cost a click each to find. Optional because a backend that has not
+   * been deployed yet will not send it, and a library that silently reported
+   * every skill as dead would be worse than one that reports nothing.
+   */
+  grantCount?: number;
 };
 
 export type SkillRegistryFolderNode = {

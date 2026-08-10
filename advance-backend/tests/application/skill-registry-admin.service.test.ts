@@ -108,6 +108,31 @@ describe('buildTree', () => {
     const tree = buildTree(folders, skills as any, departments, 1);
     assert.equal(tree.departments[0]!.skills[0]!.id, 'orphan');
   });
+
+  /*
+   * Zero is the answer worth carrying. A skill with no grants is in the
+   * library and cannot be run by anyone, and the tree is the only read that
+   * sees every skill at once — without this the screen would have to ask per
+   * skill to find the dead ones.
+   */
+  it('carries each skill its own grant count', () => {
+    const skills = [
+      skill({ id: 'shared-widely', folderId: 'fin-child' }),
+      skill({ id: 'runnable-by-nobody', folderId: 'fin-child' }),
+    ];
+    const tree = buildTree(folders, skills as any, departments, 1, new Map([['shared-widely', 3]]));
+
+    const inFolder = tree.departments[0]!.folders[0]!.children[0]!.skills;
+    assert.equal(inFolder.find((s) => s.id === 'shared-widely')!.grantCount, 3);
+    // Absent from the map, not merely low — it must read as zero, not undefined.
+    assert.equal(inFolder.find((s) => s.id === 'runnable-by-nobody')!.grantCount, 0);
+  });
+
+  it('reports zero for every skill when no grant map is supplied', () => {
+    const skills = [skill({ id: 'lonely', folderId: 'fin-child' })];
+    const tree = buildTree(folders, skills as any, departments, 1);
+    assert.equal(tree.departments[0]!.folders[0]!.children[0]!.skills[0]!.grantCount, 0);
+  });
 });
 
 // ── moveSkill scope validation ───────────────────────────────────────────────

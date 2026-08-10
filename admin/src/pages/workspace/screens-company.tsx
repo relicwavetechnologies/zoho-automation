@@ -10,11 +10,12 @@
  * The company ceiling also finally sits visibly above the team grants that it
  * silently clamps, in the same shell as the member and manager views.
  */
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Brain, Building2, Check, ChevronRight, CircleAlert, Clock, Info, KeyRound, Link2, Lock, Plus,
+  Brain, Building2, Check, ChevronRight, CircleAlert, Clock, Copy, Info, KeyRound, Link2, Lock, Plus,
   Search, ShieldCheck, Sparkles, Trash2, TriangleAlert, Users,
 } from 'lucide-react'
+import { notify } from '@/lib/notify'
 import {
   Bar, ClickRow, DataNote, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, ProviderMark, Seg, Skel,
   SkelRows, Switch, compact, money, useStaged,
@@ -29,7 +30,10 @@ import {
   useAuditLog, useCompanyCeiling, useCompanyDepartments, useDepartmentSpend, useOverview, useRuns,
   type CeilingAction, type CeilingTool, type Run,
 } from './data/use-company'
-import { useCompanyDaily, useCompanyScope, useDirectory, useSpendByModel, useSpendMembers } from '@/cursor/use-spend'
+import {
+  useCompanyDaily, useCompanyScope, useDirectory, useSpendByModel, useSpendMembers,
+  type DirectoryMember,
+} from '@/cursor/use-spend'
 import { KEY_PROVIDERS, useProxyStatus, useSaveProxyKey, type KeyScope } from '@/cursor/use-proxy'
 import { useCompanyForwards } from './data/use-mail-governance'
 import { useProxyPolicies, useSaveProxyPolicy } from '@/cursor/use-proxy-policy'
@@ -640,6 +644,138 @@ export function CompanyDepartments({ replay, toast, go }: Props) {
    config list. "Who is about to break" is coverage — and it is the one that
    costs a day of failed runs when nobody looks at it. */
 
+/**
+ * The people a provider is missing, in a form somebody can act on.
+ *
+ * This was a flat two-column dump cut off at twenty with "and 93 more" under
+ * it. Three things were wrong with that, and only the third is cosmetic: the
+ * ninety-three were unreachable, so the list could not answer "is so-and-so
+ * connected"; there was nothing to *do* with it, though the only reason to open
+ * it is to go and chase people; and it was a wall of text.
+ *
+ * Grouped by department, because that is who chases them. An admin does not
+ * email a hundred people individually — they ask each manager about their own,
+ * and the grouping is that conversation already sorted. Everyone with no
+ * department falls into one group at the end rather than being dropped.
+ */
+function MissingRoster({ people, provider }: {
+  people: readonly DirectoryMember[]
+  provider: string
+}) {
+  const [query, setQuery] = useState('')
+  /*
+   * The addresses, shown for manual copying when the clipboard refuses.
+   *
+   * `navigator.clipboard` is not always available to a page that is doing
+   * nothing wrong: browsers deny it to a backgrounded or unfocused document,
+   * and embedded views can withhold it entirely. A button whose whole job is to
+   * hand you a list should not end in an apology, so the fallback puts the list
+   * where it can be selected and copied by hand.
+   */
+  const [manual, setManual] = useState<string | null>(null)
+  const manualBox = useRef<HTMLTextAreaElement | null>(null)
+
+  // Selected on arrival: the point of the fallback is that one ⌘C finishes it.
+  useEffect(() => {
+    if (manual && manualBox.current) {
+      manualBox.current.focus()
+      manualBox.current.select()
+    }
+  }, [manual])
+
+  const groups = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const matches = q
+      ? people.filter((p) =>
+        (p.name ?? '').toLowerCase().includes(q) || p.email.toLowerCase().includes(q))
+      : people
+
+    const by = new Map<string, DirectoryMember[]>()
+    for (const p of matches) {
+      // Somebody in two departments is a real person in both, and either
+      // manager may be the one who gets them connected. Listing them under each
+      // beats picking one and hiding the other route.
+      const names = p.departmentNames.length ? p.departmentNames : ['No department']
+      for (const name of names) {
+        const list = by.get(name)
+        if (list) list.push(p); else by.set(name, [p])
+      }
+    }
+    return [...by.entries()]
+      .map(([name, list]) => ({ name, list }))
+      // Biggest first — that is where the effort goes. "No department" last
+      // whatever its size: it is a gap in the org chart, not a team to ask.
+      .sort((a, b) =>
+        (a.name === 'No department' ? 1 : 0) - (b.name === 'No department' ? 1 : 0)
+        || b.list.length - a.list.length)
+  }, [people, query])
+
+  const shown = groups.reduce((n, g) => n + g.list.length, 0)
+
+  const copyAll = async () => {
+    const emails = people.map((p) => p.email).join(', ')
+    try {
+      await navigator.clipboard.writeText(emails)
+      setManual(null)
+      notify.done(`Copied ${people.length} address${people.length === 1 ? '' : 'es'}`, `Everyone still missing ${provider}.`)
+    } catch {
+      // Not a failure to report and walk away from — the addresses are right
+      // here, so they get shown instead.
+      setManual(emails)
+      notify.heads('Copy them by hand', 'Your browser blocked the clipboard, so the addresses are selected below.')
+    }
+  }
+
+  return (
+    <div className="ws-roster">
+      <div className="ws-roster-top">
+        <div className="search">
+          <Search size={13} />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={`Search ${people.length} people`}
+          />
+        </div>
+        <button type="button" className="btn" onClick={() => void copyAll()}>
+          <Copy size={12} /> Copy all
+        </button>
+      </div>
+
+      {manual ? (
+        <textarea
+          ref={manualBox}
+          className="ws-roster-manual"
+          readOnly
+          rows={3}
+          value={manual}
+          onBlur={() => setManual(null)}
+        />
+      ) : null}
+
+      {shown === 0 ? (
+        <p className="ws-sub ws-roster-none">Nobody here matches “{query.trim()}”.</p>
+      ) : (
+        <div className="ws-roster-list">
+          {groups.map((g) => (
+            <div className="ws-roster-grp" key={g.name}>
+              <div className="ws-roster-head">
+                <b>{g.name}</b><span>{g.list.length}</span>
+              </div>
+              {g.list.map((p) => (
+                <div className="ws-roster-row" key={`${g.name}:${p.userId}`}>
+                  <span className="n">{displayName(p.name, p.email)}</span>
+                  <span className="e">{p.email}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function CompanyConnections({ replay, toast, go }: Props) {
   const { session } = useAdminAuth()
   const [r1, r2] = useStaged([280, 540], replay)
@@ -711,17 +847,7 @@ export function CompanyConnections({ replay, toast, go }: Props) {
                           <Bar pct={pct} tone={pct < 60 ? 'brand' : undefined} />
                         </div>
                         {isOpen && row.missing.length ? (
-                          <div className="ws-ba" style={{ marginTop: 12 }}>
-                            {row.missing.slice(0, 20).map((p) => (
-                              <div className="ws-ba-r" key={p.userId}>
-                                <span className="k">{displayName(p.name, p.email)}</span>
-                                <span className="to">{p.email}</span>
-                              </div>
-                            ))}
-                            {row.missing.length > 20 ? (
-                              <div className="ws-ba-r"><span className="k">and {row.missing.length - 20} more</span></div>
-                            ) : null}
-                          </div>
+                          <MissingRoster people={row.missing} provider={row.name} />
                         ) : null}
                         {row.missing.length ? (
                           <div style={{ marginTop: 9 }}>

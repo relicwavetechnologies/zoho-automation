@@ -11,7 +11,7 @@
  */
 import { useEffect, useState, type ComponentType } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { toast as sonner } from 'sonner'
+import { notify } from '@/lib/notify'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import type { Persona } from './fixtures'
 import type { Toast } from './ui'
@@ -118,11 +118,20 @@ export function routed(Screen: ComponentType<ScreenProps>) {
         <Screen
           persona={persona}
           replay={replay}
-          // A failed write must not look like a completed one. Every screen
-          // toasted through `sonner.success`, so "Could not save that key"
-          // arrived green with a checkmark next to it — the one moment the
-          // interface has to be believed, spent saying the opposite.
-          toast={(m, tone) => (tone === 'error' ? sonner.error(m) : sonner.success(m))}
+          /*
+           * A failed write must not look like a completed one. Every screen
+           * toasted through `sonner.success`, so "Could not save that key"
+           * arrived green with a checkmark next to it — the one moment the
+           * interface has to be believed, spent saying the opposite.
+           *
+           * Through `notify` rather than sonner directly, so this shim — which
+           * is what most of the workspace still speaks through — gets the same
+           * durations as everything else, and the same collapsing of repeats.
+           * Left as a shim on purpose: screens hand over a sentence and a tone,
+           * and the four intents are a judgement those call sites have not made
+           * yet.
+           */
+          toast={(m, tone) => (tone === 'error' ? notify.failed(m) : notify.done(m))}
           go={(screen) => navigate(resolvePath(screen))}
         />
       </div>

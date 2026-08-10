@@ -1,3 +1,4 @@
+import { Suspense, lazy } from "react"
 import { Link, Navigate, Route, Routes, useParams } from "react-router-dom"
 import { Toaster } from "@/components/ui/sonner"
 import { WorkspaceShell } from "@/components/admin/workspace-shell"
@@ -39,7 +40,17 @@ import {
   CompanyHome, CompanyPeople, CompanyPolicy,
 } from "@/pages/workspace/screens-company"
 import { Artifacts } from "@/pages/workspace/screens-artifacts"
-import { AgentMap } from "@/pages/workspace/screens-agents"
+/*
+ * Split out, alone among the screens.
+ *
+ * It draws with React Flow, which is by a distance the heaviest thing the app
+ * depends on — and it was in the one bundle every page shares, so opening Mail
+ * downloaded a graph library that Mail has no use for. Every other screen is
+ * ordinary React and costs little enough to keep eager; this one pays for a
+ * split several times over, and it is a page most people never open.
+ */
+const AgentMap = lazy(() =>
+  import("@/pages/workspace/screens-agents").then((m) => ({ default: m.AgentMap })))
 import {
   CompanyDepartmentDetail, CompanyPersonDetail, CompanyRunDetail,
 } from "@/pages/workspace/screens-company-detail"
@@ -344,7 +355,17 @@ export function App() {
           {/* Who may run what, as a map rather than a matrix. Work, not
               configuration — it answers a question rather than changing
               anything, so it stays on this side of the Settings door. */}
-          <Route path="agents" element={<RequireScope kind="company"><CompanyAgentsRoute /></RequireScope>} />
+          {/* The one lazily-loaded screen, so it needs the one boundary. The
+              fallback is the app's own loading line rather than a spinner:
+              this arrives in a fraction of a second on a warm connection, and
+              a spinner that brief reads as a flicker. */}
+          <Route path="agents" element={
+            <RequireScope kind="company">
+              <Suspense fallback={<div className="page"><div className="muted">Loading the agent map…</div></div>}>
+                <CompanyAgentsRoute />
+              </Suspense>
+            </RequireScope>
+          } />
           <Route path="activity" element={<RequireScope kind="company"><CompanyAuditRoute /></RequireScope>} />
 
           <Route path="people" element={<Navigate to="/settings/company/people" replace />} />

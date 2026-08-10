@@ -923,6 +923,54 @@
 .cur .ws-node[data-open="true"] > .cv { transform: rotate(90deg); }
 .cur .ws-node-ic { color: var(--cur-muted); flex-shrink: 0; }
 .cur .ws-node-ic[data-skill="true"] { color: var(--cur-body); }
+/* A skill nobody can run. Amber rather than red: it is a gap in setup, not a
+   fault — the skill is fine, it has simply never been shared with anyone. */
+.cur .ws-node-dead { color: var(--ws-warning); flex-shrink: 0; }
+
+/* ── Library lenses ───────────────────────────────────
+   The faults in the library, each one the way in to itself. A count you cannot
+   click is a scoreboard: you read "7 nobody can run" and then still have to go
+   and find the seven. */
+.cur .ws-lens { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+.cur .ws-lens-b {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 999px; cursor: pointer;
+  font-family: inherit; font-size: 11.5px; line-height: 1.6;
+  color: var(--cur-muted); background: var(--cur-canvas-soft);
+  border: 1px solid var(--cur-hairline);
+  transition: color .12s ease, border-color .12s ease, background .12s ease;
+}
+.cur .ws-lens-b:hover { color: var(--cur-ink); }
+.cur .ws-lens-b span { color: var(--cur-muted-soft); font-variant-numeric: tabular-nums; }
+.cur .ws-lens-b[data-tone="warn"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 30%, transparent); }
+.cur .ws-lens-b[data-tone="warn"] span { color: color-mix(in srgb, var(--ws-warning) 70%, transparent); }
+/* Selected reads as pressed, not merely hovered — the tree beneath it is
+   filtered, and that has to be obviously a state you are in. */
+.cur .ws-lens-b[data-on="true"] {
+  color: var(--cur-on-accent); background: var(--cur-accent); border-color: var(--cur-accent);
+}
+.cur .ws-lens-b[data-on="true"] span { color: color-mix(in srgb, var(--cur-on-accent) 75%, transparent); }
+
+/* ── Search hits ──────────────────────────────────────
+   Flat, because while a filter runs the question is "which ones are these",
+   not "where do they live" — and the tree answered the second one by making
+   you read four folders to reach one row. The path rides along so the answer
+   to the first question is not lost. */
+.cur .ws-hits { padding-top: 2px; }
+.cur .ws-hit {
+  display: flex; flex-direction: column; gap: 2px; width: 100%;
+  padding: 7px 12px; border: 0; background: none; cursor: pointer;
+  font-family: inherit; text-align: left; color: var(--cur-body);
+}
+.cur .ws-hit:hover { background: var(--cur-canvas-soft); }
+.cur .ws-hit[data-on="true"] { background: var(--cur-canvas-soft); color: var(--cur-ink); }
+.cur .ws-hit .t { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; }
+.cur .ws-hit .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cur .ws-hit .cv { color: var(--cur-muted-soft); flex-shrink: 0; }
+.cur .ws-hit .p {
+  padding-left: 20px; font-size: 11px; color: var(--cur-muted-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* Facts about one thing. Two columns so the labels line up and the eye can run
    down the values rather than hunting for them. */
@@ -958,6 +1006,65 @@
   font-family: inherit; font-size: 13px; color: var(--cur-ink);
 }
 .cur .search input::placeholder { color: var(--cur-muted-soft); }
+
+/* ── Missing-connection roster ────────────────────────
+   Who a provider has not reached, grouped by the team that has to chase them.
+
+   It borrowed `.ws-ba`, a before/after grid whose first column is a fixed
+   108px — so a three-word name wrapped onto two lines while the column beside
+   it sat half empty. Its own rule now: name and address each take the room
+   they need, and the list scrolls instead of growing the page by a hundred
+   rows. */
+.cur .ws-roster { margin-top: 12px; }
+.cur .ws-roster-top { display: flex; gap: 8px; align-items: center; margin-bottom: 9px; }
+.cur .ws-roster-top .search {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px;
+  padding: 6px 10px; border-radius: var(--cur-r-ctl);
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+  color: var(--cur-muted-soft);
+}
+.cur .ws-roster-top .search input { font-size: 12.5px; }
+.cur .ws-roster-none { padding: 10px 2px; }
+/* The fallback when the clipboard is refused. Monospace and wrapped, because
+   what is in it is a hundred addresses somebody is about to select and paste
+   into a mail client. */
+.cur .ws-roster-manual {
+  width: 100%; margin-bottom: 9px; padding: 9px 11px; resize: vertical;
+  border-radius: var(--cur-r-ctl); border: 1px solid var(--cur-accent);
+  background: var(--cur-canvas-soft); color: var(--cur-body);
+  font-family: var(--cur-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px; line-height: 1.6; outline: none;
+}
+
+/* Capped rather than paged. A hundred rows is not too many to scroll when they
+   are grouped and searchable — it is too many to *print*, which is what the
+   old list did before giving up at twenty. */
+.cur .ws-roster-list {
+  max-height: 320px; overflow-y: auto;
+  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
+  background: var(--cur-canvas-soft);
+}
+.cur .ws-roster-grp + .ws-roster-grp { border-top: 1px solid var(--cur-hairline); }
+/* Sticky, so you always know whose people you are scrolling through. */
+.cur .ws-roster-head {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding: 8px 12px;
+  background: var(--cur-surface); border-bottom: 1px solid var(--cur-hairline);
+}
+.cur .ws-roster-head b { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--cur-muted); }
+.cur .ws-roster-head span { font-size: 11px; color: var(--cur-muted-soft); font-variant-numeric: tabular-nums; }
+.cur .ws-roster-row {
+  display: flex; align-items: baseline; gap: 12px; padding: 6px 12px; font-size: 12.5px;
+}
+.cur .ws-roster-row + .ws-roster-row { border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-roster-row .n { flex: 0 1 auto; min-width: 0; color: var(--cur-ink); }
+/* The address is the part you copy and the part you search, so it gets the
+   slack and the name keeps its own line unwrapped. */
+.cur .ws-roster-row .e {
+  margin-left: auto; text-align: right; color: var(--cur-muted);
+  overflow-wrap: anywhere;
+}
 
 /* ── Run trace ────────────────────────────────────────
    Replaces the `.turn`/`.step` cards this screen used to borrow from
