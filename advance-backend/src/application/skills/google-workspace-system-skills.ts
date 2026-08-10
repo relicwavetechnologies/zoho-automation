@@ -362,138 +362,86 @@ directly under the governed \`data\` object. Each \`sheets\` entry contains
 
 ## Pasted Google Sheet or Excel workbook URL
 
-**Branch on intent before choosing a tool:**
+This covers an exact pasted \`https://docs.google.com/spreadsheets/d/...\` Sheet
+URL or \`https://drive.google.com/file/d/...\` Excel workbook URL. Branch on
+intent before choosing a tool:
 
-- **Read-only** (inspect, look up a row/column, verify a value, summarize rows)
-  → load \`google-drive\` and follow its read-only pasted-URL recipe with
-  \`get_drive_file_content\`. Do **not** run \`resolve_reference\` or a
-  conversion flow for read-only work.
-- **Edit as a native Sheet or convert Excel to Google Sheet** → use the
-  \`resolve_reference\` flow below.
+- **Read-only** — inspect, look up a row or value, verify something, summarize
+  → load \`google-drive\` and follow its pasted-URL recipe with
+  \`get_drive_file_content\`. Do not run \`resolve_reference\` for read-only work.
+- **Edit as a native Sheet, or convert an Excel workbook** → \`resolve_reference\`
+  on the exact pasted URL. Before generic web search or any native Sheets
+  operation, route the URL through that governed resolver: never derive an ID
+  from the URL yourself, fetch it as a public web page, request a download URL,
+  or call \`import_to_google_sheets\` directly.
 
-Before generic web search or a native Sheets operation for **edit/convert**
-intent, route an exact pasted \`https://docs.google.com/spreadsheets/d/...\`
-Sheet URL or \`https://drive.google.com/file/d/...\` Excel workbook URL through
-Divo's governed reference resolver. Do not fetch it as a public web page, derive
-an ID from the URL yourself, request a download URL, or call
-\`import_to_google_sheets\` directly:
+A URL on its own resolves metadata and access only. Confirm Divo can open the
+Sheet, then ask what the member wants done next.
 
-\`\`\`json
-{
-  "toolId": "googleSheets",
-  "args": {
-    "op": "resolve_reference",
-    "url": "<exact pasted Google Sheet or Drive workbook URL>",
-    "connectionId": "<optional exact returned connection UUID>"
-  }
-}
-\`\`\`
+Never spend a resolver call rediscovering an account the run bootstrap already
+selected. If Divo returns several eligible accounts, ask once, then retry the
+same URL with the exact chosen connection.
 
-When the current run bootstrap already supplies one exact selected Google
-\`connectionId\`, include it on the first call. Otherwise omit it; if Divo
-returns one eligible account, retry immediately with its exact connection ID.
-If it returns several, ask once, then retry the same URL with the selected exact
-connection. Never spend a resolver call rediscovering a bootstrap account.
-In a Lark runtime, a resolved response returns only
-\`data.destinationReferenceId\`; retain that opaque, short-lived handle bound
-to the exact user, chat, thread, and run. Use it for reads or edits without
-extracting a spreadsheet ID from the URL:
+In Lark, stop after a successful resolver call on an Excel workbook: the backend
+delivers the confirmation card and owns the conversion after the member clicks
+it. On Desktop, keep the governed \`data.resource.resourceId\` and
+\`data.resource.connectionId\` handles Divo already returned. Never reconstruct
+Google IDs or move Sheet rows through model context.
 
-\`\`\`json
-{
-  "toolId": "googleSheets",
-  "args": {
-    "op": "call_resolved_sheet",
-    "destinationReferenceId": "<opaque resolved reference>",
-    "nativeTool": "read_sheet_values",
-    "input": { "range_name": "Sheet1!A1:Z100" }
-  }
-}
-\`\`\`
+## Writing to a Sheet
 
-In Desktop, retain the governed
-\`data.resource.resourceId\` and \`data.resource.connectionId\` handles already
-returned by Divo. Never reconstruct Google IDs or move Sheet rows through
-model context.
-
-A URL-only request resolves metadata and access only. Confirm that Divo can
-open the Sheet, then ask what the member wants to do next.
-
-For an Excel workbook, \`resolve_reference\` prepares Divo's native confirmation
-to create a new Google Sheet copy. The original workbook stays unchanged. In
-Lark, stop after the successful resolver call: the backend delivers the
-confirmation card and owns conversion after the member clicks it.
-
-**If a Sheets operation fails with \`must not be an Office file\`**, Google is
-saying the file is an Excel or CSV upload rather than a native Sheet — the
-Sheets API cannot read or write one whatever the connection is allowed to do.
-This is **not** a permission problem: never tell the member their scopes are
-missing or ask them to reconnect Google over it, because reconnecting changes
-nothing and they will do it and fail again. Recover by running
-\`resolve_reference\` on the same URL, which offers the editable Google Sheet
-copy. Say that the file is an Excel export and that editing needs a Sheet copy,
-and let the member decide.
+Keep bulk source rows in local files and write in bounded calls.
 
 When the connected source is authoritative and the member asks to correct or
-replace an existing tab, inspect the header plus the final populated row once;
-do not sample several arbitrary existing ranges. Validate all replacement rows
-locally and persist them before the first Sheet mutation. On a formatting or
-verification retry, reuse that saved source file rather than refetching every
-provider page. Clear any stale tail beyond the new final row, write values in
-the fewest bounded calls, apply each requested style or dimension once, then
-perform one exact verification read containing the header and final written
-row.
+replace an existing tab, inspect the header plus the final populated row once —
+not several arbitrary ranges. Validate every replacement row locally and persist
+it before the first mutation, so a formatting or verification retry reuses that
+saved file instead of refetching provider pages. Clear any stale tail beyond the
+new final row, write in the fewest bounded calls, apply each requested style or
+dimension once, then read back the header and final written row.
 
-Resolved-Sheet terminal calls use these flat native \`input\` shapes; the opaque
-reference supplies \`spreadsheet_id\`:
+For a new structured spreadsheet, work in this order: \`create_spreadsheet\`,
+\`modify_sheet_values\` for headers and rows, \`format_sheet_range\`,
+\`resize_sheet_dimensions\` for column sizing and \`frozen_row_count\` /
+\`frozen_column_count\`, \`manage_sheet_data_validation\` for dropdowns, then
+\`read_sheet_values\` on the important range. Treat a successful create as final
+even if later parsing or code fails; never create a second spreadsheet to
+rediscover the first response.
 
-\`\`\`json
-{"nativeTool":"modify_sheet_values","input":{"range_name":"Expenses!A1","values":[["Amount"],["10.00"]]}}
-{"nativeTool":"format_sheet_range","input":{"range_name":"Expenses!A1:G1","background_color":"#334D73","text_color":"#FFFFFF","bold":true,"horizontal_alignment":"CENTER"}}
-{"nativeTool":"resize_sheet_dimensions","input":{"sheet_name":"Expenses","column_sizes":{"A":220,"B":120},"frozen_row_count":1}}
-\`\`\`
+Read \`read_sheet_values\` from its machine-readable \`values\`, \`rowCount\`,
+\`returnedRowCount\`, \`isEmpty\`, and \`complete\` fields rather than parsing
+prose.
 
-Keep Sheet values scalar and string-safe before writing. Do not nest formatting
-under \`cell_format\`, and do not invent index-based resize fields. If no loaded
-native operation can implement a requested feature, report that feature as
+Four corrections the loaded schemas do not prevent: keep Sheet values scalar and
+string-safe before writing, never nest formatting under \`cell_format\`, never
+invent index-based resize fields, and give data validation a sheet-qualified
+range with either \`one_of_list\` values or a \`one_of_range\` source. If no
+loaded native operation can implement a requested feature, report that feature
 partial instead of claiming it was applied.
 
-For a new structured spreadsheet, use this order:
-
-This workflow creates a workbook through the selected governed Google
-connection. Keep bulk source rows in local files, write in bounded calls, and
-verify the important written range before reporting completion.
-
-1. \`create_spreadsheet\` and retain the returned \`spreadsheetId\` and \`spreadsheetUrl\` fields. Treat a successful create as final even if later parsing or code fails; never create a second spreadsheet to rediscover the first response.
-2. \`modify_sheet_values\` to write headers and rows.
-   A successful write may return only an acknowledgement under \`data.result\`, not \`updatedRows\`. In a terminal workflow, count the intended rows from the local \`input.values\`; claim that count as written only after the exact read-back matches. Never turn a missing \`updatedRows\` field into a zero-row claim when verification proves the rows exist.
-3. \`format_sheet_range\` for header and cell formatting, following its described flat input schema exactly.
-4. \`resize_sheet_dimensions\` for column sizing and \`frozen_row_count\` / \`frozen_column_count\`.
-5. \`manage_sheet_data_validation\` for dropdowns. Use explicit sheet-qualified ranges such as \`Sheet1!D2:D100\` and either \`one_of_list\` values or a \`one_of_range\` source.
-6. \`read_sheet_values\` to verify the important written range. Use its machine-readable \`values\`, \`rowCount\`, \`returnedRowCount\`, \`isEmpty\`, and \`complete\` fields instead of parsing prose. A read with \`complete: false\` exposes only part of the range; read a narrower exact range before claiming verification.
-7. Return the canonical Google Sheets URL from the successful result. A task is partial if requested formatting, freezing, validation, or URL return has not completed.
-
-Example governed operation arguments:
-
-\`\`\`json
-{
-  "connectionId": "<selected connection UUID when required>",
-  "op": "call",
-  "nativeTool": "manage_sheet_data_validation",
-  "input": {
-    "spreadsheet_id": "<spreadsheet ID>",
-    "action": "set",
-    "ranges": ["Sheet1!D2:D100"],
-    "rule": { "type": "one_of_list", "values": ["Pending", "Approved", "Rejected"] }
-  }
-}
-\`\`\`
-
-Use this same argument shape with the registered Divo Google Sheets capability. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use it as the \`divo-local\` args file in a governed terminal workflow.
+Dropdowns are the one shape the run bootstrap never binds, so it is written out
+here: \`manage_sheet_data_validation\` takes
+\`{"action":"set","ranges":["Sheet1!D2:D100"],"rule":{"type":"one_of_list","values":["Pending","Approved"]}}\`.
+Every other operation's arguments come from the bound native contract or one
+\`describe\`.
 
 ### Completion contract
 
-A create or edit task is complete only after the important requested range is read back successfully in the same workflow, every required advisory is satisfied, and the response includes the canonical spreadsheet URL. Compare the machine-readable header and final populated row against the intended write. A failed, rate-limited, incomplete, or missing read-back cannot be replaced by an earlier write acknowledgement or an inferred count. Preserve the spreadsheet ID, sheet ID/title, and exact A1 ranges across steps. If a write returns an ambiguous failure, read the target range before retrying so rows or values are not duplicated.`;
+A create or edit is complete only after the important requested range is read
+back successfully in the same workflow, every required advisory is satisfied,
+and the response carries the canonical spreadsheet URL. A task is partial if
+requested formatting, freezing, validation, or URL return has not completed.
+
+A successful write may return only an acknowledgement under \`data.result\`,
+without \`updatedRows\`. Count the intended rows from your own \`input.values\`
+and claim that count as written only once the exact read-back matches; never
+turn a missing \`updatedRows\` field into a zero-row claim when verification
+proves the rows exist. A read with \`complete: false\` exposed only part of the
+range — read a narrower exact range before claiming verification. A failed,
+rate-limited, incomplete, or missing read-back cannot be replaced by an earlier
+write acknowledgement or an inferred count. Preserve the spreadsheet ID, sheet
+ID/title, and exact A1 ranges across steps, and if a write fails ambiguously,
+read the target range before retrying so rows or values are not duplicated.`;
 
     case 'contacts':
       return `
