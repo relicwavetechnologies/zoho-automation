@@ -751,6 +751,37 @@ This track is complete only when:
 - Cold review: deferred to a single review covering Waves 3-5.
 - Decision: content complete; **gates §9.3 and §9.4 still open.**
 
+### Wave 5, slice 1: the Airtable connection block — 2026-08-11
+
+- Commit / environment: local worktree on `dev`. Not reconciled to any DB.
+- `airtable-core` 13,080 → 12,544; `airtable-schema-ops` 4,366 → 3,830;
+  `airtable-automation-ops` 4,552 → 4,016. −1,608 bytes from one shared helper,
+  `airtableConnectionMethod`, which all three skills render.
+- **All three were teaching a deleted tool.** The block described the
+  `divo_gateway` mega-tool: reach Airtable through `divo_gateway` or `call_tool`
+  depending on runtime, wrap the call in root `op: "tools.invoke"` with
+  `payload: { toolId, args }`, and keep `connectionId` inside `payload.args`
+  rather than beside `payload`. That mega-tool is gone (§2) and each family is a
+  registered typed tool, so the envelope is not merely unnecessary — it is
+  rejected. A run following this skill literally could not call Airtable.
+- **The test asserted the envelope**, so the suite was holding the deleted call
+  shape in place. Third instance of this pattern, after the `google-sheets`
+  `{"toolId","args"}` blocks and the Semrush env-var section. It now guards that
+  no gateway vocabulary returns, and asserts the surviving fact instead: which
+  of the three Airtable tools owns a given job.
+- **Systemic, not local.** `divo_gateway` is still taught by
+  `shopify.skill.ts` (three places, including "call shopifyOrders only as a
+  direct divo_gateway tool invocation") and `aitable.skill.ts`. Those belong to
+  Wave 6 and were deliberately not touched here.
+- **Wave 5 is not finished.** The bodies of `airtable-core` (12.5 KB, and still
+  one wall of text with no headings), the two ops skills, and `menhood-data`
+  are not yet rewritten. Notably `airtable-core` restates the `filters` tree,
+  the date VALUE/RANGE objects, and `get_table_schema` input — and §2 says
+  Airtable nested schemas are bound before inference, so those are candidates
+  once verified against `airtable-contract-bootstrap.service.ts`.
+- Tests: 3,371 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
+- Cold review: pending, to cover Waves 3-5 together.
+
 Append one block per pair:
 
 ```md

@@ -2,14 +2,19 @@ import type { Skill } from './skill.types';
 
 type AirtableToolId = 'airtableRecords' | 'airtableSchema' | 'airtableAutomation';
 
-const airtableConnectionMethod = (toolId: AirtableToolId) => `DIVO-GOVERNED AIRTABLE CONNECTION:
-- Invoke Airtable only through the Divo tool surface available in the current runtime: Pi/desktop exposes divo_gateway, while a direct server runner may expose call_tool. Never call Airtable directly, never use a personal access token, and never switch to an unavailable tool surface.
-- A call requires an exact connectionId supplied by the current run. Describe may omit it only to inspect an approved operation schema.
-- For divo_gateway, the only valid wrapper for this skill's primary Airtable tool is root \`op: "tools.invoke"\` with \`payload: { toolId: "${toolId}", args: { op: "describe"|"call", nativeTool, connectionId, input } }\`. Put \`connectionId\` inside \`payload.args\`, never beside \`payload\`.
-- If this skill intentionally uses another loaded Airtable tool, substitute that exact toolId: record native tools use \`airtableRecords\`, schema native tools use \`airtableSchema\`, and automation/interface native tools use \`airtableAutomation\`.
-- If the current run supplies multiple connections, ask one short account-choice question using those labels, then use the selected exact ID. Do not guess.
-- If no connection is accessible, tell the member to connect Airtable or request access to an existing connection.
-- Never use a base name, workspace name, or label as connectionId. Use only a backend-provided connectionId.`;
+/*
+ * The wrapper this used to teach — root `op: "tools.invoke"` with a
+ * `payload: { toolId, args }` envelope — was the divo_gateway mega-tool, which
+ * has been deleted. Each family is a registered typed tool now, so the envelope
+ * is not merely unnecessary, it is rejected. What a tool definition cannot say
+ * is which of the three Airtable tools owns a given job, and what to do when
+ * the run offers no connection or several.
+ */
+const airtableConnectionMethod = (toolId: AirtableToolId) => `GOVERNED AIRTABLE ACCESS:
+- Reach Airtable only through Divo's registered Airtable tools. This skill's own work goes through \`${toolId}\`; records and comments use \`airtableRecords\`, base shape uses \`airtableSchema\`, and interfaces and automations use \`airtableAutomation\`. Never call Airtable directly and never use a personal access token.
+- A \`call\` needs the exact \`connectionId\` the current run supplied. \`describe\` may omit it to inspect an approved operation schema.
+- If the run supplies several connections, ask one short account-choice question using their labels, then use the selected exact ID. If none is accessible, tell the member to connect Airtable or request access to an existing one.
+- Never guess a connection, and never pass a base, workspace, or label name where a backend-provided \`connectionId\` belongs.`;
 
 const AIRTABLE_ID_DISCIPLINE = `IDENTIFIER DISCIPLINE:
 - Airtable IDs have fixed prefixes: bases are app..., tables tbl..., fields fld..., records rec..., views viw....

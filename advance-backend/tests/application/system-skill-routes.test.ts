@@ -60,12 +60,21 @@ describe('system skill routes', () => {
     assert.doesNotMatch(router.markdown, /exportCandidate|dataExport|secure-data-export/);
   });
 
-  it('teaches exact Airtable gateway and record-read shapes', () => {
-    assert.match(airtableCoreSkill.instructions, /root `op: "tools\.invoke"`/);
-    assert.match(airtableCoreSkill.instructions, /Put `connectionId` inside `payload\.args`, never beside `payload`/);
-    assert.match(airtableCoreSkill.instructions, /toolId: "airtableRecords"/);
-    assert.match(airtableSchemaOpsSkill.instructions, /toolId: "airtableSchema"/);
-    assert.match(airtableAutomationOpsSkill.instructions, /toolId: "airtableAutomation"/);
+  it('sends each Airtable job to its own registered tool, without a gateway envelope', () => {
+    /*
+     * These three skills taught the divo_gateway wrapper — root
+     * `op: "tools.invoke"` around `payload: { toolId, args }`, with a rule
+     * about which level `connectionId` sits at. That mega-tool is deleted and
+     * each family is a registered typed tool, so the envelope is not just
+     * unnecessary, it is rejected. The test asserted the envelope, so the
+     * suite was holding a deleted call shape in place.
+     */
+    for (const skill of [airtableCoreSkill, airtableSchemaOpsSkill, airtableAutomationOpsSkill]) {
+      assert.doesNotMatch(skill.instructions, /tools\.invoke|payload\.args|divo_gateway|call_tool/);
+    }
+    assert.match(airtableCoreSkill.instructions, /goes through `airtableRecords`/);
+    assert.match(airtableSchemaOpsSkill.instructions, /goes through `airtableSchema`/);
+    assert.match(airtableAutomationOpsSkill.instructions, /goes through `airtableAutomation`/);
     assert.match(airtableCoreSkill.instructions, /list_records_for_table input uses `filters` plural, not `filter`/);
     assert.match(airtableCoreSkill.instructions, /search_records has a different input shape/);
     assert.match(airtableCoreSkill.instructions, /Each leaf condition is `\{ operator, operands: \[fieldId, value\] \}`/);
