@@ -19,8 +19,8 @@ describe('Divo local Python system skill', () => {
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /credential-free\s+`divo-local`/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /retired `divo_python_automation` tool is unavailable/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /response\["data"\]/i);
-    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /--output/);
-    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /failed call does not create the output file/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /automatically writes.*DIVO_RUN_DIR/is);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /failed call creates no result file/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /data.*provider\s+result.*Never use `len\(data\)`/is);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Never guess, copy an old\s+ID/is);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /returned == parsed \+ skipped/i);

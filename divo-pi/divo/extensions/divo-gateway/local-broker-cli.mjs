@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -10,7 +11,7 @@ function usage(message) {
 		"Divo governed company-call client",
 		"",
 		"  divo-local invoke --tool <toolId> (--args-json <json> | --args-file <path>) [--output <run-path>] [--label <text>]",
-		"  divo-local request --op <connections.list|tools.list|tools.invoke> (--payload-json <json> | --payload-file <path>)",
+		"  divo-local request --op <connections.list|tools.list> (--payload-json <json> | --payload-file <path>)",
 		"",
 		"The client contains no member or SaaS credentials. The local Divo broker applies runtime approval and the backend applies RBAC, connection policy, rate limits, manager approval, and audit.",
 	].join("\n"));
@@ -56,8 +57,12 @@ if (command === "invoke") {
 	};
 } else {
 	if (!options.op) usage("--op is required for request.");
+	const requestOp = options.op.trim();
+	if (!["connections.list", "tools.list"].includes(requestOp)) {
+		usage("request supports only connections.list or tools.list; use invoke for tool execution.");
+	}
 	request = {
-		op: options.op,
+		op: requestOp,
 		payload: await readJson(options, "payload-json", "payload-file", {}),
 	};
 }
@@ -65,11 +70,13 @@ if (options.output && command !== "invoke") usage("--output is available only fo
 if (options["department-id"]) request.departmentId = options["department-id"];
 
 let outputPath;
-if (options.output) {
+if (command === "invoke") {
 	const runRoot = process.env.DIVO_RUN_DIR;
-	if (!runRoot) usage("DIVO_RUN_DIR is required for --output.");
+	if (!runRoot) usage("DIVO_RUN_DIR is required for invoke.");
 	const root = resolve(runRoot);
-	outputPath = isAbsolute(options.output) ? resolve(options.output) : resolve(root, options.output);
+	const requestedOutput = options.output
+		?? `divo-${options.tool.replaceAll(/[^a-zA-Z0-9_-]/g, "-")}-${randomUUID()}.json`;
+	outputPath = isAbsolute(requestedOutput) ? resolve(requestedOutput) : resolve(root, requestedOutput);
 	const child = relative(root, outputPath);
 	if (!child || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) {
 		usage("--output must name a new file inside DIVO_RUN_DIR.");
@@ -81,7 +88,7 @@ if (!socketPath) usage("The Divo local broker is not available in this shell.");
 const envelope = {
 	version: 1,
 	...(options.label ? { label: options.label } : {}),
-	...(outputPath ? { resultMode: "local-file" } : {}),
+	...(command === "invoke" ? { resultMode: "local-file" } : {}),
 	request,
 };
 process.stderr.write(`[Divo] ${options.label ?? (command === "invoke" ? options.tool : options.op)}\n`);

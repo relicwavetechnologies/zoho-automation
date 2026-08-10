@@ -110,12 +110,12 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local client/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Gmail\/CRM → Sheets is always this path/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Keep all connected reads, writes, and verification.*inside the file through divo-local/i);
-		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /--output.*DIVO_RUN_DIR.*never print or cat rows/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /automatically saves.*DIVO_RUN_DIR.*never print or cat rows/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /read the exact source recipe and the native divo-python-automation skill in this turn/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /a tool schema is not a source recipe/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Do not write or run until those reads succeed/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /ask one short clarifying question instead of guessing a provider contract/i);
-		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local invoke --tool <toolId> --args-file <path> --output <new-run-path>/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local invoke --tool <toolId> --args-file <path>/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /provider result is under data.*Never count keys/is);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never print preview or row values/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /provider schema describe also runs once inside this same file through divo-local/i);

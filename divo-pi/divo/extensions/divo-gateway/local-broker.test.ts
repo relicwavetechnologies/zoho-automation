@@ -332,6 +332,7 @@ describe("Divo local broker protocol", () => {
 		});
 		delete process.env.DIVO_MEMBER_TOKEN;
 		const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+		const resultModes: unknown[] = [];
 		registerLocalDivoBroker({
 			on(name: string, handler: (event: any, ctx: any) => unknown) {
 				const existing = handlers.get(name) ?? [];
@@ -341,14 +342,17 @@ describe("Divo local broker protocol", () => {
 		} as never, {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
-			executeGateway: async (_resolved, request) => ({
-				body: request.op === "tools.invoke" && (request.payload as { toolId?: string })?.toolId === "badTool"
-					? { ok: false, status: "invalid_args", error: { code: "invalid_args", message: "Bad test args" } }
-					: { ok: true, status: "success", data: request.op === "tools.invoke"
-					? { toolId: "zohoBooks", action: "read", result: { rows: [{ id: "row-1", secret: "file-only" }] } }
-					: { op: request.op } },
-				httpStatus: 200,
-			}),
+			executeGateway: async (_resolved, request, _actionId, ctx) => {
+				if (request.op === "tools.invoke") resultModes.push(ctx.resultMode);
+				return {
+					body: request.op === "tools.invoke" && (request.payload as { toolId?: string })?.toolId === "badTool"
+						? { ok: false, status: "invalid_args", error: { code: "invalid_args", message: "Bad test args" } }
+						: { ok: true, status: "success", data: request.op === "tools.invoke"
+						? { toolId: "zohoBooks", action: "read", result: { rows: [{ id: "row-1", secret: "file-only" }] } }
+						: { op: request.op } },
+					httpStatus: 200,
+				};
+			},
 		});
 		try {
 			await handlers.get("session_start")?.[0]?.({}, {});
@@ -377,19 +381,30 @@ describe("Divo local broker protocol", () => {
 			assert.match(result.stderr, /\[Divo\] List connections/);
 			assert.doesNotMatch(`${result.stdout}${result.stderr}`, /member-token/);
 			await assert.rejects(execFileAsync("divo-local", [
-				"invoke", "--tool", "badTool", "--args-json", "{}", "--output", "page.json",
+				"request", "--op", " tools.invoke ", "--payload-json", "{}",
+			], { env: process.env }), (error: { stderr?: string }) => {
+				assert.match(error.stderr ?? "", /use invoke for tool execution/i);
+				return true;
+			});
+			await assert.rejects(execFileAsync("divo-local", [
+				"invoke", "--tool", "badTool", "--args-json", "{}",
 			], { env: process.env }), (error: { stdout?: string }) => {
 				assert.match(error.stdout ?? "", /invalid_args/);
 				return true;
 			});
 			await assert.rejects(access(join(runDir, "page.json")), { code: "ENOENT" });
 			const fileResult = await execFileAsync("divo-local", [
-				"invoke", "--tool", "zohoBooks", "--args-json", "{}", "--output", "page.json",
+				"invoke", "--tool", "zohoBooks", "--args-json", "{}",
 			], { env: process.env });
 			const summary = JSON.parse(fileResult.stdout);
-			assert.equal(summary.output, join(runDir, "page.json"));
+			assert.match(summary.output, new RegExp(`^${runDir}/divo-zohoBooks-[a-f0-9-]+\\.json$`));
 			assert.doesNotMatch(fileResult.stdout, /file-only/);
-			assert.match(await readFile(join(runDir, "page.json"), "utf8"), /file-only/);
+			assert.match(await readFile(summary.output, "utf8"), /file-only/);
+			const explicitResult = await execFileAsync("divo-local", [
+				"invoke", "--tool", "zohoBooks", "--args-json", "{}", "--output", "page.json",
+			], { env: process.env });
+			assert.equal(JSON.parse(explicitResult.stdout).output, join(runDir, "page.json"));
+			assert.deepEqual(resultModes, ["local-file", "local-file", "local-file"]);
 			await handlers.get("tool_execution_end")?.[0]?.({
 				toolName: "bash",
 				toolCallId: "bash-cli",

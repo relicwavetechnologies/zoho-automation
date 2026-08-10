@@ -91,12 +91,11 @@ Use \`subprocess\` with \`divo-local\`. It exposes no member token or SaaS
 credential. For generated or substantial arguments, write an adjacent JSON
 file and pass \`--args-file\`.
 
-For a record page, always add \`--output <new-file-inside-DIVO_RUN_DIR>\`.
-The CLI writes the full governed response only to that file and prints a small
-path/byte-count/trace summary. Never print or \`cat\` the saved response. Parse
-it in Python and print only counts, aggregates, validation errors, and IDs the
-user needs. A failed call does not create the output file, so correct the same
-script and rerun it with the same path.
+Every \`divo-local invoke\` automatically writes its successful governed
+response to a new protected JSON file inside \`DIVO_RUN_DIR\` and prints only a
+small path/byte-count/trace summary. Read the returned path in Python. Never
+print or \`cat\` the saved response; print only counts, aggregates, validation
+errors, and IDs the user needs. A failed call creates no result file.
 
 The saved JSON is \`{ ok, status, data, meta, ... }\`; \`data\` is the provider
 result, not necessarily a row array. Never use \`len(data)\` as a record count.
@@ -130,11 +129,8 @@ class DivoCallError(RuntimeError):
         super().__init__(f"{status}: {message}")
 
 
-def divo_invoke_to_file(tool_id, args, label, args_name, output_name):
+def divo_invoke(tool_id, args, label, args_name):
     args_path = RUN_DIR / args_name
-    output_path = RUN_DIR / output_name
-    if output_path.exists():
-        raise RuntimeError(f"Refusing to overwrite existing result: {output_path.name}")
     args_path.write_text(json.dumps(args, ensure_ascii=False), encoding="utf-8")
     completed = subprocess.run(
         [
@@ -144,8 +140,6 @@ def divo_invoke_to_file(tool_id, args, label, args_name, output_name):
             tool_id,
             "--args-file",
             str(args_path),
-            "--output",
-            str(output_path),
             "--label",
             label,
         ],
@@ -161,6 +155,9 @@ def divo_invoke_to_file(tool_id, args, label, args_name, output_name):
         ) from exc
     if completed.returncode != 0 or not summary.get("ok"):
         raise DivoCallError(summary)
+    output_path = Path(summary["output"])
+    if output_path.parent != RUN_DIR:
+        raise RuntimeError("divo-local returned a result outside DIVO_RUN_DIR")
     response = json.loads(output_path.read_text(encoding="utf-8"))
     if not response.get("ok"):
         raise DivoCallError(response)
