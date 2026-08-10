@@ -97,6 +97,8 @@ interface StatePayload {
   redirectUri?: string;
   /** Tool ids that made this OAuth grant necessary. */
   requestedToolIds?: string[];
+  /** Signed connection ownership selected by the authenticated start route. */
+  ownerType?: 'user' | 'company';
   /** Safe app-local page to resume after a same-tab browser sign-in. */
   returnTo?: string;
   exp?: number;
@@ -2155,6 +2157,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     try {
       const userId    = res.locals['userId'] as string;
       const companyId = res.locals['companyId'] as string;
+      const ownerType = req.query['owner'] === 'company' ? 'company' : 'user';
       const redirectUri = desktopCallbackUri(req, '/api/desktop/auth/google/callback');
 
       // `for` names what the member is connecting Google *to do*, and narrows
@@ -2169,6 +2172,16 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         .split(',')
         .map(value => value.trim())
         .filter(Boolean);
+      if (ownerType === 'company') {
+        if (!COMPANY_ADMIN_ROLES.has((res.locals['aiRole'] as string | undefined) ?? 'MEMBER')) {
+          res.status(403).json({ success: false, message: 'A company admin must connect the export account' });
+          return;
+        }
+        if (requestedFor.length !== 1 || requestedFor[0] !== 'dataExport') {
+          res.status(400).json({ success: false, message: 'A company Google account may be connected here only for data exports' });
+          return;
+        }
+      }
       const scopes = googleScopesToRequestForToolIds(requestedFor);
 
       const state = signJwt(
@@ -2179,6 +2192,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           companyId,
           redirectUri,
           requestedToolIds: requestedFor,
+          ownerType,
         },
         deps.memberJwtSecret,
         600,
@@ -2216,6 +2230,29 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
 
+      const ownerType = payload.ownerType === 'company' ? 'company' : 'user';
+      if (ownerType === 'company') {
+        const membership = await deps.prisma.adminMembership.findFirst({
+          where: {
+            userId: payload.userId,
+            companyId: payload.companyId,
+            isActive: true,
+            role: { in: [...COMPANY_ADMIN_ROLES] },
+          },
+          select: { id: true },
+        });
+        if (!membership) {
+          log.warn('google.callback.company_owner_forbidden', {
+            userId: payload.userId,
+            companyId: payload.companyId,
+          });
+          res.status(403).send(
+            '<html><body><h2>Google connection rejected</h2><p>A current company admin must connect the export account.</p></body></html>',
+          );
+          return;
+        }
+      }
+
       // The state was signed when this flow began, so this is the exact same
       // callback Google used for the authorization code. It lets a locally
       // selected Desktop backend complete its own OAuth flow instead of being
@@ -2235,8 +2272,8 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
       const upsertResult = await deps.connectionRepo.upsertGoogleConnection({
         companyId:  payload.companyId,
-        ownerType: 'user',
-        ownerUserId: payload.userId,
+        ownerType,
+        ...(ownerType === 'user' ? { ownerUserId: payload.userId } : {}),
         createdBy: payload.userId,
         googleUserId: userInfo.sub,
         scope:        tokenBundle.scope ?? '',
@@ -2251,7 +2288,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       if (!upsertResult.ok) {
         log.error('google.callback.upsert_failed', { error: String(upsertResult.error) });
       } else {
-        const startsMailBrief = canStartMailBriefFromGoogleAuthorization({
+        const startsMailBrief = ownerType === 'user' && canStartMailBriefFromGoogleAuthorization({
           requestedToolIds,
           grantedScopes,
         });
@@ -2277,7 +2314,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         }
       }
 
-      log.info('google.callback.success', { userId: payload.userId });
+      log.info('google.callback.success', { userId: payload.userId, ownerType });
 
       res.send(connectionCallbackPage(
         'google_workspace',

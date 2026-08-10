@@ -110,12 +110,10 @@ Choose the exact approved specialist returned by this router.
 
 - One bounded provider lookup or preview → load that provider's specialist and
   keep the response in chat.
-- Complete Zoho Books or CRM artifact → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`.
-  Page through the governed Zoho tool into one local file, then use the
-  destination specialist and reconcile source/written/read-back counts.
-- A provider skill that explicitly says it lacks terminal-safe paging may
-  return \`exportCandidate\`. Keep that handle opaque and use \`dataExport\`
-  with \`op=plan\` only as that provider's temporary compatibility route.
+- Complete provider export with an \`exportCandidate\` → \`secure-data-export\`.
+  Keep the handle opaque and use \`dataExport op=plan\`; the backend owns
+  paging, company-account destination policy, exact invoker sharing, and
+  measured coverage.
 - Produce a governed complete-data artifact without a provider candidate →
   \`secure-data-export\`. Its direct recipes are only for backend-replayable
   sources with exact backend-resolved identifiers. Airtable MCP pagination is
@@ -137,10 +135,10 @@ Choose the exact approved specialist returned by this router.
   request a download URL or import it directly.
 - Read or analyse a file that is already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
 
-Use the scripted workflow for complete datasets when the source exposes real
-pagination, even for one source. Keep the compatibility export path only for a
-provider whose specialist explicitly says paging is unavailable. Neither route
-carries a record set through the conversation.
+Use the scripted workflow for bespoke calculations, transformations, joins, or
+related cross-product work. Use the governed export for a provider-backed file
+whenever its result contains \`exportCandidate\`. Neither route carries a record
+set through the conversation.
 
 Keep each opaque handle in its owning route:
 
@@ -162,8 +160,8 @@ Examples:
 - “Show me our best keywords” → research specialist and bounded preview.
 - “Put the complete keyword result in a Sheet” → use the provider
   \`exportCandidate\` with \`dataExport op=plan\`.
-- “Put every Zoho invoice in a Sheet” → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`,
-  then the Zoho and Google Sheets specialists.
+- “Put every Zoho invoice in a Sheet” → exact Zoho candidate, then
+  \`secure-data-export\` with \`dataExport op=plan\`.
 - “Combine invoices with Airtable owners and calculate totals” → relevant
   provider specialists plus \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`.
 - A pasted spreadsheet or Drive file URL to **read or inspect** → \`google-drive\`
@@ -172,8 +170,8 @@ Examples:
   metadata, then ask what the member wants to do.
 - “Add a Notes column to that Sheet” after a Divo export → \`google-sheets\`
   with its recent opaque resource reference and read-back verification.
-- No eligible Google destination → report the governed connection error or ask
-  one short choice question from backend-provided account labels; never guess.
+- No company Google export destination → report that an administrator must
+  configure or reconnect it; never select or connect a personal account for an export.
 
 Never treat this router as permission to process or export data. Load the specialist first.`,
     toolIds: [],

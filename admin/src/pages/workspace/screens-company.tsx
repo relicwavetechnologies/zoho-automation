@@ -650,7 +650,12 @@ export function CompanyConnections({ replay, toast, go }: Props) {
   const { token, companyId } = useAdminScope()
   const { data: directoryData, isLoading: loading } = useDirectory(token, companyId)
   const directory = directoryData ?? []
-  const { byProvider, refresh: refreshConnections } = useConnections()
+  const {
+    byProvider,
+    connecting,
+    connect,
+    refresh: refreshConnections,
+  } = useConnections()
   const tokenConnect = useTokenConnect()
 
   /**
@@ -784,7 +789,14 @@ export function CompanyConnections({ replay, toast, go }: Props) {
         {/* Handed the same status map rather than calling `useConnections`
             itself — six provider reads twice over on one page load is a cost
             nothing here needs to pay. */}
-        <DataExportPanel toast={toast} google={byProvider.get('google_workspace')} />
+        <DataExportPanel
+          toast={toast}
+          google={byProvider.get('google_workspace')}
+          connecting={connecting === 'google_workspace'}
+          connectCompanyAccount={async () => {
+            await connect('google_workspace', { forTools: ['dataExport'], owner: 'company' })
+          }}
+        />
 
         <Panel title="Per-person connections">
           <div className="ws-panel-body">
@@ -905,12 +917,20 @@ function TokenProviderRow({ provider, name, blurb, action, status, onOpen }: {
  * There is no route to clear it, only to point it somewhere else, and the panel
  * says so rather than offering a button that would 404.
  */
-function DataExportPanel({ toast, google }: { toast: Toast; google?: ProviderStatus }) {
+function DataExportPanel({ toast, google, connecting, connectCompanyAccount }: {
+  toast: Toast
+  google?: ProviderStatus
+  connecting: boolean
+  connectCompanyAccount: () => Promise<void>
+}) {
   const { profile, loading, refused, failed, saving, configure } = useDataExportProfile()
 
-  // Only connections this admin holds admin access on. Anything less and the
-  // backend refuses the write, so offering it would be a button that fails.
-  const eligible = (google?.connections ?? []).filter((c) => c.access === 'admin')
+  // Export ownership is a company policy, not a member preference. Personal
+  // accounts remain available for ordinary Workspace work but are never
+  // offered here as export owners.
+  const eligible = (google?.connections ?? []).filter(
+    (c) => c.ownerType === 'company' && c.access === 'admin' && c.reconnectRequired !== true,
+  )
 
   // Not an admin: the route answers 403 and there is nothing here for them.
   if (refused) return null
@@ -951,7 +971,7 @@ function DataExportPanel({ toast, google }: { toast: Toast; google?: ProviderSta
 
             {eligible.length === 0 ? (
               <p className="ws-sentence-note">
-                No Google account here is one you administer. Connect one from your own <b>Connected apps</b> page first.
+                Connect the company Google account that should own every new export. This does not replace your personal Google connection.
               </p>
             ) : (
               <div className="ws-rows" style={{ marginTop: 10 }}>
@@ -982,6 +1002,19 @@ function DataExportPanel({ toast, google }: { toast: Toast; google?: ProviderSta
                 })}
               </div>
             )}
+            <div style={{ marginTop: 12 }}>
+              <button
+                type="button"
+                className="btn"
+                disabled={connecting}
+                onClick={async () => {
+                  try { await connectCompanyAccount() }
+                  catch (e) { toast(e instanceof Error ? e.message : 'Could not connect the company export account', 'error') }
+                }}
+              >
+                {connecting ? 'Connecting…' : eligible.length ? 'Connect another company account' : 'Connect company export account'}
+              </button>
+            </div>
           </>
         )}
       </div>

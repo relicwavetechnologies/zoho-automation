@@ -1,5 +1,3 @@
-import { GOOGLE_SCOPE, hasGoogleScopeGroups } from '../../domain/google/google-workspace-scope';
-import type { AccessibleConnection } from '../connections/connection-registry.port';
 import type { DataExportDestinationTarget } from './data-export.types';
 
 export interface DataExportDestinationChoice {
@@ -21,76 +19,30 @@ export type ResolveDataExportDestination = (input: {
 }) => Promise<DataExportDestinationResolution>;
 
 export function selectDataExportDestination(input: {
-  readonly userId: string;
-  readonly accessible: readonly AccessibleConnection[];
-  readonly companyFallback?: {
+  readonly companyDestination?: {
     readonly connectionId: string;
   };
   readonly connectionId?: string;
-  readonly preferredConnectionId?: string;
+  readonly unavailableReason?: string;
 }): DataExportDestinationResolution {
-  const personal = input.accessible.filter(connection =>
-    connection.ownerType === 'user'
-    && connection.ownerUserId === input.userId
-    && connection.access !== 'read_only'
-    && hasGoogleScopeGroups(connection.scopes, [
-      [GOOGLE_SCOPE.driveFull, GOOGLE_SCOPE.driveFile],
-      [GOOGLE_SCOPE.sheetsFull],
-    ]),
-  );
-
-  if (input.connectionId) {
-    const selected = personal.find(connection =>
-      connection.connectionId === input.connectionId,
-    );
-    if (selected) {
-      return {
-        status: 'selected',
-        target: { kind: 'user_google', connectionId: selected.connectionId },
-      };
-    }
-    if (
-      personal.length === 0
-      && input.companyFallback?.connectionId === input.connectionId
-    ) {
-      return {
-        status: 'selected',
-        target: {
-          kind: 'company_google',
-          connectionId: input.companyFallback.connectionId,
-        },
-      };
-    }
+  if (!input.companyDestination) {
     return {
       status: 'unavailable',
-      message: 'The selected Google export account is unavailable or no longer writable.',
+      message: input.unavailableReason
+        ?? 'Company data export is not configured by an administrator.',
     };
   }
-
-  if (personal.length === 1) {
+  if (input.connectionId && input.connectionId !== input.companyDestination.connectionId) {
     return {
-      status: 'selected',
-      target: { kind: 'user_google', connectionId: personal[0]!.connectionId },
+      status: 'unavailable',
+      message: 'Personal Google accounts cannot override the company export destination.',
     };
   }
-  if (personal.length > 1) {
-    return {
-      status: 'choose_connection',
-      connections: personal.map(connection => ({
-        connectionId: connection.connectionId,
-        label: connection.label,
-        ...(connection.accountEmail ? { accountEmail: connection.accountEmail } : {}),
-      })),
-    };
-  }
-  if (input.companyFallback) {
-    return {
-      status: 'selected',
-      target: {
-        kind: 'company_google',
-        connectionId: input.companyFallback.connectionId,
-      },
-    };
-  }
-  return { status: 'connect_required' };
+  return {
+    status: 'selected',
+    target: {
+      kind: 'company_google',
+      connectionId: input.companyDestination.connectionId,
+    },
+  };
 }

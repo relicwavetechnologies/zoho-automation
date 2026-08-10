@@ -285,7 +285,7 @@ export function useConnections() {
    */
   const connect = useCallback(async (
     provider: Provider,
-    options?: { label?: string; forTools?: readonly string[] },
+    options?: { label?: string; forTools?: readonly string[]; owner?: 'user' | 'company' },
   ) => {
     if (!token) return
     const authorizePath = AUTHORIZE_PATH[provider]
@@ -303,6 +303,10 @@ export function useConnections() {
       // is not asked for Drive and Calendar on the way. Omitted means the
       // general "connect this app" sense, which is still everything.
       if (options?.forTools?.length) query.set('for', options.forTools.join(','))
+      // Company ownership is accepted only by Google's admin-gated start
+      // route. It is signed into OAuth state, so the callback cannot promote a
+      // normal personal connection by changing a query parameter.
+      if (provider === 'google_workspace' && options?.owner === 'company') query.set('owner', 'company')
       const named = query.size > 0 ? `${authorizePath}?${query.toString()}` : authorizePath
       const { authorizeUrl } = await api.get<{ authorizeUrl: string }>(
         named,
