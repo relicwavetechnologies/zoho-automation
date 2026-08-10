@@ -317,8 +317,8 @@ the runtime does not provide.
 
 ### Wave 3 — research routing
 
-- [ ] `research-router`
-- [ ] `divo-semrush-seo-research`
+- [x] `research-router`
+- [x] `divo-semrush-seo-research`
 
 Goal: choose Semrush versus web/OMS once; retain only Semrush facts needed for
 truthful interpretation and the cheapest proven operation selection.
@@ -670,6 +670,57 @@ This track is complete only when:
   lever and one edit to `buildProductSkillMarkdown`. Left untouched here because
   it changes 11 skills inside a commit claiming two; it belongs to Wave 8.
 - Decision: content complete; **gates §9.3 and §9.4 still open.**
+
+### Pair: research-router + divo-semrush-seo-research — 2026-08-11
+
+- Commit / environment: local worktree on `dev`. Not reconciled to any DB.
+- Before → after bytes: `divo-semrush-seo-research` 6,180 → 4,031
+  (1,545 → 1,008 tok), −35%. `research-router` 771 → 562, −27%. Catalogue
+  237,668 → 235,310 bytes.
+- **Two sections were policy violations, not merely bloat.**
+  `## Backend environment (ops only — never expose to members)` named
+  `SEMRUSH_WEB_API_KEY`, `SEMRUSH_WEB_COOKIE`, and `SEMRUSH_TIMEOUT_MS` under a
+  heading declaring they must not be exposed, inside a document the model reads
+  and can quote — against §5 and the §8 Wave 11 audit item. `## Senior curl
+  mapping` was a provenance table pairing each operation with the senior's
+  original curl calls, including an Excluded row for a probe that answered
+  `403 ERROR 130 API DISABLED`: history, and §5 names historical provider notes
+  and failure narratives for removal. The tool's `operation` enum decides
+  callability and its `parameterDocs` already name the three operations.
+- **A test was pinning the env-var section in place.** `documents web-only env
+  vars without legacy api.semrush.com keys` asserted all three names appear in
+  the skill body. Its intent — the wired path is the web session, not the
+  retired `api.semrush.com` key — is real, so it moved to `EnvSchema`, which
+  declares the variables, plus a guard that no `SEMRUSH_*` name returns to the
+  markdown. Note `SEMRUSH_API_KEY_WEBHOOK_URL` exists and is separate, so the
+  assertion matches exact keys rather than a prefix.
+- **The flagship honesty rule was stated twice.** "A country Semrush did not
+  return is unknown, not a measured zero" appeared at length in both the
+  operation list and the cost/honesty rules, having already drifted in wording
+  between the two. Now stated once, with a test asserting it appears exactly
+  once — the duplication is what let them diverge.
+- Router/specialist boundary: "prefer one main Semrush call and one main table"
+  and the local-Python artifact condition were execution decisions living in the
+  router. The router now selects and says the specialist owns call count and
+  boundedness; the specialist states both. Guarded from both sides.
+- Also removed as tool-owned: "never invent endpoint paths, report names,
+  headers, cookies, credentials, export columns, or raw provider filters"
+  (`parameterDocs` states Divo rejects exactly these), and the bare listing of
+  the four result states (`resultSchema` types the enum) — the honesty
+  consequence of each state was kept.
+- Kept: the shy-answering call prior, one-row-per-country-database semantics,
+  `keyword_position_trend` returning a dated series, `database` discovery from
+  the `Database` column, the 1–10 targets in one web request cost prior,
+  `coverage.missingTargets` meaning no provider data, counts-from-rows, and the
+  25-row preview cap.
+- Tests: backend suite 3,370 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
+- Cold review: **not run before commit** — this pair was committed on an
+  explicit request to move quickly. Run it before reconciling.
+- Agent Seat result: not run.
+- Cloud-Pi Development result: not run.
+- DB revisions / registry revision: not reconciled.
+- Decision: content complete; **gates §9.3 and §9.4 still open, and §12's cold
+  review is owed.**
 
 Append one block per pair:
 
