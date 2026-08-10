@@ -109,15 +109,6 @@ export interface GoogleConnectionContinuationWorkerDeps {
   intentRepo: IntentRepo;
   identityRepo: ChannelIdentityRepoPort;
   connectionRepo: GoogleConnectionRepo;
-  resumeDataExport?: (input: {
-    readonly offerId: string;
-    readonly companyId: string;
-    readonly userId: string;
-    readonly chatId: string;
-    readonly progressMessageId: string;
-    readonly connectionId: string;
-    readonly format?: 'google_sheet' | 'csv' | 'xlsx';
-  }) => Promise<string>;
   runPi: (input: GoogleConnectionContinuationRunInput) => Promise<string | null>;
   channelAdapter: LarkChannelAdapter;
   laneLeaseHolder?: LaneLeaseHolder;
@@ -214,36 +205,6 @@ export class GoogleConnectionContinuationWorker {
     try {
       const identity = await this.resolveCurrentIdentity(intent);
       const connection = await this.resolveCurrentConnection(intent);
-      if (intent.continuationPayload?.kind === 'data_export_confirmation') {
-        if (!this.deps.resumeDataExport) {
-          throw new Error('Data export continuation is unavailable.');
-        }
-        if (
-          intent.requestedToolIds.length !== 1
-          || intent.requestedToolIds[0] !== 'dataExport'
-          || intent.continuationPayload.progressMessageId !== intent.originalMessageId
-        ) {
-          throw new Error('Stored data export continuation does not match its authorization target.');
-        }
-        const exportJobId = await this.deps.resumeDataExport({
-          offerId: intent.continuationPayload.offerId,
-          companyId: intent.companyId,
-          userId: intent.userId,
-          chatId: intent.chatId,
-          progressMessageId: intent.continuationPayload.progressMessageId,
-          connectionId: connection.connectionId,
-          ...(intent.continuationPayload.format
-            ? { format: intent.continuationPayload.format }
-            : {}),
-        });
-        await this.finish(intent, { runId: exportJobId });
-        this.log.info('google.continuation.data_export_completed', {
-          intentId: intent.intentId,
-          connectionId: connection.connectionId,
-          exportJobId,
-        });
-        return;
-      }
       const input = buildContinuationInput(intent, identity, channelAdapter);
       const result = await this.deps.runPi({
         ...input,
@@ -269,20 +230,6 @@ export class GoogleConnectionContinuationWorker {
         runId: intent.continuationIdempotencyKey,
       });
     } catch (error) {
-      if (intent.continuationPayload?.kind === 'data_export_confirmation') {
-        const updated = await channelAdapter.updateMessageById(
-          intent.continuationPayload.progressMessageId,
-          buildFinalCard({
-            markdown: '# Data export could not resume\nGoogle is connected, but this export could not start. Ask Divo to prepare the export again.',
-          }),
-        );
-        if (!updated.ok) {
-          this.log.error('google.continuation.data_export_failure_delivery_failed', {
-            intentId: intent.intentId,
-            error: updated.error.message,
-          });
-        }
-      }
       await this.finish(intent, {
         failureCode: classifyContinuationFailure(error),
       });

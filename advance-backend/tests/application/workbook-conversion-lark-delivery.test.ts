@@ -5,7 +5,7 @@ import {
   type WorkbookConversionLarkDeliveryJob,
   type WorkbookConversionLarkDeliveryState,
   type WorkbookConversionLarkDeliveryStore,
-} from '../../src/application/data-export/workbook-conversion-lark-delivery.ts';
+} from '../../src/application/artifacts/workbook-conversion-lark-delivery.ts';
 import { noopLogger } from '../tools/tool-test.helpers.ts';
 
 const job: WorkbookConversionLarkDeliveryJob = {

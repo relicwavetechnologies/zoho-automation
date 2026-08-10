@@ -533,6 +533,45 @@ jobs:
             docker-compose.dev.yml \
             "${DIVO_DEV_USER}@${DIVO_DEV_HOST}:${DEPLOY_DIR}/docker-compose.yml"
 
+      - name: Retire removed Development dataExport storage when present
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
+            "DEPLOY_DIR='${DEPLOY_DIR}' BACKEND_IMAGE='${BACKEND_IMAGE}' ADMIN_IMAGE='${ADMIN_IMAGE}' PI_IMAGE='${PI_IMAGE}' PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "${DEPLOY_DIR}"
+          export DIVO_DEV_ENV_FILE=.env.development.local
+          export DIVO_DEV_BACKEND_IMAGE="${BACKEND_IMAGE}"
+          export DIVO_DEV_ADMIN_IMAGE="${ADMIN_IMAGE}"
+          export DIVO_DEV_PI_IMAGE="${PI_IMAGE}"
+          export DIVO_DEV_PI_CONTROLLER_IMAGE="${PI_CONTROLLER_IMAGE}"
+
+          docker compose --env-file .env.development.local pull divo-dev-backend
+          docker compose --env-file .env.development.local up -d --wait \
+            divo-dev-postgres divo-dev-redis-queue
+          set +e
+          docker compose --env-file .env.development.local run --rm --no-deps \
+            divo-dev-backend pnpm retire:data-export -- --needs-apply >/dev/null
+          needs_retirement=$?
+          set -e
+          if [[ "${needs_retirement}" == "0" ]]; then
+            docker compose --env-file .env.development.local stop divo-dev-backend >/dev/null 2>&1 || true
+            install -d -m 700 backups
+            retirement_backup="backups/development-data-export-retirement-$(date -u +%Y%m%dT%H%M%SZ).dump"
+            docker compose --env-file .env.development.local exec -T divo-dev-postgres sh -lc \
+              'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "${retirement_backup}"
+            test -s "${retirement_backup}"
+            chmod 600 "${retirement_backup}"
+            if ! docker compose --env-file .env.development.local run --rm --no-deps \
+              -e DATA_EXPORT_RETIRE_CONFIRM=delete-retired-data-export-storage \
+              divo-dev-backend pnpm retire:data-export -- --apply </dev/null; then
+              docker compose --env-file .env.development.local start divo-dev-backend || true
+              exit 1
+            fi
+          elif [[ "${needs_retirement}" != "3" ]]; then
+            exit "${needs_retirement}"
+          fi
+          REMOTE
+
       - name: Pull images, migrate, and restart
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}

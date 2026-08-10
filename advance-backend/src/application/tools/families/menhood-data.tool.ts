@@ -8,17 +8,9 @@ import type { ToolActionGroup } from '../../../domain/permissions/tool-action-gr
 import { asToolId } from '../../../shared/ids';
 import type { AuditService } from '../../observability/audit.service';
 import {
-  exportCandidateMetadata,
-  publishExportCandidate,
-} from '../../data-export/tool-export-candidate';
-import { dataExportRunRequestId } from '../../data-export/export-request-identity';
-import type { DataExportOrchestrationService } from '../../data-export/data-export-orchestration.service';
-import type { DataExportOfferPayload } from '../../data-export/export-offer';
-import {
   MenhoodQueryRequestSchema,
   MenhoodQueryResultSchema,
   MenhoodQueryValidationError,
-  menhoodQueryHasDeterministicReplayOrder,
   type MenhoodQueryRequest,
   type ValidatedMenhoodQuery,
   validateMenhoodQuery,
@@ -65,13 +57,6 @@ const ResultSchema = z.object({
     rows: z.number().int().positive(),
     note: z.string(),
   }).strict().optional(),
-  exportCandidate: z.object({
-    candidateId: z.string().uuid(),
-    sourceKind: z.literal('menhood_query'),
-    previewRowCount: z.number().int().nonnegative(),
-    estimatedRows: z.number().int().nonnegative().optional(),
-    expiresAt: z.string(),
-  }).strict().optional(),
   message: z.string(),
 });
 
@@ -79,7 +64,6 @@ type MenhoodDataToolResult = z.infer<typeof ResultSchema>;
 
 export const createMenhoodDataTool = (deps: {
   service: MenhoodService;
-  exportCandidates?: Pick<DataExportOrchestrationService, 'publishCandidate'>;
   audit?: AuditService;
 }): Tool<MenhoodQueryRequest, MenhoodDataToolResult> => ({
   id: asToolId('menhoodData'),
@@ -91,8 +75,7 @@ export const createMenhoodDataTool = (deps: {
   parameterDocs: [
     'sql: exactly one SELECT or read-only WITH query over menhood_orders, menhood_customers, menhood_products, or all_cities_with_pincode.',
     'parameters: positional JSON-safe values matching $1, $2, and so on; never interpolate user text into SQL.',
-    'For row-level previews or exportable raw datasets, include a deterministic ORDER BY on stable columns, e.g. order lines by order_date, order_number, id.',
-    'exportTitle: optional short title for a later governed export.',
+    'For row-level previews, include a deterministic ORDER BY on stable columns, e.g. order lines by order_date, order_number, id.',
     'menhood_advertisement_costs is intentionally unavailable.',
   ].join('\n'),
   permissionCheck(_args, perm: PermissionResult) {
@@ -116,33 +99,11 @@ export const createMenhoodDataTool = (deps: {
     try {
       ctx.abortSignal?.throwIfAborted();
       validated = validateMenhoodQuery(args);
-      // Captured so the candidate closure sees the narrowed value, not the
-      // still-possibly-undefined outer binding used by the catch block.
       const validatedQuery = validated;
       const [data, freshness] = await Promise.all([
         deps.service.execute(ctx.runContext.companyId, args),
         deps.service.coverageWindow(ctx.runContext.companyId),
       ]);
-      const exportBlockedByMissingOrder = data.coverage.truncated
-        && !menhoodQueryHasDeterministicReplayOrder(validatedQuery);
-      const candidate = await publishExportCandidate({
-        candidates: deps.exportCandidates,
-        eligible: data.rows.length > 0
-          && ctx.runContext.channel === 'lark'
-          && Boolean(ctx.runContext.chatId)
-          && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true
-          && !exportBlockedByMissingOrder,
-        payload: () => exportPayloadFor(validatedQuery, ctx),
-        metadata: exportCandidateMetadata({
-          columns: data.columns.map(column => column.name),
-          previewRowCount: data.rows.length,
-          estimatedRows: data.coverage.truncated ? undefined : data.coverage.returnedRows,
-          coverage: data.coverage,
-        }),
-        logger: ctx.logger,
-        scope: 'menhood',
-        correlationId: ctx.correlationId,
-      });
       const result: MenhoodDataToolResult = {
         status: data.coverage.truncated ? 'partial' : 'complete',
         queryFingerprint: data.queryFingerprint,
@@ -165,21 +126,8 @@ export const createMenhoodDataTool = (deps: {
                   + ' To describe a full breakdown, rerun without the LIMIT or aggregate the tail into an explicit Other bucket.',
               },
             }),
-        ...(candidate.kind === 'published'
-          ? {
-              exportCandidate: {
-                candidateId: candidate.candidateId,
-                sourceKind: 'menhood_query' as const,
-                previewRowCount: data.rows.length,
-                ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
-                expiresAt: candidate.expiresAt.toISOString(),
-              },
-            }
-          : {}),
         message: [
-          exportBlockedByMissingOrder
-            ? `Showing the first ${data.coverage.returnedRows} matching rows. Add a deterministic ORDER BY before creating a sample or full export; for order-line exports use o.order_date, o.order_number, o.id.`
-            : data.coverage.truncated
+          data.coverage.truncated
             ? `Showing the first ${data.coverage.returnedRows} matching rows.`
             : `Retrieved ${data.coverage.returnedRows} matching row${data.coverage.returnedRows === 1 ? '' : 's'}.`,
           freshnessNote(freshness, data.coverage.returnedRows),
@@ -195,7 +143,6 @@ export const createMenhoodDataTool = (deps: {
           tables: validated.tables,
           returnedRows: data.coverage.returnedRows,
           truncated: data.coverage.truncated,
-          exportCandidateId: candidate.kind === 'published' ? candidate.candidateId : null,
           latencyMs: Date.now() - startedAt,
           correlationId: ctx.correlationId,
         },
@@ -244,37 +191,6 @@ function freshnessNote(
   return returnedRows === 0
     ? `${settled} No rows here means the window is out of range or not yet populated, never that no orders were placed.`
     : settled;
-}
-
-function exportPayloadFor(
-  query: ValidatedMenhoodQuery,
-  ctx: ToolExecutionContext,
-): DataExportOfferPayload {
-  return {
-    companyId: ctx.runContext.companyId,
-    userId: ctx.runContext.userId,
-    ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
-    source: {
-      kind: 'menhood_query',
-      connectionId: 'backend_managed',
-      query: {
-        sql: query.normalizedSql,
-        parameters: query.parameters,
-        ...(query.exportTitle ? { exportTitle: query.exportTitle } : {}),
-      },
-      queryFingerprint: query.fingerprint,
-    },
-    destination: {
-      format: 'auto',
-      title: query.exportTitle ?? 'Menhood data export',
-    },
-    chatId: ctx.runContext.chatId!,
-    ...(ctx.runContext.runtimeThreadId ? { conversationKey: ctx.runContext.runtimeThreadId } : {}),
-    ...(ctx.runContext.replyToMessageId ? { replyToMessageId: ctx.runContext.replyToMessageId } : {}),
-    ...(ctx.runContext.replyInThread !== undefined ? { replyInThread: ctx.runContext.replyInThread } : {}),
-    requestId: dataExportRunRequestId(ctx.runContext, ctx.correlationId),
-    ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
-  };
 }
 
 function toToolError(error: unknown): ToolError {

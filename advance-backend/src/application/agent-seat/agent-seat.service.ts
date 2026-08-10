@@ -212,9 +212,7 @@ export class AgentSeatService {
       notes: session.notes,
       historyCount: session.history.length,
       lastInvoke: lastInvoke ?? null,
-      hint: session.history.some(entry => entry.toolId === 'semrush')
-        ? 'After a Semrush preview, try: invoke dataExport with op=list_candidates then op=plan for the table you showed.'
-        : 'Run bootstrap and load skills before invoking tools.',
+      hint: 'Run bootstrap and load skills before invoking tools.',
     };
   }
 

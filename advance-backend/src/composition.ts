@@ -14,7 +14,7 @@ import { ApprovalResumerService } from './application/approval/approval-resumer.
 import { AutomationPlanService } from './application/gateway/automation-plan.service';
 import { AutomationPlanExecutor } from './application/gateway/automation-plan.executor';
 import { LarkApprovalCardHandler } from './infrastructure/channels/lark/lark-approval-card.handler';
-import { LarkDataExportCardHandler } from './infrastructure/channels/lark/lark-data-export-card.handler';
+import { LarkWorkbookConversionCardHandler } from './infrastructure/channels/lark/lark-workbook-conversion-card.handler';
 import { ConsoleLogger } from './shared/logger';
 import { createPinoLogger } from './shared/pino-logger';
 import { systemClock } from './shared/clock';
@@ -138,42 +138,20 @@ import { DepartmentAdminService } from './application/departments/department-adm
 import { DesktopDepartmentManagementService } from './application/desktop/desktop-department-management.service';
 import { ChatMessageSerializer } from './application/channels/chat-message-serializer';
 
-// Data export and async ingress
-import { DataExportQueue } from './application/data-export/data-export.queue';
-import { DataExportOfferService } from './application/data-export/data-export-offer.service';
-import { DataExportOrchestrationService } from './application/data-export/data-export-orchestration.service';
-import { WorkbookConversionQueue } from './application/data-export/workbook-conversion.queue';
-import { WorkbookConversionConfirmationService } from './application/data-export/workbook-conversion.service';
-import { GoogleDriveXlsxConversionWorker } from './application/data-export/google-drive-xlsx-conversion.worker';
-import { GoogleDriveXlsxConversionConsumer } from './application/data-export/google-drive-xlsx-conversion.consumer';
-import { GoogleDriveXlsxConversionCheckpointStore } from './application/data-export/google-drive-xlsx-conversion.checkpoint.store';
-import { WorkbookConversionLarkDelivery } from './application/data-export/workbook-conversion-lark-delivery';
-import { RedisWorkbookConversionLarkDeliveryStore } from './application/data-export/workbook-conversion-lark-delivery.store';
-import { WorkbookConversionContinuityRecorder } from './application/data-export/workbook-conversion-continuity';
+// Workbook conversion and async ingress
+import { WorkbookConversionQueue } from './application/artifacts/workbook-conversion.queue';
+import { WorkbookConversionConfirmationService } from './application/artifacts/workbook-conversion.service';
+import { GoogleDriveXlsxConversionWorker } from './application/artifacts/google-drive-xlsx-conversion.worker';
+import { GoogleDriveXlsxConversionConsumer } from './application/artifacts/google-drive-xlsx-conversion.consumer';
+import { GoogleDriveXlsxConversionCheckpointStore } from './application/artifacts/google-drive-xlsx-conversion.checkpoint.store';
+import { WorkbookConversionLarkDelivery } from './application/artifacts/workbook-conversion-lark-delivery';
+import { RedisWorkbookConversionLarkDeliveryStore } from './application/artifacts/workbook-conversion-lark-delivery.store';
 import { GoogleDriveXlsxConversionAdapter } from './infrastructure/google/google-drive-xlsx-conversion.adapter';
-import { DatasetSourceRegistry } from './application/data-export/data-export.source-registry';
-import {
-  AirtableDataExportSource,
-  MenhoodQueryDataExportSource,
-  OmsSnapshotDataExportSource,
-  SemrushSnapshotDataExportSource,
-  ShopifySnapshotDataExportSource,
-  ZohoBooksDataExportSource,
-  ZohoCrmDataExportSource,
-} from './application/data-export/data-export.sources';
-import { GoogleWorkspaceExportSink } from './application/data-export/google-workspace-export.sink';
-import { parseGoogleDriveXlsxReference } from './application/data-export/google-drive-xlsx-resource-reference';
-import { GoogleDriveXlsxResourceResolver } from './application/data-export/google-drive-xlsx-resource-resolver';
-import { parseGoogleSheetReference } from './application/data-export/google-sheet-resource-reference';
-import { GoogleSheetResourceResolver } from './application/data-export/google-sheet-resource-resolver';
+import { parseGoogleDriveXlsxReference } from './application/artifacts/google-drive-xlsx-resource-reference';
+import { GoogleDriveXlsxResourceResolver } from './application/artifacts/google-drive-xlsx-resource-resolver';
+import { parseGoogleSheetReference } from './application/artifacts/google-sheet-resource-reference';
+import { GoogleSheetResourceResolver } from './application/artifacts/google-sheet-resource-resolver';
 import { GoogleSheetResourceProbeClient } from './infrastructure/google/google-sheet-resource-probe';
-import { DataExportOfferRepository } from './infrastructure/persistence/data-export-offer.repository';
-import { DataExportCandidateRepository } from './infrastructure/persistence/data-export-candidate.repository';
-import { getDataExportProfile } from './application/data-export/data-export.profile';
-import { PermanentDataExportError } from './application/data-export/data-export.errors';
-import { selectDataExportDestination } from './application/data-export/data-export-destination-resolver';
-import type { DataExportDestinationTarget } from './application/data-export/data-export.types';
-import type { GoogleExportAuth } from './application/data-export/data-export.destination';
 import { LarkIngressQueue } from './application/lark-ingress/lark-ingress.queue';
 import {
   GoogleConnectionContinuationQueue,
@@ -275,7 +253,6 @@ import { createZohoCrmTool } from './application/tools/families/zoho-crm.tool';
 import { createZohoBooksTool } from './application/tools/families/zoho-books.tool';
 import { createWebSearchTool } from './application/tools/families/web-search.tool';
 import { createKnowledgeTool } from './application/tools/families/knowledge.tool';
-import { createDataExportTool } from './application/tools/families/data-export.tool';
 import { createRunCommandTool } from './application/tools/families/run-command.tool';
 import { createScheduledWorkflowsTool } from './application/tools/families/scheduled-workflows.tool';
 import {
@@ -449,29 +426,11 @@ export interface Container {
   // HITL approval
   approvalGate: ApprovalGateService;
   approvalCardHandler: LarkApprovalCardHandler;
-  dataExportCardHandler: LarkDataExportCardHandler;
+  workbookConversionCardHandler: LarkWorkbookConversionCardHandler;
   approvalResumer: ApprovalResumerService;
   approvalInbox: ApprovalInboxService;
-  dataExportQueue: DataExportQueue;
-  dataExportCandidateRepo: DataExportCandidateRepository;
   workbookConversionQueue: WorkbookConversionQueue;
   workbookConversionWorker: GoogleDriveXlsxConversionConsumer;
-  dataExportSources: DatasetSourceRegistry;
-  googleWorkspaceExportSink: GoogleWorkspaceExportSink;
-  resumeDataExportAfterGoogleConnection: (input: {
-    readonly offerId: string;
-    readonly companyId: string;
-    readonly userId: string;
-    readonly chatId: string;
-    readonly progressMessageId: string;
-    readonly connectionId: string;
-    readonly format?: 'google_sheet' | 'csv' | 'xlsx';
-  }) => Promise<string>;
-  resolveGoogleExportAuth: (
-    companyId: string,
-    userId: string,
-    target?: DataExportDestinationTarget,
-  ) => Promise<GoogleExportAuth>;
   airtableConnectionResolver: ResolveAirtableMcpConnection;
   larkIngressQueue: LarkIngressQueue;
   // Manager learning P1–P4. Promotion remains isolated from memory, skills, and RBAC.
@@ -854,7 +813,7 @@ export async function buildContainer(
         // one left behind under the other prefix would be served to the first
         // call after the reconnect that was supposed to fix all of this.
         await Promise.all(
-          [`connection:${input.connectionId}`, `data-export:${input.connectionId}`]
+          [`connection:${input.connectionId}`]
             .map(cacheUserId => googleOAuthService.forgetCachedToken(input.companyId, cacheUserId)),
         );
         const marked = await integrationConnectionRepo.markGoogleReauthorizationRequired({
@@ -1201,174 +1160,6 @@ export async function buildContainer(
   }
 
   /**
-   * The administrator-approved company export account, checked the same way at
-   * request time and at run time.
-   *
-   * The profile stores a connection id and is validated only when it is
-   * written. Nothing revalidates it when that connection is later revoked, so
-   * the fallback happily handed the queue a dead destination: the member was
-   * told the export was on its way, and the job discovered minutes later that
-   * the account was gone. One resolver means the offer and the run can never
-   * disagree about whether this destination exists.
-   */
-  async function resolveCompanyExportConnection(companyId: string): Promise<
-    | {
-        readonly ok: true;
-        readonly connectionId: string;
-        readonly refreshToken: string;
-        readonly readerDomain: string;
-        readonly ownerEmail: string;
-      }
-    | { readonly ok: false; readonly reason: string }
-  > {
-    const configured = await getDataExportProfile(prisma, companyId);
-    const profile = configured.profile;
-    if (!profile) {
-      return { ok: false, reason: 'Company data export is not configured by an administrator.' };
-    }
-    const resolved = await integrationConnectionRepo.findCompanyGoogleExportConnection({
-      companyId,
-      connectionId: profile.googleConnectionId,
-    });
-    // A failed lookup is not a revoked account. Reporting a Prisma timeout as
-    // "an administrator must reconnect" is the exact confusion this change
-    // exists to remove, and it would also drop the fallback at request time for
-    // a member whose only route is the company account. Let it propagate so the
-    // job retries.
-    if (!resolved.ok) throw resolved.error;
-    const connection = resolved.value;
-    const refreshToken = connection?.refreshToken;
-    if (!connection || !refreshToken) {
-      return {
-        ok: false,
-        reason:
-          `The company Google export account (${profile.accountEmail}) is disconnected. `
-          + 'An administrator needs to reconnect it and save the data export profile again.',
-      };
-    }
-    if (connection.accountEmail?.trim().toLowerCase() !== profile.accountEmail) {
-      return {
-        ok: false,
-        reason: 'The company Google export account changed. An administrator needs to approve it again.',
-      };
-    }
-    if (!hasGoogleScopeGroups(connection.scopes, [
-      [GOOGLE_SCOPE.driveFull, GOOGLE_SCOPE.driveFile],
-      [GOOGLE_SCOPE.sheetsFull],
-    ])) {
-      return {
-        ok: false,
-        reason: 'The company Google export account no longer has Drive and Sheets write access.',
-      };
-    }
-    return {
-      ok: true,
-      connectionId: connection.id,
-      refreshToken,
-      readerDomain: profile.readerDomain,
-      ownerEmail: profile.accountEmail,
-    };
-  }
-
-  async function resolveDataExportDestination(input: {
-    readonly companyId: string;
-    readonly userId: string;
-    readonly connectionId?: string;
-  }) {
-    const companyExport = await resolveCompanyExportConnection(input.companyId);
-    return selectDataExportDestination({
-      ...(companyExport.ok
-        ? { companyDestination: { connectionId: companyExport.connectionId } }
-        : { unavailableReason: companyExport.reason }),
-      ...(input.connectionId ? { connectionId: input.connectionId } : {}),
-    });
-  }
-
-  async function resolveGoogleExportAuth(
-    companyId: string,
-    userId: string,
-    target?: DataExportDestinationTarget,
-  ): Promise<GoogleExportAuth> {
-    if (target?.kind === 'user_google' || target?.kind === 'existing_google_sheet') {
-      const resolved = await integrationConnectionRepo.findAccessibleGoogleConnection({
-        companyId,
-        userId,
-        connectionId: target.connectionId,
-        minimumAccess: 'read_write',
-      });
-      // Every branch here is permanent: nothing about a disconnected or
-      // unscoped Google account improves by running the same job again.
-      if (!resolved.ok || !resolved.value?.refreshToken) {
-        throw new PermanentDataExportError(
-          'Your Google account is no longer connected to Divo. Reconnect it, then ask again.',
-          'Selected personal Google export connection is unavailable',
-        );
-      }
-      const connection = resolved.value;
-      const refreshToken = connection.refreshToken;
-      if (!refreshToken) {
-        throw new PermanentDataExportError(
-          'Your Google account is no longer connected to Divo. Reconnect it, then ask again.',
-          'Selected personal Google export connection has no refresh credential',
-        );
-      }
-      if (connection.ownerType !== 'user' || connection.ownerUserId !== userId) {
-        throw new PermanentDataExportError(
-          'That Google account does not belong to you, so Divo cannot export into it.',
-          'Selected Google export connection is not owned by the requester',
-        );
-      }
-      if (!connection.accountEmail) {
-        throw new PermanentDataExportError(
-          'Your connected Google account has no verified address. Reconnect it, then ask again.',
-          'Selected personal Google export connection has no verified account email',
-        );
-      }
-      if (!hasGoogleScopeGroups(connection.scopes, [
-        [GOOGLE_SCOPE.driveFull, GOOGLE_SCOPE.driveFile],
-        [GOOGLE_SCOPE.sheetsFull],
-      ])) {
-        throw new PermanentDataExportError(
-          'Your Google connection no longer allows Divo to create Drive files and Sheets. Reconnect it to restore write access.',
-          'Selected personal Google export connection no longer has Drive and Sheets write scopes',
-        );
-      }
-      const accessToken = await googleAccessTokenFor({
-        companyId,
-        connectionId: connection.id,
-        cacheUserId: `data-export:${connection.id}`,
-        refreshToken,
-      });
-      await integrationConnectionRepo.touchLastUsed(connection.id);
-      return {
-        accessToken,
-        ownerEmail: connection.accountEmail.trim().toLowerCase(),
-      };
-    }
-
-    const company = await resolveCompanyExportConnection(companyId);
-    if (!company.ok) throw new PermanentDataExportError(company.reason);
-    if (target && target.connectionId !== company.connectionId) {
-      throw new PermanentDataExportError(
-        'The company Google export account changed after this export was offered. Ask again to use the current one.',
-        'Configured company Google export destination changed before execution',
-      );
-    }
-    const accessToken = await googleAccessTokenFor({
-      companyId,
-      connectionId: company.connectionId,
-      cacheUserId: `data-export:${company.connectionId}`,
-      refreshToken: company.refreshToken,
-    });
-    await integrationConnectionRepo.touchLastUsed(company.connectionId);
-    return {
-      accessToken,
-      readerDomain: company.readerDomain,
-      companyOwnerEmail: company.ownerEmail,
-    };
-  }
-
-  /**
    * Resolve one Airtable account for a tool call, refreshing its token first
    * when needed. Airtable rotates the refresh token on every refresh and kills
    * the previous one, so the rotated pair is persisted before the client is
@@ -1686,50 +1477,7 @@ export async function buildContainer(
     logger.child({ service: 'cloudinary' }),
   );
 
-  const dataExportQueue = new DataExportQueue(queueRedisUrl);
   const workbookConversionQueue = new WorkbookConversionQueue(queueRedisUrl);
-  const dataExportCandidateRepo = new DataExportCandidateRepository(prisma);
-  const dataExportOfferService = new DataExportOfferService({
-    offers: new DataExportOfferRepository(prisma),
-    queue: dataExportQueue,
-    identityRepo: channelIdentityRepo,
-    permissions,
-    resolveDestination: resolveDataExportDestination,
-  });
-  const dataExportOrchestrationService = new DataExportOrchestrationService({
-    candidates: dataExportCandidateRepo,
-    offers: dataExportOfferService,
-    identityRepo: channelIdentityRepo,
-    permissions,
-    resolveDestination: resolveDataExportDestination,
-  });
-  const resumeDataExportAfterGoogleConnection = async (input: {
-    readonly offerId: string;
-    readonly companyId: string;
-    readonly userId: string;
-    readonly chatId: string;
-    readonly progressMessageId: string;
-    readonly connectionId: string;
-    readonly format?: 'google_sheet' | 'csv' | 'xlsx';
-  }): Promise<string> => {
-    const confirmed = await dataExportOfferService.confirmForActor({
-      offerId: input.offerId,
-      companyId: input.companyId,
-      userId: input.userId,
-      chatId: input.chatId,
-      progressMessageId: input.progressMessageId,
-      destinationConnectionId: input.connectionId,
-      ...(input.format ? { destinationFormat: input.format } : {}),
-    });
-    if (
-      confirmed.disposition === 'choose_destination'
-      || confirmed.disposition === 'connect_required'
-      || confirmed.disposition === 'in_progress'
-    ) {
-      throw new Error('The connected Google account did not resolve the pending export destination.');
-    }
-    return confirmed.exportJobId;
-  };
   const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
   const googleConnectionContinuationQueue =
     new GoogleConnectionContinuationQueue(queueRedisUrl);
@@ -1822,23 +1570,6 @@ export async function buildContainer(
   // ── Zoho Books paginated client + finance ops ────────────────────────────
   const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
   const zohoPaginatedCrmClient = new ZohoCrmPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
-  const dataExportSources = new DatasetSourceRegistry();
-  dataExportSources.register(new AirtableDataExportSource(getAirtableMcpConnection));
-  dataExportSources.register(new ZohoBooksDataExportSource(
-    zohoPaginatedBooksClient,
-    async () => {
-      const { getExchangeRates, buildCurrencyUtilities } = await import('./application/zoho/exchange-rate.service');
-      return buildCurrencyUtilities(await getExchangeRates());
-    },
-  ));
-  dataExportSources.register(new ZohoCrmDataExportSource(zohoPaginatedCrmClient));
-  dataExportSources.register(new OmsSnapshotDataExportSource(companyOmsSiteDataService));
-  dataExportSources.register(new SemrushSnapshotDataExportSource(semrushService));
-  dataExportSources.register(new ShopifySnapshotDataExportSource(shopifyService));
-  dataExportSources.register(new MenhoodQueryDataExportSource(menhoodQueryService));
-  const googleWorkspaceExportSink = new GoogleWorkspaceExportSink({
-    logger: logger.child({ service: 'google-workspace-export-sink' }),
-  });
 
   const zohoFinanceOps = new ZohoFinanceOps(
     zohoPaginatedBooksClient,
@@ -2248,6 +1979,7 @@ export async function buildContainer(
 
   const composeMailBrief = createMailBriefComposer({
     model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+    appBaseUrl: env.APP_BASE_URL,
   });
 
   toolRegistry.register(createCanvaDesignTool({ getClient: getCanvaMcpClient }));
@@ -2266,7 +1998,6 @@ export async function buildContainer(
     getClient:   getZohoCrmClient,
     crmClient:   zohoPaginatedCrmClient,
     crmOps:      zohoCrmOps,
-    exportCandidates: dataExportOrchestrationService,
   }));
   toolRegistry.register(createZohoBooksTool({
     booksClient:     zohoPaginatedBooksClient,
@@ -2281,7 +2012,6 @@ export async function buildContainer(
       ? { homeGstStateCode: env.ZOHO_BOOKS_HOME_GST_STATE_CODE }
       : {}),
     financeOps:      zohoFinanceOps,
-    exportCandidates: dataExportOrchestrationService,
     inlineThreshold: env.ZOHO_BOOKS_CSV_INLINE_THRESHOLD,
     attachmentSource: conversationAttachmentSource,
     appBaseUrl:      env.ZOHO_BOOKS_APP_BASE_URL,
@@ -2295,30 +2025,22 @@ export async function buildContainer(
     files: knowledgeFileService,
     documents: knowledgeDocumentSearch,
   }));
-  toolRegistry.register(createDataExportTool({
-    offers: dataExportOfferService,
-    orchestration: dataExportOrchestrationService,
-  }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,
-    exportCandidates: dataExportOrchestrationService,
     audit: auditService,
     apiKeyExhaustion: apiKeyExhaustionFacade,
   }));
   toolRegistry.register(createOmsSiteDataTool({
     service: companyOmsSiteDataService,
-    exportCandidates: dataExportOrchestrationService,
     audit: auditService,
   }));
   toolRegistry.register(createMenhoodDataTool({
     service: menhoodQueryService,
-    exportCandidates: dataExportOrchestrationService,
     audit: auditService,
   }));
   const [shopifyAnalyticsTool, shopifyOrdersTool, shopifyCustomersTool] = createShopifyTools({
     service: shopifyService,
     audit: auditService,
-    exportCandidates: dataExportOrchestrationService,
   });
   toolRegistry.register(shopifyAnalyticsTool);
   if (env.SHOPIFY_PROTECTED_DATA_TOOLS_ENABLED) {
@@ -2879,14 +2601,12 @@ export async function buildContainer(
     logger.child({ service: 'approval-card-handler' }),
     auditService,
   );
-  const dataExportCardHandler = new LarkDataExportCardHandler(
-    dataExportOfferService,
-    logger.child({ service: 'data-export-card-handler' }),
-    googleConnectionAuthorization,
+  const workbookConversionCardHandler = new LarkWorkbookConversionCardHandler(
     new WorkbookConversionConfirmationService({
       offers: runEffectReceipts,
       queue: workbookConversionQueue,
     }),
+    logger.child({ service: 'workbook-conversion-card-handler' }),
   );
   const resolveWorkbookIdentity = async (companyId: string, userId: string) => {
     const resolved = await channelIdentityRepo.resolveByUserId(userId, companyId);
@@ -2984,7 +2704,6 @@ export async function buildContainer(
       await integrationConnectionRepo.touchLastUsed(input.connectionId);
       return token;
     }),
-    continuity: new WorkbookConversionContinuityRecorder(conversationRepo),
     delivery: workbookConversionDelivery,
   });
   const workbookConversionWorker = new GoogleDriveXlsxConversionConsumer({
@@ -3060,7 +2779,6 @@ export async function buildContainer(
     larkKnowledgeReview: larkKnowledgeReviewService,
     knowledgeMutations,
     personalMemoryCommands,
-    dataExportResources: conversationRepo,
     resolveGoogleSheetReference,
     runEffectReceipts,
     logger: logger.child({ service: 'gateway-dispatcher' }),
@@ -3133,18 +2851,12 @@ export async function buildContainer(
   // HITL approval
   approvalGate,
     approvalCardHandler,
-    dataExportCardHandler,
+    workbookConversionCardHandler,
     approvalResumer,
     approvalInbox,
-    // Data export and async ingress
-    dataExportQueue,
-    dataExportCandidateRepo,
+    // Workbook conversion and async ingress
     workbookConversionQueue,
     workbookConversionWorker,
-    dataExportSources,
-    googleWorkspaceExportSink,
-    resumeDataExportAfterGoogleConnection,
-    resolveGoogleExportAuth,
     airtableConnectionResolver: getAirtableMcpConnection,
     larkIngressQueue,
     personaLearningQueue,

@@ -13,9 +13,9 @@ Full harness docs: `docs/cloud-pi-testing/06-agent-seat.md`.
 
 ## Bundled scenarios
 
-| Name | What it exercises |
-| --- | --- |
-| `shy-semrush-export` | One `backlinks_comparison` table, shy export follow-up, `dataExport` plan on turn 2 |
+No legacy export-planner scenario is bundled. New scenarios must exercise
+currently registered provider contracts; terminal/file workflows belong in the
+Cloud-Pi harness because Agent Seat does not run the container.
 
 ## Notes for authors
 

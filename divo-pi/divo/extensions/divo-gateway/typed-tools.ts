@@ -103,7 +103,9 @@ function exactNativeCallBranch(
 	if (!isRecord(contract.inputSchema) || JSON.stringify(contract.inputSchema).includes("\"$ref\"")) return undefined;
 	const properties = isRecord(branch.properties) ? { ...branch.properties } : undefined;
 	if (!properties) return undefined;
-	properties.op = literalProperty(properties.op, "call");
+	const operation = ["call", "call_resolved_sheet"].find(value => operationIncludes(branch, value));
+	if (!operation) return undefined;
+	properties.op = literalProperty(properties.op, operation);
 	properties.nativeTool = literalProperty(properties.nativeTool, contract.nativeTool, contract.description);
 	properties.input = contract.inputSchema;
 	return {
@@ -144,7 +146,8 @@ export function bindNativeContracts(
 ): Record<string, unknown> {
 	if (contracts.length === 0) return schema;
 	const branches = Array.isArray(schema.anyOf) ? schema.anyOf.filter(isRecord) : [schema];
-	const callBranches = branches.filter(branch => operationIncludes(branch, "call"));
+	const callBranches = branches.filter(branch =>
+		operationIncludes(branch, "call") || operationIncludes(branch, "call_resolved_sheet"));
 	if (callBranches.length === 0) return schema;
 	const preloaded = new Set(contracts.map(contract => contract.nativeTool));
 	const exact = callBranches.flatMap(branch => contracts.flatMap(contract => {
@@ -155,7 +158,7 @@ export function bindNativeContracts(
 	}));
 	if (exact.length === 0) return schema;
 	const preserved = branches.flatMap(branch => {
-		if (!operationIncludes(branch, "call")) return [branch];
+		if (!operationIncludes(branch, "call") && !operationIncludes(branch, "call_resolved_sheet")) return [branch];
 		const fallback = genericNativeCallBranch(branch, preloaded);
 		return fallback ? [fallback] : [];
 	});

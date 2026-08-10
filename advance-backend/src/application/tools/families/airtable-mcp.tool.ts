@@ -16,28 +16,48 @@ import {
   type AirtableProductDefinition,
 } from '../../airtable/airtable-mcp-manifest';
 
-function createArgsSchema(nativeTool: z.ZodType<string>) {
-  return z.object({
-    connectionId: z.string().uuid().optional(),
-    op: z.enum(['describe', 'call']),
-    nativeTool,
-    input: z.record(z.unknown()).optional(),
-    exportAll: z.boolean().optional(),
-  }).superRefine((value, context) => {
-    // A real call must name exactly one account. Besides preventing accidental
-    // cross-account writes, this is what lets the backend apply the connection
-    // owner's governance policy and rate budget to the request.
-    if (value.op === 'call' && !value.connectionId) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['connectionId'],
-        message: 'is required for Airtable calls; reuse the run-bootstrap account or use connections.list once when none was loaded',
-      });
-    }
-  });
+const LIST_RECORDS_TOOL = 'list_records_for_table';
+const AirtablePageInputSchema = z.object({
+  baseId: z.string().min(1),
+  tableId: z.string().min(1),
+  fieldIds: z.array(z.string().min(1)).max(100).optional(),
+  cursor: z.string().min(1).optional(),
+}).strict();
+
+function nativeArgsBranches(nativeTool: z.ZodType<string>) {
+  return [
+    z.object({
+      connectionId: z.string().uuid().optional(),
+      op: z.literal('describe'),
+      nativeTool,
+      input: z.record(z.unknown()).optional(),
+    }),
+    z.object({
+      connectionId: z.string().uuid(),
+      op: z.literal('call'),
+      nativeTool,
+      input: z.record(z.unknown()).optional(),
+    }),
+  ] as const;
 }
 
-const ArgsSchema = createArgsSchema(z.string().min(1));
+function createNativeArgsSchema(nativeTool: z.ZodType<string>) {
+  return z.discriminatedUnion('op', nativeArgsBranches(nativeTool));
+}
+
+function createPageArgsSchema(nativeTool: z.ZodType<string>) {
+  return z.discriminatedUnion('op', [
+    ...nativeArgsBranches(nativeTool),
+    z.object({
+      connectionId: z.string().uuid(),
+      op: z.literal('page'),
+      nativeTool: z.literal(LIST_RECORDS_TOOL),
+      input: AirtablePageInputSchema,
+    }),
+  ]);
+}
+
+const ArgsSchema = createPageArgsSchema(z.string().min(1));
 export type AirtableMcpArgs = z.infer<typeof ArgsSchema>;
 
 function nativeToolEnum(values: readonly string[]): z.ZodEnum<[string, ...string[]]> {
@@ -169,16 +189,19 @@ function createProductTool(
     id: asToolId(product.toolId),
     family: 'airtable',
     actionGroups: supportedActions,
-    argsSchema: createArgsSchema(nativeToolEnum(nativeToolNames)),
+    argsSchema: (product.service === 'base' || product.service === 'records'
+      ? createPageArgsSchema(nativeToolEnum(nativeToolNames))
+      : createNativeArgsSchema(nativeToolEnum(nativeToolNames))) as z.ZodType<AirtableMcpArgs>,
     resultSchema: ResultSchema,
     description: product.description,
     parameterDocs: [
       'connectionId: required for call. Reuse an exact run-bootstrap Airtable connectionId. If no account was supplied, do not call the provider; report that Airtable must be connected or shared. Describe may omit connectionId only to inspect an approved operation schema.',
-      'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required operation whose schema is absent; input may be omitted for describe.',
+      product.service === 'base' || product.service === 'records'
+        ? 'op: describe|call|page. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required operation whose schema is absent. page is restricted to list_records_for_table through divo-local and returns one 100-row Web API page plus nextCursor.'
+        : 'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required operation whose schema is absent.',
       `nativeTool: one of ${nativeToolNames.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${AIRTABLE_MCP_AUTH_CONTRACT.agentGuidance}`,
-      'Record reads are capped to a byte-safe preview and do not expose continuation cursors. Do not use Airtable MCP pagination as a full export or broad analytics source; use Menhood Data for synced Menhood analysis, or dataExport only when an exact backend-replayable source is available.',
-      'Inline exportAll is retired and rejected. Load the Data Work Router and use dataExport only when the member explicitly requests a file, sheet, CSV, or export artifact.',
+      'Ordinary record calls are capped to a byte-safe preview and do not expose continuation cursors. A persistent terminal workflow may use op=page with input {baseId,tableId,fieldIds?,cursor?}; pass each returned nextCursor as the next cursor, keep every response file outside model context, and stop when hasMore=false.',
     ].join(' '),
 
     permissionCheck(args, permission) {
@@ -211,12 +234,23 @@ function createProductTool(
     },
 
     async preflight(args, ctx) {
-      if (args.exportAll) return inlineExportRetired(product.toolId);
       const resolved = await resolveForRequest(product, deps, args, ctx);
       if (!resolved.ok) return resolved;
       const { operation, action, connection } = resolved.value;
 
       try {
+        if (args.op === 'page') {
+          const issue = validatePageRequest(product, args, ctx);
+          if (issue) return badArgs(product.toolId, issue);
+          return ok({
+            level: 'native_schema_and_connection',
+            connectionEligible: true,
+            nativeSchemaValidated: true,
+            nativeTool: args.nativeTool,
+            action,
+            requiredActions: ['read'],
+          });
+        }
         const description = await describeOperation(connection.client, args.nativeTool);
         if (!description) return missingNativeTool(product, args.nativeTool);
         if (args.op === 'call') {
@@ -237,7 +271,6 @@ function createProductTool(
     },
 
     async execute(args, ctx): Promise<Result<AirtableMcpToolResult, ToolError>> {
-      if (args.exportAll) return inlineExportRetired(product.toolId);
       const resolved = await resolveForRequest(product, deps, args, ctx);
       if (!resolved.ok) {
         // A pending account choice is a normal, recoverable turn — surface the
@@ -258,6 +291,32 @@ function createProductTool(
       const { action, connection } = resolved.value;
 
       try {
+        if (args.op === 'page') {
+          const issue = validatePageRequest(product, args, ctx);
+          if (issue) return badArgs(product.toolId, issue);
+          if (!connection.client.listRecordsPage) {
+            return missingNativeTool(product, 'Airtable Web API page reader');
+          }
+          const input = AirtablePageInputSchema.parse(args.input ?? {});
+          ctx.onProgress?.(`Reading ${product.name} page…`);
+          const page = await connection.client.listRecordsPage({
+            baseId: input.baseId,
+            tableId: input.tableId,
+            ...(input.fieldIds ? { fieldIds: input.fieldIds } : {}),
+            ...(input.cursor ? { offset: input.cursor } : {}),
+          }, ctx.abortSignal);
+          return ok({
+            success: true,
+            nativeTool: args.nativeTool,
+            data: {
+              records: page.records,
+              returnedRecordCount: page.records.length,
+              hasMore: Boolean(page.nextCursor),
+              ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+            },
+            message: `${product.name} file page completed`,
+          });
+        }
         if (args.op === 'describe') {
           ctx.onProgress?.(`Loading ${product.name} operation schema…`);
           const description = await describeOperation(connection.client, args.nativeTool);
@@ -311,7 +370,7 @@ function createProductTool(
           nativeTool: args.nativeTool,
           data: modelData,
           message: RECORD_READ_OPERATIONS.has(args.nativeTool)
-            ? `${product.name} preview completed. This MCP preview is not a full export or broad analytics source; use Menhood Data for synced Menhood analysis, or dataExport only with an exact backend-replayable source.`
+            ? `${product.name} preview completed. This MCP preview is not a full export or broad analytics source; use Menhood Data for synced Menhood analysis.`
             : `${product.name} operation completed`,
         });
       } catch (cause) {
@@ -378,10 +437,8 @@ function compactRecordResult(value: unknown): unknown {
     if (Buffer.byteLength(JSON.stringify(candidate), 'utf8') > RECORD_PREVIEW_MAX_BYTES) break;
     compactRecords.push(compact);
   }
-  // Keep MCP record reads as bounded previews. Do not leak nextCursor to the
-  // model, otherwise it can accidentally turn a preview into ungoverned bulk
-  // pagination. Backend-owned export replay uses AirtableDataExportSource and
-  // its server-side cursor handling instead.
+  // Keep ordinary MCP record reads as bounded previews. Trusted terminal
+  // workflows use op=page, whose result is written to a local file.
   const { nextCursor: _nextCursor, offset: _offset, ...previewValue } = value;
   return {
     ...previewValue,
@@ -509,11 +566,26 @@ async function describeOperation(
     : client.describeTool(nativeTool);
 }
 
-function inlineExportRetired(toolId: string): Result<never, ToolError> {
-  return badArgs(
-    toolId,
-    'Inline exportAll is unsupported. Airtable MCP is a bounded preview path, not a bulk export source. Use Menhood Data for synced Menhood analysis, or dataExport only when an exact backend-replayable Airtable source is available.',
-  );
+function validatePageRequest(
+  product: AirtableProductDefinition,
+  args: AirtableMcpArgs,
+  ctx: ToolExecutionContext,
+): string | undefined {
+  if (args.nativeTool !== LIST_RECORDS_TOOL) {
+    return 'op=page is available only for list_records_for_table';
+  }
+  if (product.service !== 'base' && product.service !== 'records') {
+    return `op=page is not available through ${product.name}`;
+  }
+  if (ctx.resultAudience !== 'local_file') {
+    return 'op=page is available only inside a divo-local terminal workflow so bulk rows stay outside model context';
+  }
+  const parsed = AirtablePageInputSchema.safeParse(args.input ?? {});
+  return parsed.success
+    ? undefined
+    : parsed.error.errors
+      .map(issue => `${issue.path.join('.') || '(root)'}: ${issue.message}`)
+      .join('; ');
 }
 
 function missingNativeTool(

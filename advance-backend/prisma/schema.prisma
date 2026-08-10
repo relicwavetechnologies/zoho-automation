@@ -109,29 +109,6 @@ enum KnowledgeLearningJobStatus {
   failed
 }
 
-enum DataExportOfferStatus {
-  pending
-  confirming
-  confirmed
-  expired
-  cancelled
-}
-
-enum DataExportCandidateStatus {
-  active
-  expired
-  cancelled
-}
-
-enum DataExportPlanStatus {
-  planned
-  sample_queued
-  sample_ready
-  full_queued
-  expired
-  cancelled
-}
-
 enum ShopifyPrivacyRequestState {
   received
   ready
@@ -281,10 +258,6 @@ model User {
   managerPersonaNodes                ManagerPersonaNode[]            @relation("ManagerPersonaNodeManager")
   managerTeachSessions               ManagerTeachSession[]           @relation("ManagerTeachSessionManager")
   connectionAuthorizationIntents     ConnectionAuthorizationIntent[]
-  dataExportOffers                   DataExportOffer[]
-  dataExportCandidates               DataExportCandidate[]
-  dataExportPlans                    DataExportPlan[]
-  dataExportDestinationPreferences   DataExportDestinationPreference[]
   mailboxSubscriptions               MailboxSubscription[]
   mailAutomationRules                MailAutomationRule[]
   mailBriefs                         MailBrief[]
@@ -354,10 +327,6 @@ model Company {
   managerPersonaNodes             ManagerPersonaNode[]
   managerTeachSessions            ManagerTeachSession[]
   connectionAuthorizationIntents  ConnectionAuthorizationIntent[]
-  dataExportOffers                DataExportOffer[]
-  dataExportCandidates            DataExportCandidate[]
-  dataExportPlans                 DataExportPlan[]
-  dataExportDestinationPreferences DataExportDestinationPreference[]
   mailboxSubscriptions            MailboxSubscription[]
   mailAutomationRules             MailAutomationRule[]
   mailEvents                      MailEvent[]
@@ -883,9 +852,6 @@ model Department {
   managerPersonaNodes            ManagerPersonaNode[]
   managerTeachSessions           ManagerTeachSession[]
   connectionAuthorizationIntents ConnectionAuthorizationIntent[]
-  dataExportOffers               DataExportOffer[]
-  dataExportCandidates           DataExportCandidate[]
-  dataExportPlans                DataExportPlan[]
   mailAutomationRules            MailAutomationRule[]
   knowledgeResources             KnowledgeResource[]
   knowledgeMutations             KnowledgeMutation[]
@@ -1461,7 +1427,6 @@ model ConnectionAuthorizationIntent {
   groupReplyMode             String?
   originalRequest            String
   requestedToolIds           String[]               @default([])
-  continuationPayload        Json?
   status                     String                 @default("pending")
   continuationStatus         String                 @default("blocked")
   continuationIdempotencyKey String                 @unique
@@ -1485,120 +1450,6 @@ model ConnectionAuthorizationIntent {
   @@index([status, expiresAt])
   @@index([continuationStatus, continuationQueuedAt])
   @@index([connectionId])
-}
-
-/// Immutable, expiring server-owned recipe behind one export confirmation.
-/// It stores identifiers and normalized tool input only; dataset rows and
-/// provider credentials never belong in this record.
-model DataExportOffer {
-  id                 String                @id @default(uuid())
-  companyId          String
-  company            Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  userId             String
-  user               User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  departmentId       String?
-  department         Department?            @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
-  sourceKind         String
-  sourceConnectionId String
-  payloadJson        Json
-  specHash           String
-  idempotencyKey     String
-  status             DataExportOfferStatus @default(pending)
-  queueJobId         String?
-  /// Every artifact this offer has produced, one job id per destination
-  /// format. `queueJobId` alone cannot serve as the ledger: a member may take
-  /// the Sheet and the Excel file, and the column can only remember the last
-  /// one, which made a repeat click on the earlier format report success while
-  /// queueing nothing.
-  confirmedJobIds    String[]              @default([])
-  expiresAt          DateTime
-  confirmedAt        DateTime?
-  createdAt          DateTime              @default(now())
-  updatedAt          DateTime              @updatedAt
-
-  @@unique([companyId, idempotencyKey])
-  @@index([companyId, userId, status, expiresAt])
-  @@index([status, expiresAt])
-  @@index([companyId, sourceConnectionId])
-}
-
-/// Opaque server-owned handle for an exportable dataset a source tool already
-/// read in preview form. Google Drive stores sample/final files; this row is
-/// only the replay/control receipt.
-model DataExportCandidate {
-  id                 String                    @id @default(uuid())
-  companyId          String
-  company            Company                   @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  userId             String
-  user               User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  departmentId       String?
-  department         Department?               @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
-  chatId             String
-  conversationKey    String?
-  sourceKind         String
-  sourceConnectionId String
-  payloadJson        Json
-  payloadHash        String
-  schemaJson         Json?
-  previewRowCount    Int                       @default(0)
-  estimatedRows      Int?
-  coverageJson       Json?
-  status             DataExportCandidateStatus @default(active)
-  expiresAt          DateTime
-  createdAt          DateTime                  @default(now())
-  updatedAt          DateTime                  @updatedAt
-
-  @@index([companyId, userId, chatId, status, expiresAt])
-  @@index([companyId, sourceKind, sourceConnectionId])
-  @@index([status, expiresAt])
-}
-
-/// Plan chosen by the model from one or more export candidates. It records the
-/// exact plan hash that a sample approved before Divo queues the full export.
-model DataExportPlan {
-  id                      String               @id @default(uuid())
-  companyId               String
-  company                 Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  userId                  String
-  user                    User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  departmentId            String?
-  department              Department?          @relation(fields: [departmentId, companyId], references: [id, companyId], onDelete: Restrict)
-  chatId                  String
-  conversationKey         String?
-  candidateIds            String[]
-  planJson                Json
-  planHash                String
-  destinationFormat       String
-  destinationConnectionId String?
-  status                  DataExportPlanStatus @default(planned)
-  sampleRows              Int?
-  sampleJobId             String?
-  sampleReadyAt           DateTime?
-  fullJobId               String?
-  sampleConfirmedAt       DateTime?
-  expiresAt               DateTime
-  createdAt               DateTime             @default(now())
-  updatedAt               DateTime             @updatedAt
-
-  @@unique([companyId, userId, chatId, planHash])
-  @@index([companyId, userId, chatId, status, expiresAt])
-  @@index([status, expiresAt])
-}
-
-/// Explicit personal Google destination chosen by one user inside one company.
-/// Eligibility is always revalidated; a stale connection ID is harmless state.
-model DataExportDestinationPreference {
-  id           String   @id @default(uuid())
-  companyId    String
-  company      Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  connectionId String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  @@unique([companyId, userId])
-  @@index([userId, companyId])
 }
 
 /// One Pub/Sub-triggered history cursor and lease per connected Gmail mailbox.

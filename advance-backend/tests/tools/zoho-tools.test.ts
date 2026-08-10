@@ -5,7 +5,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeAllowedPerm, makeDeniedPerm, makeCtx } from './tool-test.helpers.ts';
-import { asToolId } from '../../src/shared/ids.ts';
 
 import { createZohoCrmTool }   from '../../src/application/tools/families/zoho-crm.tool.ts';
 import { createZohoBooksTool } from '../../src/application/tools/families/zoho-books.tool.ts';
@@ -251,94 +250,25 @@ describe('zohoCrm tool', () => {
       assert.equal((r as any).error.payload.reason, 'permission_denied');
     });
 
-    /*
-     * The old path uploaded a CSV to Cloudinary and handed back a signed URL —
-     * no offer, no destination governance, no owner approval. These cover the
-     * replacement, and specifically the case where being wrong is silent: a
-     * personalized member must never be handed a candidate, because the export is
-     * re-read later by a worker that has no requester identity to filter on and
-     * would export the whole module.
-     */
-    const exportPerm = () => ({
-      allowedToolIds: new Set([asToolId('zohoCrm'), asToolId('dataExport')]) as any,
-      allowedActionsByTool: new Map([
-        [asToolId('zohoCrm'), new Set(['read'])],
-        [asToolId('dataExport'), new Set(['create'])],
-      ]) as any,
-      decisions: [],
-    });
-    const CONNECTION = '11111111-1111-4111-8111-111111111111';
-
-    it('publishes a governed export candidate of the exact module instead of uploading a CSV', async () => {
-      const candidates: any[] = [];
-      const tool = createZohoCrmTool({
-        getClient: yesClient,
-        crmClient: fakePaginatedCrmClient,
-        crmOps: fakeCrmOps,
-        exportCandidates: {
-          publishCandidate: async (payload: any) => {
-            candidates.push(payload);
-            return {
-              candidateId: '11111111-1111-4111-8111-111111111111',
-              expiresAt: new Date('2026-08-03T00:00:00.000Z'),
-            } as any;
-          },
-        } as any,
-      });
-      const exporting = makeCtx('zohoCrm', ['read'], { chatId: 'oc-1' });
-      (exporting as any).perm = exportPerm();
-
-      const r = await tool.execute(
-        { op: 'list', module: 'Deals', exportAll: true, connectionId: CONNECTION },
-        exporting,
-      );
-
-      assert.equal(r.ok, true);
-      assert.equal((r as any).value.exportCandidate.candidateId, '11111111-1111-4111-8111-111111111111');
-      assert.equal(candidates.length, 1);
-      assert.deepEqual(candidates[0].source, {
-        kind: 'zoho_crm',
-        connectionId: CONNECTION,
-        module: 'Deals',
-      });
-      // No signed link leaves the tool any more.
-      assert.equal('csvLink' in (r as any).value, false);
-    });
-
-    it('never publishes an export candidate to a member restricted to their own records', async () => {
-      let published = false;
-      const tool = createZohoCrmTool({
-        getClient: yesClient,
-        crmClient: fakePaginatedCrmClient,
-        crmOps: fakeCrmOps,
-        exportCandidates: {
-          publishCandidate: async () => {
-            published = true;
-            return { candidateId: '11111111-1111-4111-8111-111111111111', expiresAt: new Date() } as any;
-          },
-        } as any,
-      });
-      const personalized = makeCtx('zohoCrm', ['read'], {
-        chatId: 'oc-1',
-        requesterEmail: 'member@example.com',
-      });
-      (personalized as any).perm = exportPerm();
-      (personalized.perm as any).department = { zohoReadScope: 'personalized' };
-
-      const r = await tool.execute(
-        { op: 'list', module: 'Deals', exportAll: true, connectionId: CONNECTION },
-        personalized,
-      );
-
-      assert.equal(r.ok, true);
-      assert.equal(published, false);
-      assert.equal((r as any).value.exportCandidate, undefined);
-    });
-
     it('search: ok with criteria', async () => {
       const tool = makeCrmTool();
       const r = await tool.execute({ op: 'search', module: 'Leads', criteria: '(Last_Name:contains:Alice)' }, ctx);
       assert.equal(r.ok, true);
+    });
+
+    it('marks search coverage truncated when Zoho has more rows but no continuation contract', async () => {
+      const paginatedClient = {
+        ...fakePaginatedCrmClient,
+        searchRecords: async () => ({ items: [{ id: 'lead-1' }], hasMore: true }),
+      } as unknown as ZohoCrmPaginatedClient;
+      const tool = createZohoCrmTool({ getClient: yesClient, crmClient: paginatedClient, crmOps: fakeCrmOps });
+
+      const r = await tool.execute({ op: 'search', module: 'Leads', criteria: '(Last_Name:contains:Alice)' }, ctx);
+
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.hasMore, true);
+      assert.equal((r as any).value.truncated, true);
+      assert.match((r as any).value.message, /no continuation/i);
     });
 
     it('search_text: ok with query', async () => {

@@ -45,10 +45,6 @@ import {
   parseConnectionGovernancePolicy,
 } from '../../application/governance/connection-governance.policy';
 import {
-  configureDataExportProfile,
-  getDataExportProfile,
-} from '../../application/data-export/data-export.profile';
-import {
   canStartMailBriefFromGoogleAuthorization,
   type MailBriefOnboardingInput,
   type MailBriefOnboardingResult,
@@ -2182,7 +2178,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     try {
       const userId    = res.locals['userId'] as string;
       const companyId = res.locals['companyId'] as string;
-      const ownerType = req.query['owner'] === 'company' ? 'company' : 'user';
+      if (req.query['owner'] === 'company') {
+        res.status(400).json({ success: false, message: 'Company Google connections are not supported by this flow' });
+        return;
+      }
+      const ownerType = 'user' as const;
       const redirectUri = desktopCallbackUri(req, '/api/desktop/auth/google/callback');
 
       // `for` names what the member is connecting Google *to do*, and narrows
@@ -2197,16 +2197,6 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         .split(',')
         .map(value => value.trim())
         .filter(Boolean);
-      if (ownerType === 'company') {
-        if (!COMPANY_ADMIN_ROLES.has((res.locals['aiRole'] as string | undefined) ?? 'MEMBER')) {
-          res.status(403).json({ success: false, message: 'A company admin must connect the export account' });
-          return;
-        }
-        if (requestedFor.length !== 1 || requestedFor[0] !== 'dataExport') {
-          res.status(400).json({ success: false, message: 'A company Google account may be connected here only for data exports' });
-          return;
-        }
-      }
       const scopes = googleScopesToRequestForToolIds(requestedFor);
 
       const state = signJwt(
@@ -2395,83 +2385,6 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         connections: rows,
       },
     });
-  });
-
-  router.get('/google/data-export-profile', memberAuth, async (_req: Request, res: Response) => {
-    const companyId = res.locals['companyId'] as string;
-    const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
-    if (!COMPANY_ADMIN_ROLES.has(role)) {
-      res.status(403).json({ success: false, message: 'Company admin access required' });
-      return;
-    }
-    const configured = await getDataExportProfile(deps.prisma, companyId);
-    res.json({
-      success: true,
-      data: {
-        profile: configured.profile,
-        configuredAt: configured.configuredAt?.toISOString() ?? null,
-        configuredBy: configured.configuredBy,
-        version: configured.version,
-      },
-    });
-  });
-
-  router.put('/google/data-export-profile', memberAuth, async (req: Request, res: Response) => {
-    const companyId = res.locals['companyId'] as string;
-    const userId = res.locals['userId'] as string;
-    const role = (res.locals['aiRole'] as string | undefined) ?? 'MEMBER';
-    if (!COMPANY_ADMIN_ROLES.has(role)) {
-      res.status(403).json({ success: false, message: 'Company admin access required' });
-      return;
-    }
-    const parsed = z.object({
-      googleConnectionId: z.string().uuid(),
-      acknowledged: z.literal(true),
-    }).strict().safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? 'Invalid export profile' });
-      return;
-    }
-    const manageable = await buildConnectionManagePayload(
-      parsed.data.googleConnectionId,
-      userId,
-      companyId,
-      role,
-    );
-    if (!manageable) {
-      res.status(404).json({ success: false, message: 'Google connection not found' });
-      return;
-    }
-    if ('forbidden' in manageable) {
-      res.status(403).json({ success: false, message: 'Admin access to the selected Google connection is required' });
-      return;
-    }
-    try {
-      const configured = await configureDataExportProfile(deps.prisma, {
-        companyId,
-        googleConnectionId: parsed.data.googleConnectionId,
-        configuredBy: userId,
-      });
-      log.info('google.data_export_profile.updated', {
-        companyId,
-        googleConnectionId: parsed.data.googleConnectionId,
-        accountEmail: configured.profile.accountEmail,
-        userId,
-        version: configured.version,
-      });
-      res.json({
-        success: true,
-        data: {
-          profile: configured.profile,
-          configuredAt: configured.configuredAt.toISOString(),
-          configuredBy: configured.configuredBy,
-          version: configured.version,
-        },
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      res.status(message.includes('not found') ? 404 : 400).json({ success: false, message });
-    }
   });
 
   router.get('/google/connections/:connectionId/manage', memberAuth, async (req: Request, res: Response) => {

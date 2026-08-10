@@ -205,6 +205,38 @@ describe('airtable args schema', () => {
       false,
     );
   });
+
+  it('makes terminal page mode exact and unavailable to unrelated Airtable products', () => {
+    const tools = createAirtableMcpTools({ getConnection: async () => ({ status: 'unavailable' }) });
+    const records = tools.find(tool => tool.id === 'airtableRecords')!;
+    const automation = tools.find(tool => tool.id === 'airtableAutomation')!;
+    const connectionId = '11111111-1111-4111-8111-111111111111';
+
+    assert.equal(records.argsSchema.safeParse({
+      connectionId,
+      op: 'page',
+      nativeTool: 'list_records_for_table',
+      input: { baseId: 'app1', tableId: 'tbl1' },
+    }).success, true);
+    assert.equal(records.argsSchema.safeParse({
+      connectionId,
+      op: 'page',
+      nativeTool: 'search_records',
+      input: { baseId: 'app1', tableId: 'tbl1' },
+    }).success, false);
+    assert.equal(records.argsSchema.safeParse({
+      connectionId,
+      op: 'page',
+      nativeTool: 'list_records_for_table',
+      input: { base_id: 'app1', table_id: 'tbl1' },
+    }).success, false);
+    assert.equal(automation.argsSchema.safeParse({
+      connectionId,
+      op: 'page',
+      nativeTool: 'list_records_for_table',
+      input: { baseId: 'app1', tableId: 'tbl1' },
+    }).success, false);
+  });
 });
 
 describe('airtable execute', () => {
@@ -329,6 +361,82 @@ describe('airtable execute', () => {
     assert.match(value.message, /MCP preview is not a full export or broad analytics source/i);
   });
 
+  it('pages complete Airtable rows only into trusted local result files', async () => {
+    const calls: unknown[] = [];
+    const [records] = createAirtableMcpTools({
+      getConnection: async () => ({
+        status: 'resolved' as const,
+        connection: {
+          client: {
+            describeTool: async () => ({ name: 'list_records_for_table', inputSchema: { type: 'object' } }),
+            callTool: async () => { throw new Error('MCP preview must not run for page mode'); },
+            listRecordsPage: async (input: unknown) => {
+              calls.push(input);
+              return {
+                records: Array.from({ length: 100 }, (_, index) => ({ id: `rec${index}`, fields: { Name: `Order ${index}` } })),
+                nextCursor: 'offset-page-2',
+              };
+            },
+          },
+        },
+      }),
+    });
+    const ctx = { ...makeCtx('airtableRecords', ['read']), resultAudience: 'local_file' as const };
+    const result = await records!.execute({
+      op: 'page',
+      nativeTool: 'list_records_for_table',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      input: {
+        baseId: 'app1',
+        tableId: 'tbl1',
+        fieldIds: ['fldName'],
+        cursor: 'offset-page-1',
+      },
+    } as any, ctx);
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls, [{
+      baseId: 'app1',
+      tableId: 'tbl1',
+      fieldIds: ['fldName'],
+      offset: 'offset-page-1',
+    }]);
+    const data = result.ok ? result.value.data as any : null;
+    assert.equal(data.records.length, 100);
+    assert.equal(data.returnedRecordCount, 100);
+    assert.equal(data.hasMore, true);
+    assert.equal(data.nextCursor, 'offset-page-2');
+  });
+
+  it('refuses Airtable page mode on a model-facing call', async () => {
+    let pageCalled = false;
+    const [records] = createAirtableMcpTools({
+      getConnection: async () => ({
+        status: 'resolved' as const,
+        connection: {
+          client: {
+            describeTool: async () => ({ name: 'list_records_for_table', inputSchema: { type: 'object' } }),
+            callTool: async () => ({}),
+            listRecordsPage: async () => {
+              pageCalled = true;
+              return { records: [] };
+            },
+          },
+        },
+      }),
+    });
+    const result = await records!.execute({
+      op: 'page',
+      nativeTool: 'list_records_for_table',
+      connectionId: '11111111-1111-4111-8111-111111111111',
+      input: { baseId: 'app1', tableId: 'tbl1' },
+    } as any, makeCtx('airtableRecords', ['read']));
+
+    assert.equal(result.ok, false);
+    assert.match(!result.ok ? result.error.message : '', /only inside a divo-local terminal workflow/i);
+    assert.equal(pageCalled, false);
+  });
+
   it('normalizes stale record-read params before calling Airtable MCP', async () => {
     const calls: Array<Record<string, unknown>> = [];
     const [records] = createAirtableMcpTools({
@@ -405,30 +513,6 @@ describe('airtable execute', () => {
     assert.equal(calls[0]?.['filter'], undefined);
     assert.equal(calls[0]?.['limit'], undefined);
     assert.equal(calls[0]?.['pageSize'], 10);
-  });
-
-  it('rejects the retired inline export path before resolving a connection', async () => {
-    let resolved = false;
-    const [records] = createAirtableMcpTools({
-      getConnection: async () => {
-        resolved = true;
-        return { status: 'unavailable' as const };
-      },
-    });
-    const result = await records!.execute(
-      {
-        op: 'call',
-        nativeTool: 'list_records_for_table',
-        connectionId: '11111111-1111-4111-8111-111111111111',
-        input: { baseId: 'app1', tableId: 'tbl1' },
-        exportAll: true,
-      } as any,
-      makeCtx('airtableRecords', ['read']),
-    );
-
-    assert.equal(result.ok, false);
-    assert.match(!result.ok ? result.error.message : '', /MCP is a bounded preview path.*not a bulk export source/i);
-    assert.equal(resolved, false);
   });
 
   it('lists the complete field ID/name index through the backend adapter', async () => {

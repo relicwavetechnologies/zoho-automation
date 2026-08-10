@@ -2671,7 +2671,7 @@ describe('GatewayDispatcher', () => {
    * A denied tool used to come back as unknown_tool, which reads as "this was
    * never built". An agent that believes a capability does not exist stops
    * asking for permission and starts inventing a way around it — in one real
-   * session it rebuilt an export by hand against an explicit prohibition. The
+   * session it tried to rebuild a denied action by hand. The
    * refusal has to be legible as a refusal.
    */
   it('separates a denied tool from one that does not exist', async () => {
@@ -2679,9 +2679,9 @@ describe('GatewayDispatcher', () => {
     registry.register(makeFakeTool());
     registry.register({
       ...makeFakeTool(),
-      id: asToolId('dataExport'),
-      family: 'data',
-      description: 'Governed export',
+      id: asToolId('zohoBooks'),
+      family: 'zoho',
+      description: 'Governed Zoho Books',
     } as Tool<{ query: string }, { result: string }>);
 
     const dispatcher = new GatewayDispatcher({
@@ -2697,11 +2697,11 @@ describe('GatewayDispatcher', () => {
       logger: noopLogger,
     });
 
-    // The member's permissions cover fakeTool only, so dataExport is real but
+    // The member's permissions cover fakeTool only, so Zoho Books is real but
     // out of reach.
     const denied = await dispatcher.dispatch({
       op: 'tools.list',
-      payload: { toolId: 'dataExport' },
+      payload: { toolId: 'zohoBooks' },
     }, member);
     assert.equal(denied.status, 'permission_denied');
     assert.match(String(denied.error?.message), /permission decision, not a missing capability/);
@@ -2860,71 +2860,6 @@ describe('GatewayDispatcher', () => {
 
     assert.equal(result.ok, true);
     assert.deepEqual((result.data as { result: { result: string } }).result, { result: 'echo:gateway' });
-  });
-
-  it('records a trusted export offer against the exact Lark runtime lease', async () => {
-    const offerId = '11111111-1111-4111-8111-111111111111';
-    const receipts: unknown[] = [];
-    const registry = new ToolRegistry();
-    registry.register(makeFakeTool({
-      resultSchema: z.object({
-        result: z.string(),
-        preview: z.object({ exportOfferId: z.string().uuid() }),
-      }) as any,
-      execute: async () => ok({ result: '25 rows', preview: { exportOfferId: offerId } }) as any,
-    }));
-    const permissions = makePermissionService();
-    const dispatcher = new GatewayDispatcher({
-      permissions,
-      toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([allowedSkill]),
-      toolExecutor: new ToolExecutor({
-        toolRegistry: registry,
-        permissions,
-        logger: noopLogger,
-        clock: { now: () => new Date(), nowMs: () => Date.now() },
-      }),
-      runEffectReceipts: {
-        reserveKnowledgeReview: async () => ({ status: 'claimed' }),
-        completeKnowledgeReview: async () => ({} as any),
-        releaseKnowledgeReview: async () => {},
-        recordPersonalMemory: async () => ({} as any),
-        recordDataExportOffer: async (identity, input) => {
-          receipts.push({ identity, input });
-          return {} as any;
-        },
-      },
-      logger: noopLogger,
-    });
-
-    const result = await dispatcher.dispatch({
-      op: 'tools.invoke',
-      execution: {
-        version: 1,
-        runId: 'run-1',
-        threadId: 'thread-1',
-        actionId: 'call-1',
-      },
-      payload: { toolId: 'fakeTool', args: { query: 'large dataset' } },
-    }, {
-      ...member,
-      channel: 'lark',
-      runtimeChatId: 'chat-1',
-      runtimeRunId: 'run-1',
-      runtimeThreadId: 'thread-1',
-    });
-
-    assert.equal(result.ok, true);
-    assert.deepEqual(receipts, [{
-      identity: {
-        companyId: 'co-test',
-        userId: 'user-test',
-        chatId: 'chat-1',
-        threadId: 'thread-1',
-        runId: 'run-1',
-      },
-      input: { offerId },
-    }]);
   });
 
   it('replaces a resolved Lark Sheet target with a run-bound opaque reference', async () => {
@@ -3174,226 +3109,6 @@ describe('GatewayDispatcher', () => {
         fileName: 'Forecast.xlsx',
       },
     }]);
-  });
-
-  it('materializes an exported Sheet reference only inside the governed Google call', async () => {
-    const resourceRef = '22222222-2222-4222-8222-222222222222';
-    const connectionId = '11111111-1111-4111-8111-111111111111';
-    let executedArgs: unknown;
-    const registry = new ToolRegistry();
-    registry.register(makeFakeTool({
-      id: asToolId('googleSheets'),
-      actionGroups: new Set(['read', 'update']),
-      argsSchema: z.object({
-        op: z.literal('call'),
-        connectionId: z.string().uuid(),
-        nativeTool: z.string(),
-        input: z.record(z.unknown()),
-      }),
-      resultSchema: z.object({}).passthrough(),
-      permissionCheck: () => ok('update'),
-      execute: async (args: any) => {
-        executedArgs = args;
-        return ok({
-          success: true,
-          spreadsheetId: args.input.spreadsheet_id,
-          connectionId: args.connectionId,
-          spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-exported/edit',
-        });
-      },
-    } as any));
-    const permissions = makePermissionService(makeAllowedPerm('googleSheets', ['read', 'update']));
-    const dataExportResources = {
-      getToolTurnByResourceRef: async () => ok({
-        id: 'resource-turn',
-        role: 'tool' as const,
-        content: 'verified export',
-        timestamp: '2026-08-02T00:00:00.000Z',
-        toolName: 'dataExportResource',
-        toolOutcome: {
-          version: 1,
-          kind: 'data_export_resource',
-          resourceRef,
-          ownerUserId: 'user-test',
-          artifactId: 'sheet-exported',
-          artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-exported/edit',
-          artifactType: 'google_sheet',
-          rowCount: 50,
-          connectionId,
-          spreadsheetId: 'sheet-exported',
-          createdAt: '2026-08-02T00:00:00.000Z',
-          expiresAt: '2099-08-09T00:00:00.000Z',
-        },
-      }),
-    };
-    const dispatcher = new GatewayDispatcher({
-      permissions,
-      toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([allowedSkill]),
-      toolExecutor: new ToolExecutor({
-        toolRegistry: registry,
-        permissions,
-        logger: noopLogger,
-        clock: { now: () => new Date(), nowMs: () => Date.now() },
-      }),
-      dataExportResources,
-      resolveGoogleSheetReference: async () => ({
-        status: 'resolved',
-        resource: {
-          provider: 'google',
-          kind: 'spreadsheet',
-          connectionId,
-          resourceId: 'sheet-exported',
-        },
-      }),
-      logger: noopLogger,
-    });
-    const execution = {
-      version: 1 as const,
-      runId: 'run-1',
-      threadId: 'thread-1',
-      actionId: 'edit-export-1',
-    };
-    const larkMember = {
-      ...member,
-      channel: 'lark' as const,
-      runtimeChatId: 'chat-1',
-      runtimeRunId: 'run-1',
-      runtimeThreadId: 'thread-1',
-    };
-    const specialArgs = {
-      op: 'call_exported_sheet',
-      resourceRef,
-      nativeTool: 'modify_sheet_values',
-      input: { range: 'Sheet1!H1:H3', values: [['Notes'], ['Needs review'], ['Needs review']] },
-    };
-
-    const result = await dispatcher.dispatch({
-      op: 'tools.invoke',
-      execution,
-      payload: { toolId: 'googleSheets', args: specialArgs },
-    }, larkMember);
-
-    assert.equal(result.ok, true);
-    assert.deepEqual(executedArgs, {
-      op: 'call',
-      connectionId,
-      nativeTool: 'modify_sheet_values',
-      input: {
-        spreadsheet_id: 'sheet-exported',
-        range: 'Sheet1!H1:H3',
-        values: [['Notes'], ['Needs review'], ['Needs review']],
-      },
-    });
-    assert.equal(JSON.stringify(result.data).includes(connectionId), false);
-    assert.equal(JSON.stringify(result.data).includes('"spreadsheetId"'), false);
-    assert.deepEqual((result.data as any).exportedSheet, {
-      resourceRef,
-      url: 'https://docs.google.com/spreadsheets/d/sheet-exported/edit',
-    });
-
-    const preflight = await dispatcher.dispatch({
-      op: 'tools.preflight',
-      execution,
-      payload: { invocations: [{ toolId: 'googleSheets', args: specialArgs }] },
-    }, larkMember);
-    assert.equal(preflight.ok, true);
-    assert.equal(JSON.stringify(preflight.data).includes(connectionId), false);
-    assert.equal(JSON.stringify(preflight.data).includes('spreadsheet_id'), false);
-
-    const injectedHandle = await dispatcher.dispatch({
-      op: 'tools.invoke',
-      execution,
-      payload: {
-        toolId: 'googleSheets',
-        args: { ...specialArgs, input: { ...specialArgs.input, spreadsheet_id: 'attacker' } },
-      },
-    }, larkMember);
-    assert.equal(injectedHandle.status, 'bad_request');
-
-    let deniedResolverCalls = 0;
-    const deniedPermissions = makePermissionService(makeDeniedPerm());
-    const deniedDispatcher = new GatewayDispatcher({
-      permissions: deniedPermissions,
-      toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([allowedSkill]),
-      toolExecutor: new ToolExecutor({
-        toolRegistry: registry,
-        permissions: deniedPermissions,
-        logger: noopLogger,
-        clock: { now: () => new Date(), nowMs: () => Date.now() },
-      }),
-      dataExportResources,
-      resolveGoogleSheetReference: async () => {
-        deniedResolverCalls += 1;
-        return { status: 'resolved' };
-      },
-      logger: noopLogger,
-    });
-    const denied = await deniedDispatcher.dispatch({
-      op: 'tools.invoke',
-      execution,
-      payload: { toolId: 'googleSheets', args: specialArgs },
-    }, larkMember);
-    assert.equal(denied.status, 'permission_denied');
-    assert.equal(deniedResolverCalls, 0);
-
-    const rejectingDispatcher = new GatewayDispatcher({
-      permissions,
-      toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([allowedSkill]),
-      toolExecutor: new ToolExecutor({
-        toolRegistry: registry,
-        permissions,
-        logger: noopLogger,
-        clock: { now: () => new Date(), nowMs: () => Date.now() },
-      }),
-      dataExportResources,
-      resolveGoogleSheetReference: async () => {
-        throw new Error('provider unavailable');
-      },
-      logger: noopLogger,
-    });
-    const rejected = await rejectingDispatcher.dispatch({
-      op: 'tools.invoke',
-      execution,
-      payload: { toolId: 'googleSheets', args: specialArgs },
-    }, larkMember);
-    assert.equal(rejected.status, 'tool_error');
-    assert.match(rejected.error?.message ?? '', /could not verify that Sheet right now/);
-  });
-
-  it('does not expose a Lark export offer without matching runtime provenance', async () => {
-    const registry = new ToolRegistry();
-    registry.register(makeFakeTool({
-      resultSchema: z.object({ preview: z.object({ exportOfferId: z.string().uuid() }) }) as any,
-      execute: async () => ok({
-        preview: { exportOfferId: '11111111-1111-4111-8111-111111111111' },
-      }) as any,
-    }));
-    const permissions = makePermissionService();
-    const dispatcher = new GatewayDispatcher({
-      permissions,
-      toolRegistry: registry,
-      skillCatalog: makeSkillCatalog([allowedSkill]),
-      toolExecutor: new ToolExecutor({
-        toolRegistry: registry,
-        permissions,
-        logger: noopLogger,
-        clock: { now: () => new Date(), nowMs: () => Date.now() },
-      }),
-      runEffectReceipts: {} as any,
-      logger: noopLogger,
-    });
-
-    const result = await dispatcher.dispatch({
-      op: 'tools.invoke',
-      payload: { toolId: 'fakeTool', args: { query: 'large dataset' } },
-    }, { ...member, channel: 'lark' });
-
-    assert.equal(result.ok, false);
-    assert.equal(result.status, 'tool_error');
-    assert.equal(result.data, undefined);
   });
 
   it('returns a bound write intent from invoke and executes it only after commit', async () => {

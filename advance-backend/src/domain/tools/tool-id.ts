@@ -176,7 +176,6 @@ export const TOOL_CAPABILITY_DEFINITIONS = {
 
   webSearch:       defineCapability('context', ['read']),
   knowledge:       defineCapability('memory', ['read', 'create', 'update', 'delete']),
-  dataExport:       defineCapability('data', ['create']),
   mailAutomations:  defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
   scheduledWorkflows: defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
 
@@ -209,45 +208,6 @@ export const TOOL_SUPPORTED_ACTIONS: Readonly<Record<CanonicalToolId, readonly s
 export const TOOL_DEFAULT_PERMISSIONS: Readonly<Record<CanonicalToolId, BuiltInRoleDefaults>> =
   mapCapabilities<BuiltInRoleDefaults>(definition => definition.defaultPermissions);
 
-/**
- * Capabilities whose department permission is derived from another granted
- * capability. This keeps orchestration helpers such as dataExport available
- * when a role can read a supported source, without requiring duplicate
- * department permission rows for every helper.
- */
-export const TOOL_DERIVED_PERMISSIONS = [
-  {
-    toolId: 'dataExport',
-    action: 'create',
-    // Every family whose results can carry an `exportCandidate` belongs here.
-    // A reader of a family that is missing does not merely lose the export —
-    // dataExport disappears from their tool list entirely, and an agent asked
-    // to export their data concludes the capability was never built. That is
-    // exactly what happened to a Shopify-only member: the skill told it to use
-    // `dataExport op=plan`, the tool was absent, and it rebuilt the file by
-    // hand against an explicit prohibition rather than say "you lack access".
-    anyOf: [
-      { toolId: 'airtableBase', action: 'read' },
-      { toolId: 'airtableRecords', action: 'read' },
-      { toolId: 'zohoBooks', action: 'read' },
-      { toolId: 'zohoCrm', action: 'read' },
-      { toolId: 'shopifyAnalytics', action: 'read' },
-      { toolId: 'shopifyOrders', action: 'read' },
-      { toolId: 'shopifyCustomers', action: 'read' },
-      { toolId: 'semrush', action: 'read' },
-      { toolId: 'omsSiteData', action: 'read' },
-      { toolId: 'menhoodData', action: 'read' },
-    ],
-  },
-] as const satisfies readonly {
-  readonly toolId: CanonicalToolId;
-  readonly action: string;
-  readonly anyOf: readonly {
-    readonly toolId: CanonicalToolId;
-    readonly action: string;
-  }[];
-}[];
-
 /** Every canonical tool ID in one family, in stable catalogue order. */
 export function toolIdsForFamily(family: ToolFamily): CanonicalToolId[] {
   return CANONICAL_TOOL_IDS.filter(toolId => TOOL_CAPABILITY_DEFINITIONS[toolId].family === family);
@@ -263,7 +223,6 @@ export const TOOL_PERMISSION_POLICY_REVISION = createHash('sha256')
     toolIds: CANONICAL_TOOL_IDS,
     supportedActions: TOOL_SUPPORTED_ACTIONS,
     defaults: TOOL_DEFAULT_PERMISSIONS,
-    derivedPermissions: TOOL_DERIVED_PERMISSIONS,
   }))
   .digest('hex')
   .slice(0, 16);

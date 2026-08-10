@@ -9,7 +9,6 @@ import {
 import { GOOGLE_WORKSPACE_SYSTEM_SKILLS } from '../../src/application/skills/google-workspace-system-skills';
 import { LARK_SYSTEM_SKILLS } from '../../src/application/skills/lark-system-skills';
 import { DIVO_LOCAL_PYTHON_SYSTEM_SKILL } from '../../src/application/skills/divo-local-python-system-skill';
-import { DATA_EXPORT_SYSTEM_SKILL } from '../../src/application/skills/data-export-system-skill';
 import { ROUTING_SYSTEM_SKILLS } from '../../src/application/skills/system-skill-routes';
 import { DIVO_PRESENTATIONS_SYSTEM_SKILL } from '../../src/application/skills/divo-presentations-system-skill';
 import {
@@ -31,119 +30,74 @@ const permission = {
 
 describe('governed local-workflow instruction contract', () => {
   it('keeps every desktop-published connected-work recipe on one routing boundary', () => {
-    const publishedDesktopRecipes = [
+    const recipes = [
       DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown,
       DIVO_PRESENTATIONS_SYSTEM_SKILL.markdown,
-      ...GOOGLE_WORKSPACE_SYSTEM_SKILLS.map((skill) => skill.markdown),
-      ...LARK_SYSTEM_SKILLS.map((skill) => skill.markdown),
+      ...GOOGLE_WORKSPACE_SYSTEM_SKILLS.map(skill => skill.markdown),
+      ...LARK_SYSTEM_SKILLS.map(skill => skill.markdown),
     ];
-
-    for (const recipe of publishedDesktopRecipes) {
+    for (const recipe of recipes) {
       assert.match(recipe, new RegExp(GOVERNED_DIRECT_ACTION_CRITERION));
       assert.match(recipe, new RegExp(GOVERNED_LOCAL_WORKFLOW_CRITERION));
     }
   });
 
-  it('keeps the capability bootstrap aligned with the published local-workflow criterion', () => {
+  it('keeps capability bootstrap aligned with the local-workflow criterion', () => {
     const bootstrap = buildDesktopCapabilityBootstrap({
-      departmentName: 'Operations',
-      departmentSlug: 'operations',
-      companyRole: 'MEMBER',
-      permission,
+      departmentName: 'Operations', departmentSlug: 'operations', companyRole: 'MEMBER', permission,
       visibleSkills: [{
-        id: 'divo-python-automation-id',
-        slug: 'divo-python-automation',
-        name: 'Divo Local Python Workflows',
-        description: 'Persistent governed data workflows.',
-        instructions: 'Hidden full recipe.',
+        id: 'divo-python-automation-id', slug: 'divo-python-automation', name: 'Divo Local Python Workflows',
+        description: 'Persistent governed data workflows.', instructions: 'Hidden full recipe.',
         toolIds: [], aliases: [], tags: [], revision: 1,
       }],
       registryRevision: 1,
     });
-
-    assert(bootstrap.routingHints.some((hint) =>
-      hint.includes(GOVERNED_LOCAL_WORKFLOW_CRITERION)),
-    );
+    assert(bootstrap.routingHints.some(hint => hint.includes(GOVERNED_LOCAL_WORKFLOW_CRITERION)));
   });
 
   it('keeps Zoho skills aligned with backend-owned connection selection', () => {
-    for (const skill of [
-      zohoBooksInvoiceSkill,
-      zohoBooksReadAnalysisSkill,
-      zohoBooksBillSkill,
-      zohoBillNotifyAccountsSkill,
-    ]) {
+    for (const skill of [zohoBooksInvoiceSkill, zohoBooksReadAnalysisSkill, zohoBooksBillSkill, zohoBillNotifyAccountsSkill]) {
       assert.match(skill.instructions, /Otherwise omit it: the backend selects an account only when exactly one accessible account qualifies/);
       assert.doesNotMatch(skill.instructions, /Before every Zoho action, use connections\.list|Divo never auto-selects a Zoho account/);
     }
   });
 
-  it('documents the exact Zoho terminal result shape instead of inviting schema probes', () => {
+  it('documents the exact Zoho terminal result shape', () => {
     assert.match(zohoBooksReadAnalysisSkill.instructions, /data\.preview\.rows/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /data\.report\.returnedCount/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /data\.hasMore.*data\.nextPage/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /Never count keys in `data` as records/i);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /matching registered Divo Zoho tool/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /source recipe's exact toolId/);
   });
 
-  it('routes exact whole-account finance aggregates through complete governed sources', () => {
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /Exact whole-account or potentially large aggregate with no requested artifact/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /keep the direct model preview bounded/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /load `divo-python-automation`/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /each returned `nextPage` through the same persistent Python file/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /Number\(_balance_inr\) > 0/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /outstanding_payable_amount or outstanding_receivable_amount from get_contact/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /reconcile it: every source page accounted for/);
+  it('routes complete Zoho Books artifacts through file-backed terminal paging', () => {
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /complete artifact.*local Python workflow/is);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /pass its exact ISO boundaries as `dateFrom` and `dateTo`/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /Never fetch the whole Zoho account and filter it locally/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /Do not ask whether to proceed/i);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /source, written, and read-back counts/);
   });
 
-  it('keeps divo-local availability explicit in published connected-work skills', () => {
-    const publishedInstructions = [
+  it('qualifies every divo-local instruction with runtime availability', () => {
+    const instructions = [
       zohoBooksInvoiceSkill.instructions,
       zohoBooksReadAnalysisSkill.instructions,
       zohoBooksBillSkill.instructions,
       zohoBillNotifyAccountsSkill.instructions,
-      ...GOOGLE_WORKSPACE_SYSTEM_SKILLS.map((skill) => skill.markdown),
+      ...GOOGLE_WORKSPACE_SYSTEM_SKILLS.map(skill => skill.markdown),
     ];
-
-    for (const text of publishedInstructions) {
+    const criterion = new RegExp(GOVERNED_LOCAL_AVAILABLE_RUNTIME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    for (const text of instructions) {
       for (const line of text.split('\n')) {
-        if (!line.includes('divo-local')) continue;
-        assert.match(
-          line,
-          new RegExp(GOVERNED_LOCAL_AVAILABLE_RUNTIME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
-          `unqualified divo-local instruction: ${line}`,
-        );
+        if (line.includes('divo-local')) assert.match(line, criterion);
       }
     }
   });
 
-  it('routes complete Zoho Books exports through the governed provider candidate', () => {
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /complete export artifact.*one exact filtered read.*`exportCandidate`/is);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /load `secure-data-export`.*`dataExport op=plan`/s);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /pass its exact ISO boundaries as `dateFrom` and `dateTo`/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /Never fetch the whole Zoho account and filter it locally/);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /export all expenses.*new Google Sheet/i);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /Do not ask whether to proceed, manually page it, or call Google Sheets directly/i);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /do not use the Zoho `script` parameter/i);
-    assert.match(zohoBooksReadAnalysisSkill.instructions, /company Google account.*verified invoker reader access/s);
-    assert.doesNotMatch(zohoBooksReadAnalysisSkill.instructions, /server channels there is no divo-local/);
-    assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /divo_skill_view/);
-  });
-
-  it('uses provider candidates for exports and native Python for bespoke work', () => {
+  it('uses native Python only when the source has truthful continuation', () => {
     const dataRouter = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'data-router')!;
-    assert.match(dataRouter.markdown, /Complete provider export with an `exportCandidate`/);
-    assert.match(dataRouter.markdown, /backend owns\s+paging, company-account destination policy, exact invoker sharing/s);
-    assert.match(dataRouter.markdown, /scripted workflow for bespoke calculations, transformations, joins/);
+    assert.match(dataRouter.markdown, /source specialist plus `divo-python-automation`/);
+    assert.match(dataRouter.markdown, /source exposes no complete paging\s+contract, say that plainly/s);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /source skill exposes real page or\s+continuation fields/);
-    assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /how data of any size is processed/);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /supported source tools return bounded chat evidence plus an\s+`exportCandidate`/s);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /`op=plan`/i);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Use a direct `dataExport` recipe only.*backend-replayable source/s);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Airtable MCP is not\s+a bulk-export source/s);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Menhood, Zoho Books, and Zoho CRM governed exports/);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /administrator-approved company Google account/);
-    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /never ask for or choose a personal Google account/);
+    assert.doesNotMatch(`${dataRouter.markdown}\n${DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown}`, /exportCandidate|dataExport/);
   });
 });

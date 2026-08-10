@@ -844,7 +844,7 @@ export const DrawerGrip = ({ onGrab, reset }: { onGrab: (e: React.PointerEvent) 
 const dedupe = (xs: string[]) => Array.from(new Set(xs))
 const SENSITIVE = new Set([
   'googleGmail:send', 'googleDrive:delete', 'zohoBooks:update', 'zohoCrm:update',
-  'airtableRecords:delete', 'dataExport:create',
+  'airtableRecords:delete',
 ])
 import { TOOLS } from './fixtures'
 const TOOLS_WITH_VERBS = TOOLS.filter((t) => Object.keys(t.verb).length > 0)

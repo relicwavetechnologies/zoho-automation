@@ -23,7 +23,7 @@ import {
 import type { Toast } from './ui'
 import type { Provider } from './fixtures'
 import { useConnections, type ProviderStatus } from './data/use-connections'
-import { useDataExportProfile, useTokenConnect, type AirtableAccessMode } from './data/use-company-connections'
+import { useTokenConnect, type AirtableAccessMode } from './data/use-company-connections'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import {
   ROLE_LABEL, ago, displayName, durationLabel, initialsOf,
@@ -786,12 +786,7 @@ export function CompanyConnections({ replay, toast, go }: Props) {
   const { token, companyId } = useAdminScope()
   const { data: directoryData, isLoading: loading } = useDirectory(token, companyId)
   const directory = directoryData ?? []
-  const {
-    byProvider,
-    connecting,
-    connect,
-    refresh: refreshConnections,
-  } = useConnections()
+  const { byProvider, refresh: refreshConnections } = useConnections()
   const tokenConnect = useTokenConnect()
 
   /**
@@ -912,18 +907,6 @@ export function CompanyConnections({ replay, toast, go }: Props) {
           </div>
         </Panel>
 
-        {/* Handed the same status map rather than calling `useConnections`
-            itself — six provider reads twice over on one page load is a cost
-            nothing here needs to pay. */}
-        <DataExportPanel
-          toast={toast}
-          google={byProvider.get('google_workspace')}
-          connecting={connecting === 'google_workspace'}
-          connectCompanyAccount={async () => {
-            await connect('google_workspace', { forTools: ['dataExport'], owner: 'company' })
-          }}
-        />
-
         <Panel title="Per-person connections">
           <div className="ws-panel-body">
             <p className="ws-sub" style={{ lineHeight: 1.6 }}>
@@ -1029,126 +1012,6 @@ function TokenProviderRow({ provider, name, blurb, action, status, onOpen }: {
       </div>
       <button type="button" className="btn" onClick={onOpen}>{action}</button>
     </div>
-  )
-}
-
-/**
- * Which account the company's data exports are written through.
- *
- * A real decision rather than a setting: every export Divo produces is created
- * by this account, so it is the one that owns the resulting Sheets and the one
- * whose quota they count against. Choosing it in a panel that says all of that
- * is the acknowledgement the route asks for.
- *
- * There is no route to clear it, only to point it somewhere else, and the panel
- * says so rather than offering a button that would 404.
- */
-function DataExportPanel({ toast, google, connecting, connectCompanyAccount }: {
-  toast: Toast
-  google?: ProviderStatus
-  connecting: boolean
-  connectCompanyAccount: () => Promise<void>
-}) {
-  const { profile, loading, refused, failed, saving, configure } = useDataExportProfile()
-
-  // Export ownership is a company policy, not a member preference. Personal
-  // accounts remain available for ordinary Workspace work but are never
-  // offered here as export owners.
-  const eligible = (google?.connections ?? []).filter(
-    (c) => c.ownerType === 'company' && c.access === 'admin' && c.reconnectRequired !== true,
-  )
-
-  // Not an admin: the route answers 403 and there is nothing here for them.
-  if (refused) return null
-
-  return (
-    <Panel
-      title="Secure data exports"
-      description="The Google account Divo writes exports through"
-    >
-      <div className="ws-panel-body">
-        <p className="ws-sub" style={{ lineHeight: 1.6 }}>
-          Divo reads the source data outside the model's context, transforms it in a sandbox with no network, then
-          writes a Sheet or a CSV. Whoever asked for the export is fixed as its only reader.
-        </p>
-
-        {loading ? <div style={{ marginTop: 14 }}><SkelRows n={2} icon={false} /></div> : failed ? (
-          <div className="ws-ceiling" style={{ marginTop: 14 }}>
-            <TriangleAlert size={14} />
-            <div>Could not read the export account. This says nothing about whether one is set.</div>
-          </div>
-        ) : (
-          <>
-            {profile ? (
-              <div className="ws-private" style={{ marginTop: 14 }}>
-                <ShieldCheck size={15} />
-                <div>
-                  Exports are written through <b>{profile.accountEmail}</b>, shared only with whoever asked for them.
-                </div>
-              </div>
-            ) : (
-              <div className="ws-ceiling" style={{ marginTop: 14 }}>
-                <TriangleAlert size={14} />
-                <div>
-                  No export account is set, so every export Divo is asked for will fail. Choose one below.
-                </div>
-              </div>
-            )}
-
-            {eligible.length === 0 ? (
-              <p className="ws-sentence-note">
-                Connect the company Google account that should own every new export. This does not replace your personal Google connection.
-              </p>
-            ) : (
-              <div className="ws-rows" style={{ marginTop: 10 }}>
-                {eligible.map((c) => {
-                  const current = profile?.googleConnectionId === c.connectionId
-                  return (
-                    <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }} key={c.connectionId}>
-                      <span className="ws-ic" data-tone={current ? 'ok' : undefined}>
-                        {current ? <Check size={14} /> : <ShieldCheck size={14} />}
-                      </span>
-                      <div className="ws-row-main">
-                        <b>{c.accountEmail ?? c.label}</b>
-                        <p>{current ? 'Every export is written through this account' : 'Use this account for exports instead'}</p>
-                      </div>
-                      <button
-                        type="button"
-                        className="btn"
-                        disabled={current || saving}
-                        onClick={async () => {
-                          try { await configure(c.connectionId); toast(`Exports now go through ${c.accountEmail ?? c.label}`) }
-                          catch (e) { toast(e instanceof Error ? e.message : 'Could not set the export account', 'error') }
-                        }}
-                      >
-                        {current ? 'In use' : 'Use this one'}
-                      </button>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
-            <div style={{ marginTop: 12 }}>
-              <button
-                type="button"
-                className="btn"
-                disabled={connecting}
-                onClick={async () => {
-                  try { await connectCompanyAccount() }
-                  catch (e) { toast(e instanceof Error ? e.message : 'Could not connect the company export account', 'error') }
-                }}
-              >
-                {connecting ? 'Connecting…' : eligible.length ? 'Connect another company account' : 'Connect company export account'}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-      <div className="ws-panel-foot">
-        <CircleAlert size={13} />
-        An export account can be pointed somewhere else but not removed — there is no route to unset it
-      </div>
-    </Panel>
   )
 }
 

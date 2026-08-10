@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { RedisWorkbookConversionLarkDeliveryStore } from '../../src/application/data-export/workbook-conversion-lark-delivery.store.ts';
+import { RedisWorkbookConversionLarkDeliveryStore } from '../../src/application/artifacts/workbook-conversion-lark-delivery.store.ts';
 import type { CachePort } from '../../src/shared/cache.ts';
 import { ok } from '../../src/shared/result.ts';
 

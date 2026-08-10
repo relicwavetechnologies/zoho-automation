@@ -59,7 +59,6 @@ export const TOOL_LABELS: Readonly<Record<CanonicalToolId, ToolLabel>> = {
   shopifyCustomers:   { name: 'Shopify Customers', noun: 'customers' },
   webSearch:          { name: 'Web Search',       noun: 'the web' },
   knowledge:          { name: 'Divo Knowledge',   noun: 'knowledge' },
-  dataExport:         { name: 'Secure Data Export', noun: 'exports' },
   mailAutomations:    { name: 'Mail Ops',          noun: 'mail rules' },
   scheduledWorkflows: { name: 'Scheduled Work',   noun: 'schedules' },
   semrush:            { name: 'Semrush',          noun: 'SEO data' },

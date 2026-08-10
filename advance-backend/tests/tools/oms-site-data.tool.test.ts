@@ -1,12 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createOmsSiteDataTool } from '../../src/application/tools/families/oms-site-data.tool.ts';
-import { createDataExportTool } from '../../src/application/tools/families/data-export.tool.ts';
 import { OmsSiteDataServiceError } from '../../src/application/oms/oms-site-data.types.ts';
-import { OmsSnapshotDataExportSource } from '../../src/application/data-export/data-export.sources.ts';
-import { datasetSourceToolId } from '../../src/application/data-export/data-export.types.ts';
-import { parseDataExportOfferPayload } from '../../src/application/data-export/export-offer.ts';
-import { asToolId } from '../../src/shared/ids.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
 
 describe('OMS Site Data tool', () => {
@@ -97,121 +92,6 @@ describe('OMS Site Data tool', () => {
     assert.equal('artifact' in result.value, false);
     assert.doesNotMatch(result.value.message, /temporary CSV|download link/i);
     assert.match(result.value.message, /arbitrary subset/i);
-  });
-
-  it('creates one central provider-limited export candidate without using Cloudinary', async () => {
-    const rows = Array.from({ length: 100 }, (_, index) => ({ website: `site-${index}.com` }));
-    const candidates: unknown[] = [];
-    const tool = createTool({
-      service: { execute: async () => ({ operation: 'search_sites', status: 'partial', coverage: {}, rows }) },
-      exportCandidates: {
-        publishCandidate: async (payload: unknown) => {
-          candidates.push(payload);
-          return {
-            candidateId: '11111111-1111-4111-8111-111111111111',
-            expiresAt: new Date('2026-08-03T00:00:00.000Z'),
-          };
-        },
-      },
-    });
-    const ctx = makeCtx('omsSiteData', ['read'], { chatId: 'oc-chat', requestId: 'request-1' });
-    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-
-    const result = await tool.execute({ operation: 'search_sites', niche: 'Technology' }, ctx);
-
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.equal(result.value.preview?.rows.length, 25);
-    assert.deepEqual(result.value.preview?.coverage, {
-      kind: 'provider_limited',
-      returnedRows: 100,
-      reason: 'oms_100_row_cap_without_pagination_or_total',
-    });
-    assert.equal(result.value.exportCandidate?.candidateId, '11111111-1111-4111-8111-111111111111');
-    assert.equal(candidates.length, 1);
-    const payload = parseDataExportOfferPayload(candidates[0]);
-    assert.deepEqual(payload.source, {
-      kind: 'oms_snapshot',
-      connectionId: 'backend_managed',
-      args: { operation: 'search_sites', niche: 'Technology' },
-    });
-    assert.match(payload.destination.title, /snapshot/i);
-
-    const withoutExportPermission = await tool.execute(
-      { operation: 'search_sites', niche: 'Technology' },
-      makeCtx('omsSiteData', ['read'], { chatId: 'oc-chat', requestId: 'request-2' }),
-    );
-    assert.equal(withoutExportPermission.ok && withoutExportPermission.value.exportCandidate, undefined);
-    assert.equal(candidates.length, 1);
-
-    const dataExport = createDataExportTool({ offers: {} as never });
-    assert.equal(dataExport.argsSchema.safeParse({
-      source: payload.source,
-      destination: payload.destination,
-    }).success, false, 'OMS exports must use the opaque candidate, not a model-built recipe');
-  });
-
-  it('keeps the successful preview when optional candidate persistence fails', async () => {
-    const tool = createTool({
-      service: {
-        execute: async () => ({
-          operation: 'get_site_profiles',
-          status: 'complete',
-          coverage: {},
-          rows: [{ website: 'example.com' }],
-        }),
-      },
-      exportCandidates: {
-        publishCandidate: async () => { throw new Error('database unavailable'); },
-      },
-    });
-    const ctx = makeCtx('omsSiteData', ['read'], { chatId: 'oc-chat', requestId: 'request-3' });
-    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-
-    const result = await tool.execute(
-      { operation: 'get_site_profiles', websites: ['example.com'] },
-      ctx,
-    );
-
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.deepEqual(result.value.preview?.rows, [{ website: 'example.com' }]);
-    assert.equal(result.value.exportCandidate, undefined);
-  });
-
-  it('replays an OMS snapshot through the central source adapter', async () => {
-    const calls: unknown[] = [];
-    const adapter = new OmsSnapshotDataExportSource({
-      execute: async (input) => {
-        calls.push(input);
-        return {
-          operation: 'get_site_profiles',
-          status: 'partial',
-          coverage: {},
-          rows: [{ website: 'example.com' }],
-        };
-      },
-    } as never);
-    const pages = [];
-    for await (const page of adapter.read({
-      kind: 'oms_snapshot',
-      connectionId: 'backend_managed',
-      args: { operation: 'get_site_profiles', websites: ['example.com'] },
-    }, { companyId: 'co-1', userId: 'user-1' })) pages.push(page);
-
-    assert.deepEqual(calls, [{
-      companyId: 'co-1',
-      args: { operation: 'get_site_profiles', websites: ['example.com'] },
-    }]);
-    assert.deepEqual(pages, [{
-      rows: [{ website: 'example.com' }],
-      coverage: { outcome: 'partial', cause: 'provider_limit' },
-    }]);
-    assert.equal(datasetSourceToolId({
-      kind: 'oms_snapshot',
-      connectionId: 'backend_managed',
-      args: { operation: 'get_site_profiles', websites: ['example.com'] },
-    }), 'omsSiteData');
   });
 
   it('warns that an unsorted capped result is not the best sites, and names the ranking when sorted', async () => {
@@ -312,7 +192,6 @@ describe('OMS Site Data tool', () => {
 
 function createTool(overrides: {
   service?: Record<string, unknown>;
-  exportCandidates?: Record<string, unknown>;
 } = {}) {
   const service = {
     preflight: async () => ({ configured: true }),
@@ -321,6 +200,5 @@ function createTool(overrides: {
   };
   return createOmsSiteDataTool({
     service: service as never,
-    ...(overrides.exportCandidates ? { exportCandidates: overrides.exportCandidates as never } : {}),
   });
 }

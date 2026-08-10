@@ -27,6 +27,15 @@ export interface ClaimedMailBrief {
   userId: string;
   subscriptionId: string;
   mailboxEmail: string;
+  /**
+   * Whether Divo is still watching the mailbox this brief reports on.
+   *
+   * Carried on the claim rather than looked up later because it changes what
+   * the brief is allowed to say. A paused mailbox syncs nothing, so its window
+   * is empty for a reason that has nothing to do with a quiet inbox — and
+   * "no mail arrived" about a mailbox nobody is reading is a false all-clear.
+   */
+  mailboxActive: boolean;
   times: string[];
   days: string[];
   timeZone: string;
@@ -235,7 +244,7 @@ export class MailBriefRepository {
           coveredThrough: true,
           nextRunAt: true,
           claimedAt: true,
-          subscription: { select: { mailboxEmail: true } },
+          subscription: { select: { mailboxEmail: true, status: true } },
         },
       });
       if (!due?.nextRunAt) return ok(null);
@@ -256,6 +265,7 @@ export class MailBriefRepository {
         userId: due.userId,
         subscriptionId: due.subscriptionId,
         mailboxEmail: due.subscription.mailboxEmail,
+        mailboxActive: due.subscription.status === 'active',
         times: (due.timesJson as string[]) ?? [],
         days: (due.daysJson as string[]) ?? [],
         timeZone: due.timeZone,

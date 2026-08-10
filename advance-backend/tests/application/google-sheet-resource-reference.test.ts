@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseGoogleDriveXlsxReference } from '../../src/application/data-export/google-drive-xlsx-resource-reference.ts';
-import { parseGoogleSheetReference } from '../../src/application/data-export/google-sheet-resource-reference.ts';
+import { parseGoogleDriveXlsxReference } from '../../src/application/artifacts/google-drive-xlsx-resource-reference.ts';
+import { parseGoogleSheetReference } from '../../src/application/artifacts/google-sheet-resource-reference.ts';
 
 describe('Google Sheet reference', () => {
   it('parses supported Sheet URLs into one canonical reference', () => {

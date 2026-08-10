@@ -23,11 +23,8 @@ describe('Menhood data system skill', () => {
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /`menhood_advertisement_costs` is intentionally unavailable/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /bounded preview/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Choose `final_amount`, `collectable_value`, or `declared_value`/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Never page bulk rows.*synthesize an export/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /result contains `exportCandidate`/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /call `dataExport` with `op=plan`/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Want me to export this to Google Sheets, Excel, or CSV/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /not to export, not now, or chat-only/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /Never page bulk rows through the conversation/);
+    assert.doesNotMatch(MENHOOD_DATA_SYSTEM_SKILL.markdown, /exportCandidate|dataExport/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /deterministic `ORDER BY`/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /ORDER BY o\.order_date, o\.order_number, o\.id/);
     assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /sample is only reviewable if the full replay returns rows in the same order/);

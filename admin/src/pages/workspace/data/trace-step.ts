@@ -58,7 +58,6 @@ const VENDOR_NAMES: Record<string, string> = {
   zohoBooks: 'Zoho Books',
   zohoCrm: 'Zoho CRM',
   canvaDesign: 'Canva',
-  dataExport: 'Data export',
   mailAutomations: 'Mail rules',
 }
 

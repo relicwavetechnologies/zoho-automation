@@ -127,13 +127,6 @@ export interface GoogleDriveXlsxConversionWorkerDeps {
       readonly spreadsheetId: string;
     }): Promise<GoogleDriveXlsxCreatedSheetMetadata | null>;
   };
-  /** Persists a verified, requester-scoped continuation handle; never OAuth material. */
-  readonly continuity: {
-    record(input: {
-      readonly job: GoogleDriveXlsxConversionJob;
-      readonly completion: GoogleDriveXlsxConversionCompletion;
-    }): Promise<void>;
-  };
   /** Every method must be idempotent by jobKey. */
   readonly delivery: {
     progress(input: { readonly jobKey: string; readonly content: string }): Promise<void>;
@@ -164,7 +157,6 @@ export class GoogleDriveXlsxConversionWorker {
       if (claimed.status === 'in_progress') return { disposition: 'in_progress' };
       if (claimed.status === 'completed') {
         durableCompletion = claimed.completion;
-        await this.deps.continuity.record({ job, completion: claimed.completion });
         await this.deps.delivery.completed({ jobKey: job.jobKey, completion: claimed.completion });
         return { disposition: 'completed', completion: claimed.completion };
       }
@@ -185,7 +177,6 @@ export class GoogleDriveXlsxConversionWorker {
       const completion = await this.verifyCompletion(job, spreadsheetId);
       const persisted = await this.deps.checkpoints.complete(completion);
       durableCompletion = persisted;
-      await this.deps.continuity.record({ job, completion: persisted });
       await this.deps.delivery.completed({ jobKey: job.jobKey, completion: persisted });
       return { disposition: 'completed', completion: persisted };
     } catch (error) {

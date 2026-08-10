@@ -158,8 +158,9 @@ Use Agent Seat when **you are the runtime agent**: load real skills from the
 gateway, invoke real tools under a named user's RBAC, and walk multi-turn flows
 **without** cloud Pi, Lark webhooks, or the Vercel orchestration engine.
 
-This is the right path for validating **skill clarity**, **tool graphs**, shy
-answer behavior, and export planning before asking Pi to comply.
+This is the right path for validating **skill clarity**, **tool graphs**, RBAC,
+and one governed provider call before asking Pi to comply. It does not prove
+terminal/file workflows because Agent Seat does not run the Cloud-Pi container.
 
 ### References
 
@@ -170,8 +171,6 @@ answer behavior, and export planning before asking Pi to comply.
 | Slim container (skips Lark init) | `advance-backend/src/application/agent-seat/agent-seat-container.ts` |
 | Delivery chat resolution | `advance-backend/src/application/agent-seat/agent-seat-delivery-chat.ts` |
 | Full harness doc | `advance-backend/docs/cloud-pi-testing/06-agent-seat.md` |
-| Shy Semrush + export scenario | `advance-backend/scenarios/agent-seat/shy-semrush-export.yaml` |
-| Export orchestration spec | `plans/ai-controlled-data-export-orchestration.md` |
 | Cloud-Pi harness comparison | `advance-backend/docs/cloud-pi-testing/02-lark-dm-harness.md` |
 
 ### Prerequisites
@@ -207,24 +206,20 @@ Do **not** improvise tool calls from memory. Follow the same steps Pi should:
    `divo-semrush-seo-research` for Semrush).
 5. **`invoke <toolId> '<json>'`** — one governed call matching the skill; use
    preflight mentally (schema + skill limits) before invoking.
-6. **Answer shy** — one main table in chat; at most 25 preview rows; soft
-   export follow-up only when `exportCandidate` exists and the member did not
-   refuse export.
-7. **Turn 2 (e.g. "excel")** — `invoke dataExport` with `op=list_candidates`
-   only when unsure, then `op=plan` with one dataset. Never show candidate
-   UUIDs or picker tables to the member.
-8. **`note "…"`** — record skill gaps, schema surprises, or provider blocks for
+6. **Answer shy** — keep bounded provider previews honest and never present a
+   partial page as a complete dataset.
+7. **`note "…"`** — record skill gaps, schema surprises, or provider blocks for
    the next engineer.
 
-### Shy answer + model-planned export (what we are proving)
+### Semrush comparison (what Agent Seat can prove)
 
 For Semrush comparison prompts:
 
 - **Do:** one `backlinks_comparison` with all targets the user named (within
   schema max).
 - **Do not:** fan out `domain_overview` per domain.
-- **Do not:** rerun Semrush after the member picks a format — `dataExport`
-  `op=plan` owns pagination and artifact creation.
+- **Do not:** claim complete coverage when the operation exposes no truthful
+  continuation. Use the Cloud-Pi harness for terminal/file workflow proof.
 
 Skill sources of truth:
 
@@ -242,7 +237,7 @@ Skill sources of truth:
 | `invalid_args` targets max 10 | Tool schema caps `backlinks_comparison` at 10 domains | Split batch, drop a domain, or tell the member — do not silently omit |
 | `blocked` / auth errors | Missing or expired `SEMRUSH_WEB_COOKIE` / `SEMRUSH_WEB_API_KEY` | Refresh web session in backend env |
 
-### Example commands (shy Semrush export scenario)
+### Example commands
 
 ```bash
 cd advance-backend
@@ -251,11 +246,6 @@ pnpm tsx scripts/agent-seat.ts init --user "you@company.com"
 pnpm tsx scripts/agent-seat.ts turn begin
 pnpm tsx scripts/agent-seat.ts skill divo-semrush-seo-research
 pnpm tsx scripts/agent-seat.ts invoke semrush '{"operation":"backlinks_comparison","targets":["a.com","b.com"]}'
-# turn 2:
-pnpm tsx scripts/agent-seat.ts turn begin
-pnpm tsx scripts/agent-seat.ts invoke dataExport '{"op":"list_candidates","scope":"run"}'
-pnpm tsx scripts/agent-seat.ts invoke dataExport '{"op":"plan","datasets":[{"candidateId":"..."}],"destination":{"format":"xlsx","title":"..."},"userIntent":"explicit_export"}'
-pnpm tsx scripts/agent-seat.ts scenario show shy-semrush-export
 ```
 
 Automated tests for the harness:

@@ -29,6 +29,36 @@ describe('Google Workspace MCP product tools', () => {
     assert.equal(sheets.argsSchema.safeParse({ op: 'describe', nativeTool: 'get_values' }).success, false);
   });
 
+  it('publishes the governed resolved-Sheet call in the Pi contract', () => {
+    const tools = createGoogleWorkspaceMcpTools({ getConnection: async () => null });
+    const sheets = tools.find(tool => tool.id === 'googleSheets')!;
+    const gmail = tools.find(tool => tool.id === 'googleGmail')!;
+    const handle = '11111111-1111-4111-8111-111111111111';
+
+    assert.equal(sheets.argsSchema.safeParse({
+      op: 'call_resolved_sheet',
+      destinationReferenceId: handle,
+      nativeTool: 'format_sheet_range',
+      input: { range: 'A1:B2' },
+    }).success, true);
+    assert.equal(sheets.argsSchema.safeParse({
+      op: 'call_resolved_sheet',
+      destinationReferenceId: handle,
+      nativeTool: 'send_gmail_message',
+      input: {},
+    }).success, false);
+    assert.equal(gmail.argsSchema.safeParse({
+      op: 'call_resolved_sheet',
+      destinationReferenceId: handle,
+      nativeTool: 'search_gmail_messages',
+      input: {},
+    }).success, false);
+    assert.equal(gmail.argsSchema.safeParse({
+      op: 'resolve_reference',
+      url: 'https://docs.google.com/spreadsheets/d/sheet-1/edit',
+    }).success, false);
+  });
+
   it('rejects a native operation owned by another Google product', () => {
     const [gmail] = createGoogleWorkspaceMcpTools({ getConnection: async () => null });
     const result = gmail!.permissionCheck({

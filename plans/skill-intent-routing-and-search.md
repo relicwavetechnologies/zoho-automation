@@ -498,7 +498,8 @@ exact authorized slug lookup
 - [x] Add tool-free DB routers for Google Workspace, Airtable, AITable, data,
       and research alongside the existing Lark and Zoho routers.
 - [x] Split bounded `dataProcessor` work into `data-processing` and route
-      complete-file delivery to the existing `secure-data-export` specialist.
+      complete-file delivery to the provider + Python automation + destination
+      skill chain; the former central export specialist is retired.
 - [x] Replace the source-only research recipes with DB `research-router` and
       `context-research`; keep Document RAG outside this rollout.
 - [x] Remove `UNIFIED_AGENT_MODE`, the in-memory `SkillRegistry`, and the

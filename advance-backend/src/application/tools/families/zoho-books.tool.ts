@@ -34,7 +34,7 @@
  *
  * Token safety:
  *   - Plain list ops return at most `limit` records (default 25, max 100)
- *     and fetch only one bounded page unless exportAll was explicitly requested
+ *     and fetch only one bounded page on the model-facing path
  *   - Complete artifacts page through the governed terminal without entering model context
  */
 
@@ -93,20 +93,9 @@ import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../i
 import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
 import {
-  exportCandidateMetadata,
-  publishExportCandidate,
-} from '../../data-export/tool-export-candidate';
-import {
-  dataExportRunRequestId,
-} from '../../data-export/export-request-identity';
-import { DATA_EXPORT_CSV_ROW_LIMIT } from '../../data-export/data-export-limits';
-import { datasetSourceSchema } from '../../data-export/data-export.types';
-import type { DataExportOrchestrationService } from '../../data-export/data-export-orchestration.service';
-import type { DataExportOfferPayload } from '../../data-export/export-offer';
-import {
   createDatasetPreview,
   DATASET_PREVIEW_ROW_LIMIT,
-} from '../../data-export/dataset-preview';
+} from '../../provider-data/dataset-preview';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
@@ -163,10 +152,8 @@ const Schema = z.object({
   fields:         z.record(z.unknown()).optional(),
   limit:          z.number().int().min(1).max(100).optional(),
   // Each response remains bounded to at most 25 model-facing rows. A higher
-  // cursor ceiling lets governed terminal workflows page large date ranges
-  // without routing back through the legacy export pipeline.
+  // cursor ceiling lets governed terminal workflows page large date ranges.
   page:           z.number().int().min(1).max(MAX_TERMINAL_PAGE).optional(),
-  exportAll:      z.boolean().optional(),
   organizationId: z.string().optional(),
   dateFrom:       z.string().optional(),
   dateTo:         z.string().optional(),
@@ -225,7 +212,6 @@ const ResultSchema = z.object({
   hasMore:      z.boolean().optional(),
   page:         z.number().int().positive().optional(),
   nextPage:     z.number().int().positive().optional(),
-  suggestExport: z.boolean().optional(),
   // Script-mode fields
   rowCount:        z.number().optional(),
   totalFetched:    z.number().optional(),
@@ -250,13 +236,6 @@ const ResultSchema = z.object({
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
   }).optional(),
-  exportCandidate: z.object({
-    candidateId: z.string().uuid(),
-    sourceKind: z.literal('zoho_books'),
-    previewRowCount: z.number().int().nonnegative(),
-    estimatedRows: z.number().int().nonnegative().optional(),
-    expiresAt: z.string(),
-  }).strict().optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
@@ -529,13 +508,11 @@ const dateParams = (args: Args): Record<string, unknown> => ({
 });
 
 /**
- * Provider filters for one module, derived once so the inline read and the
- * export recipe cannot drift.
+ * Provider filters for one module, derived once for every read mode.
  *
- * They have to agree. The recipe is replayed at confirmation time, so a filter
- * the preview applied but the recipe omits turns a scoped answer into an
- * unscoped file — and `accountId` was being accepted and dropped by both,
- * widening a one-account question to every account in the organisation.
+ * They have to agree: otherwise a terminal page and a direct preview can apply
+ * different scopes. `accountId` was once accepted and then dropped, widening a
+ * one-account question to every account in the organisation.
  */
 const moduleFilters = (
   moduleName: ZohoBooksModule,
@@ -703,7 +680,6 @@ export const createZohoBooksTool = (deps: {
   booksClient:  ZohoBooksPaginatedClient;
   /** Finance ops service for deep report operations. */
   financeOps:   ZohoFinanceOps;
-  exportCandidates?: Pick<DataExportOrchestrationService, 'publishCandidate'>;
   inlineThreshold?: number;
   /** Resolves a file the member sent in this conversation. Absent = attachments unavailable. */
   attachmentSource?: ZohoAttachmentSourcePort;
@@ -784,13 +760,6 @@ export const createZohoBooksTool = (deps: {
           ? 'update'
           : 'delete';
     const allowed = perm.allowedActionsByTool.get(asToolId('zohoBooks'))?.has(action) ?? false;
-    if (
-      allowed
-      && args.exportAll
-      && !perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')
-    ) {
-      return err(new PermissionError({ toolId: 'dataExport', action: 'create', reason: 'not_allowed' }));
-    }
     return allowed
       ? ok(action)
       : err(new PermissionError({ toolId: 'zohoBooks', action, reason: 'not_allowed' }));
@@ -860,120 +829,6 @@ export const createZohoBooksTool = (deps: {
     }
 
     const scopeFilter: Record<string, unknown> = personalizedScope ? { email: requesterEmail! } : {};
-
-    const exportPayloadFor = (
-      moduleName: ZohoBooksModule,
-      requestId: string,
-    ): DataExportOfferPayload => ({
-      companyId,
-      userId,
-      ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
-      source: {
-        kind: 'zoho_books',
-        connectionId: args.connectionId,
-        module: moduleName,
-        ...(args.organizationId ? { organizationId: args.organizationId } : {}),
-        filters: { ...dateParams(args), ...moduleFilters(moduleName, args) },
-        ...(args.searchQuery ? { query: args.searchQuery } : {}),
-      },
-      destination: {
-        format: 'auto',
-        title: `Zoho Books ${moduleName} export`,
-      },
-      chatId: ctx.runContext.chatId!,
-      ...(ctx.runContext.runtimeThreadId
-        ? { conversationKey: ctx.runContext.runtimeThreadId }
-        : {}),
-      ...(ctx.runContext.replyToMessageId
-        ? { replyToMessageId: ctx.runContext.replyToMessageId }
-        : {}),
-      ...(ctx.runContext.replyInThread !== undefined
-        ? { replyInThread: ctx.runContext.replyInThread }
-        : {}),
-      requestId,
-      ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
-    });
-
-    const exportModule = listOpToModule[args.op];
-    if (args.exportAll && exportModule) {
-      if (!ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create')) {
-        return err(new ToolError({
-          toolId: 'dataExport',
-          reason: 'permission_denied',
-          message: `Governed Zoho Books exports of up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows are not permitted for this member`,
-        }));
-      }
-      if (personalizedScope) {
-        return err(new ToolError({
-          toolId: 'zohoBooks',
-          reason: 'permission_denied',
-          message: `Governed Zoho exports of up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows require full company Zoho read scope`,
-        }));
-      }
-      if (
-        !deps.exportCandidates
-        || ctx.runContext.channel !== 'lark'
-        || !ctx.runContext.chatId
-        || !args.connectionId
-      ) {
-        return err(new ToolError({
-          toolId: 'zohoBooks',
-          reason: 'bad_args',
-          message: 'Governed Zoho exports require an exact connection UUID and a Lark chat so Divo can prepare an export candidate.',
-        }));
-      }
-      // exportAll returns before the per-op switch, so the guards on the
-      // individual bank-transaction cases never see it. Without this, the one
-      // path that queues an export directly is also the only one that could
-      // still submit a recipe the provider will reject.
-      if (exportModule === 'banktransactions') {
-        const filterError = bankTransactionFilterError(args);
-        if (filterError) return err(filterError);
-      }
-      const payload = exportPayloadFor(
-        exportModule,
-        dataExportRunRequestId(ctx.runContext, ctx.correlationId),
-      );
-      const recipe = datasetSourceSchema.safeParse(payload.source);
-      if (!recipe.success) {
-        return err(new ToolError({
-          toolId: 'zohoBooks',
-          reason: 'bad_args',
-          message: `This export cannot be run as asked — ${recipe.error.errors.map(issue => issue.message).join('; ')}`,
-        }));
-      }
-      const candidate = await publishExportCandidate({
-        candidates: deps.exportCandidates,
-        eligible: true,
-        payload: () => payload,
-        metadata: exportCandidateMetadata({
-          columns: [],
-          previewRowCount: 0,
-          coverage: { kind: 'unknown', returnedRows: 0 },
-        }),
-        logger: ctx.logger,
-        scope: 'zoho_books',
-        correlationId: ctx.correlationId,
-      });
-      if (candidate.kind !== 'published') {
-        return err(new ToolError({
-          toolId: 'dataExport',
-          reason: 'upstream_failure',
-          message: 'Could not prepare a Zoho Books export candidate. Ask Divo to retry.',
-        }));
-      }
-      return ok({
-        success: true,
-        exportCandidate: {
-          candidateId: candidate.candidateId,
-          sourceKind: 'zoho_books' as const,
-          previewRowCount: 0,
-          ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
-          expiresAt: candidate.expiresAt.toISOString(),
-        },
-        message: 'Legacy Zoho Books export candidate is ready. New complete Zoho artifacts should use terminal-safe paging through divo-python-automation.',
-      });
-    }
 
     // ── Script mode (auto-escalate list ops to exhaustive fetch + sandbox) ──
     if (args.script) {
@@ -1518,14 +1373,6 @@ export const createZohoBooksTool = (deps: {
       },
     ) => {
       const isLocalFileResult = ctx.resultAudience === 'local_file';
-      const canPublishExportCandidate = !isLocalFileResult
-        && args.limit === undefined
-        && args.page === undefined
-        && !personalizedScope
-        && deps.exportCandidates !== undefined
-        && ctx.runContext.channel === 'lark'
-        && Boolean(ctx.runContext.chatId)
-        && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true;
       const result = await handleZohoList({
         companyId,
         ...connectionContext,
@@ -1535,7 +1382,6 @@ export const createZohoBooksTool = (deps: {
         filters: { ...scopeFilter, ...moduleFilters(moduleName, args), ...options.filters },
         ...(options.query ? { query: options.query } : {}),
         ...(args.page !== undefined ? { page: args.page } : {}),
-        suggestExportOnOverflow: canPublishExportCandidate,
         inlineThreshold: isLocalFileResult
           ? Math.min(args.limit ?? TERMINAL_FILE_PAGE_LIMIT, TERMINAL_FILE_PAGE_LIMIT)
           : Math.min(
@@ -1556,23 +1402,6 @@ export const createZohoBooksTool = (deps: {
       });
       const modelItems = projectListItems(result.items, options.columns);
       const formattedItems = formatZohoResult(modelItems) as Record<string, unknown>[];
-      const candidate = await publishExportCandidate({
-        candidates: deps.exportCandidates,
-        eligible: result.suggestExport && canPublishExportCandidate,
-        payload: () => exportPayloadFor(
-          moduleName,
-          dataExportRunRequestId(ctx.runContext, ctx.correlationId),
-        ),
-        metadata: exportCandidateMetadata({
-          columns: formattedItems.length > 0 ? Object.keys(formattedItems[0]!) : [],
-          previewRowCount: formattedItems.length,
-          estimatedRows: result.coverage.kind === 'complete' ? formattedItems.length : undefined,
-          coverage: result.coverage,
-        }),
-        logger: ctx.logger,
-        scope: 'zoho_books',
-        correlationId: ctx.correlationId,
-      });
       const preview = isLocalFileResult
         ? {
             columns: Array.from(new Set(formattedItems.flatMap(row => Object.keys(row)))),
@@ -1586,34 +1415,19 @@ export const createZohoBooksTool = (deps: {
 
       return {
         success: true,
-        message: candidate.kind === 'published'
-          ? `${result.summary} Use dataExport op=plan with the returned export candidate if the member wants a file.`
-          : result.summary,
+        message: result.summary,
         preview,
-        ...(candidate.kind === 'published'
-          ? {
-              exportCandidate: {
-                candidateId: candidate.candidateId,
-                sourceKind: 'zoho_books' as const,
-                previewRowCount: formattedItems.length,
-                ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
-                expiresAt: candidate.expiresAt.toISOString(),
-              },
-            }
-          : {}),
         report: {
           returnedCount: result.items.length,
           ...(result.totalCount !== undefined ? { totalCount: result.totalCount } : {}),
           summary: result.summary,
           truncated: result.truncated,
           hasMore: result.hasMore,
-          suggestExport: result.suggestExport,
         },
         truncated: result.truncated,
         hasMore: result.hasMore,
         page: result.page,
         ...(result.hasMore && result.page < MAX_TERMINAL_PAGE ? { nextPage: result.page + 1 } : {}),
-        suggestExport: result.suggestExport,
       } satisfies Res;
     };
 

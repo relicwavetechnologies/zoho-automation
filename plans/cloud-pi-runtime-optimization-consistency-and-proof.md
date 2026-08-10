@@ -2,7 +2,7 @@
 
 > Status: **Active plan — owned by the primary runtime agent**
 >
-> Last updated: **2026-08-10**
+> Last updated: **2026-08-11**
 >
 > Scope: **all remaining Cloud-Pi work except skill-body rewriting and DB skill-content rollout**
 >
@@ -41,8 +41,8 @@ features to audit and benchmark**, not blank-slate features to build again.
   Teach cloud pipeline are gone.
 - Prompt-relevant nested Google/Airtable input contracts are bound before
   inference.
-- The extension reports any registered tool filtered from Pi's active
-  allowlist; focused regression coverage already exists.
+- CI now compares every canonical backend tool to Pi's exact manifest
+  allowlist, so a newly added capability cannot be silently filtered.
 - Read-only capability tools run in parallel only when every reachable action
   is read-only.
 - `divo-local` carries no member/SaaS credential, uses governed backend calls,
@@ -52,9 +52,10 @@ features to audit and benchmark**, not blank-slate features to build again.
   path and deliver through the intended Lark lifecycle.
 - Google Workspace MCP is pinned to `1.22.2`; Development proved reads beyond
   the old 50-row renderer cap.
-- Provider exports retain one governed backend boundary while direct terminal
-  paths mature. The current uncommitted export-policy slice makes new provider
-  exports company-owned and invoker-reader only.
+- The legacy candidate/offer/sample export planner is removed in the current
+  slice. Complete data movement now requires a truthful provider paging
+  contract, protected local files, a persistent Python workflow, and governed
+  destination read-back; bounded providers must report incomplete coverage.
 
 Key recent commits: `7ddb2426c`, `299cddf39`, `04d3e6306`, `88c7ddde9`,
 `7941b839e`, `aca9b6656`, `c9ca10ce9`, and `9330237a1`.
@@ -73,7 +74,7 @@ provider adapters, container lifecycle, or policy code.
 
 ## 4. Priority order
 
-1. Land and verify the current export-policy slice on a clean baseline.
+1. Land and verify the current hard removal plus provider-contract slice.
 2. Prove bootstrap and warm reuse through real process lifecycle evidence.
 3. Fix context growth, run-file persistence, and terminal helper reliability.
 4. Complete typed-contract/allowlist parity and error-state proof.
@@ -84,13 +85,19 @@ provider adapters, container lifecycle, or policy code.
 
 ## 5. Phase 0 — clean baseline and current slice
 
-- [ ] Inspect and commit the current company-owned export-policy changes as one
-      isolated slice after its focused tests pass.
-- [ ] Do not mix skill-rewrite work into that commit even though some export
-      and router definitions are necessarily corrected by the policy change.
-- [ ] Record the exact SHA, test commands, and known rollout prerequisite:
-      Development and Main each need an admin-connected company Google account
-      selected as the export profile.
+- [x] Complete the hard removal of the old export planner, its DB metadata,
+      provider candidate publishing, queue/cards, and stale executable docs.
+- [x] Preserve the neutral Google Sheet reference and XLSX-to-Sheet conversion
+      paths under `application/artifacts`.
+- [x] Prove Airtable, Zoho Books, and Zoho CRM local-file pagination; keep
+      Semrush, OMS, Menhood, and protected Shopify explicitly bounded until
+      they have truthful continuation contracts.
+- [ ] Commit the coherent removal/contract slice only after backend, Cloud-Pi,
+      admin, and Jan verification.
+- [ ] Record the exact SHA, test commands, and rollout prerequisite: each
+      environment must run the guarded one-time queue/table retirement before
+      its normal schema sync. The command refuses runnable jobs and the deploy
+      path creates a database backup first.
 - [ ] Verify the worktree is clean before either plan starts parallel work.
 
 Exit gate: one reviewable commit, clean `dev`, no untracked build artifacts,
@@ -178,14 +185,14 @@ truthful counts and no credential/context leak.
 The surface is live; finish the parity and behavior matrix rather than adding
 another wrapper.
 
-- [ ] Generate/verify the invariant:
+- [x] Generate/verify the invariant:
       `reachable backend contracts ⊆ runtime manifest allowlist = intended active Pi tools`.
-- [ ] Fail CI when a newly registered backend tool is silently absent from the
+- [x] Fail CI when a newly registered backend tool is silently absent from the
       packaged runtime manifest or active Pi surface.
 - [ ] Keep visible denial stubs for known but unauthorized tools; distinguish
       denied, unavailable, malformed schema, expired connection, and approval
       pending.
-- [ ] For Google/Airtable, prove the exact selected native input branch is bound
+- [x] For Google/Airtable, prove the exact selected native input branch is bound
       before inference for representative reads and mutations.
 - [ ] Retire `divo_preflight` only after every nested family has equivalent
       typed validation; do not remove it by assumption.
@@ -202,13 +209,14 @@ behavior.
 
 ## 10. Phase 5 — provider and data-movement capability gaps
 
-Do not cut a provider away from `dataExport` until its replacement path passes
-real paging, destination, and recovery tests.
+The universal exporter no longer masks provider gaps. Each source contract must
+now be either complete and resumable or explicitly bounded; never imply that a
+preview can become a complete artifact through another hidden route.
 
 ### Menhood
 
-- [ ] Keep the current backend async stream while its PostgreSQL cursor remains
-      transaction/connection-scoped.
+- [ ] Menhood currently exposes only a truthful 25-row bounded result. Its old
+      worker-owned cursor was transaction/connection-scoped and is retired.
 - [ ] Design a resumable stateful stream only if real workloads require terminal
       ownership; do not expose a dead cursor token.
 
@@ -220,8 +228,8 @@ real paging, destination, and recovery tests.
 
 ### Airtable
 
-- [ ] Add/verify an authorized bounded REST/connector paging path for complete
-      exports; MCP preview pagination is not bulk proof.
+- [x] Add an authorized 100-row Web API paging path available only to the
+      local-file audience; direct MCP calls remain bounded previews.
 - [ ] Normalize linked/select objects and scan for unresolved object cells
       before declaring a Sheet complete (`EXPORTOBJECT-001`).
 
@@ -231,7 +239,9 @@ real paging, destination, and recovery tests.
       the old 50-row renderer issue in deployed Main (`VERIFY-001`).
 - [ ] Define a governed resumable CSV/XLSX/Drive upload boundary that does not
       place file bytes inside the broker's JSON envelope.
-- [ ] Preserve company owner + exact invoker reader policy for provider exports.
+- [ ] Decide the future company-owned destination policy separately from source
+      paging; ordinary terminal workflows currently use the invoker's governed
+      Google connection.
 
 ### Remaining provider gaps
 
@@ -243,9 +253,8 @@ real paging, destination, and recovery tests.
 - [ ] Resolve ambiguous connected-account selection through configured policy
       or one user clarification (`GOOGLEACCOUNT-001`).
 
-Exit gate: each migrated source/destination reports truthful coverage, uses
-governed identity, and survives its failure matrix before compatibility is
-removed.
+Exit gate: each source/destination reports truthful coverage, uses governed
+identity, and survives its failure matrix.
 
 ## 11. Phase 6 — queue, confirmation, and lifecycle truth
 
@@ -344,19 +353,17 @@ time and errors actually come from for each tested family.
 
 ## 15. Phase 10 — controlled legacy cleanup
 
-Cleanup is last because some old code still protects in-flight jobs or provider
-fallbacks.
+The old exporter cleanup is complete in the current slice, including its model
+tool, candidates, provider publishers, worker/queue, cards, admin/desktop UI,
+profile, and four metadata tables. Neutral workbook conversion remains under
+`application/artifacts`; two legacy Redis key prefixes remain intentionally
+stable until any in-flight workbook conversion has expired.
 
-Candidates to review:
+Remaining candidates to review later:
 
-- `DataExportDestinationPreferenceRepository` and its table/test;
-- personal-export destination preference branches;
-- removed sample/confirmation persistence fields and worker branches;
-- legacy candidate/offer compatibility after queued jobs drain;
-- stale old Google company-connect route if the authenticated admin route fully
-  replaces it;
 - unused prompt/manifest compatibility checks;
-- model-facing `dataExport` surface only after every provider cutover passes.
+- stale provider-specific compatibility shims proven unreachable by E2E;
+- the stable workbook-conversion Redis namespaces after their retention window.
 
 For each candidate:
 
@@ -428,7 +435,7 @@ Primary references:
 | Thread files leak or grow forever | Exact scope binding, quota, expiry, protected/shared isolation, deterministic cleanup |
 | Provider gap becomes prompt exception | Record dependency; fix contract/backend rather than adding prose |
 | Main data is mutated during testing | Read-only default; disposable governed artifacts; explicit per-batch approval |
-| Compatibility deletion breaks in-flight work | Caller/data census, drain gate, rollback, explicit approval |
+| Exporter retirement breaks in-flight work | Refuse runnable queue jobs, back up DB, explicit deploy flag, stable workbook-conversion keys |
 | Sub-agents create inconsistent edits | Read-only mapping/review; single editing owner per file |
 
 ## 19. Completion gate
@@ -466,4 +473,3 @@ This non-skills program is complete only when:
 - Skills-plan dependency discovered:
 - Decision: complete / revise / blocked
 ```
-

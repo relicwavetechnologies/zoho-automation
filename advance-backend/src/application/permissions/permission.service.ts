@@ -10,7 +10,6 @@ import type { CompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asDepartmentRoleSlug } from '../../domain/permissions/department-role';
 import {
   CANONICAL_TOOL_IDS,
-  TOOL_DERIVED_PERMISSIONS,
   TOOL_DEFAULT_PERMISSIONS,
   TOOL_SUPPORTED_ACTIONS,
   type CanonicalToolId,
@@ -226,12 +225,12 @@ export class PermissionServiceImpl implements PermissionService {
       ...(membership.managerApprovalJson !== null ? { managerApprovalJson: membership.managerApprovalJson } : {}),
     };
 
-    const result = applyDerivedDepartmentPermissions({
+    const result: PermissionResult = {
       allowedToolIds,
       allowedActionsByTool,
       decisions,
       department: deptMeta,
-    }, companyCeiling, deptRoleMap, overrideMap);
+    };
 
     this.deps.logger.info('perm.resolved.dept', {
       userId,
@@ -510,41 +509,6 @@ function stripDepartmentGrantOnlyTools(result: PermissionResult): PermissionResu
     allowedActionsByTool,
     decisions: result.decisions.filter(decision => !DEPARTMENT_GRANT_ONLY_TOOLS.includes(decision.toolId as CanonicalToolId)),
   };
-}
-
-function applyDerivedDepartmentPermissions(
-  result: PermissionResult,
-  companyCeiling: PermissionResult,
-  departmentRole: ReadonlyMap<string, boolean>,
-  userOverrides: ReadonlyMap<string, boolean>,
-): PermissionResult {
-  const allowedToolIds = new Set(result.allowedToolIds);
-  const allowedActionsByTool = new Map(result.allowedActionsByTool);
-  const decisions = [...result.decisions];
-  for (const rule of TOOL_DERIVED_PERMISSIONS) {
-    const target = asToolId(rule.toolId);
-    const key = `${rule.toolId}:${rule.action}`;
-    if (allowedActionsByTool.get(target)?.has(rule.action as ToolActionGroup)) continue;
-    if (userOverrides.has(key) || departmentRole.has(key)) continue;
-    if (!companyCeiling.allowedActionsByTool.get(target)?.has(rule.action as ToolActionGroup)) continue;
-    if (!rule.anyOf.some(source =>
-      allowedActionsByTool
-        .get(asToolId(source.toolId))
-        ?.has(source.action as ToolActionGroup)
-    )) continue;
-
-    const actions = new Set(allowedActionsByTool.get(target) ?? []);
-    actions.add(rule.action as ToolActionGroup);
-    allowedActionsByTool.set(target, actions);
-    allowedToolIds.add(target);
-    decisions.push({
-      toolId: target,
-      actionGroup: rule.action as ToolActionGroup,
-      allowed: true,
-      source: 'derived',
-    });
-  }
-  return { ...result, allowedToolIds, allowedActionsByTool, decisions };
 }
 
 function applyFinalPermissionAliases(

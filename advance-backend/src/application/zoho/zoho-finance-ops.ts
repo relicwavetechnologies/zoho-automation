@@ -6,7 +6,6 @@
  *      due_date < today AND status ∈ {overdue, sent, partially_paid} — computed here.
  *   2. Pagination is exhaustive: loops has_more_page up to 20 × 200 = 4 000 records.
  *   3. Token budget is enforced by returning summary stats + top-N records.
- *      Complete row delivery belongs exclusively to the dataExport pipeline.
  *   4. No LLM calls in this file — pure data transformation.
  *
  * Ported from:

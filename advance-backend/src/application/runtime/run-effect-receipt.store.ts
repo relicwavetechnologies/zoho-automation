@@ -56,21 +56,6 @@ export interface AppliedPersonalMemoryEffect extends LarkRunEffectIdentity {
   readonly appliedAt: string;
 }
 
-export interface OfferedDataExportEffect extends LarkRunEffectIdentity {
-  readonly version: 1;
-  readonly kind: 'data_export_offer';
-  readonly status: 'offered';
-  readonly effectKind: 'data_export_offered';
-  readonly offerId: string;
-  /**
-   * Rows the backend measured across every contributing call. Refreshed as a
-   * run adds parts, so the card can state a number it counted rather than one
-   * the model inferred from a 25-row preview.
-   */
-  readonly observedRowCount?: number;
-  readonly createdAt: string;
-}
-
 export interface GoogleSheetDestinationEffect extends LarkRunEffectIdentity {
   readonly version: 1;
   readonly kind: 'google_sheet_destination';
@@ -308,91 +293,6 @@ export class RunEffectReceiptStore {
     );
     if (!exactStored.ok) throw exactStored.error;
     await this.writePersonalMemoryReceipt(identity, effect);
-    return effect;
-  }
-
-  async recordDataExportOffer(
-    identity: LarkRunEffectIdentity,
-    input: { readonly offerId: string; readonly observedRowCount?: number },
-  ): Promise<OfferedDataExportEffect> {
-    if (!isUuid(input.offerId)) throw new Error('Data export offer ID is invalid.');
-    const effect: OfferedDataExportEffect = {
-      version: 1,
-      kind: 'data_export_offer',
-      status: 'offered',
-      effectKind: 'data_export_offered',
-      ...identity,
-      offerId: input.offerId,
-      ...(input.observedRowCount !== undefined
-        ? { observedRowCount: input.observedRowCount }
-        : {}),
-      createdAt: new Date().toISOString(),
-    };
-    const stored = await this.cache.setNx(
-      runEffectIndexKey(identity, effect.effectKind),
-      effect,
-      RUN_EFFECT_TTL_SECONDS,
-    );
-    if (!stored.ok) throw stored.error;
-    if (stored.value) return effect;
-
-    const existing = await this.getVerifiedDataExportOffer(identity);
-    if (!existing) throw new Error('Data export offer receipt disappeared.');
-    if (existing.offerId !== input.offerId) {
-      throw new Error('This run is already bound to a different data export offer.');
-    }
-    // Same offer, more parts: refresh the measured count so the card reflects
-    // the whole answer rather than whichever call happened to arrive first.
-    if (
-      input.observedRowCount !== undefined
-      && input.observedRowCount !== existing.observedRowCount
-    ) {
-      const refreshed: OfferedDataExportEffect = {
-        ...existing,
-        observedRowCount: input.observedRowCount,
-      };
-      const updated = await this.cache.set(
-        runEffectIndexKey(identity, refreshed.effectKind),
-        refreshed,
-        RUN_EFFECT_TTL_SECONDS,
-      );
-      if (!updated.ok) throw updated.error;
-      return refreshed;
-    }
-    return existing;
-  }
-
-  /**
-   * Drop this run's export binding so the final card renders no export action.
-   * Used when a run's datasets stop fitting one file — the offer row itself is
-   * cancelled separately by the offer service.
-   */
-  async clearDataExportOffer(identity: LarkRunEffectIdentity): Promise<void> {
-    const removed = await this.cache.del(
-      runEffectIndexKey(identity, 'data_export_offered'),
-    );
-    if (!removed.ok) throw removed.error;
-  }
-
-  async getVerifiedDataExportOffer(
-    identity: LarkRunEffectIdentity,
-  ): Promise<OfferedDataExportEffect | null> {
-    const result = await this.cache.get<OfferedDataExportEffect>(
-      runEffectIndexKey(identity, 'data_export_offered'),
-    );
-    if (!result.ok) throw result.error;
-    const effect = result.value;
-    if (!effect) return null;
-    if (
-      effect.version !== 1
-      || effect.kind !== 'data_export_offer'
-      || effect.status !== 'offered'
-      || effect.effectKind !== 'data_export_offered'
-      || !isUuid(effect.offerId)
-    ) {
-      throw new Error('Data export offer effect index is invalid.');
-    }
-    assertSameIdentity(effect, identity);
     return effect;
   }
 
@@ -701,7 +601,6 @@ function runEffectIndexKey(
   effectKind:
     | KnowledgeReviewEffectKind
     | 'personal_memory_applied'
-    | 'data_export_offered'
     | 'workbook_conversion_offered',
 ): string {
   return `${runEffectPrefix(identity)}latest:${effectKind}`;
@@ -737,7 +636,6 @@ function assertSameIdentity(
     | KnowledgeReviewRunEffect
     | AppliedPersonalMemoryEffect
     | PersonalMemoryReservation
-    | OfferedDataExportEffect
     | GoogleSheetDestinationEffect
     | OfferedWorkbookConversionEffect,
   identity: LarkRunEffectIdentity,
