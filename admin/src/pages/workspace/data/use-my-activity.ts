@@ -101,6 +101,27 @@ export const durationLabel = (ms: number | null): string | null => {
   return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, '0')}s`
 }
 
+/**
+ * What to call a run when nothing has named it.
+ *
+ * Three screens each wrote `summary ?? entrypoint`, and `entrypoint` is the
+ * name of the container the work ran in — so a member's Recent list was five
+ * rows all reading "pi", which is both meaningless to them and an internal
+ * detail they were never meant to see. Every run in the dev database has a null
+ * summary, so this is not the rare path: it is the only one.
+ *
+ * Where it came from is the one true thing left, and it is worth more than the
+ * container's name. The wording matches `CHANNEL_WORD` on the run-detail page.
+ */
+const CHANNEL_TITLE: Record<string, string> = {
+  lark: 'Asked in Lark',
+  desktop: 'Asked on the desktop',
+  api: 'Asked over the API',
+}
+
+export const runTitle = (run: { summary: string | null; channel: string }): string =>
+  run.summary?.trim() || CHANNEL_TITLE[run.channel] || 'Something you asked Divo'
+
 /** Percentage change between two windows, guarding the divide by zero. */
 export const changePct = (now: number, before: number): number =>
   before === 0 ? (now > 0 ? 100 : 0) : Math.round(((now - before) / before) * 100)

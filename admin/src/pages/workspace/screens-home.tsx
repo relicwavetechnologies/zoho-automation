@@ -23,7 +23,7 @@ import {
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
-import { useMyRuns, useMyUsage, changePct, durationLabel } from './data/use-my-activity'
+import { useMyRuns, useMyUsage, changePct, durationLabel, runTitle } from './data/use-my-activity'
 import { useConnections, CONNECTABLE } from './data/use-connections'
 import type { MyRun } from './data/use-my-activity'
 import type { Provider } from './fixtures'
@@ -546,7 +546,7 @@ function RunList({ runs }: { runs: MyRun[] }) {
           <div className="ws-row" key={r.id}>
             <div className="ws-row-main">
               <b>
-                {r.summary ?? r.entrypoint}
+                {runTitle(r)}
                 {r.status === 'running' && r.channel === 'lark' ? (
                   <span className="ws-note" title="Lark runs are never closed by the backend — status and duration are unreliable for this channel.">
                     status unknown

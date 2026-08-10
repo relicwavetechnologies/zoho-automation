@@ -1145,10 +1145,17 @@
    column — but it does it by stretching two cards to 508px each, and a 40px
    logo over one line of text in a 508px box is more air than the empty column
    ever was. A card holds its ~330px and a short row simply ends. */
+/* `start`, not `stretch`.
+   Stretching made every card in a row as tall as the tallest, and the extra
+   height had to go somewhere — on Lark, 57px of nothing between its one account
+   and its button, because Google beside it has two. The reference's cards are
+   equal because their contents are, not because they were forced. Here the
+   contents genuinely differ, so a card takes the height it needs and a row ends
+   slightly ragged rather than holding a hole. */
 .cur .ws-appgrid {
   display: grid; gap: 14px;
   grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
-  align-items: stretch;
+  align-items: start;
 }
 
 .cur .ws-appcard {
@@ -1219,11 +1226,10 @@
   overflow: hidden;
 }
 /* A real logo brings its own colour and shape, so the tile gets out of its way
-   — a bordered grey square around the Google G reads as a placeholder holding a
-   logo rather than as the app. */
-.cur .ws-app[data-plain="true"] {
-  background: var(--cur-surface); border-color: var(--cur-hairline-soft);
-}
+   entirely — a bordered square around the Google G reads as a placeholder
+   holding a logo rather than as the app, which is precisely what the reference
+   does not do. */
+.cur .ws-app[data-plain="true"] { background: transparent; border-color: transparent; }
 /* Canva, Shopify and AITable publish a finished app icon: its own background,
    its own corner radius. Left on the tile it became a rounded square inside a
    rounded square with a hairline between them. The tile's `overflow: hidden`

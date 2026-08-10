@@ -24,6 +24,7 @@ import {
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useManagedDepartments } from '@/pages/workspace/data/use-team'
 import { useOnboarding, useRecentRuns } from '@/pages/workspace/data/use-onboarding'
+import { runTitle } from '@/pages/workspace/data/use-my-activity'
 import { RAIL } from '@/components/admin/settings-shell'
 import { RoleProvider } from '@/cursor/role-context'
 import { useTheme } from '@/lib/use-theme'
@@ -369,7 +370,7 @@ function RecentRuns({ onOpen, onSearch }: { onOpen: () => void; onSearch: () => 
       </div>
       {runs.map((run) => (
         <button type="button" className="ws-recent-item" key={run.id} onClick={onOpen}>
-          <b>{run.summary ?? run.entrypoint}</b>
+          <b>{runTitle(run)}</b>
           {/*
             A dot before the time, because the age of a run is only half of what
             somebody scanning this rail wants — "22h" reads the same whether it
