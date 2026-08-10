@@ -1,6 +1,5 @@
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import { CONNECTED_PROVIDER_SYSTEM_SKILLS } from './connected-provider-system-skills';
-import { DATA_EXPORT_SYSTEM_SKILL } from './data-export-system-skill';
 import {
   CREATE_FILES_SKILL_SLUG,
   FILES_AND_DOCUMENTS_SYSTEM_SKILLS,
@@ -103,24 +102,22 @@ The Shopify specialist is read-only and routes every request through governed Di
   {
     slug: 'data-router',
     name: 'Data Work Router',
-    summary: 'Routes data work between a scripted workflow, a governed export, and reading a file already in the workspace.',
+    summary: 'Routes data work between connected providers, one scripted workflow, and destination tools.',
     markdown: `# Data Work Router
 
 Choose exactly one specialist below. Loading this router is never permission to
 process or export anything.
 
 - Bounded lookup or preview → that provider's specialist; keep the answer in chat.
-- The member wants a file, or a result carried an \`exportCandidate\` →
-  \`secure-data-export\`. The backend owns paging, the company-account
-  destination policy, exact invoker sharing, and measured coverage.
-- Calculate, group, join, reshape, or move data across pages or between
-  connected products → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`. One script: run it,
-  edit it, rerun it.
+- The member wants a complete file, Sheet, or cross-product transformation →
+  the source specialist plus \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`, then the
+  destination specialist. Use one persistent script and reconcile source,
+  written, and read-back counts. If the source exposes no complete paging
+  contract, say that plainly instead of calling a bounded preview complete.
 - Read or look up a value from a pasted
   \`https://docs.google.com/spreadsheets/d/...\` or
   \`https://drive.google.com/file/d/...\` URL → \`google-drive\` first, with
-  \`get_drive_file_content\` and the file ID from that URL or from a
-  \`RECENT DIVO EXPORTS\` \`artifactUrl\`. Never answer a pasted link from an
+  \`get_drive_file_content\` and the file ID from that URL. Never answer a pasted link from an
   earlier provider query.
 - Edit as a native Sheet, add columns, or convert an Excel workbook to a Google
   Sheet from such a URL → \`google-sheets\`. Resolve the reference first: a URL
@@ -128,26 +125,21 @@ process or export anything.
   request a download URL or import the workbook directly.
 - Read or analyse a file already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
 
-An opaque handle belongs to one route, and is never turned into provider IDs,
-source rows, or Python input:
+An opaque artifact handle belongs to one route and is never turned into
+provider credentials or invented source IDs:
 
-- \`exportCandidate\` → \`secure-data-export\`.
-- a legacy \`preview.exportOfferId\` → Divo's verified Lark final-response card,
-  then \`secure-data-export\`. Never rebuild one as an \`exportCandidate\`.
-- \`destinationReferenceId\` or \`resourceRef\` for a **google_sheet** →
+- \`destinationReferenceId\` for a **google_sheet** →
   \`google-sheets\`.
-- an **xlsx** or **csv** under \`RECENT DIVO EXPORTS\` → \`google-drive\`.
-- \`exportJobId\` → status and safe retry or resume only.
 
 Examples, kept because each one is a boundary the bullets alone decide slowly:
 
 - “Show me our best keywords” → research specialist, answer in chat.
-- “Put the complete keyword result in a Sheet” → the same result's
-  \`exportCandidate\`, through \`secure-data-export\`.
+- “Put the complete keyword result in a Sheet” → source paging in one local
+  script, then \`google-sheets\`, with exact read-back evidence.
 - “Combine invoices with Airtable owners and calculate totals” → the provider
   specialists plus \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`, not an export.
-- “Add a Notes column to that Sheet” after a Divo export → \`google-sheets\`
-  with the recent opaque resource reference and a read-back check.`,
+- “Add a Notes column to that Sheet” after resolving its link → \`google-sheets\`
+  with the same-run opaque destination reference and a read-back check.`,
     toolIds: [],
     tags: ['data', 'router', 'processing', 'analysis', 'export', 'python'],
     aliases: [
@@ -197,7 +189,7 @@ job, not this one.`,
 Choose the exact approved specialist returned by this router.
 
 - Current public facts and external verification → \`web-search\`.
-- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Prefer one main Semrush call and one main table (for example one \`backlinks_comparison\` for multi-domain ranking). Its bounded preview may return an \`exportCandidate\`; if the member asks for a file, use \`dataExport\` \`op=list_candidates\` when needed, then \`op=plan\` for the table you showed — never rerun the provider query, paginate in Pi, or use a local workflow.
+- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Prefer one main Semrush call and one main table (for example one \`backlinks_comparison\` for multi-domain ranking). Treat bounded results as bounded; for a requested artifact, use the local Python workflow only when the operation exposes complete data or truthful continuation.
 - Approved OMS publisher/site inventory → \`divo-oms-site-inventory\`.
 
 Never substitute web search results for configured Semrush or OMS data.
@@ -301,7 +293,6 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
     routerSlug: 'data-router',
     targetSlugs: [
       DIVO_LOCAL_PYTHON_SKILL_SLUG,
-      DATA_EXPORT_SYSTEM_SKILL.slug,
       'google-drive',
       'google-sheets',
       READ_FILES_SKILL_SLUG,
@@ -340,7 +331,6 @@ export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = [
   ...ZOHO_FINANCE_SYSTEM_SKILLS,
   ...MAIL_OPS_SYSTEM_SKILLS,
   ...FILES_AND_DOCUMENTS_SYSTEM_SKILLS,
-  DATA_EXPORT_SYSTEM_SKILL,
   DIVO_SEMRUSH_SYSTEM_SKILL,
   DIVO_OMS_SITE_DATA_SYSTEM_SKILL,
   MENHOOD_DATA_SYSTEM_SKILL,

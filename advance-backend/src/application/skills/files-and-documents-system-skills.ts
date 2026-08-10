@@ -161,12 +161,11 @@ Use this when the deliverable is a file: a workbook, a report, a formatted
 export, or an edit to a file the user sent.
 
 This skill owns files already in the workspace and artifacts Divo genuinely
-authors there. It does not own a complete export from a connected provider. If
-a provider result contains \`exportCandidate\`, keep that opaque candidate and
-call \`dataExport\` with \`op=plan\` when the member wants Sheet, Excel, CSV, all
-rows, or a full export; do not rerun the provider query, or copy rows into a locally rebuilt file. If the target is a
-pasted or recent Google Sheet, load \`google-sheets\` and retain only Divo's
-opaque Sheet reference.
+authors there. For a complete artifact from a connected provider, use the
+source specialist, the local Python workflow, and the destination specialist;
+keep bulk rows in files rather than model context. If the target is a pasted or
+recent Google Sheet, load \`google-sheets\` and retain only Divo's opaque Sheet
+reference.
 
 ${DEPENDENCY_TIERS}
 

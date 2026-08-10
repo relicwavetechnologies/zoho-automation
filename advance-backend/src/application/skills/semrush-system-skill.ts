@@ -42,24 +42,7 @@ Only the three **Callable** operations below may be invoked through the \`semrus
    - \`empty\`: the request was valid but Semrush had no matching coverage.
    - \`partial\`: Semrush has another available page. State that limitation for the chat preview.
    - \`blocked\` or an invocation error: explain whether configuration, permission, unsupported capability, or provider availability prevented the lookup. Never invent the missing data.
-5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. Present **one main table** when one operation is enough. When \`exportCandidate\` is present and the member asks for Sheet, Excel, CSV, all rows, or a full export, call \`dataExport\` with \`op=plan\` using the candidate that matches the table you showed — not every candidate from the run. If unsure which candidate matches, call \`dataExport\` \`op=list_candidates\` first, then plan. If the member did not ask for a file but the result is a useful table, ranking, gap, or comparison with \`exportCandidate\`, end with one soft follow-up asking whether to export it to Google Sheets, Excel, or CSV, unless the member explicitly said not to export, not now, or chat-only. Do not manually follow \`nextPage\`, create or upload a CSV/XLSX/Sheet, run Python or a local workflow, or rerun the provider query after the member chooses a format. The central governed export owns provider pagination, destination access, and artifact creation. A valid explicit plan queues the full export without a sample or another confirmation. It retrieves current Semrush data, so describe it as a current export rather than an immutable copy of the preview.
-
-## When \`dataExport\` asks you something back
-
-\`op=plan\` does not always queue. It can answer with a question, and each one
-has exactly one correct reply:
-
-- \`choose_destination\` — this is a stale plan from before company-owned
-  exports. Prepare the data again; never ask the member to select an account.
-- \`connect_required\` — the administrator-approved company export account is
-  unavailable. Ask an administrator to configure or reconnect it, and stop;
-  never start personal Google OAuth or build the file another way.
-- \`ambiguous\` — your plan named more than one dataset without saying how they
-  fit. Repair it (one dataset, or a \`tabName\` per dataset). Never show the
-  member a candidate list or any ID.
-
-When a plan is accepted, say the export has started, not that it is finished.
-The completion card is what reports the final row count and any cap.
+5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. Present **one main table** when one operation is enough. Treat a continuation as incomplete coverage and never pull bulk rows through model context.
 
 ## Shy answering (default)
 

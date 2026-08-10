@@ -2,7 +2,7 @@ import type {
   ZohoBooksModule,
   ZohoBooksPaginatedClient,
 } from '../../infrastructure/zoho/zoho-books-paginated.client';
-import type { DatasetCoverage } from '../data-export/dataset-preview';
+import type { DatasetCoverage } from '../provider-data/dataset-preview';
 
 const DEFAULT_INLINE_THRESHOLD = 25;
 
@@ -19,7 +19,6 @@ export interface ListHandlerResult<T extends Record<string, unknown> = Record<st
   readonly summary: string;
   readonly truncated: boolean;
   readonly hasMore: boolean;
-  readonly suggestExport: boolean;
   readonly coverage: DatasetCoverage;
 }
 
@@ -33,7 +32,6 @@ export interface HandleZohoListInput<T extends Record<string, unknown> = Record<
   readonly filters?: Record<string, unknown>;
   readonly query?: string;
   readonly page?: number;
-  readonly suggestExportOnOverflow?: boolean;
   readonly inlineThreshold?: number;
   readonly postFilter?: (items: readonly T[]) => T[];
   readonly summarize: (items: readonly T[], meta: { truncated: boolean; hasMore: boolean }) => string;
@@ -59,15 +57,7 @@ export async function handleZohoList<T extends Record<string, unknown> = Record<
   const firstItems = input.postFilter ? input.postFilter(fetchedItems) : fetchedItems;
   const visible = firstItems.slice(0, inlineThreshold);
   const hasOverflow = firstPage.hasMore || firstItems.length > inlineThreshold;
-  const suggestExport = hasOverflow && input.suggestExportOnOverflow !== false;
   const baseSummary = input.summarize(visible, { truncated: hasOverflow, hasMore: firstPage.hasMore });
-  const summary = suggestExport
-    ? [
-        baseSummary,
-        `Found more ${input.moduleLabel.toLowerCase()} than can fit inline.`,
-        'Divo can prepare the remaining data as an export.',
-      ].join(' ')
-    : baseSummary;
   const coverage: DatasetCoverage = hasOverflow
     ? {
         kind: 'truncated',
@@ -80,10 +70,9 @@ export async function handleZohoList<T extends Record<string, unknown> = Record<
     items: visible,
     page: firstPage.page,
     ...(!firstPage.hasMore ? { totalCount: firstItems.length } : {}),
-    summary,
+    summary: baseSummary,
     truncated: hasOverflow,
     hasMore: firstPage.hasMore,
-    suggestExport,
     coverage,
   };
 }

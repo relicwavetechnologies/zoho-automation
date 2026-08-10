@@ -49,13 +49,15 @@ DATE WINDOWS:
 - When the member named a specific month, quarter, year, or date range, express it as two exactDate comparisons — \`>=\` the first day and \`<\` the first day of the NEXT period — and never substitute a relative mode. \`pastMonth\` is a rolling window ending today, not a calendar month, and \`thisCalendarMonth\` is the current month, not the one the member named. Filtering July with pastMonth answers a different question and returns a different number.
 - Use the time zone the business keeps its dates in, not UTC. Menhood order dates are Asia/Kolkata.
 
-COUNTS FROM A BOUNDED PREVIEW:
-- Record reads return a small preview and never a continuation cursor. Paging is deliberately impossible here: never send \`offset\` or \`cursor\`, and never try to walk the table for a total.
+DIRECT PREVIEWS AND LOCAL PAGE MODE:
+- Ordinary direct \`op: "call"\` record reads return a small preview and never a continuation cursor. Never send \`offset\` or \`cursor\` to a native MCP operation, and never try to walk its preview for a total.
+- Complete unfiltered table reads are available only through \`divo-local\` and its trusted local-file audience: call \`airtableRecords\` with \`op: "page"\`, \`nativeTool: "list_records_for_table"\`, and \`input: { baseId, tableId, fieldIds?, cursor? }\`. Start without \`cursor\`, save the protected result file, then follow each returned \`nextCursor\` until \`hasMore=false\`. This page mode returns 100 raw rows and never puts them in model context.
+- Page mode deliberately has no filter or sort input. For a complete filtered artifact, page the required fields from the table into local files and apply the member's filter and stable ordering in the persistent Python workflow. Do not pretend a direct 10-row preview was the source.
 - The response still carries \`metadata.totalRecordCount\`, which is the server's exact count of every record matching the filter, not the number of rows previewed. When the member asked how many, that number IS the answer: filter precisely, read totalRecordCount, and report it. Send \`pageSize: 1\` when only the count is wanted.
 - To break a count down by category, run one more filtered read per bucket and read each totalRecordCount. Resolve the buckets from the field's real options, and show the leftover between the buckets and the total rather than dropping it.
 - When \`hasMore\` is true the returned rows are a preview, not a sample. Never derive a distribution, share, percentage, average, minimum, maximum, date range, or sum from them, and never call them representative. Present them as examples or not at all.
-- Sums — units, quantity, amount — cannot be computed through this lane at all: there is no aggregation and no full row set. Report the exact count, say plainly that the value total is not available here, and offer a backend-replayable export if the member needs it.
-- If a preview says more rows exist, do not page through Airtable MCP for a broad analysis, CSV, Excel, or Google Sheet. For settled synced Menhood analytics use \`menhood-data\`; for live/recent Menhood order counts or Airtable-view filters that the sync does not carry, use the live Orders table here and answer from totalRecordCount. For other Airtable data, use \`secure-data-export\` only when an exact backend-replayable connection, base, table, operation, and filters are already resolved. Otherwise ask for a bounded preview or say the full export is not available through MCP.
+- Sums — units, quantity, amount — cannot be computed from the direct preview. For a complete non-Menhood calculation, use the local page mode and compute over the reconciled local rows. For settled Menhood history, use \`menhood-data\` instead.
+- If a preview says more rows exist, do not treat it as a complete dataset. For settled synced Menhood analytics use \`menhood-data\`; for live/recent Menhood order counts or Airtable-view filters that the sync does not carry, use the live Orders table here and answer from totalRecordCount. For another complete Airtable artifact or calculation, use local page mode rather than widening model context.
 - Do not claim a total the selected route did not actually prove, and say so plainly when a bounded answer stopped early.`;
 
 export const airtableCoreSkill: Skill = {
@@ -82,15 +84,14 @@ ANALYSIS:
 - For Menhood live order-count reconciliation, first resolve the live base/table/field IDs and select-choice IDs, then filter the Orders table and read \`metadata.totalRecordCount\`. The cleanup shape is the product identity + \`Order Sub Status\` = Regular Order + \`Order Status (Team)\` isNoneOf Duplicate/TEST/Testing, bounded by the member's exact requested dates. A named month is two exactDate comparisons in Asia/Kolkata — for July 2026, \`Order Date\` >= 2026-07-01 and < 2026-08-01 — never \`pastMonth\`.
 - The Orders table is order-line grain. Call what totalRecordCount returns "order lines" or "records", not orders, and do not state distinct order numbers, units, or amount from this lane, because it cannot aggregate them. A status or payment split is allowed only as one filtered count per bucket, never read off the preview rows.
 - For Menhood product identity, filter on the field the member's wording names: a product-name prompt resolves against \`Product Name\`, and \`SKU\` is for when the member gave a SKU or the name maps to exactly one SKU. Resolve the exact select option with get_table_schema and filter on that option ID; never use \`contains\` on free text. For "Trimmer 1.0" take only the exact Trimmer 1.0 product option; do not include charging cable or replacement blade unless the member asks for accessories/replacements too.
-- For non-Menhood Airtable analysis, use MCP only when the member gave a narrow bounded scope; otherwise ask for a smaller preview or a backend-replayable export source.
+- For non-Menhood Airtable analysis, use direct MCP for a narrow bounded scope. Use the trusted local page mode for a complete artifact or calculation and keep all pages in local files.
 - Each Airtable row arrives with its fields nested. Flatten once when writing the file, then read plain column names; deciding row-by-row whether to reach for row.fields or row.cellValuesByFieldId is where these scripts go wrong.
 - Never estimate a number you did not compute, and never present a partial page as a complete total.
 
-EXPORTS:
-- A plain complete export from one Airtable table belongs to secure-data-export only when the backend has an exact replayable Airtable source, not this skill's pagination loop or the Python workflow.
-- If a bounded Airtable preview is useful but no backend-replayable export source or \`exportCandidate\` exists, do not offer a full export. If an exact replayable source exists and the member has not asked for a file yet, you may ask one soft follow-up about exporting to Google Sheets, Excel, or CSV, unless the member explicitly said not to export, not now, or chat-only.
-- Use Python only when the request also needs calculation, transformation, joins, more than one connected product, or related destination writes.
-- Keep backend-returned export job IDs for status and safe resume only; never expose connection IDs, provider IDs, or bulk rows in the final answer.
+ARTIFACTS:
+- Never claim a complete Airtable artifact from an ordinary direct preview. Completeness requires local page mode to reach \`hasMore=false\`, followed by source/written/read-back count reconciliation.
+- Use the persistent Python workflow for paging, calculation, transformation, joins, more than one connected product, or related destination writes.
+- Never expose connection IDs, provider IDs, or bulk rows in the final answer.
 
 OUTPUT:
 - Answer in business language: what the records say, which ones matter, and the concrete next step.

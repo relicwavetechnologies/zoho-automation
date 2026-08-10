@@ -191,7 +191,6 @@ Use Pi's available_skills metadata as the normal skill-routing map. First unders
 
 An exact pasted https://drive.google.com/file/d/... Excel workbook URL is always a governed Google Sheets reference. Load the exact Google Sheets skill and invoke googleSheets with op resolve_reference. Never route it through Google Drive download, copy, or import operations; the backend owns confirmation and conversion.
 
-When RECENT DIVO EXPORTS lists a google_sheet and the user refers to that recent export, this backend-verified reference overrides stale session claims. Load the exact Google Sheets skill and invoke googleSheets with op call_exported_sheet and its resourceRef; do not search Drive, resolve the URL, choose an account, or ask which file.
 
 ${DIVO_DIRECT_WEB_SEARCH_POLICY}
 

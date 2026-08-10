@@ -69,7 +69,6 @@ const MATRIX: Record<'MANAGER' | 'MEMBER', Record<string, readonly string[]>> = 
     airtableRecords: ['read'],
 
     webSearch: ['read'],
-    dataExport: ['create'],
     mailAutomations: ['read', 'create', 'update', 'delete', 'execute'],
     scheduledWorkflows: ['read', 'create', 'update', 'delete', 'execute'],
   },
@@ -98,7 +97,6 @@ const MATRIX: Record<'MANAGER' | 'MEMBER', Record<string, readonly string[]>> = 
     airtableRecords: ['read'],
 
     webSearch: ['read'],
-    dataExport: ['create'],
     // A member reads the automation schedule; the manager changes it.
     mailAutomations: ['read'],
     scheduledWorkflows: ['read'],

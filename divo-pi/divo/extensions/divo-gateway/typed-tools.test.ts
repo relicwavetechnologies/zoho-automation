@@ -250,6 +250,64 @@ describe("buildTypedTools", () => {
 		);
 	});
 
+	it("binds the same native schema into a governed resolved-Sheet call", () => {
+		const bootstrap = bootstrapWith([{
+			id: "googleSheets",
+			argsSchema: {
+				anyOf: [{
+					type: "object",
+					properties: {
+						op: { const: "call_resolved_sheet" },
+						destinationReferenceId: { type: "string" },
+						nativeTool: { type: "string", enum: ["read_rows"] },
+						input: { type: "object", additionalProperties: {} },
+					},
+					required: ["op", "destinationReferenceId", "nativeTool", "input"],
+					additionalProperties: false,
+				}],
+			},
+		}]);
+		bootstrap.nativeContracts = [{
+			toolId: "googleSheets",
+			nativeTool: "read_rows",
+			inputSchema: {
+				type: "object",
+				properties: { range: { type: "string" } },
+				required: ["range"],
+				additionalProperties: false,
+			},
+		}];
+		const { tools, rejected } = buildTypedTools(bootstrap);
+		assert.deepEqual(rejected, []);
+		const piTool = { name: tools[0]!.name, description: "", parameters: tools[0]!.parameters } as never;
+		assert.deepEqual(
+			validateToolArguments(piTool, {
+				name: tools[0]!.name,
+				arguments: {
+					op: "call_resolved_sheet",
+					destinationReferenceId: "ref-1",
+					nativeTool: "read_rows",
+					input: { range: "A1:B10" },
+				},
+			} as never),
+			{
+				op: "call_resolved_sheet",
+				destinationReferenceId: "ref-1",
+				nativeTool: "read_rows",
+				input: { range: "A1:B10" },
+			},
+		);
+		assert.throws(() => validateToolArguments(piTool, {
+			name: tools[0]!.name,
+			arguments: {
+				op: "call_resolved_sheet",
+				destinationReferenceId: "ref-1",
+				nativeTool: "read_rows",
+				input: { range_name: "A1:B10" },
+			},
+		} as never), /Validation failed/);
+	});
+
 	it("rejects an unusable schema with a reason rather than registering a wrong contract", () => {
 		const { tools, rejected } = buildTypedTools(bootstrapWith([{ id: "brokenTool", argsSchema: { type: "string" } }]));
 		assert.deepEqual(tools, []);

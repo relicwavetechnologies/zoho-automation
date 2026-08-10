@@ -3,9 +3,9 @@ import { describe, it } from 'node:test';
 import {
   WORKBOOK_CONVERSION_RETRY_DELAY_MS,
   type WorkbookConversionJobPayload,
-} from '../../src/application/data-export/workbook-conversion.queue.ts';
-import { WorkbookConversionConfirmationService } from '../../src/application/data-export/workbook-conversion.service.ts';
-import { GOOGLE_DRIVE_XLSX_CONVERSION_LEASE_TTL_SECONDS } from '../../src/application/data-export/google-drive-xlsx-conversion.checkpoint.store.ts';
+} from '../../src/application/artifacts/workbook-conversion.queue.ts';
+import { WorkbookConversionConfirmationService } from '../../src/application/artifacts/workbook-conversion.service.ts';
+import { GOOGLE_DRIVE_XLSX_CONVERSION_LEASE_TTL_SECONDS } from '../../src/application/artifacts/google-drive-xlsx-conversion.checkpoint.store.ts';
 
 describe('workbook conversion confirmation', () => {
   it('queues the exact trusted conversation and leaves enough time for a crashed lease to expire', async () => {

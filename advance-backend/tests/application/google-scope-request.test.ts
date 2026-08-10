@@ -53,7 +53,7 @@ describe('googleScopesToRequestForToolIds', () => {
   it('grants what it asked for — the request satisfies its own callback check', () => {
     // The two sides deadlock if they disagree: the callback may only insist on
     // what the authorize URL actually put in front of the member.
-    for (const toolId of ['mailAutomations', 'googleDrive', 'googleCalendar', 'dataExport']) {
+    for (const toolId of ['mailAutomations', 'googleDrive', 'googleCalendar', 'googleSheets']) {
       const requested = googleScopesToRequestForToolIds([toolId]);
       const required = googleScopeGroupsForToolIds([toolId]);
       assert.equal(

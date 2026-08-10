@@ -6,7 +6,7 @@
 >
 > Scope: **Cloud Pi only; skill content, router graph, system-skill provisioning, DB reconciliation, and skill-behavior proof**
 >
-> Explicitly out of scope: **Pi runtime/controller changes, warm-process work, typed-tool implementation, gateway authorization, provider adapters, Jan/Desktop, and export-state-machine deletion**
+> Explicitly out of scope: **Pi runtime/controller changes, warm-process work, typed-tool implementation, gateway authorization, provider adapters, Jan/Desktop, and retired export-planner cleanup**
 
 ## 1. Executive handoff
 
@@ -47,12 +47,12 @@ architecture.
   is read-only.
 - `divo-local` lets a credential-free script call the same governed backend
   tools and persist large results outside model context.
-- `dataExport` remains the governed backend boundary for replayable provider
-  exports. A separate, currently uncommitted policy slice is changing new
-  provider exports to the configured company Google owner with the verified
-  invoker as reader. Do not treat that behavior as landed until the runtime
-  plan's Phase 0 gate passes, and do not promise a terminal replacement where
-  a provider does not yet expose one.
+- The legacy candidate/offer/sample export tool and `secure-data-export` skill
+  are being hard-removed by the runtime track. Do not rewrite or provision
+  either one. Route complete data movement through the source specialist,
+  `divo-python-automation`, and the destination specialist only when the source
+  contract exposes truthful continuation. Otherwise require an honest bounded
+  answer; prose must not invent missing paging.
 - Native-skill staging and warm Pi reuse already use an exact scope/catalogue
   digest. This track must not modify that machinery merely because Markdown
   changes alter the digest.

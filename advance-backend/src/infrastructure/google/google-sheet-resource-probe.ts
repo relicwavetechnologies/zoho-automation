@@ -3,7 +3,7 @@ import type {
   GoogleDriveFileMetadata,
   GoogleSheetResourceProbe,
   GoogleSheetsMetadata,
-} from '../../application/data-export/google-sheet-resource-resolver';
+} from '../../application/artifacts/google-sheet-resource-resolver';
 
 export type ResolveGoogleSheetAccessToken = (connectionId: string) => Promise<string>;
 

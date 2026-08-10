@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
+import { typedToolName } from '../../../divo-pi/divo/extensions/divo-gateway/typed-tools.ts';
 import {
   CONNECTED_PROVIDER_SYSTEM_SKILLS,
 } from '../../src/application/skills/connected-provider-system-skills';
@@ -28,7 +31,6 @@ import {
   resolveHarnessRuntimeAddress,
   resolveHarnessOpenId,
   resolveHarnessTenantKey,
-  waitForDataExports,
   waitForGoogleOAuthContinuation,
 } from '../../scripts/run-engine-harness';
 import {
@@ -52,6 +54,26 @@ describe('capability catalogue reconciliation', () => {
     assert.equal(new Set(seededIds).size, seededIds.length);
     assert.deepEqual(CANONICAL_TOOL_IDS.filter(toolId => !seededIds.includes(toolId)), []);
     assert.deepEqual(seededIds.filter(toolId => !isCanonicalToolId(toolId)), ['runCommand']);
+  });
+
+  it('admits every canonical governed tool through Pi\'s explicit runtime allowlist', () => {
+    const manifest = JSON.parse(readFileSync(
+      resolve(__dirname, '../../../divo-pi/divo/runtime-manifest.json'),
+      'utf8',
+    )) as { toolAllowlist?: unknown };
+    assert.ok(Array.isArray(manifest.toolAllowlist));
+    const allowlist = manifest.toolAllowlist.filter((name): name is string => typeof name === 'string');
+    assert.equal(new Set(allowlist).size, allowlist.length, 'runtime toolAllowlist contains duplicates');
+
+    const missing = CANONICAL_TOOL_IDS.flatMap(toolId => {
+      const piName = typedToolName(toolId);
+      return allowlist.includes(piName) ? [] : [{ toolId, piName }];
+    });
+    assert.deepEqual(
+      missing,
+      [],
+      `Canonical backend tools missing from Pi runtime-manifest.toolAllowlist: ${JSON.stringify(missing)}`,
+    );
   });
 
   it('creates only missing catalogue rows and preserves existing rows', async () => {
@@ -496,42 +518,6 @@ describe('Lark engine harness controls', () => {
     const message = JSON.parse(buildHarnessTextMessage('hello'));
     assert.equal(message.msg_type, 'text');
     assert.deepEqual(JSON.parse(message.content), { text: 'hello' });
-  });
-
-  it('extends the export wait while row progress continues and rejects a stalled job', async () => {
-    let now = 0;
-    let polls = 0;
-    const progressingQueue = {
-      getJobCounts: async () => (
-        ++polls < 5
-          ? { waiting: 0, active: 1, delayed: 0 }
-          : { waiting: 0, active: 0, delayed: 0 }
-      ),
-      getJobs: async () => [{ id: 'job-1', progress: { stage: 'reading', rowsRead: polls * 100 } }],
-    };
-    await waitForDataExports(progressingQueue, {
-      inactivityMs: 3,
-      pollMs: 2,
-      now: () => now,
-      sleep: async (ms) => { now += ms; },
-      onProgress: () => undefined,
-    });
-    assert(now > 3, 'total runtime may exceed the inactivity window while progress continues');
-
-    now = 0;
-    await assert.rejects(
-      () => waitForDataExports({
-        getJobCounts: async () => ({ waiting: 0, active: 1, delayed: 0 }),
-        getJobs: async () => [{ id: 'job-2', progress: { stage: 'reading', rowsRead: 100 } }],
-      }, {
-        inactivityMs: 3,
-        pollMs: 2,
-        now: () => now,
-        sleep: async (ms) => { now += ms; },
-        onProgress: () => undefined,
-      }),
-      /no queue or row progress/i,
-    );
   });
 
   it('monitors OAuth through one fresh continuation without holding the first run', async () => {

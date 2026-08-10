@@ -1,13 +1,17 @@
 # Pi-native skills and terminal-first export simplification
 
-> Status: **Native-skill hardening and Phases 4–6 in progress**
+> Status: **Superseded execution plan — native loading landed; hard removal is tracked in `cloud-pi-runtime-optimization-consistency-and-proof.md`**
 >
-> Last updated: **2026-08-10**
+> Last updated: **2026-08-11**
 >
 > Confidence: **94%**
 >
 > Scope: cloud Pi only, DB-backed skills, governed terminal
 > workflows, and staged retirement of the model-facing export pipeline.
+
+> 2026-08-10 decision update: the legacy candidate/offer/sample export planner
+> is being hard-removed. Earlier instructions below to retain it as a fallback
+> are historical context and must not be implemented.
 
 ## 1. Target outcome
 
@@ -34,10 +38,11 @@ credentials, approvals, schemas, rate limits, and audit.
    not deny an otherwise permitted ordinary tool call.
 4. **Use terminal-first workflows for data movement.** Rows stay in local
    files and governed tool calls, not model context.
-5. **Do not delete `dataExport` yet.** Several providers do not expose safe
-   pagination to Python, cloud runs are bounded, and protected Shopify records
-   are currently blocked from `divo-local`.
-6. **Delete the old export state machine only after a real cloud E2E passes.**
+5. **The legacy export capability is retired.** Provider contracts must expose
+   truthful bounded or paged reads to terminal workflows; missing coverage is
+   reported, never hidden behind the removed candidate/offer state machine.
+6. **Keep bulk rows out of model context.** Persistent scripts use
+   `divo-local` local-file results and reconcile source/written/read-back counts.
 7. **General skill rewriting is deferred.** This project rewrites only export,
    data-router, and directly contradictory provider guidance.
 
@@ -49,10 +54,9 @@ credentials, approvals, schemas, rate limits, and audit.
   loaded by Pi's native resource loader.
 - The custom `divo_skill_view` tool and process-local skill provenance ledger
   have been removed. Skills are guidance; backend policy remains authoritative.
-- `dataExport` still owns compatibility candidates, plans, queues, Lark cards,
-  workers, provider replay, Google delivery, and follow-up continuity. Its
-  model-facing sample/confirm workflow has been removed: a valid explicit plan
-  queues the full governed job after destination and policy checks.
+- The legacy candidate/offer/sample tool, queue, provider replay, and Lark-card
+  state machine are removed. Neutral pasted-Sheet resolution and Drive XLSX to
+  Google Sheet conversion remain under the artifact subsystem.
 - Cloud `divo-local` enablement is committed in `0d1c083fe`. The launcher lives
   under runtime-owned `DIVO_HOME`, survives warm turn rotation, and is removed
   on session shutdown.
@@ -357,30 +361,30 @@ now share one 100-page ceiling, with a regression proving page 20 returns 21.
 **Exit gate:** real Google artifact link, verified values, reconciled counts,
 and trace evidence showing only governed calls.
 
-### Phase 7 — Staged cutover from `dataExport`
+### Phase 7 — Provider cutover from the retired export planner
 
-- [ ] Stop publishing `exportCandidate` for one verified provider at a time.
-- [ ] Remove that provider's candidate, replay adapter, and permission coupling.
+- [x] Stop publishing legacy candidate handles from every provider.
+- [x] Remove provider replay adapters and retired permission coupling.
 - [ ] Observe error rate, completion time, row accuracy, and context size.
-- [ ] Decide the long-running-job boundary from evidence:
+- [x] Decide the current long-running-job boundary:
   - interactive/bounded work stays in terminal;
-  - if work can exceed the Pi run limit, retain one minimal backend async job
-      surface rather than the remaining candidate/offer state machine.
-- [ ] Preserve Google resource continuity and workbook conversion separately;
+  - providers without a truthful continuation contract report bounded coverage
+      rather than silently falling back to another export state machine.
+- [x] Preserve Google reference resolution and workbook conversion separately;
       they are not inherently part of export planning.
 
-**Exit gate:** all supported providers use the new route or one deliberately
-retained generic async boundary; `dataExport` has no model-facing callers.
+**Exit gate:** met for removal. Provider parity remains a separate evidence
+program; the retired tool has no model-facing callers.
 
 ### Phase 8 — Hard removal and database cleanup
 
-- [ ] Remove the `dataExport` tool, labels, derived permissions, candidates,
+- [x] Remove the legacy tool, labels, derived permissions, candidates,
       plans, offers, cards, source adapters, queue/worker wiring, and dead tests.
-- [ ] Split workbook-conversion handling before deleting mixed Lark handlers.
-- [ ] Drain or explicitly expire in-flight jobs and offers.
-- [ ] Back up Development and verify rollback before Prisma model removal.
-- [ ] Delete candidate/plan/offer tables in a separate reviewed migration.
-- [ ] Update old export plans/docs to mark them superseded, not silently true.
+- [x] Split workbook-conversion handling before deleting mixed Lark handlers.
+- [x] Add a guarded retirement command that refuses runnable legacy jobs.
+- [x] Require an environment backup before dropping the four metadata tables.
+- [x] Wire the exact table retirement into Development and opt-in Main rollout.
+- [x] Update old export plans/docs to mark them superseded, not silently true.
 
 **Exit gate:** no dead export authority remains and the schema migration has a
 tested rollback path.

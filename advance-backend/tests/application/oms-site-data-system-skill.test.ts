@@ -9,11 +9,9 @@ describe('OMS Site Data system skill', () => {
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /never call the OMS webhook/i);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /ambiguous/i);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /company administrators/i);
-    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /`exportCandidate`/);
-    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /call `dataExport` with `op=plan`/);
-    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /one soft follow-up asking whether to export it to Google Sheets, Excel, or CSV/);
-    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /local Python workflow/i);
-    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /temporary download link/);
+    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /OMS never paginates and never returns a total count/);
+    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /bounded returned snapshot/);
+    assert.doesNotMatch(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /exportCandidate|dataExport/);
     // Naming a store the tool can no longer reach only tells the model it exists.
     assert.doesNotMatch(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /cloudinary/i);
   });

@@ -54,7 +54,7 @@ export const zohoCrmReadAnalysisSkill: Skill = {
 READ ROUTING:
 - Use zohoCrm read operations for customer, lead, contact, account, deal, case, owner, and relationship context.
 - Use narrow search/list filters before fetching a specific record.
-- For a complete CRM artifact, make one exact filtered read to obtain its opaque \`exportCandidate\`, then load \`secure-data-export\` and call \`dataExport op=plan\`. The backend owns full paging, company-account creation, invoker-reader sharing, and delivery; never copy CRM rows into a Sheet yourself.
+- For a complete CRM artifact, follow the tool's real pagination fields and keep pages in local files rather than model context. Do not claim completeness without reconciling every page.
 - Stay read-only unless the user explicitly requests a CRM mutation and an approved write specialist is available.
 
 WRITES ARE NOT THIS SKILL:
@@ -79,8 +79,8 @@ READ ROUTING:
 - Zoho Books terminal arguments are top-level: for example \`{"op":"list_expenses","connectionId":"<exact bootstrap UUID>","dateFrom":"2026-04-01","dateTo":"2026-07-31","page":1,"limit":100}\`. Never wrap them in Google-style \`input\`, and do not probe an unsupported \`describe\` op.
 - Bounded lookup or preview, with no requested artifact or destination -> use the matching zohoBooks read operation with narrow filters.
 - For an ordinary list request, keep the direct model preview bounded. Do not fetch additional pages unless the member asked for a complete artifact, a whole-account calculation, or another workflow that genuinely needs them.
-- For a complete export artifact, make one exact filtered read to obtain its opaque \`exportCandidate\`, then load \`secure-data-export\` and call \`dataExport op=plan\`. The backend replays every page, shapes nested values, creates the artifact in the configured company Google account, grants only the verified invoker reader access, and reports measured coverage.
-- A request such as “export all expenses for this date range from this account into a new Google Sheet” is already clear. Do not ask whether to proceed, manually page it, or call Google Sheets directly. Use the candidate from that exact filtered read and queue the governed export.
+- For a complete artifact, use the local Python workflow described below, persist every page outside model context, then use the requested destination specialist and reconcile source, written, and read-back counts.
+- A request such as “export all expenses for this date range from this account into a new Google Sheet” is already clear. Do not ask whether to proceed.
 - When the member gives a bounded date range, pass its exact ISO boundaries as \`dateFrom\` and \`dateTo\` on the first call and every paginated call. Never fetch the whole Zoho account and filter it locally when the provider operation accepts those filters.
 - For that artifact workflow, do not use the Zoho \`script\` parameter and do not return or stringify source rows from a provider-side script. \`script\` is for bounded server-side analysis, not paging or transfer. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use \`page\`, \`hasMore\`, and \`nextPage\` through \`divo-local\` so each saved response keeps the documented structured page envelope.
 - Latest/recent bounded invoices -> use zohoBooks op="list_invoices" with the requested limit; it is already sorted by invoice date newest-first. Do not scan or sort thousands of rows.

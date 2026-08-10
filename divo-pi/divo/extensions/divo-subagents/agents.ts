@@ -52,7 +52,6 @@ const READ_ONLY_DIVO_TOOLS = [
 	"divo_shopify_customers",
 	"divo_web_search",
 	"divo_knowledge",
-	"divo_data_export",
 	"divo_mail_automations",
 	"divo_scheduled_workflows",
 	"divo_semrush",

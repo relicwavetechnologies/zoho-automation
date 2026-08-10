@@ -1,5 +1,9 @@
 # Unified Data Movement and Spreadsheet Workflows
 
+> **Partially superseded 2026-08-11.** Preserve the neutral Sheet/XLSX
+> reference and conversion work. The candidate/offer/sample export planner
+> sections are historical and must not be reintroduced.
+
 **Status:** implementation active; Phases 0–5 are complete, and isolated-runtime validation is in progress
 **Date:** 2026-08-02
 **Scope:** tabular previews, proactive exports, cross-tool data movement, pasted spreadsheet URLs, and the boundary between deterministic backend exports and agent-authored container workflows

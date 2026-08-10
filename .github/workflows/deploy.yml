@@ -13,6 +13,11 @@ on:
         required: true
         type: boolean
         default: false
+      retire_data_export_storage:
+        description: One-time retirement of the removed dataExport queue and tables (backs up Main first)
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -294,16 +299,18 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLONE_DEVELOPMENT_DATABASE: ${{ inputs.clone_development_database }}
           APPLY_SCHEMA: ${{ inputs.apply_schema }}
+          RETIRE_DATA_EXPORT_STORAGE: ${{ inputs.retire_data_export_storage }}
         run: |
           printf '%s' "${GHCR_TOKEN}" | ssh -i ~/.ssh/id_ed25519 "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}" \
             "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
 
           ssh -i ~/.ssh/id_ed25519 "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}" \
-            "DEPLOY_DIR='${DEPLOY_DIR}' BACKEND_IMAGE='${BACKEND_IMAGE}' ADMIN_IMAGE='${ADMIN_IMAGE}' PI_IMAGE='${PI_IMAGE}' PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' CLONE_DEVELOPMENT_DATABASE='${CLONE_DEVELOPMENT_DATABASE}' APPLY_SCHEMA='${APPLY_SCHEMA}' bash -s" <<'REMOTE'
+            "DEPLOY_DIR='${DEPLOY_DIR}' BACKEND_IMAGE='${BACKEND_IMAGE}' ADMIN_IMAGE='${ADMIN_IMAGE}' PI_IMAGE='${PI_IMAGE}' PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' CLONE_DEVELOPMENT_DATABASE='${CLONE_DEVELOPMENT_DATABASE}' APPLY_SCHEMA='${APPLY_SCHEMA}' RETIRE_DATA_EXPORT_STORAGE='${RETIRE_DATA_EXPORT_STORAGE}' bash -s" <<'REMOTE'
           set -euo pipefail
 
           cd "${DEPLOY_DIR}"
           export DIVO_ENV_FILE=.env.production.local
+          rm -f .release-data-export-retirement-backup
 
           if curl -fsS --max-time 10 http://127.0.0.1:13002/health >/dev/null; then
             backend_image="$(docker inspect --format='{{.Config.Image}}' divo-main-divo-backend-1)"
@@ -333,6 +340,23 @@ jobs:
           docker pull "${DIVO_PI_IMAGE}"
           docker compose --env-file .env.production.local up -d --wait \
             divo-postgres divo-redis-queue divo-redis-cache divo-redis-memory
+
+          if [[ "${RETIRE_DATA_EXPORT_STORAGE}" == "true" ]]; then
+            test "${APPLY_SCHEMA}" = "true"
+            test "${CLONE_DEVELOPMENT_DATABASE}" = "false"
+            docker compose --env-file .env.production.local stop divo-backend >/dev/null 2>&1 || true
+            install -d -m 700 backups
+            retirement_backup="backups/data-export-retirement-$(date -u +%Y%m%dT%H%M%SZ).dump"
+            docker exec divo-main-divo-postgres-1 sh -lc \
+              'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > "${retirement_backup}"
+            test -s "${retirement_backup}"
+            chmod 600 "${retirement_backup}"
+            printf '%s\n' "${retirement_backup}" > .release-data-export-retirement-backup
+            chmod 600 .release-data-export-retirement-backup
+            docker compose --env-file .env.production.local run --rm --no-deps \
+              -e DATA_EXPORT_RETIRE_CONFIRM=delete-retired-data-export-storage \
+              divo-backend pnpm retire:data-export -- --apply </dev/null
+          fi
 
           if [[ "${CLONE_DEVELOPMENT_DATABASE}" == "true" ]]; then
             dev_db_container=divo-development-divo-dev-postgres-1
@@ -398,6 +422,7 @@ jobs:
                  DIVO_PI_CONTROLLER_IMAGE="${DIVO_PI_CONTROLLER_IMAGE}" \
                  docker compose --env-file .env.production.local exec -T divo-backend \
                  node -e "fetch('http://divo-pi-controller:4317/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+              rm -f .release-data-export-retirement-backup
               docker compose --env-file .env.production.local ps
               exit 0
             fi
@@ -428,6 +453,21 @@ jobs:
           source .release-rollback.images.env
           export DIVO_ENV_FILE=.env.production.local
           export DIVO_BACKEND_IMAGE DIVO_ADMIN_IMAGE DIVO_PI_IMAGE DIVO_PI_CONTROLLER_IMAGE
+
+          if [[ -s .release-data-export-retirement-backup ]]; then
+            retirement_backup="$(cat .release-data-export-retirement-backup)"
+            case "${retirement_backup}" in
+              backups/data-export-retirement-*.dump) ;;
+              *) echo "Invalid retirement backup path" >&2; exit 1 ;;
+            esac
+            test -s "${retirement_backup}"
+            docker compose --env-file .env.production.local stop divo-backend >/dev/null 2>&1 || true
+            docker exec divo-main-divo-postgres-1 sh -lc \
+              'dropdb --if-exists --force -U "$POSTGRES_USER" "$POSTGRES_DB" && createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
+            docker exec -i divo-main-divo-postgres-1 sh -lc \
+              'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-acl' < "${retirement_backup}"
+            rm -f .release-data-export-retirement-backup
+          fi
 
           docker compose --env-file .env.production.local up -d --no-build --remove-orphans
 

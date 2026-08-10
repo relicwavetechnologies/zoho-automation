@@ -6,17 +6,17 @@ import {
   GoogleDriveXlsxConversionCheckpointStore,
   GOOGLE_DRIVE_XLSX_CONVERSION_COMPLETION_TTL_SECONDS,
   GOOGLE_DRIVE_XLSX_CONVERSION_LEASE_TTL_SECONDS,
-} from '../../src/application/data-export/google-drive-xlsx-conversion.checkpoint.store.ts';
+} from '../../src/application/artifacts/google-drive-xlsx-conversion.checkpoint.store.ts';
 import {
   GoogleDriveXlsxConversionConsumer,
   WorkbookConversionLeaseHeldError,
-} from '../../src/application/data-export/google-drive-xlsx-conversion.consumer.ts';
-import { WorkbookConversionQueue } from '../../src/application/data-export/workbook-conversion.queue.ts';
+} from '../../src/application/artifacts/google-drive-xlsx-conversion.consumer.ts';
+import { WorkbookConversionQueue } from '../../src/application/artifacts/workbook-conversion.queue.ts';
 import type {
   GoogleDriveXlsxConversionCompletion,
   GoogleDriveXlsxConversionJob,
-} from '../../src/application/data-export/google-drive-xlsx-conversion.worker.ts';
-import type { WorkbookConversionJobPayload } from '../../src/application/data-export/workbook-conversion.queue.ts';
+} from '../../src/application/artifacts/google-drive-xlsx-conversion.worker.ts';
+import type { WorkbookConversionJobPayload } from '../../src/application/artifacts/workbook-conversion.queue.ts';
 
 const job: GoogleDriveXlsxConversionJob = {
   jobKey: 'offer_123',

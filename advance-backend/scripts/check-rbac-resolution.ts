@@ -155,13 +155,11 @@ async function main(): Promise<void> {
       console.log(`  ${source.padEnd(26)} ${entries.length}`);
     }
 
-    // The two capabilities that arrive without a row of their own. If either is
-    // missing, the alias or the derived rule did not fire and order lookup or
-    // export is quietly gone.
-    for (const [toolId, action] of [['menhoodData', 'read'], ['dataExport', 'create']] as const) {
-      const held = resolved.value.allowedActionsByTool.get(toolId as never)?.has(action as never) ?? false;
-      console.log(`  ${held ? 'OK  ' : 'MISS'} ${toolId}:${action} (${toolId === 'menhoodData' ? 'alias off airtableRecords:read' : 'derived'})`);
-    }
+    // Menhood access is derived from the Airtable read grant rather than a
+    // separate department permission row.
+    const hasMenhood = resolved.value.allowedActionsByTool
+      .get('menhoodData' as never)?.has('read' as never) ?? false;
+    console.log(`  ${hasMenhood ? 'OK  ' : 'MISS'} menhoodData:read (alias off airtableRecords:read)`);
   } finally {
     await prisma.$disconnect();
   }

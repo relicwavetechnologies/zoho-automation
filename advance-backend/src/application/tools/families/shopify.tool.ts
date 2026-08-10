@@ -13,38 +13,25 @@ import {
   ShopifyOrdersArgsSchema,
   type ShopifyAnalyticsArgs,
   type ShopifyCustomersArgs,
-  type ShopifyCustomersListExportArgs,
   type ShopifyOrdersArgs,
-  type ShopifyOrdersListExportArgs,
 } from '../../shopify/shopify.types';
-import type { DataExportOrchestrationService } from '../../data-export/data-export-orchestration.service';
-import type { DataExportOfferPayload } from '../../data-export/export-offer';
 import {
   createDatasetPreview,
   DATASET_PREVIEW_ROW_LIMIT,
   type DatasetCoverage,
-} from '../../data-export/dataset-preview';
-import {
-  exportCandidateMetadata,
-  publishExportCandidate,
-} from '../../data-export/tool-export-candidate';
-import { dataExportRunRequestId } from '../../data-export/export-request-identity';
+} from '../../provider-data/dataset-preview';
 import {
   flattenShopifyAnalyticsRows,
   flattenShopifyCustomerRows,
   flattenShopifyOrderRows,
-  exportReplayArgsForList,
   previewCoverageForAnalytics,
   previewCoverageForShopifyList,
   readShopifyAnalyticsTable,
   readShopifyListNodes,
-  shopifyAnalyticsExportable,
-  shopifyCustomersExportable,
-  shopifyExportTitle,
-  shopifyOrdersExportable,
-  type ShopifyExportArgs,
-  type ShopifyExportToolId,
-} from '../../shopify/shopify-export';
+  shopifyAnalyticsPreviewable,
+  shopifyCustomersPreviewable,
+  shopifyOrdersPreviewable,
+} from '../../shopify/shopify-result';
 
 const legacyResultSchema = z.object({
   status: z.enum(['complete', 'empty', 'pending']),
@@ -72,13 +59,6 @@ const legacyResultSchema = z.object({
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
   }).optional(),
-  exportCandidate: z.object({
-    candidateId: z.string().uuid(),
-    sourceKind: z.literal('shopify_snapshot'),
-    previewRowCount: z.number().int().nonnegative(),
-    estimatedRows: z.number().int().nonnegative().optional(),
-    expiresAt: z.string(),
-  }).strict().optional(),
   queryCost: z.record(z.unknown()).optional(),
   requestId: z.string().optional(),
   retrievedAt: z.string(),
@@ -109,13 +89,6 @@ const analyticsResultSchema = z.object({
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
   }).optional(),
-  exportCandidate: z.object({
-    candidateId: z.string().uuid(),
-    sourceKind: z.literal('shopify_snapshot'),
-    previewRowCount: z.number().int().nonnegative(),
-    estimatedRows: z.number().int().nonnegative().optional(),
-    expiresAt: z.string(),
-  }).strict().optional(),
   queryCost: z.record(z.unknown()).optional(),
   requestId: z.string().optional(),
   retrievedAt: z.string(),
@@ -129,7 +102,6 @@ type ProtectedListRes = z.infer<typeof legacyResultSchema>;
 export function createShopifyTools(deps: {
   readonly service: ShopifyService;
   readonly audit: AuditService;
-  readonly exportCandidates?: Pick<DataExportOrchestrationService, 'publishCandidate'>;
 }): [
   Tool<ShopifyAnalyticsArgs, AnalyticsRes>,
   Tool<ShopifyOrdersArgs, ProtectedListRes>,
@@ -149,12 +121,10 @@ export function createShopifyTools(deps: {
         'get_order and get_order_by_identifier with includeHistorical=false omit orders older than the same 60-day floor even when the connection token also has read_all_orders.',
         'Use list_order_line_items with its endCursor to page through orders with more than the bounded detail page.',
         'get_order_attribution may return pending while customerJourneySummary.ready is false; never infer missing UTM data.',
-        'list_orders may return exportCandidate on Lark when dataExport create is granted; use dataExport op=plan for Sheet, Excel, or CSV instead of manually paging cursors.',
       ].join('\n'),
       execute: (args, ctx) => deps.service.orders(args, ctx),
       audit: deps.audit,
-      exportCandidates: deps.exportCandidates,
-      exportable: shopifyOrdersExportable,
+      previewable: shopifyOrdersPreviewable,
       flattenRows: (data) => flattenShopifyOrderRows(readShopifyListNodes(data)),
     }),
     createProtectedListTool({
@@ -166,12 +136,10 @@ export function createShopifyTools(deps: {
         'operation: list_customers, get_customer, search_customers, or count_customers.',
         'Search accepts one structured email, phone, or name field; arbitrary Shopify search syntax is not accepted.',
         'All customer-level results are protected data and require this separately granted capability. includeContact is rejected; names, email, and phone are never returned.',
-        'list_customers and search_customers may return exportCandidate on Lark when dataExport create is granted; use dataExport op=plan for Sheet, Excel, or CSV instead of manually paging cursors.',
       ].join('\n'),
       execute: (args, ctx) => deps.service.customers(args, ctx),
       audit: deps.audit,
-      exportCandidates: deps.exportCandidates,
-      exportable: shopifyCustomersExportable,
+      previewable: shopifyCustomersPreviewable,
       flattenRows: (data) => flattenShopifyCustomerRows(readShopifyListNodes(data)),
     }),
   ];
@@ -180,7 +148,6 @@ export function createShopifyTools(deps: {
 function createAnalyticsTool(deps: {
   readonly service: ShopifyService;
   readonly audit: AuditService;
-  readonly exportCandidates?: Pick<DataExportOrchestrationService, 'publishCandidate'>;
 }): Tool<ShopifyAnalyticsArgs, AnalyticsRes> {
   return {
     id: asToolId('shopifyAnalytics'),
@@ -194,7 +161,7 @@ function createAnalyticsTool(deps: {
       'operation: sales_summary, sales_timeseries, sales_by_channel, sales_attribution, sales_by_utm, product_performance, customer_acquisition, inventory_position, payments_summary, or payments_by_method.',
       'Queries are compiled from enums. Raw ShopifyQL, GraphQL, headers, credentials, and arbitrary fields are not accepted.',
       'For last-click marketing attribution use sales_attribution with dimension referring_channel and attribution LAST_CLICK_ATTRIBUTION.',
-      'Ranked reports return top-N rows only. If exportCandidate is present and the member asks for Sheet, Excel, or CSV, use dataExport op=plan instead of rerunning this tool.',
+      'Ranked reports return top-N rows only; never describe them as a complete dataset.',
     ].join('\n'),
     permissionCheck(_args: ShopifyAnalyticsArgs, perm: PermissionResult): Result<ToolActionGroup, PermissionError> {
       const allowed = perm.allowedActionsByTool.get(asToolId('shopifyAnalytics'))?.has('read') ?? false;
@@ -235,24 +202,6 @@ function createAnalyticsTool(deps: {
 
       const table = readShopifyAnalyticsTable(result.data);
       const flatRows = table ? flattenShopifyAnalyticsRows(table.columns, table.rows) : [];
-      const candidate = await publishExportCandidate({
-        candidates: deps.exportCandidates,
-        eligible: flatRows.length > 0
-          && shopifyAnalyticsExportable(args.operation)
-          && ctx.runContext.channel === 'lark'
-          && Boolean(ctx.runContext.chatId)
-          && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true,
-        payload: () => exportPayloadForShopify('shopifyAnalytics', args, ctx, result.store.domain),
-        metadata: exportCandidateMetadata({
-          columns: flatRows.length > 0 ? Object.keys(flatRows[0]!) : [],
-          previewRowCount: flatRows.length,
-          estimatedRows: flatRows.length,
-          coverage: previewCoverageForAnalytics(args, flatRows.length),
-        }),
-        logger: ctx.logger,
-        scope: 'shopify',
-        correlationId: ctx.correlationId,
-      });
       const preview = flatRows.length > 0
         ? createDatasetPreview({
           rows: flatRows,
@@ -266,24 +215,12 @@ function createAnalyticsTool(deps: {
         store: result.store,
         apiVersion: result.apiVersion,
         preview,
-        ...(candidate.kind === 'published'
-          ? {
-              exportCandidate: {
-                candidateId: candidate.candidateId,
-                sourceKind: 'shopify_snapshot' as const,
-                previewRowCount: flatRows.length,
-                ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
-                expiresAt: candidate.expiresAt.toISOString(),
-              },
-            }
-          : {}),
         ...(result.queryCost ? { queryCost: result.queryCost } : {}),
         ...(result.requestId ? { requestId: result.requestId } : {}),
         retrievedAt: result.retrievedAt,
         message: messageForAnalytics({
           rowCount: flatRows.length,
           returnedRows: preview?.rows.length ?? 0,
-          hasCandidate: candidate.kind === 'published',
           status: result.status,
           ...(preview?.coverage !== undefined ? { coverage: preview.coverage } : {}),
         }),
@@ -301,7 +238,6 @@ function createAnalyticsTool(deps: {
             status: result.status,
             rowCount: flatRows.length,
             returnedRowCount: preview?.rows.length ?? 0,
-            exportCandidateId: candidate.kind === 'published' ? candidate.candidateId : null,
             requestId: result.requestId ?? null,
             latencyMs: Date.now() - startedAt,
             correlationId: ctx.correlationId,
@@ -322,8 +258,7 @@ function createProtectedListTool<TArgs extends ShopifyOrdersArgs | ShopifyCustom
   readonly parameterDocs: string;
   readonly execute: (args: TArgs, ctx: ToolExecutionContext) => Promise<ShopifyOperationResult>;
   readonly audit: AuditService;
-  readonly exportCandidates?: Pick<DataExportOrchestrationService, 'publishCandidate'> | undefined;
-  readonly exportable: (operation: string) => boolean;
+  readonly previewable: (operation: string) => boolean;
   readonly flattenRows: (data: unknown) => Record<string, unknown>[];
 }): Tool<TArgs, ProtectedListRes> {
   return {
@@ -372,33 +307,11 @@ function createProtectedListTool<TArgs extends ShopifyOrdersArgs | ShopifyCustom
         return err(toToolError(input.id, normalized));
       }
 
-      const listExportable = input.exportable(operation);
-      const flatRows = listExportable ? input.flattenRows(result.data) : [];
-      const coverage = listExportable
+      const listPreviewable = input.previewable(operation);
+      const flatRows = listPreviewable ? input.flattenRows(result.data) : [];
+      const coverage = listPreviewable
         ? previewCoverageForShopifyList(result.pageInfo?.hasNextPage ?? false, flatRows.length)
         : undefined;
-      const replayArgs = listExportable
-        ? exportReplayArgsForList(args)
-        : undefined;
-      const candidate = listExportable && replayArgs
-        ? await publishExportCandidate({
-          candidates: input.exportCandidates,
-          eligible: flatRows.length > 0
-            && ctx.runContext.channel === 'lark'
-            && Boolean(ctx.runContext.chatId)
-            && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true,
-          payload: () => exportPayloadForShopify(input.id, replayArgs, ctx, result.store.domain),
-          metadata: exportCandidateMetadata({
-            columns: flatRows.length > 0 ? Object.keys(flatRows[0]!) : [],
-            previewRowCount: flatRows.length,
-            estimatedRows: result.pageInfo?.hasNextPage ? undefined : flatRows.length,
-            ...(coverage ? { coverage } : {}),
-          }),
-          logger: ctx.logger,
-          scope: 'shopify',
-          correlationId: ctx.correlationId,
-        })
-        : { kind: 'none' as const };
       const preview = flatRows.length > 0 && coverage
         ? createDatasetPreview({ rows: flatRows, coverage })
         : undefined;
@@ -411,25 +324,13 @@ function createProtectedListTool<TArgs extends ShopifyOrdersArgs | ShopifyCustom
         data: result.data,
         ...(result.pageInfo ? { pageInfo: result.pageInfo } : {}),
         ...(preview ? { preview } : {}),
-        ...(candidate.kind === 'published'
-          ? {
-              exportCandidate: {
-                candidateId: candidate.candidateId,
-                sourceKind: 'shopify_snapshot' as const,
-                previewRowCount: flatRows.length,
-                ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
-                expiresAt: candidate.expiresAt.toISOString(),
-              },
-            }
-          : {}),
         ...(result.queryCost ? { queryCost: result.queryCost } : {}),
         ...(result.requestId ? { requestId: result.requestId } : {}),
         retrievedAt: result.retrievedAt,
-        message: listExportable
+        message: listPreviewable
           ? messageForProtectedList({
             rowCount: flatRows.length,
             returnedRows: preview?.rows.length ?? 0,
-            hasCandidate: candidate.kind === 'published',
             status: result.status,
             hasNextPage: result.pageInfo?.hasNextPage ?? false,
             ...(coverage !== undefined ? { coverage } : {}),
@@ -451,7 +352,6 @@ function createProtectedListTool<TArgs extends ShopifyOrdersArgs | ShopifyCustom
             hasNextPage: result.pageInfo?.hasNextPage ?? false,
             rowCount: flatRows.length,
             returnedRowCount: preview?.rows.length ?? 0,
-            exportCandidateId: candidate.kind === 'published' ? candidate.candidateId : null,
             latencyMs: Date.now() - startedAt,
             correlationId: ctx.correlationId,
           },
@@ -464,66 +364,9 @@ function createProtectedListTool<TArgs extends ShopifyOrdersArgs | ShopifyCustom
   };
 }
 
-function exportPayloadForShopify(
-  toolId: ShopifyExportToolId,
-  args: ShopifyExportArgs,
-  ctx: ToolExecutionContext,
-  storeDomain: string,
-): DataExportOfferPayload {
-  const shared = {
-    companyId: ctx.runContext.companyId,
-    userId: ctx.runContext.userId,
-    ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
-    destination: {
-      format: 'auto' as const,
-      title: shopifyExportTitle(toolId, args, storeDomain),
-    },
-    chatId: ctx.runContext.chatId!,
-    ...(ctx.runContext.runtimeThreadId
-      ? { conversationKey: ctx.runContext.runtimeThreadId }
-      : {}),
-    ...(ctx.runContext.replyToMessageId ? { replyToMessageId: ctx.runContext.replyToMessageId } : {}),
-    ...(ctx.runContext.replyInThread !== undefined ? { replyInThread: ctx.runContext.replyInThread } : {}),
-    requestId: dataExportRunRequestId(ctx.runContext, ctx.correlationId),
-    ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
-  };
-  if (toolId === 'shopifyAnalytics') {
-    return {
-      ...shared,
-      source: {
-        kind: 'shopify_snapshot',
-        connectionId: args.connectionId,
-        toolId: 'shopifyAnalytics',
-        args: args as ShopifyAnalyticsArgs,
-      },
-    };
-  }
-  if (toolId === 'shopifyOrders') {
-    return {
-      ...shared,
-      source: {
-        kind: 'shopify_snapshot',
-        connectionId: args.connectionId,
-        toolId: 'shopifyOrders',
-        args: args as ShopifyOrdersListExportArgs,
-      },
-    };
-  }
-  return {
-    ...shared,
-    source: {
-      kind: 'shopify_snapshot',
-      connectionId: args.connectionId,
-      toolId: 'shopifyCustomers',
-      args: args as ShopifyCustomersListExportArgs,
-    },
-  };
-}
-
 function messageForAnalytics(input: {
   readonly rowCount: number;
   readonly returnedRows: number;
-  readonly hasCandidate: boolean;
   readonly status: AnalyticsRes['status'];
   readonly coverage?: DatasetCoverage;
 }): string {
@@ -537,16 +380,12 @@ function messageForAnalytics(input: {
   if (input.coverage?.kind === 'provider_limited') {
     parts.push('This ranked Shopify report is top-N only.');
   }
-  if (input.hasCandidate) {
-    parts.push('If the member asks for Sheet, Excel, or CSV, use the returned export candidate; Divo reruns current Shopify data for the file.');
-  }
   return parts.join(' ');
 }
 
 function messageForProtectedList(input: {
   readonly rowCount: number;
   readonly returnedRows: number;
-  readonly hasCandidate: boolean;
   readonly status: ProtectedListRes['status'];
   readonly hasNextPage: boolean;
   readonly coverage?: DatasetCoverage;
@@ -560,9 +399,6 @@ function messageForProtectedList(input: {
   }
   if (input.hasNextPage || input.coverage?.kind === 'truncated') {
     parts.push('More rows are available beyond this page.');
-  }
-  if (input.hasCandidate) {
-    parts.push('If the member asks for Sheet, Excel, or CSV, use the returned export candidate; Divo replays current Shopify data for the file.');
   }
   return parts.join(' ');
 }

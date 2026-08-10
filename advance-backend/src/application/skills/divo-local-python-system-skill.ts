@@ -22,17 +22,11 @@ bounded pagination, parsing, transformation, grouping, deduplication, joining,
 or several related destination writes.
 
 Use this path for a complete artifact when the source skill exposes real page or
-continuation fields. Use a provider's temporary \`exportCandidate\` →
-\`dataExport\` compatibility path only when that provider skill explicitly says
-it has no terminal-safe paging contract. The container is a real machine with a
-real terminal: write the file, run it, read the error, edit that same file, and
-run it again.
+continuation fields. The container is a real machine with a real terminal:
+write the file, run it, read the error, edit that same file, and run it again.
 
-Never use \`exportCandidate\`, \`preview.exportOfferId\`,
-\`destinationReferenceId\`, or \`resourceRef\` as Python data input. Those
-opaque handles stay with \`secure-data-export\` or \`google-sheets\`. A returned
-export job ID is only a status/checkpoint handle; it is not a dataset and must
-never be expanded into rows.
+Opaque resource references are not Python data input. Resolve them through the
+specialist that owns the resource, then keep bulk rows in local result files.
 
 Python is ordinary local execution. The agent creates a persistent source file,
 runs it through Bash, edits that same file after an error, and reruns the same

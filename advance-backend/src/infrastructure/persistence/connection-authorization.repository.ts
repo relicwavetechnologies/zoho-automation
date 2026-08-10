@@ -5,20 +5,11 @@ import {
   connectionAuthorizationDedupeKey,
   createConnectionAuthorizationSecrets,
   hashConnectionAuthorizationState,
-  parseConnectionContinuationPayload,
   type ConnectionAuthorizationTarget,
 } from '../../application/connections/connection-authorization-intent';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 import { err, ok, type Result } from '../../shared/result';
 import { decryptToken, encryptToken } from '../shared/token.crypto';
-
-function continuationPayload(value: unknown): Pick<
-  ConnectionAuthorizationTarget,
-  'continuationPayload'
-> {
-  const parsed = parseConnectionContinuationPayload(value);
-  return parsed ? { continuationPayload: parsed } : {};
-}
 
 export interface CreateConnectionAuthorizationIntentInput
   extends ConnectionAuthorizationTarget {
@@ -89,7 +80,6 @@ const continuationSelect = {
   groupReplyMode: true,
   originalRequest: true,
   requestedToolIds: true,
-  continuationPayload: true,
   correlationId: true,
   continuationIdempotencyKey: true,
 } as const;
@@ -132,11 +122,6 @@ export class ConnectionAuthorizationRepository {
           ...(input.groupReplyMode ? { groupReplyMode: input.groupReplyMode } : {}),
           originalRequest: input.originalRequest,
           requestedToolIds: input.requestedToolIds,
-          ...(input.continuationPayload
-            ? {
-                continuationPayload: input.continuationPayload as Prisma.InputJsonValue,
-              }
-            : {}),
           continuationIdempotencyKey: secrets.continuationIdempotencyKey,
           correlationId: secrets.correlationId,
           expiresAt,
@@ -262,7 +247,6 @@ export class ConnectionAuthorizationRepository {
             : {}),
           originalRequest: existing.originalRequest,
           requestedToolIds: existing.requestedToolIds,
-          ...continuationPayload(existing.continuationPayload),
           correlationId: existing.correlationId,
           continuationIdempotencyKey: existing.continuationIdempotencyKey,
         },
@@ -334,7 +318,6 @@ export class ConnectionAuthorizationRepository {
         ...(row.groupReplyMode ? { groupReplyMode: row.groupReplyMode } : {}),
         originalRequest: row.originalRequest,
         requestedToolIds: row.requestedToolIds,
-        ...continuationPayload(row.continuationPayload),
         correlationId: row.correlationId,
         continuationIdempotencyKey: row.continuationIdempotencyKey,
       };
@@ -479,7 +462,6 @@ export class ConnectionAuthorizationRepository {
         ...(intent.groupReplyMode ? { groupReplyMode: intent.groupReplyMode } : {}),
         originalRequest: intent.originalRequest,
         requestedToolIds: intent.requestedToolIds,
-        ...continuationPayload(intent.continuationPayload),
         correlationId: intent.correlationId,
         continuationIdempotencyKey: intent.continuationIdempotencyKey,
       });
@@ -520,7 +502,6 @@ export class ConnectionAuthorizationRepository {
         ...(intent.groupReplyMode ? { groupReplyMode: intent.groupReplyMode } : {}),
         originalRequest: intent.originalRequest,
         requestedToolIds: intent.requestedToolIds,
-        ...continuationPayload(intent.continuationPayload),
         correlationId: intent.correlationId,
         continuationIdempotencyKey: intent.continuationIdempotencyKey,
       });

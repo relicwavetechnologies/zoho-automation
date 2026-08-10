@@ -31,8 +31,8 @@ tests pass or because it returned a preview once.
 3. Reads may use real Main data. Writes must target clearly named disposable
    test artifacts; never mutate or delete ordinary company data.
 4. Do not clone Development into Main and do not expose provider credentials.
-5. Keep `dataExport` available as rollback until each source passes its own
-   terminal-first export proof.
+5. The retired export planner is not a rollback path. A source is `Bulk` only
+   after its terminal-first paging and reconciliation proof passes.
 6. A failure stays visible in this file until fixed and rerun.
 7. Record IDs only in private test evidence. Do not commit tokens, chat IDs,
    connection IDs, raw protected rows, or personal data here.
@@ -81,7 +81,7 @@ Export modes:
 7. Google Workspace tools.
 8. Lark tools.
 9. Web, knowledge, Canva, mail automation, commands, and schedules.
-10. Runtime support tools and explicit fallback `dataExport` verification.
+10. Runtime support tools and failure/recovery verification.
 
 ## Master governed-tool matrix
 
@@ -108,8 +108,8 @@ Export modes:
 | [B] | `googleAppsScript` | Google | Artifact | Blocked: Apps Script API disabled in the shared GCP project |
 | [~] | `mailAutomations` | Mail | N/A | Main read-only inventory passed; mutation/HITL intentionally not exercised |
 | [-] | `canvaDesign` | Canva | Artifact | Not available in this Main member's governed allowlist; non-Google writes excluded |
-| [x] | `airtableBase` | Airtable | Bulk | Main discovery and complete 2,457-row export passed |
-| [x] | `airtableRecords` | Airtable | Bulk | Main complete 2,457-row export reconciled |
+| [~] | `airtableBase` | Airtable | Bulk | Main discovery passed; new terminal page contract needs fresh proof |
+| [~] | `airtableRecords` | Airtable | Bulk | Historical 2,457-row artifact passed through the retired planner; terminal paging needs fresh proof |
 | [B] | `airtableSchema` | Airtable | Artifact | Agent used a nonexistent base-native schema operation |
 | [~] | `airtableAutomation` | Airtable | Optional | Main read-only inventory and Sheet reconciliation passed |
 | [-] | `aitableDatasheets` | Aitable | Bulk | Intentionally skipped; integration is not ready |
@@ -118,7 +118,6 @@ Export modes:
 | [~] | `zohoBooks` | Zoho | Bulk | 8,014 expenses + 6,190 invoices paged; final Sheet proof failed |
 | [x] | `webSearch` | Context | Optional | Main parallel web evidence + Sheet delivery passed |
 | [B] | `knowledge` | Knowledge | Artifact | Main reads are blocked by misconfigured approval routing |
-| [x] | `dataExport` | Fallback | Bulk | Main 2,457-row Airtable-to-Google fallback export verified |
 | [~] | `semrush` | Research | Bulk | Main comparison + parallel domain reads + Sheet passed; bulk paging pending |
 | [~] | `omsSiteData` | Internal data | Bulk | Main site-profile evidence + Sheet passed; bulk paging pending |
 | [~] | `menhoodData` | Internal data | Bulk | Main parallel analysis + Sheet delivery passed; raw bulk export pending |
@@ -420,13 +419,6 @@ counts, duration, and issue IDs. Detailed sensitive evidence stays outside Git.
 - Evidence: Main loaded the exact scheduling skill and read all four archived schedules; the inventory was written and read back from Google Sheets.
 - Issues: Create/update/disable/execution lifecycle was intentionally not exercised under the read-only production test policy.
 
-#### `dataExport`
-- Status: `[x]`; export: `Bulk`; role: rollback only.
-- Core proof: verify existing candidate/plan path still works while sources migrate.
-- Export proof: one representative fallback export with exact reconciliation.
-- Evidence: Main resolved a 2,457-row Airtable candidate for July 2026, ran preflight, created the async export, wrote a Google Sheet in 500-row progress batches, and delivered a governed link. Backend logs confirm `rowCount=2457`, `coverageOutcome=complete`, artifact checkpoint, and delivery completion.
-- Issues: The run began the large export without first estimating and confirming its scale (`EXPORTCONFIRM-001`). Remove this fallback only after every migrated provider has passed and rollback is approved.
-
 ## Divo runtime-support tool matrix
 
 These tools are tested for routing, context, safety, and lifecycle correctness.
@@ -506,4 +498,5 @@ The program is complete only when:
 - [ ] Google Sheets and file/Drive destinations pass large-write read-back.
 - [ ] Every open issue is fixed, accepted, or explicitly deferred with an owner.
 - [ ] No test exposed credentials, leaked unbounded rows, or duplicated mutations.
-- [ ] `dataExport` removal/cutover is decided from recorded evidence, not assumption.
+- [ ] The retired planner is absent from Pi, registry, RBAC, skills, queues, and
+      active DB metadata; each remaining Bulk source has its own recorded proof.

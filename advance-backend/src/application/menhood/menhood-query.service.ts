@@ -9,11 +9,8 @@ import {
   MenhoodQueryValidationError,
   validateMenhoodQuery,
 } from './menhood-query';
-import type { DataExportPage } from '../data-export/data-export.types';
 
 const PREVIEW_ROWS = 25;
-const EXPORT_PAGE_ROWS = 1_000;
-const EXPORT_CURSOR = 'menhood_export_cursor';
 
 /**
  * Orders reach this reporting DB long after they are placed, and they keep
@@ -213,101 +210,6 @@ export class MenhoodQueryService {
     return window;
   }
 
-  async *streamExportPages(
-    companyId: string,
-    input: unknown,
-    expectedFingerprint: string,
-    signal?: AbortSignal,
-  ): AsyncIterable<DataExportPage> {
-    this.preflight(companyId);
-    const query = validateMenhoodQuery(input);
-    if (query.fingerprint !== expectedFingerprint) {
-      throw new MenhoodQueryValidationError('invalid_query', 'Menhood query fingerprint mismatch');
-    }
-    signal?.throwIfAborted();
-
-    let client: MenhoodClient;
-    try {
-      client = await this.getPool().connect();
-    } catch (error) {
-      signal?.throwIfAborted();
-      throw mapProviderError(error);
-    }
-
-    let cursorDeclared = false;
-    let committed = false;
-    try {
-      signal?.throwIfAborted();
-      await checkedQuery(client, 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY', signal);
-      await checkedQuery(client, "SET LOCAL statement_timeout = '5min'", signal);
-      await checkedQuery(client, "SET LOCAL lock_timeout = '2s'", signal);
-      await checkedQuery(client, "SET LOCAL idle_in_transaction_session_timeout = '30s'", signal);
-      signal?.throwIfAborted();
-      await client.query({
-        text: `DECLARE ${EXPORT_CURSOR} NO SCROLL CURSOR FOR ${query.normalizedSql}`,
-        values: query.parameters,
-        rowMode: 'array',
-      });
-      cursorDeclared = true;
-      signal?.throwIfAborted();
-
-      let carry: unknown[] | undefined;
-      let fields: DriverResult['fields'] = [];
-      for (;;) {
-        const rows = carry ? [carry] : [];
-        carry = undefined;
-        const result = await checkedQuery(client, {
-          text: `FETCH FORWARD ${EXPORT_PAGE_ROWS - rows.length} FROM ${EXPORT_CURSOR}`,
-          values: [],
-          rowMode: 'array',
-        }, signal) as DriverResult;
-        if (result.fields.length > 0) fields = result.fields;
-        rows.push(...result.rows);
-        if (rows.length === 0) break;
-        if (rows.length === EXPORT_PAGE_ROWS) {
-          const lookahead = await checkedQuery(client, {
-            text: `FETCH FORWARD 1 FROM ${EXPORT_CURSOR}`,
-            values: [],
-            rowMode: 'array',
-          }, signal) as DriverResult;
-          carry = lookahead.rows[0];
-        }
-        const columns = uniqueColumnNames(fields);
-        yield {
-          rows: rows.map(row => Object.fromEntries(
-            columns.map((column, index) => [column, normalizeJson(row[index])]),
-          )),
-          ...(carry ? { hasMore: true } : {}),
-        };
-        if (!carry) break;
-      }
-
-      await checkedQuery(client, `CLOSE ${EXPORT_CURSOR}`, signal);
-      cursorDeclared = false;
-      await checkedQuery(client, 'COMMIT', signal);
-      committed = true;
-    } catch (error) {
-      signal?.throwIfAborted();
-      throw mapProviderError(error);
-    } finally {
-      if (cursorDeclared) {
-        try {
-          await client.query(`CLOSE ${EXPORT_CURSOR}`);
-        } catch {
-          // Rollback below remains the authoritative cleanup path.
-        }
-      }
-      if (!committed) {
-        try {
-          await client.query('ROLLBACK');
-        } catch {
-          // Preserve the original provider or cancellation error.
-        }
-      }
-      client.release();
-    }
-  }
-
   async close(): Promise<void> {
     if (!this.pool) return;
     const pool = this.pool;
@@ -344,17 +246,6 @@ export class MenhoodQueryService {
     this.pool = pool;
     return this.pool;
   }
-}
-
-async function checkedQuery(
-  client: MenhoodClient,
-  query: string | { text: string; values: unknown[]; rowMode: 'array' },
-  signal?: AbortSignal,
-): Promise<unknown> {
-  signal?.throwIfAborted();
-  const result = await client.query(query);
-  signal?.throwIfAborted();
-  return result;
 }
 
 function isoDate(value: Date): string {

@@ -1,6 +1,9 @@
 # Data export: identity, coverage, and recovery — final design
 
-Status: **implemented (V1 + V2-lite)**, 2026-08-04. Baseline: `cd218170c`; full V2 durable source recovery remains deferred.
+> **Archived 2026-08-11.** The queue/candidate/offer architecture described
+> here was removed. This file is historical evidence, not active guidance.
+
+Status: **retired**, 2026-08-11. Baseline: `cd218170c`.
 
 This design closes the class of defects behind the export pipeline's repeated
 breakages. V1 is a correct, idempotent whole-run retry: after an interruption it

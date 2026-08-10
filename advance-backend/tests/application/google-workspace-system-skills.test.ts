@@ -73,8 +73,6 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /acknowledgement under `data\.result`, not `updatedRows`/);
     assert.match(sheets.markdown, /claim that count as written only after the exact read-back matches/);
     assert.match(sheets.markdown, /Never turn a missing `updatedRows` field into a zero-row claim/);
-    assert.match(sheets.markdown, /not an export-delivery path/);
-    assert.match(sheets.markdown, /never use\s+`create_spreadsheet` to bypass the configured company export account/s);
     assert.match(sheets.markdown, /`get_spreadsheet_info` returns machine-readable `spreadsheetId`/);
     assert.match(sheets.markdown, /Never parse or inspect its compatibility prose in\s+`data\.result`/);
     assert(sheets.aliases.includes('dropdown'));
@@ -99,17 +97,11 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /Never spend a resolver call rediscovering a bootstrap account/);
     assert.match(sheets.markdown, /returns several, ask\s+once/s);
     assert.match(sheets.markdown, /URL-only request resolves metadata and access only/);
-    assert.match(sheets.markdown, /RECENT DIVO EXPORTS/);
-    assert.match(sheets.markdown, /"op": "call_exported_sheet"/);
-    assert.match(sheets.markdown, /never supply a\s+connection or\s+spreadsheet ID/s);
-    assert.match(sheets.markdown, /read the exact changed range back/);
+    assert.match(sheets.markdown, /perform one exact verification read/);
     assert.match(sheets.markdown, /drive\.google\.com\/file\/d/);
     assert.match(sheets.markdown, /request a download URL/);
     assert.match(sheets.markdown, /import_to_google_sheets` directly/);
     assert.match(sheets.markdown, /backend delivers the\s+confirmation card and owns conversion/s);
-    assert.match(sheets.markdown, /Read-only.*google-drive/s);
-    assert.match(sheets.markdown, /xlsx[\s\S]*csv[\s\S]*get_drive_file_content/);
-    assert.match(sheets.markdown, /Never answer from an earlier provider query when the member references a recent\s+export/);
     assert.match(sheets.markdown, /inspect the header plus the final populated row once/);
     assert.match(sheets.markdown, /clear any stale tail beyond the new final row/i);
     assert.match(sheets.markdown, /persist them before the first Sheet mutation/);
@@ -142,7 +134,7 @@ describe('Google Workspace system skills', () => {
         'get_drive_file_content',
         'check_drive_file_public_access',
         'do not blindly create a second copy',
-        'Pasted workbook or Divo export URL (read-only)',
+        'Pasted Google workbook URL (read-only)',
         'Never answer from an earlier Menhood',
       ],
       'google-calendar': [

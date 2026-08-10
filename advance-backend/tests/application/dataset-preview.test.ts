@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   createDatasetPreview,
   DATASET_PREVIEW_ROW_LIMIT,
-} from '../../src/application/data-export/dataset-preview.ts';
+} from '../../src/application/provider-data/dataset-preview.ts';
 
 describe('createDatasetPreview', () => {
   it('keeps a complete result at or below the 25-row model limit', () => {

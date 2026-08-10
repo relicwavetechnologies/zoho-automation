@@ -47,10 +47,6 @@ const EXTRA_TOOL_SCOPE_GROUPS: Readonly<Record<string, readonly (readonly string
       [GOOGLE_SCOPE.gmailSend],
       [GOOGLE_SCOPE.gmailLabels],
     ],
-    dataExport: [
-      [GOOGLE_SCOPE.driveFile, GOOGLE_SCOPE.driveFull],
-      [GOOGLE_SCOPE.sheetsFull],
-    ],
   });
 
 /**

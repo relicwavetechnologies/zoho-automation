@@ -114,6 +114,8 @@ export class GoogleDriveXlsxConversionCheckpointStore
 
 export function googleDriveXlsxConversionCheckpointKey(jobKey: string): string {
   if (!jobKey.trim()) throw new Error('Workbook conversion job key is required.');
+  // Keep the deployed key stable across the code move so an in-flight neutral
+  // workbook conversion still resumes after the exporter removal release.
   return `data-export:workbook-conversion:${sha256CanonicalJson(jobKey)}`;
 }
 

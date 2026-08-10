@@ -1,5 +1,8 @@
 # Secure Data Export Pipeline
 
+> **Archived 2026-08-11.** This candidate/offer/worker design was hard removed.
+> It must not be treated as a callable or fallback architecture.
+
 ## Goal
 
 Divo exports bounded tabular datasets without placing bulk rows in model context, exposing source credentials, or creating provider-specific export paths.

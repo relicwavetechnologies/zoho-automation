@@ -10,7 +10,7 @@ Pi Docker is **not** required for Agent Seat v1.
 
 | Path | Who decides tool calls | Proves |
 | --- | --- | --- |
-| **Agent Seat** (`agent-seat.ts`) | Human + Cursor reading skills | Skill clarity, tool graphs, RBAC, export planning |
+| **Agent Seat** (`agent-seat.ts`) | Human + Cursor reading skills | Skill clarity, tool graphs, RBAC, one governed provider call |
 | **Direct Pi harness** ([02-lark-dm-harness.md](./02-lark-dm-harness.md)) | Cloud Pi model | Model compliance with skills |
 | **Live Lark** ([03-live-lark-webhook.md](./03-live-lark-webhook.md)) | Cloud Pi model | Full ingress and delivery |
 
@@ -29,7 +29,7 @@ It does not need the Pi controller on `:4317` or `pnpm dev` for tool invokes.
 
 ### Delivery chat (per tester)
 
-Export candidates and Lark-scoped runtime context need a **chat id** (`oc_…`).
+Lark-scoped runtime context needs a **chat id** (`oc_…`).
 Each teammate uses their own DM with Divo or a dedicated test group.
 
 **Do not commit personal chat ids to git.**
@@ -74,28 +74,21 @@ pnpm tsx scripts/agent-seat.ts note "Skill gap: ..."
 pnpm tsx scripts/agent-seat.ts state
 ```
 
-## Multi-turn export testing
+## Terminal and file workflow testing
 
-1. `turn begin` before each user prompt you simulate.
-2. Run Semrush (or other source) on turn 1 — this mints `exportCandidate` rows
-   scoped to the session `runtimeRunId`.
-3. On turn 2 ("excel"), call:
-
-```bash
-pnpm tsx scripts/agent-seat.ts invoke dataExport '{"op":"list_candidates","scope":"run"}'
-pnpm tsx scripts/agent-seat.ts invoke dataExport '{"op":"plan","datasets":[{"candidateId":"..."}],"destination":{"format":"xlsx","title":"..."},"userIntent":"explicit_export"}'
-```
-
-Use `list_candidates` only when unsure which candidate matches the table you
-showed. Never surface candidate IDs to the member in real product copy.
+Agent Seat does not run the Cloud-Pi container, so it cannot prove
+`divo-local`, persistent Python scripts, protected local result files, or
+destination read-back. Use it to verify the source tool contract and RBAC,
+then use the local Cloud-Pi harness for the complete source → local file →
+destination workflow.
 
 ## Scenarios
 
-Bundled walkthrough guides live under `scenarios/agent-seat/`:
+Bundled walkthrough guides, when present, live under `scenarios/agent-seat/`:
 
 ```bash
 pnpm tsx scripts/agent-seat.ts scenario list
-pnpm tsx scripts/agent-seat.ts scenario show shy-semrush-export
+pnpm tsx scripts/agent-seat.ts scenario list
 ```
 
 v1 scenarios are **manual** checklists. Automated `scenario verify` may come

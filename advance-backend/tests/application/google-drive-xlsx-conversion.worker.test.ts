@@ -4,7 +4,7 @@ import {
   GoogleDriveXlsxConversionWorker,
   type GoogleDriveXlsxConversionCompletion,
   type GoogleDriveXlsxConversionWorkerDeps,
-} from '../../src/application/data-export/google-drive-xlsx-conversion.worker.ts';
+} from '../../src/application/artifacts/google-drive-xlsx-conversion.worker.ts';
 import { GOOGLE_SCOPE } from '../../src/domain/google/google-workspace-scope.ts';
 
 const job = {
@@ -24,7 +24,6 @@ function createDeps(overrides: Partial<GoogleDriveXlsxConversionWorkerDeps> = {}
     import: 0,
     sourceMetadata: 0,
     complete: 0,
-    continuity: 0,
     progress: [] as string[],
     delivered: [] as GoogleDriveXlsxConversionCompletion[],
     failures: [] as Array<{ content: string; retryable: boolean }>,
@@ -92,9 +91,6 @@ function createDeps(overrides: Partial<GoogleDriveXlsxConversionWorkerDeps> = {}
         webViewLink: 'https://docs.google.com/spreadsheets/d/new_sheet_456/edit?usp=drive_link',
       }),
     },
-    continuity: {
-      record: async () => { calls.continuity += 1; },
-    },
     delivery: {
       progress: async input => { calls.progress.push(input.content); },
       completed: async input => { calls.delivered.push(input.completion); },
@@ -124,7 +120,6 @@ describe('GoogleDriveXlsxConversionWorker', () => {
     assert.equal(calls.download, 1);
     assert.equal(calls.import, 1);
     assert.equal(calls.complete, 1);
-    assert.equal(calls.continuity, 1);
     assert.equal(calls.failures.length, 0);
     assert.match(calls.progress[0]!, /original Excel file will not be changed/);
   });
@@ -140,53 +135,6 @@ describe('GoogleDriveXlsxConversionWorker', () => {
     assert.equal(calls.download, 1);
     assert.equal(calls.complete, 1);
     assert.equal(calls.delivered.length, 2);
-  });
-
-  it('retries continuity after the verified Sheet was checkpointed', async () => {
-    let continuityAttempts = 0;
-    const { deps, calls } = createDeps({
-      continuity: {
-        record: async () => {
-          continuityAttempts += 1;
-          if (continuityAttempts === 1) throw new Error('conversation store unavailable');
-          calls.continuity += 1;
-        },
-      },
-    });
-    const worker = new GoogleDriveXlsxConversionWorker(deps);
-    await assert.rejects(worker.process(job, { finalAttempt: false }), /conversation store unavailable/);
-    const retry = await worker.process(job, { finalAttempt: true });
-
-    assert.equal(retry.disposition, 'completed');
-    assert.equal(calls.import, 1);
-    assert.equal(calls.download, 1);
-    assert.equal(continuityAttempts, 2);
-    assert.equal(calls.continuity, 1);
-  });
-
-  it('marks a final post-checkpoint failure retryable and reuses the verified Sheet', async () => {
-    let continuityAttempts = 0;
-    const { deps, calls } = createDeps({
-      continuity: {
-        record: async () => {
-          continuityAttempts += 1;
-          if (continuityAttempts === 1) throw new Error('conversation store unavailable');
-          calls.continuity += 1;
-        },
-      },
-    });
-    const worker = new GoogleDriveXlsxConversionWorker(deps);
-    await assert.rejects(worker.process(job, { finalAttempt: true }), /conversation store unavailable/);
-    const retry = await worker.process(job, { finalAttempt: true });
-
-    assert.equal(retry.disposition, 'completed');
-    assert.equal(calls.import, 1);
-    assert.equal(calls.download, 1);
-    assert.deepEqual(calls.failures, [{
-      jobKey: job.jobKey,
-      content: 'Divo could not convert this Excel workbook. The original file was not changed. Please try again shortly.',
-      retryable: true,
-    }]);
   });
 
   it('does not import when identity, permission, or source access is revoked and only delivers safe failure copy', async () => {

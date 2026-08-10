@@ -13,7 +13,6 @@
  * Usage: pnpm skills:inventory
  */
 import { CONNECTED_PROVIDER_SYSTEM_SKILLS } from '../src/application/skills/connected-provider-system-skills';
-import { DATA_EXPORT_SYSTEM_SKILL } from '../src/application/skills/data-export-system-skill';
 import { DIVO_LOCAL_PYTHON_SYSTEM_SKILL } from '../src/application/skills/divo-local-python-system-skill';
 import { DIVO_PRESENTATIONS_SYSTEM_SKILL } from '../src/application/skills/divo-presentations-system-skill';
 import { FILES_AND_DOCUMENTS_SYSTEM_SKILLS } from '../src/application/skills/files-and-documents-system-skills';
@@ -59,7 +58,7 @@ const rows: InventoryRow[] = [
   ...withFamily('provider', CONNECTED_PROVIDER_SYSTEM_SKILLS),
   ...withFamily('mail', MAIL_OPS_SYSTEM_SKILLS),
   ...withFamily('files', FILES_AND_DOCUMENTS_SYSTEM_SKILLS),
-  ...withFamily('data', [DATA_EXPORT_SYSTEM_SKILL, MENHOOD_DATA_SYSTEM_SKILL]),
+  ...withFamily('data', [MENHOOD_DATA_SYSTEM_SKILL]),
   ...withFamily('research', [DIVO_SEMRUSH_SYSTEM_SKILL, DIVO_OMS_SITE_DATA_SYSTEM_SKILL]),
   ...withFamily('productivity', [DIVO_LOCAL_PYTHON_SYSTEM_SKILL, DIVO_PRESENTATIONS_SYSTEM_SKILL]),
   /*

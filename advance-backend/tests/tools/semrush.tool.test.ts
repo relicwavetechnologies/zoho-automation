@@ -2,12 +2,6 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createSemrushTool } from '../../src/application/tools/families/semrush.tool.ts';
 import { SemrushServiceError } from '../../src/application/semrush/semrush.types.ts';
-import { createDataExportTool } from '../../src/application/tools/families/data-export.tool.ts';
-import { PermanentDataExportError } from '../../src/application/data-export/data-export.errors.ts';
-import { SemrushSnapshotDataExportSource } from '../../src/application/data-export/data-export.sources.ts';
-import { datasetSourceToolId } from '../../src/application/data-export/data-export.types.ts';
-import { parseDataExportOfferPayload } from '../../src/application/data-export/export-offer.ts';
-import { asToolId } from '../../src/shared/ids.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
 
 describe('semrush tool', () => {
@@ -16,6 +10,7 @@ describe('semrush tool', () => {
     assert.equal(tool.argsSchema.safeParse({ operation: 'domain_overview', domain: 'https://example.com' }).success, false);
     assert.equal(tool.argsSchema.safeParse({ operation: 'domain_overview', domain: 'example.com/path' }).success, false);
     assert.equal(tool.argsSchema.safeParse({ operation: 'domain_overview', domain: 'example.com', headers: { Cookie: 'nope' } }).success, false);
+    assert.equal(tool.argsSchema.safeParse({ operation: 'domain_overview', domain: 'example.com', exportCsv: true }).success, false);
     assert.equal(tool.argsSchema.safeParse({ operation: 'organic_positions', domain: 'example.com' }).success, false);
     assert.equal(tool.argsSchema.safeParse({ operation: 'arbitrary_export', domain: 'example.com' }).success, false);
   });
@@ -26,147 +21,6 @@ describe('semrush tool', () => {
     assert.equal(denied.ok, false);
     const allowed = tool.permissionCheck({ operation: 'domain_overview', domain: 'example.com' }, makeAllowedPerm('semrush', ['read']));
     assert.deepEqual(allowed, { ok: true, value: 'read' });
-  });
-
-  it('publishes an independent export candidate for each source lookup', async () => {
-    const domains = ['a.com', 'b.com', 'c.com'];
-    const published: unknown[] = [];
-    const tool = createTool({
-      service: {
-        execute: async (args: any) => ({
-          operation: 'domain_overview',
-          status: 'complete',
-          coverage: {},
-          rows: [{ domain: args.domain, rank: 1 }],
-        }),
-      },
-      exportCandidates: {
-        publishCandidate: async (payload: unknown) => {
-          published.push(payload);
-          return {
-            candidateId: `11111111-1111-4111-8111-11111111111${published.length}`,
-            expiresAt: new Date('2026-08-03T00:00:00.000Z'),
-          };
-        },
-      },
-    });
-
-    const candidateIds: (string | undefined)[] = [];
-    for (const domain of domains) {
-      const ctx = makeCtx('semrush', ['read'], {
-        chatId: 'oc-chat',
-        requestId: 'request-multi',
-        runtimeRunId: 'runtime-run-multi',
-      });
-      ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-      const result = await tool.execute({ operation: 'domain_overview', domain }, ctx);
-      assert.equal(result.ok, true);
-      if (!result.ok) return;
-      candidateIds.push(result.value.exportCandidate?.candidateId);
-    }
-
-    assert.equal(published.length, 3);
-    assert.equal(new Set(candidateIds).size, 3);
-  });
-
-  it('creates one opaque export candidate for backlinks comparison', async () => {
-    const candidates: unknown[] = [];
-    const tool = createTool({
-      service: {
-        execute: async () => ({
-          operation: 'backlinks_comparison',
-          status: 'complete',
-          coverage: {},
-          rows: [{ Target: 'example.com', 'Authority Score': 50 }],
-        }),
-      },
-      exportCandidates: {
-        publishCandidate: async (payload: unknown) => {
-          candidates.push(payload);
-          return {
-            candidateId: '11111111-1111-4111-8111-111111111111',
-            expiresAt: new Date('2026-08-03T00:00:00.000Z'),
-          };
-        },
-      },
-    });
-    const ctx = makeCtx('semrush', ['read'], {
-      chatId: 'oc-chat',
-      requestId: 'request-1',
-      runtimeRunId: 'runtime-run-1',
-    });
-    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-
-    const result = await tool.execute(
-      { operation: 'backlinks_comparison', targets: ['example.com', 'other.com'] },
-      ctx,
-    );
-
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.equal(result.value.exportCandidate?.candidateId, '11111111-1111-4111-8111-111111111111');
-    const payload = parseDataExportOfferPayload(candidates[0]);
-    assert.deepEqual(payload.source, {
-      kind: 'semrush_snapshot',
-      connectionId: 'backend_managed',
-      args: { operation: 'backlinks_comparison', targets: ['example.com', 'other.com'] },
-    });
-
-    const dataExport = createDataExportTool({ offers: {} as never });
-    assert.equal(dataExport.argsSchema.safeParse({
-      source: payload.source,
-      destination: payload.destination,
-    }).success, false);
-  });
-
-  it('keeps export payload titles within the 120-character destination limit for large target lists', async () => {
-    const targets = [
-      'whatmycarworth.com',
-      'giztrendzone.com',
-      'iphone-s.com',
-      'technewsera.com',
-      'theedgesearch.com',
-      'fiz-x.com',
-      'gamengadgets.com',
-      'tierraandlava.com',
-      'travelexperta.com',
-      'manvsclock.com',
-    ];
-    const candidates: unknown[] = [];
-    const tool = createTool({
-      service: {
-        execute: async () => ({
-          operation: 'backlinks_comparison',
-          status: 'complete',
-          coverage: {},
-          rows: targets.map(target => ({ Target: target })),
-        }),
-      },
-      exportCandidates: {
-        publishCandidate: async (payload: unknown) => {
-          candidates.push(payload);
-          return {
-            candidateId: '11111111-1111-4111-8111-111111111111',
-            expiresAt: new Date('2026-08-03T00:00:00.000Z'),
-          };
-        },
-      },
-    });
-    const ctx = makeCtx('semrush', ['read'], {
-      chatId: 'oc-chat',
-      requestId: 'request-ten',
-      runtimeRunId: 'runtime-run-ten',
-    });
-    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-
-    const result = await tool.execute({ operation: 'backlinks_comparison', targets }, ctx);
-
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.ok(result.value.exportCandidate?.candidateId);
-    const payload = parseDataExportOfferPayload(candidates[0]);
-    assert.ok(payload.destination.title.length <= 120);
-    assert.match(payload.destination.title, /\+8 more/);
   });
 
   it('names every requested backlinks target when Semrush has no provider report', async () => {
@@ -192,80 +46,6 @@ describe('semrush tool', () => {
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.match(result.value.message, /no backlink overview for: missing-one\.example, missing-two\.example/i);
-  });
-
-  it('replays an opaque Semrush snapshot through the central source adapter in one fetch', async () => {
-    const calls: unknown[] = [];
-    const adapter = new SemrushSnapshotDataExportSource({
-      execute: async (args) => {
-        calls.push(args);
-        return {
-          operation: 'backlinks_comparison',
-          status: 'complete',
-          coverage: {},
-          rows: [{ Target: 'example.com' }],
-        };
-      },
-    } as never);
-    const source = {
-      kind: 'semrush_snapshot' as const,
-      connectionId: 'backend_managed' as const,
-      args: { operation: 'backlinks_comparison' as const, targets: ['example.com', 'other.com'] },
-    };
-    const pages = [];
-    for await (const page of adapter.read(source, { companyId: 'co-1', userId: 'user-1' })) pages.push(page);
-
-    assert.deepEqual(calls, [source.args]);
-    assert.deepEqual(pages, [{ rows: [{ Target: 'example.com' }] }]);
-    assert.equal(datasetSourceToolId(source), 'semrush');
-  });
-
-  it('ends an export permanently when the key is refused or spent, and points at the key', async () => {
-    const cases = [
-      { code: 'provider_auth_failed' as const, expect: /api key was rejected/i },
-      { code: 'provider_quota_exhausted' as const, expect: /used up its allowance/i },
-    ];
-    for (const { code, expect } of cases) {
-      const adapter = new SemrushSnapshotDataExportSource({
-        execute: async () => { throw new SemrushServiceError(code, `Semrush ${code}.`); },
-      } as never);
-
-      await assert.rejects(
-        async () => {
-          for await (const _page of adapter.read({
-            kind: 'semrush_snapshot',
-            connectionId: 'backend_managed',
-            args: { operation: 'domain_overview', domain: 'example.com' },
-          }, { companyId: 'co-1', userId: 'user-1' })) {
-            // consume
-          }
-        },
-        (error: unknown) => error instanceof PermanentDataExportError
-          && expect.test(error.memberMessage)
-          // Refreshing a browser cookie never fixes either case.
-          && !/session|cookie/i.test(error.memberMessage),
-        `${code} should end the export with a key-specific reason`,
-      );
-    }
-  });
-
-  it('lets a throttled export stay retryable instead of failing permanently', async () => {
-    const adapter = new SemrushSnapshotDataExportSource({
-      execute: async () => { throw new SemrushServiceError('rate_limited', 'Semrush is throttling requests.'); },
-    } as never);
-
-    await assert.rejects(
-      async () => {
-        for await (const _page of adapter.read({
-          kind: 'semrush_snapshot',
-          connectionId: 'backend_managed',
-          args: { operation: 'domain_overview', domain: 'example.com' },
-        }, { companyId: 'co-1', userId: 'user-1' })) {
-          // consume
-        }
-      },
-      (error: unknown) => error instanceof SemrushServiceError && !(error instanceof PermanentDataExportError),
-    );
   });
 
   it('states, next to the rows, that no other country was reported', async () => {
@@ -374,7 +154,6 @@ describe('semrush tool', () => {
 
 function createTool(overrides: {
   service?: Record<string, unknown>;
-  exportCandidates?: Record<string, unknown>;
   apiKeyExhaustion?: Record<string, unknown>;
 } = {}) {
   const service = {
@@ -384,7 +163,6 @@ function createTool(overrides: {
   };
   return createSemrushTool({
     service: service as never,
-    ...(overrides.exportCandidates ? { exportCandidates: overrides.exportCandidates as never } : {}),
     ...(overrides.apiKeyExhaustion ? { apiKeyExhaustion: overrides.apiKeyExhaustion as never } : {}),
   });
 }

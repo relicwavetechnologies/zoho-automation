@@ -25,9 +25,9 @@ import type {
   LarkAuthenticatedCardActor,
 } from './lark-approval-card.handler';
 import {
-  isDataExportCardAction,
-  type LarkDataExportCardHandler,
-} from './lark-data-export-card.handler';
+  isWorkbookConversionCardAction,
+  type LarkWorkbookConversionCardHandler,
+} from './lark-workbook-conversion-card.handler';
 import type { LarkKnowledgeReviewService } from '../../../application/knowledge/lark-knowledge-review.service';
 import type { ChatMessageSerializer } from '../../../application/channels/chat-message-serializer';
 import type { LaneLeaseHolder } from '../../../application/channels/lane-lease.holder';
@@ -167,7 +167,7 @@ export interface LarkWebhookDeps {
   env: TypedEnv;
   approvalGate?: ApprovalGateService;
   approvalCardHandler?: LarkApprovalCardHandler;
-  dataExportCardHandler?: LarkDataExportCardHandler;
+  workbookConversionCardHandler?: LarkWorkbookConversionCardHandler;
   knowledgeReviewService?: LarkKnowledgeReviewService;
   larkOAuthService?: LarkOAuthService;
   connectionRepo?: IntegrationConnectionRepository;
@@ -294,7 +294,7 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
     const isCard10Click = !headerType && !!topLevelAction && typeof topLevelAction === 'object';
     if (isCard20Click || isCard10Click) {
       const cardEvent = isCard20Click ? (event['event'] as unknown) : event;
-      if (deps.dataExportCardHandler && isDataExportCardAction(cardEvent)) {
+      if (deps.workbookConversionCardHandler && isWorkbookConversionCardAction(cardEvent)) {
         res.status(200).json({
           toast: {
             type: 'success',
@@ -302,11 +302,11 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
           },
         });
         setImmediate(() => {
-          void processDeferredDataExportAction({
+          void processDeferredWorkbookConversionAction({
             cardEvent,
             envelope: event,
             eventHeader,
-            handler: deps.dataExportCardHandler!,
+            handler: deps.workbookConversionCardHandler!,
             identityRepo: deps.channelIdentityRepo,
             adapter: deps.adapter,
             log,
@@ -348,13 +348,6 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
               },
             });
             return;
-          }
-          if (deps.dataExportCardHandler) {
-            const result = await deps.dataExportCardHandler.handle(cardEvent, actor);
-            if (result.handled) {
-              res.status(200).json(result.responseBody ?? { ok: true });
-              return;
-            }
           }
           if (deps.approvalCardHandler) {
             const result = await deps.approvalCardHandler.handle(cardEvent, actor);
@@ -532,11 +525,11 @@ function createLarkRequestLog(
   });
 }
 
-async function processDeferredDataExportAction(input: {
+async function processDeferredWorkbookConversionAction(input: {
   readonly cardEvent: unknown;
   readonly envelope: Record<string, unknown>;
   readonly eventHeader: Record<string, unknown> | undefined;
-  readonly handler: LarkDataExportCardHandler;
+  readonly handler: LarkWorkbookConversionCardHandler;
   readonly identityRepo: ChannelIdentityRepoPort;
   readonly adapter: LarkChannelAdapter;
   readonly log: Logger;
@@ -556,20 +549,20 @@ async function processDeferredDataExportAction(input: {
             toast: { type: 'error', content: 'Divo could not verify this Lark action.' },
           },
         };
-    await deliverDeferredDataExportResponse(
+    await deliverDeferredWorkbookConversionResponse(
       result,
       input.cardEvent,
       input.adapter,
       input.log,
     );
   } catch (error) {
-    input.log.error('webhook.data_export.deferred_failed', { error: String(error) });
-    await deliverDeferredDataExportResponse({
+    input.log.error('webhook.workbook_conversion.deferred_failed', { error: String(error) });
+    await deliverDeferredWorkbookConversionResponse({
       handled: true,
       responseBody: {
         toast: {
           type: 'error',
-          content: 'Divo could not start this export. Please try again.',
+          content: 'Divo could not start this workbook conversion. Please try again.',
         },
       },
     }, input.cardEvent, input.adapter, input.log);
@@ -603,7 +596,7 @@ function channelErrorLogFields(error: unknown): Record<string, unknown> {
   return fields;
 }
 
-async function deliverDeferredDataExportResponse(
+async function deliverDeferredWorkbookConversionResponse(
   result: { handled: boolean; responseBody?: unknown },
   cardEvent: unknown,
   adapter: LarkChannelAdapter,
@@ -620,44 +613,7 @@ async function deliverDeferredDataExportResponse(
     ? context['open_chat_id']
     : undefined;
   if (!chatId) {
-    log.warn('webhook.data_export.deferred_delivery_missing_chat');
-    return;
-  }
-  if (delivery === 'remove_source_actions') {
-    const sourceMessageId = typeof context?.['open_message_id'] === 'string'
-      ? context['open_message_id']
-      : typeof event?.['open_message_id'] === 'string'
-        ? event['open_message_id']
-        : undefined;
-    if (!sourceMessageId) {
-      log.warn('webhook.data_export.deferred_update_missing_message');
-      return;
-    }
-    const source = await adapter.getInteractiveMessageCard(sourceMessageId);
-    if (!source.ok) {
-      log.warn('webhook.data_export.deferred_source_fetch_failed', {
-        error: source.error.message,
-      });
-      return;
-    }
-    if (source.value.chatId !== chatId) {
-      log.warn('webhook.data_export.deferred_source_chat_mismatch');
-      return;
-    }
-    const lockedCard = removeDataExportActions(source.value.card);
-    if (!lockedCard) {
-      log.warn('webhook.data_export.deferred_source_actions_missing');
-      return;
-    }
-    const updated = await adapter.updateMessageById(
-      sourceMessageId,
-      JSON.stringify({ msg_type: 'interactive', card: lockedCard }),
-    );
-    if (!updated.ok) {
-      log.warn('webhook.data_export.deferred_update_failed', {
-        error: updated.error.message,
-      });
-    }
+    log.warn('webhook.workbook_conversion.deferred_delivery_missing_chat');
     return;
   }
   if (cardData) {
@@ -668,7 +624,7 @@ async function deliverDeferredDataExportResponse(
           ? event['open_message_id']
           : undefined;
       if (!sourceMessageId) {
-        log.warn('webhook.data_export.deferred_update_missing_message');
+        log.warn('webhook.workbook_conversion.deferred_update_missing_message');
         return;
       }
       const updated = await adapter.updateMessageById(
@@ -676,7 +632,7 @@ async function deliverDeferredDataExportResponse(
         JSON.stringify({ msg_type: 'interactive', card: cardData }),
       );
       if (!updated.ok) {
-        log.warn('webhook.data_export.deferred_update_failed', {
+        log.warn('webhook.workbook_conversion.deferred_update_failed', {
           error: updated.error.message,
         });
       }
@@ -687,7 +643,7 @@ async function deliverDeferredDataExportResponse(
       JSON.stringify({ msg_type: 'interactive', card: cardData }),
     );
     if (!sent.ok) {
-      log.warn('webhook.data_export.deferred_card_failed', {
+      log.warn('webhook.workbook_conversion.deferred_card_failed', {
         error: sent.error.message,
       });
     }
@@ -697,32 +653,10 @@ async function deliverDeferredDataExportResponse(
   if (toast?.['type'] !== 'error' || typeof toast['content'] !== 'string') return;
   const sent = await adapter.sendToChatId(chatId, toast['content']);
   if (!sent.ok) {
-    log.warn('webhook.data_export.deferred_error_failed', {
+    log.warn('webhook.workbook_conversion.deferred_error_failed', {
       error: sent.error.message,
     });
   }
-}
-
-function removeDataExportActions(
-  card: Record<string, unknown>,
-): Record<string, unknown> | null {
-  const body = asRecord(card['body']);
-  const elements = body?.['elements'];
-  if (!body || !Array.isArray(elements)) return null;
-  const remaining = elements.filter(element => !containsDataExportAction(element));
-  if (remaining.length === elements.length) return null;
-  return { ...card, body: { ...body, elements: remaining } };
-}
-
-function containsDataExportAction(value: unknown): boolean {
-  if (Array.isArray(value)) return value.some(containsDataExportAction);
-  const record = asRecord(value);
-  if (!record) return false;
-  if (
-    record['type'] === 'callback'
-    && isDataExportCardAction({ action: { value: record['value'] } })
-  ) return true;
-  return Object.values(record).some(containsDataExportAction);
 }
 
 /**

@@ -98,12 +98,6 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /backend owns confirmation and conversion/i);
 	});
 
-	it("prefers a backend-verified recent Sheet export over stale session history", () => {
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /RECENT DIVO EXPORTS lists a google_sheet/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /overrides stale session claims/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /googleSheets with op call_exported_sheet and its resourceRef/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /do not search Drive, resolve the URL, choose an account, or ask which file/i);
-	});
 
 	it("treats Airtable as an exact governed connection family", () => {
 		assert.equal(Check(DIVO_CONNECTIONS_PARAMS, { provider: "airtable" }), true);

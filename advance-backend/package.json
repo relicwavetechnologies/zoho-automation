@@ -16,6 +16,7 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:push": "prisma db push",
+    "retire:data-export": "tsx scripts/retire-data-export-storage.ts",
     "db:bootstrap-empty": "tsx scripts/bootstrap-empty-database.ts",
     "schema:sync": "tsx scripts/sync-schema.ts",
     "provision:knowledge": "tsx scripts/provision-knowledge.ts",
