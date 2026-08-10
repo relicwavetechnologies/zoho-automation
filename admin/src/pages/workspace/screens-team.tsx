@@ -14,14 +14,14 @@
  * those disagree — which company rule is holding it down. So a locked cell here
  * names the real reason rather than guessing at a ceiling.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ArrowRight, Check, Clock, Copy, Lock, Plus, Search, ShieldCheck,
+  ArrowRight, Check, ChevronDown, Clock, Copy, Lock, Plus, Search, ShieldCheck,
   Trash2, TriangleAlert, UserPlus, Users,
 } from 'lucide-react'
 import {
   Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, Heatmap, NoAccess, PageHeader, Panel, Prompt,
-  RowMenu, Seg, Skel, SkelRows, Switch, listPhrase, money, useStaged,
+  RowMenu, Seg, Skel, SkelRows, Switch, ToolMark, listPhrase, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
 import { notify } from '@/lib/notify'
@@ -110,7 +110,14 @@ function ToolMatrix({ tools, cellFor, onToggle, readOnly }: {
         <tbody>
           {tools.map((tool) => (
             <tr key={tool.tool.toolId}>
-              <td><span style={{ fontWeight: 500 }}>{tool.tool.name}</span></td>
+              <td>
+                {/* The app's mark beside its name, so "the Google ones" is a
+                    glance rather than fifteen lines of reading. */}
+                <span className="ws-mx-tool">
+                  <ToolMark toolName={tool.tool.name} />
+                  <span style={{ fontWeight: 500 }}>{tool.tool.name}</span>
+                </span>
+              </td>
               {columns.map((action) => {
                 if (!tool.supportedActions.includes(action)) {
                   return <td key={action} className="act"><span className="ws-cell-na">·</span></td>
@@ -375,26 +382,94 @@ function RoleSelect({ person, roles, busy, onPick }: {
   // Managers are governed at company level, so the Manager role is not on offer
   // here — the same rule the drawer and the roles page already apply.
   const assignable = roles.filter((r) => r.slug !== 'MANAGER')
+  if (assignable.length === 0) {
+    return <span className="ws-sub">{person.roleName ?? 'Member'}</span>
+  }
   return (
-    <select
-      className="select ws-role-pick"
-      value={person.roleId ?? ''}
-      disabled={busy || assignable.length === 0}
-      aria-label={`Role for ${displayName(person.name, person.email)}`}
-      onClick={(e) => e.stopPropagation()}
-      onChange={(e) => {
-        e.stopPropagation()
-        const picked = assignable.find((r) => r.id === e.target.value)
-        if (picked && picked.id !== person.roleId) onPick(picked.id, picked.name)
-      }}
-    >
-      {/* A role the snapshot knows but this scope may not assign still has to
-          be selectable-as-current, or the box would show somebody else's role. */}
-      {person.roleId && !assignable.some((r) => r.id === person.roleId) ? (
-        <option value={person.roleId}>{person.roleName ?? 'Current role'}</option>
+    <RolePicker
+      current={person.roleName ?? 'Member'}
+      currentId={person.roleId}
+      options={assignable}
+      busy={busy}
+      label={`Role for ${displayName(person.name, person.email)}`}
+      onPick={onPick}
+    />
+  )
+}
+
+/**
+ * A role picker Divo can actually style.
+ *
+ * This was a native `<select>`, and a native select's *popup* is drawn by the
+ * operating system — on macOS that is a blue-highlighted list that owes nothing
+ * to the app's palette, sitting on a dark page. The closed control matched and
+ * the open one did not, which is the one moment somebody is looking straight at
+ * it.
+ *
+ * Same behaviour as the row menu beside it, and the same dismissal rules, so
+ * two adjacent controls on one row do not open in two different ways.
+ */
+function RolePicker({ current, currentId, options, busy, label, onPick }: {
+  current: string
+  currentId?: string
+  options: DeptRole[]
+  busy: boolean
+  label: string
+  onPick: (roleId: string, roleName: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const wrap = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  return (
+    <div className="ws-menu-wrap" ref={wrap} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="ws-role-pick"
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={busy}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {busy ? 'Saving…' : current}
+        <ChevronDown size={13} />
+      </button>
+      {open ? (
+        <div className="ws-menu" role="menu">
+          {options.map((r) => (
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={r.id === currentId}
+              key={r.id}
+              onClick={() => {
+                setOpen(false)
+                if (r.id !== currentId) onPick(r.id, r.name)
+              }}
+            >
+              {/* The tick holds its column whether or not it is drawn, so the
+                  labels do not shift by 19px as the selection moves. */}
+              <Check size={13} style={{ opacity: r.id === currentId ? 1 : 0 }} />
+              {r.name}
+            </button>
+          ))}
+        </div>
       ) : null}
-      {assignable.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
-    </select>
+    </div>
   )
 }
 

@@ -1839,19 +1839,30 @@
 .cur .ws-row.ws-rule-row[data-off="true"] { opacity: 0.62; }
 .cur .ws-rule-when { font-size: 11.5px; color: var(--cur-muted); white-space: nowrap; }
 
-/* The role, inline in a people row. Shorter than a form select and quiet until
-   hovered — it sits among figures, not in a form, and a full-height bordered
-   box on every row would make the list read as ten inputs. */
+/* The role, inline in a people row. Quiet until the row is hovered — it sits
+   among figures, not in a form, and a bordered box on every row would make the
+   list read as ten inputs.
+
+   A button rather than a `<select>`, because a select's popup is drawn by the
+   operating system and ignores every token here. */
 .cur .ws-role-pick {
-  height: 28px; padding: 0 26px 0 9px; font-size: 12.5px;
-  background-color: transparent; border-color: transparent; color: var(--cur-body);
-  max-width: 140px;
+  display: inline-flex; align-items: center; gap: 5px; justify-content: space-between;
+  height: 28px; padding: 0 8px 0 9px; min-width: 104px; max-width: 150px;
+  border: 1px solid transparent; border-radius: var(--cur-r-cta);
+  background: transparent; color: var(--cur-body);
+  font: inherit; font-size: 12.5px; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
 }
+.cur .ws-role-pick svg { color: var(--cur-muted-soft); flex-shrink: 0; }
 .cur .ws-row:hover .ws-role-pick,
-.cur .ws-role-pick:focus-visible {
-  background-color: var(--cur-surface); border-color: var(--cur-hairline-strong);
+.cur .ws-role-pick:focus-visible,
+.cur .ws-role-pick[aria-expanded="true"] {
+  background: var(--cur-surface); border-color: var(--cur-hairline-strong);
 }
 .cur .ws-role-pick:disabled { opacity: 0.55; cursor: default; }
+/* Right-aligned under its trigger. The row's menu opens the same way, so two
+   adjacent controls do not fly out in two directions. */
+.cur .ws-menu-wrap .ws-menu [role="menuitemradio"] { gap: 8px; }
 
 .cur .ws-menu-wrap { position: relative; display: inline-flex; }
 .cur .ws-menu-btn { opacity: 0; transition: opacity 0.12s ease; }
@@ -2287,3 +2298,9 @@
 }
 .cur .ws-mk-hint b { color: var(--cur-body); font-weight: 500; }
 .cur .ws-blk-body .ws-mk-tog { margin-top: 14px; }
+
+/* A tool's app mark beside its name in the permission matrix. The blank keeps
+   its width when Divo has no mark for that app, so the names stay in one
+   column instead of stepping left on every unknown row. */
+.cur .ws-mx-tool { display: inline-flex; align-items: center; gap: 9px; }
+.cur .ws-toolmark { width: 24px; height: 24px; flex-shrink: 0; display: inline-flex; }

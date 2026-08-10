@@ -324,13 +324,24 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
         key: def.provider,
         name: def.name,
         mark: <ProviderMark provider={def.provider} size={30} />,
+        /*
+         * Only what the card does not already show.
+         *
+         * A connected provider printed "2 accounts" directly above a list of
+         * those two accounts — a line whose entire content was the length of
+         * the list under it. So a healthy one says nothing here and lets the
+         * list speak; a provider with a revoked account still gets a sentence,
+         * because that is the one thing the rows cannot say as a group.
+         */
         blurb: status?.error
           ? status.error
           : accounts.length === 0
             ? def.blurb
             : dead === accounts.length
               ? `Not connected — ${dead === 1 ? 'this account needs' : `all ${dead} accounts need`} reconnecting`
-              : `${accounts.length} account${accounts.length === 1 ? '' : 's'}${dead > 0 ? ` · ${dead} needs reconnecting` : ''}`,
+              : dead > 0
+                ? `${dead} of ${accounts.length} needs reconnecting`
+                : '',
         accounts: accounts.map((conn) => ({
           id: conn.connectionId,
           title: conn.accountEmail ?? conn.label,
@@ -367,7 +378,11 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
             // — "save Dev Dashboard credentials once" — was an instruction for
             // the admin doing the setup, on a card whose reader cannot.
             ? 'Company-owned store access. Divo keeps the tokens refreshed.'
-            : `${shopAccounts.length} store${shopAccounts.length === 1 ? '' : 's'}${shopDead > 0 ? ` · ${shopDead} needs reconnecting` : ''}`,
+            // Same rule as the providers above: the list of stores is the
+            // count, so this only speaks when one has stopped working.
+            : shopDead > 0
+              ? `${shopDead} of ${shopAccounts.length} needs reconnecting`
+              : '',
       accounts: shopAccounts.map((conn) => ({
         id: conn.connectionId,
         title: shopifyConnectionLabel(conn),
@@ -651,7 +666,9 @@ function AppCard({ mark, name, blurb, accounts, action, tone }: {
     <article className="ws-appcard" data-tone={tone}>
       <div className="ws-appcard-h">{mark}</div>
       <h3>{name}</h3>
-      <p>{blurb}</p>
+      {/* Omitted rather than rendered empty: an empty paragraph still carries
+          its own margin, which is the gap this was meant to remove. */}
+      {blurb ? <p>{blurb}</p> : null}
       {accounts}
       {/* `margin-top: auto`, so the action sits on the card's floor however tall
           its neighbours make it — the alignment comes from the card stretching

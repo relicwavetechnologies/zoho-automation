@@ -823,6 +823,57 @@ export const ProviderMark = ({ provider, size = 34 }: { provider: Provider; size
   )
 }
 
+/**
+ * Which app a tool belongs to, from the name the tool already carries.
+ *
+ * A permission matrix is fifteen rows of "Google Docs", "Google Sheets", "Lark
+ * Task", "Zoho CRM" — read as text it is a wall, and the thing somebody is
+ * actually looking for is "the Google ones". The snapshot has no provider
+ * field, so this reads the leading word, which is how every tool in the
+ * registry is named.
+ *
+ * Deliberately returns null rather than guessing: an unknown tool gets no mark
+ * instead of somebody else's logo, and the row still reads.
+ */
+const TOOL_PREFIX: Record<string, Provider> = {
+  google: 'google_workspace',
+  gmail: 'google_workspace',
+  lark: 'lark',
+  zoho: 'zoho',
+  canva: 'canva',
+  airtable: 'airtable',
+  aitable: 'aitable',
+}
+
+export const toolProvider = (toolName: string): Provider | null =>
+  TOOL_PREFIX[toolName.trim().split(/[\s_-]/)[0]?.toLowerCase() ?? ''] ?? null
+
+/** A tool's app mark, at the size a table row can carry. */
+export const ToolMark = ({ toolName }: { toolName: string }) => {
+  const provider = toolProvider(toolName)
+  if (provider) {
+    return <span className="ws-toolmark"><ProviderMark provider={provider} size={24} /></span>
+  }
+  // Shopify has artwork but is not a `Provider` — it is company-owned and
+  // reaches the app through its own hook — so it comes through `AppMark`.
+  if (toolName.trim().toLowerCase().startsWith('shopify')) {
+    return (
+      <span className="ws-toolmark">
+        <AppMark short="S" asset="/brand/shopify.png" fill tint="#008060" ink="#FFFFFF" size={24} />
+      </span>
+    )
+  }
+  /*
+   * A blank of the same width, and deliberately blank.
+   *
+   * The rest are Divo's own capabilities — Mail Ops, Scheduled Workflows, Web
+   * Search — which belong to no third party, so there is no logo to show and
+   * inventing a generic one would suggest an integration that does not exist.
+   * The space keeps the names in one column.
+   */
+  return <span className="ws-toolmark" aria-hidden />
+}
+
 export const providerName = (p: Provider) => PROVIDER_META[p].name
 
 export const money = (n: number) => `$${n.toFixed(2)}`
