@@ -180,7 +180,10 @@ describe("department persona", () => {
 		);
 		assert.match(prompt, /Skill registry revision: 14/);
 		assert.match(prompt, /Daily Report \[skillId=skill-daily-report; revision=3\]/);
-		assert.match(prompt, /googleSheets: read, update/);
+		// Tool ids and actions reach the model as registered typed tools. Listing
+		// them here too was a second, weaker copy of the same facts.
+		assert.doesNotMatch(prompt, /googleSheets: read, update/);
+		assert.match(prompt, /registered divo_\* tools are the capability list/);
 		assert.match(prompt, /Use divo_skill_resolve only when a specialized company workflow is likely/);
 
 		const nativePrompt = composeDivoSystemPrompt(
@@ -190,7 +193,7 @@ describe("department persona", () => {
 			{ nativeSkills: true },
 		);
 		assert.match(nativePrompt, /available_skills list is the skill index/);
-		assert.match(nativePrompt, /googleSheets: read, update/);
+		assert.doesNotMatch(nativePrompt, /googleSheets: read, update/);
 		assert.doesNotMatch(nativePrompt, /Daily Report \[skillId=/);
 		assert.doesNotMatch(nativePrompt, /skill IDs are not authorization tokens/);
 		assert.doesNotMatch(nativePrompt, /skill-daily-report|divo_skill_view/);
@@ -255,9 +258,12 @@ describe("department persona", () => {
 			await readDepartmentPersonaContext(path),
 		);
 		assert.match(prompt, /Airtable \[family=airtable; connection=member_selectable via airtable; skill=optional\]/);
-		assert.match(prompt, /Airtable Schema \[toolId=airtableSchema; actions=read\]/);
+		// The family header survives because a tool definition cannot express which
+		// connection provider the family needs or whether it requires a skill. The
+		// leaf tools do not, because each is a registered typed tool already.
+		assert.doesNotMatch(prompt, /Airtable Schema \[toolId=airtableSchema; actions=read\]/);
 		assert.doesNotMatch(prompt, /actions=read, delete/);
-		assert.match(prompt, /describe permitted operations only from each governed tool's actions list/);
+		assert.match(prompt, /describe permitted operations only from the actions named on each registered divo_\* tool/);
 		assert.match(prompt, /never claim an operation mentioned by a skill/);
 		assert.match(prompt, /Airtable Core \[skillId=airtable-core-id; mode=optional\]/);
 		assert.doesNotMatch(prompt, /Delete every record/);
