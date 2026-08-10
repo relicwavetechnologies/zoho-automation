@@ -2,6 +2,16 @@ import type { PrismaClient } from '../../generated/prisma';
 
 const RETIRED_TOOL_ID = 'dataExport';
 const RETIRED_SYSTEM_SKILL_SLUG = 'secure-data-export';
+const RETIRED_TEXT_MARKERS = [
+  RETIRED_TOOL_ID,
+  RETIRED_SYSTEM_SKILL_SLUG,
+  'exportCandidate',
+] as const;
+
+function mentionsRetiredDataExport(markdown: string): boolean {
+  const normalized = markdown.toLowerCase();
+  return RETIRED_TEXT_MARKERS.some(marker => normalized.includes(marker.toLowerCase()));
+}
 
 export async function retireDataExportCapability(prisma: PrismaClient) {
   return prisma.$transaction(async tx => {
@@ -10,7 +20,6 @@ export async function retireDataExportCapability(prisma: PrismaClient) {
         OR: [
           { toolIds: { has: RETIRED_TOOL_ID } },
           {
-            isSystem: false,
             status: { not: 'archived' },
             OR: [
               { markdown: { contains: RETIRED_TOOL_ID, mode: 'insensitive' } },
@@ -20,11 +29,36 @@ export async function retireDataExportCapability(prisma: PrismaClient) {
           },
         ],
       },
-      select: { id: true, companyId: true, isSystem: true, toolIds: true },
+      select: {
+        id: true,
+        companyId: true,
+        isSystem: true,
+        slug: true,
+        markdown: true,
+        toolIds: true,
+      },
     });
     const affectedCompanyIds = new Set(affectedSkills.map(skill => skill.companyId));
 
+    const staleSystemSkillIds = affectedSkills
+      .filter(skill => skill.isSystem && mentionsRetiredDataExport(skill.markdown))
+      .map(skill => skill.id);
+    const retiredSystemSkills = await tx.skill.findMany({
+      where: {
+        isSystem: true,
+        OR: [
+          { slug: RETIRED_SYSTEM_SKILL_SLUG },
+          ...(staleSystemSkillIds.length > 0 ? [{ id: { in: staleSystemSkillIds } }] : []),
+        ],
+      },
+      select: { id: true, companyId: true },
+    });
+    const retiredSystemSkillIds = new Set(retiredSystemSkills.map(skill => skill.id));
+    for (const skill of retiredSystemSkills) affectedCompanyIds.add(skill.companyId);
+
+    let skillsRewritten = 0;
     for (const skill of affectedSkills) {
+      if (retiredSystemSkillIds.has(skill.id)) continue;
       await tx.skill.update({
         where: { id: skill.id },
         data: {
@@ -33,16 +67,11 @@ export async function retireDataExportCapability(prisma: PrismaClient) {
           revision: { increment: 1 },
         },
       });
+      skillsRewritten += 1;
     }
 
-    const retiredSystemSkills = await tx.skill.findMany({
-      where: { isSystem: true, slug: RETIRED_SYSTEM_SKILL_SLUG },
-      select: { id: true, companyId: true },
-    });
-    for (const skill of retiredSystemSkills) affectedCompanyIds.add(skill.companyId);
-
     await tx.skill.deleteMany({
-      where: { isSystem: true, slug: RETIRED_SYSTEM_SKILL_SLUG },
+      where: { id: { in: [...retiredSystemSkillIds] } },
     });
     await tx.skillCapability.deleteMany({ where: { toolId: RETIRED_TOOL_ID } });
     await tx.departmentUserToolOverride.deleteMany({ where: { toolId: RETIRED_TOOL_ID } });
@@ -69,7 +98,7 @@ export async function retireDataExportCapability(prisma: PrismaClient) {
     return {
       registeredToolsDeleted: tools.count,
       systemSkillsDeleted: retiredSystemSkills.length,
-      skillsRewritten: affectedSkills.length,
+      skillsRewritten,
       companiesInvalidated: affectedCompanyIds.size,
     };
   });
