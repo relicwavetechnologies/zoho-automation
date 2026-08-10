@@ -987,28 +987,6 @@
   font-size: 12px; color: var(--cur-muted);
 }
 
-/* ── Connected apps ───────────────────────────────────
-   A provider can hold several accounts, so the provider is a group and each
-   account is a row inside it. The first pass rendered a full-width "Add
-   another X account" row after every provider — five of them in one flat list,
-   drowning the accounts they belonged to. The add action lives in the group
-   header instead, once, where it reads as belonging to that provider. */
-.cur .ws-conns { display: flex; flex-direction: column; }
-.cur .ws-conn-group { border-top: 1px solid var(--cur-hairline-soft); }
-.cur .ws-conns > .ws-conn-group:first-child { border-top: 0; }
-.cur .ws-conn-h { display: flex; align-items: center; gap: 13px; padding: 14px 18px; }
-.cur .ws-conn-h-main { flex: 1; min-width: 0; }
-.cur .ws-conn-h-main b { font-size: 13px; font-weight: 500; }
-.cur .ws-conn-h-main p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; }
-/* Accounts are indented under their provider and sit on the canvas, so the
-   group reads as one object rather than as more sibling rows. */
-.cur .ws-conn-accounts {
-  background: var(--cur-canvas-soft);
-  border-top: 1px solid var(--cur-hairline-soft);
-  padding-left: 27px;
-}
-.cur .ws-conn-accounts .ws-row { border-top-color: var(--cur-hairline-soft); }
-.cur .ws-conn-accounts > .ws-row:first-child { border-top: 0; }
 
 /* A quiet inline action inside a panel — "Share with someone".
    Not `.btn`: it opens a form in place rather than committing anything, and a
@@ -1162,39 +1140,41 @@
 }
 .cur .ws-appsec-h p { margin: 0 0 0 2px; font-size: 12px; color: var(--cur-muted); }
 
-/* `auto-fit`, not `auto-fill`.
-   `auto-fill` keeps every track it can fit whether or not anything is in it, so
-   a section holding two cards in a three-column width left a 334px column of
-   nothing beside them — twice, once per section. `auto-fit` collapses the empty
-   tracks and the cards take the room back. */
+/* `auto-fill`, so a card keeps its proportions.
+   `auto-fit` collapses the tracks nothing sits in, which does remove the empty
+   column — but it does it by stretching two cards to 508px each, and a 40px
+   logo over one line of text in a 508px box is more air than the empty column
+   ever was. A card holds its ~330px and a short row simply ends. */
 .cur .ws-appgrid {
   display: grid; gap: 14px;
-  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
   align-items: stretch;
 }
 
 .cur .ws-appcard {
-  display: flex; gap: 13px; padding: 15px 16px;
+  display: flex; flex-direction: column; padding: 18px;
   border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
   background: var(--cur-surface); box-shadow: var(--cur-shadow-card);
 }
-.cur .ws-appcard-body { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 /* Only when something under this card needs attention — a revoked account. The
    card is not toned for being unconnected, which is an ordinary state. */
 .cur .ws-appcard[data-tone="warn"] {
   border-color: color-mix(in srgb, var(--ws-warning) 30%, var(--cur-hairline));
 }
-.cur .ws-appcard-h { flex-shrink: 0; }
+/* The mark sits on its own line with room under it, which is the proportion the
+   reference card gets its calm from — the logo is the first thing read, not a
+   bullet beside the title. */
+.cur .ws-appcard-h { flex-shrink: 0; margin-bottom: 16px; }
 .cur .ws-appcard h3 {
-  font-size: 13.5px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink);
+  font-size: 14px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink);
 }
-/* No `min-height` any more. It existed to line the buttons up, which the card
-   now does by stretching and pushing the action to its floor — so a one-line
-   blurb takes one line instead of reserving two and leaving the second empty. */
+/* No `min-height`. It existed to line the buttons up, which the card now does by
+   stretching and pushing the action to its floor — so a one-line blurb takes one
+   line instead of reserving two and leaving the second empty. */
 .cur .ws-appcard p {
-  margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: var(--cur-muted);
+  margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--cur-muted);
 }
-.cur .ws-appcard-act { margin-top: auto; padding-top: 13px; }
+.cur .ws-appcard-act { margin-top: auto; padding-top: 16px; }
 .cur .ws-appcard-act .ws-tag { width: 100%; justify-content: center; height: 32px; }
 
 /* The accounts under an app. Compact rows, because the card is about the app

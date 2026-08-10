@@ -361,7 +361,11 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
         : shopifyStatus.failed
           ? 'Could not read Shopify connections.'
           : shopAccounts.length === 0
-            ? 'Company-owned store access. Save Dev Dashboard credentials once; Divo keeps tokens refreshed.'
+            // Trimmed to the length the other six run to, so its card is not
+            // the one that stands a line taller than the row. The dropped half
+            // — "save Dev Dashboard credentials once" — was an instruction for
+            // the admin doing the setup, on a card whose reader cannot.
+            ? 'Company-owned store access. Divo keeps the tokens refreshed.'
             : `${shopAccounts.length} store${shopAccounts.length === 1 ? '' : 's'}${shopDead > 0 ? ` · ${shopDead} needs reconnecting` : ''}`,
       accounts: shopAccounts.map((conn) => ({
         id: conn.connectionId,
@@ -644,19 +648,14 @@ function AppCard({ mark, name, blurb, accounts, action, tone }: {
 }) {
   return (
     <article className="ws-appcard" data-tone={tone}>
-      {/* The mark beside the text rather than stacked over it. Stacked, a card
-          wide enough to hold two accounts left a band of nothing under a
-          one-line blurb; alongside, the width the card has is the width the
-          sentence uses. */}
       <div className="ws-appcard-h">{mark}</div>
-      <div className="ws-appcard-body">
-        <h3>{name}</h3>
-        <p>{blurb}</p>
-        {accounts}
-        {/* `margin-top: auto`, so the action sits on the card's floor however
-            tall its neighbours make it — no filler needed above it. */}
-        <div className="ws-appcard-act">{action}</div>
-      </div>
+      <h3>{name}</h3>
+      <p>{blurb}</p>
+      {accounts}
+      {/* `margin-top: auto`, so the action sits on the card's floor however tall
+          its neighbours make it — the alignment comes from the card stretching
+          rather than from filler reserved above the button. */}
+      <div className="ws-appcard-act">{action}</div>
     </article>
   )
 }
