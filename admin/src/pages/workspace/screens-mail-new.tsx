@@ -510,16 +510,27 @@ function MailRuleForm({
   const spokenPending = useRef<string | null>(null)
   useEffect(() => {
     if (!pending) { spokenPending.current = null; return }
-    const key = `${pending.approverName}|${pending.destination}|${pending.reused}`
+    const key = `${pending.approverName}|${pending.destination}|${pending.reused}|${pending.deliveredVia}`
     if (spokenPending.current === key) return
     spokenPending.current = key
-    // Asked, not refused. Nothing the member typed is wrong and there is
-    // nothing to correct — somebody else has to answer.
+    /*
+     * Asked, not refused. Nothing the member typed is wrong and there is
+     * nothing to correct — somebody else has to answer.
+     *
+     * Where they were asked is said out loud. "Asked your manager" with no
+     * place named sent people to check Lark for a card that, on a deployment
+     * with card delivery off or an approver with no Lark account, was never
+     * sent — and finding nothing there reads as the request having gone
+     * nowhere, when it is sitting live in Divo the whole time.
+     */
+    const waitsAt = pending.deliveredVia === 'lark'
+      ? `Divo sent ${pending.approverName} a card in Lark.`
+      : `It is waiting for them in Divo, under Approvals.`
     notify.heads(
       pending.reused
         ? `${pending.approverName} has already been asked`
         : `Asked ${pending.approverName} to approve this`,
-      `Forwarding to ${pending.destination} sends mail outside your organisation, so it needs their yes. ${editing ? 'The change applies' : 'The rule turns on'} by itself once they agree.`,
+      `Forwarding to ${pending.destination} sends mail outside your organisation, so it needs their yes. ${waitsAt} ${editing ? 'The change applies' : 'The rule turns on'} by itself once they agree.`,
     )
   }, [pending, editing])
 

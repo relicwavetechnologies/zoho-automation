@@ -25,6 +25,7 @@ import {
 } from '../../application/mail-ops/mail-ops-health';
 import { dryRunMailRule } from '../../application/mail-ops/mail-rule-dry-run';
 import type { MailRuleCompilation } from '../../application/mail-ops/mail-rule-compiler';
+import type { ApprovalDelivery } from '../../application/approval/approval.types';
 import {
   actionForDestination,
   type MailRuleStatusChange,
@@ -215,6 +216,20 @@ const createRuleBodySchema = z.object({
     });
   }
 });
+
+/*
+ * Where the member should expect the answer to come from.
+ *
+ * "Asked your manager" with nowhere to look is what turns a working approval
+ * into a reported bug: the member checks Lark, finds nothing, and concludes
+ * nothing was sent. Both destinations are real and either one resolves the
+ * request, so both are named plainly rather than one being treated as the
+ * happy path and the other as a degraded fallback.
+ */
+const approvalWaitsAt = (deliveredVia: ApprovalDelivery, approverName: string): string =>
+  deliveredVia === 'lark'
+    ? `Divo sent ${approverName} a card in Lark.`
+    : `It is waiting for ${approverName} in Divo, under Approvals.`;
 
 /*
  * A status code and a default sentence per refusal.
@@ -1144,10 +1159,13 @@ export function createMailAutomationsRoutes(
                 approverName: asked.approverName,
                 destination: outcome.destination,
                 reused: asked.reused,
+                deliveredVia: asked.deliveredVia,
               },
               message: asked.reused
-                ? `${asked.approverName} has already been asked about this rule and has not answered yet.`
+                ? `${asked.approverName} has already been asked about this rule and has not answered yet. `
+                  + approvalWaitsAt(asked.deliveredVia, asked.approverName)
                 : `Asked ${asked.approverName} to approve forwarding to ${outcome.destination}. `
+                  + `${approvalWaitsAt(asked.deliveredVia, asked.approverName)} `
                   + 'The rule turns on by itself once they agree.',
             });
             return;
@@ -1437,10 +1455,13 @@ export function createMailAutomationsRoutes(
                 approverName: asked.approverName,
                 destination: outcome.destination,
                 reused: asked.reused,
+                deliveredVia: asked.deliveredVia,
               },
               message: asked.reused
-                ? `${asked.approverName} has already been asked about this change and has not answered yet.`
+                ? `${asked.approverName} has already been asked about this change and has not answered yet. `
+                  + approvalWaitsAt(asked.deliveredVia, asked.approverName)
                 : `Asked ${asked.approverName} to approve forwarding to ${outcome.destination}. `
+                  + `${approvalWaitsAt(asked.deliveredVia, asked.approverName)} `
                   + 'The change applies by itself once they agree.',
             });
             return;

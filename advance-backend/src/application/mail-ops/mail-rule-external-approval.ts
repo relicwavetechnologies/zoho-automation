@@ -36,6 +36,7 @@
  * behaviour anybody clicking a button twice should get.
  */
 import type { ApprovalGateService } from '../approval/approval-gate.service';
+import type { ApprovalDelivery } from '../approval/approval.types';
 import type { PermissionService } from '../permissions/permission.service';
 import type { Logger } from '../../shared/logger';
 import {
@@ -119,6 +120,12 @@ export type MailRuleExternalApprovalOutcome =
       readonly approverName: string;
       /** Already reused an open request for the identical rule. */
       readonly reused: boolean;
+      /**
+       * Where it is waiting for them. The member is told this, because "asked
+       * your manager" without a place to look is what makes a working approval
+       * read as a broken one.
+       */
+      readonly deliveredVia: ApprovalDelivery;
     }
   /** Already answered yes, and the rule was written by the replay. */
   | { readonly kind: 'already_granted'; readonly message: string }
@@ -254,6 +261,7 @@ export function createMailRuleExternalApproval(deps: MailRuleExternalApprovalDep
           approvalId: decision.approvalId,
           approverName: decision.approverName,
           reused: decision.requestState === 'reused',
+          deliveredVia: decision.deliveredVia,
         };
       case 'rejected':
         return {
