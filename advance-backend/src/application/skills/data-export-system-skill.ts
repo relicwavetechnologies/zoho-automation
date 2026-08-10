@@ -15,23 +15,17 @@ import {
 export const DATA_EXPORT_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   slug: 'secure-data-export',
   name: 'Secure Data Export',
-  summary: `Complete an opaque provider exportCandidate when its specialist explicitly says terminal-safe paging is unavailable; never use this compatibility route for Zoho Books or CRM.`,
+  summary: `Complete an opaque backend-replayable provider exportCandidate through Divo's company-owned export destination.`,
   markdown: `# Secure Data Export
 
 In Lark, supported source tools return bounded chat evidence plus an
 \`exportCandidate\` when the same backend-held recipe can be replayed as a
 private file. This includes Shopify analytics, order lists, and customer lists
 (\`shopify_snapshot\`) as well as
-Semrush, OMS, and Menhood governed exports. Preserve that opaque candidate and do not mention its ID to the
+Semrush, OMS, Menhood, Zoho Books, and Zoho CRM governed exports. Preserve that opaque candidate and do not mention its ID to the
 member. If the member asks for Excel/XL/XLSX, CSV, Sheet, all rows, full data,
 or an export artifact, plan the export from the **table you showed** in your
 last answer:
-
-Zoho Books and Zoho CRM are not this route. Their specialists expose
-terminal-safe paging, so a complete Zoho artifact must use
-\`divo-python-automation\` from the start. Do not preview Zoho first, create a
-Zoho \`exportCandidate\`, use a direct \`zoho_books\` recipe, or ask for another
-confirmation when the member already requested the artifact.
 
 1. Export only after the member names a format or asks for a file.
 2. Identify which \`exportCandidate\` matches that table — not every tool call
@@ -59,13 +53,11 @@ errors, one-number answers, an explicit "do not export / not now / chat only"
 instruction, or sources that have no backend-replayable export candidate.
 
 \`dataExport op=plan\` is the only place that decides whether to queue the full
-export, ask which writable Google account should own it, ask the member to
-connect Google, or block an unsafe plan. A valid explicit plan queues the full
+export through the configured company Google account or block an unsafe plan.
+A valid explicit plan queues the full
 export immediately; do not create a sample or ask for another confirmation. If it returns
-\`choose_destination\`, show the returned account labels/emails, ask which
-Google account should own the file, and retry only with the exact returned
-\`connectionId\` after the member picks one. Do not choose a saved, default, or
-guessed account when the backend returned multiple choices. The final artifact
+\`unavailable\`, report that an administrator must reconnect or configure the
+company export account; never start personal Google OAuth for an export. The final artifact
 is created in Google Drive/Sheets; the database stores only the control receipt
 and replay plan.
 
@@ -115,7 +107,7 @@ Format limits are explicit: Excel ${DATA_EXPORT_XLSX_ROW_LIMIT.toLocaleString('e
 6. For mapping, filtering, renaming, flattening, or calculated columns, provide a row transform. It receives \`row\`, \`index\`, and \`args\`; return one object, an array of objects, or \`null\`. A transform shapes rows; it is not a substitute for a source filter the provider supports.
 7. Never fetch source pages manually, paste bulk rows into model context, or invoke Google Drive/Sheets directly for the export.
 
-When the user has one writable Google account, the export is created there and owned by that account. With multiple writable accounts, let Divo's verified card or confirmation result present the eligible choices; never guess an account. If no writable personal account is available, the backend may use the administrator-approved company export account and grant reader access only to the verified invoking user. Access changes are not supported. If asked to share an export with another user, group, department, company, domain, or public link, refuse clearly; do not call Google permission tools.
+Every new export is created in the administrator-approved company Google account. The backend derives that account from company policy and grants reader access only to the verified invoking user; never ask for or choose a personal Google account, owner email, recipient email, or connection ID. Access changes are not supported. If asked to share an export with another user, group, department, company, domain, or public link, refuse clearly; do not call Google permission tools.
 
 The backend re-checks dataExport permission, source read permission, invoker access to the exact source connection, the exact selected Google destination, the resulting owner-or-reader access, and artifact integrity.`,
   toolIds: ['dataExport'],

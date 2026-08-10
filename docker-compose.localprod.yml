@@ -44,7 +44,7 @@ services:
     networks: [local-internal]
 
   google-workspace-mcp:
-    image: ghcr.io/taylorwilsdon/google_workspace_mcp:1.22.0
+    image: ghcr.io/taylorwilsdon/google_workspace_mcp:1.22.2
     <<: *amd64
     env_file: [advance-backend/.env.localprod.local]
     environment:

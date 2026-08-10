@@ -63,12 +63,13 @@ export async function configureDataExportProfile(
       id: input.googleConnectionId,
       companyId: input.companyId,
       provider: 'google_workspace',
+      ownerType: 'company',
       status: 'connected',
       revokedAt: null,
     },
     select: { id: true, accountEmail: true, scopes: true },
   });
-  if (!connection) throw new Error('Connected Google Workspace account not found');
+  if (!connection) throw new Error('Connected company-owned Google Workspace account not found');
   if (!connection.accountEmail) throw new Error('The selected Google connection has no verified account email');
   if (!hasGoogleScopeGroups(connection.scopes, [
     [GOOGLE_SCOPE.driveFull, GOOGLE_SCOPE.driveFile],

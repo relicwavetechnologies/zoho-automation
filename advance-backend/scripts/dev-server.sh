@@ -41,7 +41,7 @@ ALLOWED_FILE_DIRS=/tmp/divo-no-local-files \
     --quiet \
     --python 3.12 \
     --env-file "$BACKEND_ROOT/.env" \
-    --from 'workspace-mcp==1.22.0' \
+    --from 'workspace-mcp==1.22.2' \
     workspace-mcp \
     --transport streamable-http \
     --tool-tier complete \

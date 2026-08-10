@@ -169,7 +169,6 @@ import { GoogleSheetResourceResolver } from './application/data-export/google-sh
 import { GoogleSheetResourceProbeClient } from './infrastructure/google/google-sheet-resource-probe';
 import { DataExportOfferRepository } from './infrastructure/persistence/data-export-offer.repository';
 import { DataExportCandidateRepository } from './infrastructure/persistence/data-export-candidate.repository';
-import { DataExportDestinationPreferenceRepository } from './infrastructure/persistence/data-export-destination-preference.repository';
 import { getDataExportProfile } from './application/data-export/data-export.profile';
 import { PermanentDataExportError } from './application/data-export/data-export.errors';
 import { selectDataExportDestination } from './application/data-export/data-export-destination-resolver';
@@ -1201,9 +1200,6 @@ export async function buildContainer(
     };
   }
 
-  const dataExportDestinationPreferenceRepo =
-    new DataExportDestinationPreferenceRepository(prisma);
-
   /**
    * The administrator-approved company export account, checked the same way at
    * request time and at run time.
@@ -1221,6 +1217,7 @@ export async function buildContainer(
         readonly connectionId: string;
         readonly refreshToken: string;
         readonly readerDomain: string;
+        readonly ownerEmail: string;
       }
     | { readonly ok: false; readonly reason: string }
   > {
@@ -1269,6 +1266,7 @@ export async function buildContainer(
       connectionId: connection.id,
       refreshToken,
       readerDomain: profile.readerDomain,
+      ownerEmail: profile.accountEmail,
     };
   }
 
@@ -1277,27 +1275,12 @@ export async function buildContainer(
     readonly userId: string;
     readonly connectionId?: string;
   }) {
-    const [accessible, companyExport, preferred] = await Promise.all([
-      integrationConnectionRepo.listAccessibleGoogleConnections({
-        companyId: input.companyId,
-        userId: input.userId,
-      }),
-      resolveCompanyExportConnection(input.companyId),
-      dataExportDestinationPreferenceRepo.findConnectionId(input),
-    ]);
-    if (!accessible.ok) throw accessible.error;
-    if (!preferred.ok) throw preferred.error;
+    const companyExport = await resolveCompanyExportConnection(input.companyId);
     return selectDataExportDestination({
-      userId: input.userId,
-      accessible: accessible.value,
-      // Offered only while it can actually be written to, so a member with no
-      // personal account is told to connect one instead of being handed a
-      // button that fails after the fact.
       ...(companyExport.ok
-        ? { companyFallback: { connectionId: companyExport.connectionId } }
-        : {}),
+        ? { companyDestination: { connectionId: companyExport.connectionId } }
+        : { unavailableReason: companyExport.reason }),
       ...(input.connectionId ? { connectionId: input.connectionId } : {}),
-      ...(preferred.value ? { preferredConnectionId: preferred.value } : {}),
     });
   }
 
@@ -1378,7 +1361,11 @@ export async function buildContainer(
       refreshToken: company.refreshToken,
     });
     await integrationConnectionRepo.touchLastUsed(company.connectionId);
-    return { accessToken, readerDomain: company.readerDomain };
+    return {
+      accessToken,
+      readerDomain: company.readerDomain,
+      companyOwnerEmail: company.ownerEmail,
+    };
   }
 
   /**
@@ -1701,20 +1688,6 @@ export async function buildContainer(
 
   const dataExportQueue = new DataExportQueue(queueRedisUrl);
   const workbookConversionQueue = new WorkbookConversionQueue(queueRedisUrl);
-  const rememberDataExportDestination = async (input: {
-    readonly companyId: string;
-    readonly userId: string;
-    readonly connectionId: string;
-  }): Promise<void> => {
-    const saved = await dataExportDestinationPreferenceRepo.save(input);
-    if (!saved.ok) {
-      logger.warn('Could not remember the selected data export destination', {
-        companyId: input.companyId,
-        userId: input.userId,
-        error: saved.error.message,
-      });
-    }
-  };
   const dataExportCandidateRepo = new DataExportCandidateRepository(prisma);
   const dataExportOfferService = new DataExportOfferService({
     offers: new DataExportOfferRepository(prisma),
@@ -1722,7 +1695,6 @@ export async function buildContainer(
     identityRepo: channelIdentityRepo,
     permissions,
     resolveDestination: resolveDataExportDestination,
-    rememberDestination: rememberDataExportDestination,
   });
   const dataExportOrchestrationService = new DataExportOrchestrationService({
     candidates: dataExportCandidateRepo,
@@ -1730,7 +1702,6 @@ export async function buildContainer(
     identityRepo: channelIdentityRepo,
     permissions,
     resolveDestination: resolveDataExportDestination,
-    rememberDestination: rememberDataExportDestination,
   });
   const resumeDataExportAfterGoogleConnection = async (input: {
     readonly offerId: string;
@@ -2327,7 +2298,6 @@ export async function buildContainer(
   toolRegistry.register(createDataExportTool({
     offers: dataExportOfferService,
     orchestration: dataExportOrchestrationService,
-    beginAuthorization: beginGoogleAuthorization,
   }));
   toolRegistry.register(createSemrushTool({
     service: semrushService,

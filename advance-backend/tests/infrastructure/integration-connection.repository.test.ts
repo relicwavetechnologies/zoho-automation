@@ -141,6 +141,37 @@ describe('IntegrationConnectionRepository.upsertLarkConnection', () => {
   });
 });
 
+describe('IntegrationConnectionRepository.findCompanyGoogleExportConnection', () => {
+  it('queries only a connected company-owned Google connection', async () => {
+    let where: unknown;
+    const repo = new IntegrationConnectionRepository({
+      integrationConnection: {
+        findFirst: async (input: { where: unknown }) => {
+          where = input.where;
+          return null;
+        },
+      },
+    } as any, {
+      ZOHO_TOKEN_ENCRYPTION_KEY: 'test-key',
+    } as any);
+
+    const result = await repo.findCompanyGoogleExportConnection({
+      companyId: 'company-1',
+      connectionId: 'connection-1',
+    });
+
+    assert.deepEqual(result, { ok: true, value: null });
+    assert.deepEqual(where, {
+      id: 'connection-1',
+      companyId: 'company-1',
+      provider: 'google_workspace',
+      ownerType: 'company',
+      revokedAt: null,
+      status: 'connected',
+    });
+  });
+});
+
 describe('IntegrationConnectionRepository.findLarkConnectionOwner', () => {
   it('scopes an owner lookup by Lark tenant when open IDs are identical', async () => {
     const fixture = makeDb();
