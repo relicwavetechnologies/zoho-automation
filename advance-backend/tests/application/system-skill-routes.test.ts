@@ -15,6 +15,11 @@ import { zohoBooksReadAnalysisSkill } from '../../src/application/skills/zoho.sk
 import { DIVO_LOCAL_PYTHON_SYSTEM_SKILL } from '../../src/application/skills/divo-local-python-system-skill.ts';
 import { GOOGLE_WORKSPACE_SYSTEM_SKILLS } from '../../src/application/skills/google-workspace-system-skills.ts';
 import { DIVO_PRESENTATIONS_SYSTEM_SKILL } from '../../src/application/skills/divo-presentations-system-skill.ts';
+import { ZOHO_FINANCE_SYSTEM_SKILLS } from '../../src/application/skills/zoho-finance-system-skills.ts';
+import { LARK_SYSTEM_SKILLS } from '../../src/application/skills/lark-system-skills.ts';
+import { MAIL_OPS_SYSTEM_SKILLS } from '../../src/application/skills/mail-ops-system-skills.ts';
+import { SCHEDULE_DIVO_WORK_SKILL_MARKDOWN } from '../../src/application/skills/scheduled-work-system-skill.ts';
+import { KNOWLEDGE_MANAGEMENT_SKILL_MARKDOWN } from '../../src/application/skills/knowledge-system-skill.ts';
 import {
   ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS,
   ROUTING_SYSTEM_SKILLS,
@@ -156,6 +161,12 @@ describe('system skill routes', () => {
    * succeed. Airtable, Shopify and AITable each carried it well past the
    * migration because nothing failed when a skill went stale.
    */
+  /*
+   * Hand-listed bodies are how the scheduler kept its dead gateway protocol:
+   * a family missing from the list is exempt from the only check that would
+   * notice. Zoho, Lark, mail-ops and the scheduler were all absent. Build the
+   * list from the seeded collections so a new family is covered by existing.
+   */
   it('never teaches a call surface the runtime removed', () => {
     const bodies = [
       ...ROUTING_SYSTEM_SKILLS.map(skill => skill.markdown),
@@ -168,6 +179,11 @@ describe('system skill routes', () => {
       MENHOOD_DATA_SYSTEM_SKILL.markdown,
       DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown,
       ...GOOGLE_WORKSPACE_SYSTEM_SKILLS.map(skill => skill.markdown),
+      ...ZOHO_FINANCE_SYSTEM_SKILLS.map(skill => skill.markdown),
+      ...LARK_SYSTEM_SKILLS.map(skill => skill.markdown),
+      ...MAIL_OPS_SYSTEM_SKILLS.map(skill => skill.markdown),
+      SCHEDULE_DIVO_WORK_SKILL_MARKDOWN,
+      KNOWLEDGE_MANAGEMENT_SKILL_MARKDOWN,
     ];
     for (const body of bodies) {
       assert.doesNotMatch(body, /divo_gateway|call_tool|tools\.invoke|payload\.args/);

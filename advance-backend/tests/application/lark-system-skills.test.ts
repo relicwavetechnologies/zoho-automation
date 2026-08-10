@@ -82,12 +82,22 @@ describe('Lark system skill provisioning', () => {
       const skill = LARK_SYSTEM_SKILLS.find((candidate) => candidate.toolIds.includes(String(tool.id)));
       assert(skill, `missing skill for ${tool.id}`);
       assert.doesNotMatch(skill.markdown, /## Implemented operations/, `${skill.slug} reprints its tool enum`);
-      const ops = [...operationOptions(tool.argsSchema)];
-      assert.ok(ops.length > 0);
-      assert.match(tool.parameterDocs, /op:/, `${tool.id} must declare its own operations`);
-      for (const op of ops) {
-        assert.ok(tool.parameterDocs.includes(op), `${tool.id} parameterDocs omit ${op}`);
-      }
+      /*
+       * `parameterDocs.includes(op)` looked like a check and was not: op names
+       * are ordinary words that recur throughout the prose, so "create",
+       * "update", "list" and "delete" pass against docs whose op line has been
+       * truncated. Parse the declared line and compare it to the schema, which
+       * is the strength the deleted skill-vs-tool assertion had.
+       */
+      const declared = tool.parameterDocs.match(/(?:^|\n)[-\s]*op:\s*([^\n.]+)/)?.[1];
+      assert.ok(declared, `${tool.id} must declare its own operations`);
+      // Compared as sets: larkMessaging documents its ops in a different order
+      // than the schema declares them, and reading order carries no meaning.
+      assert.deepEqual(
+        declared.split('|').map(op => op.trim()).sort(),
+        [...operationOptions(tool.argsSchema)].sort(),
+        `${tool.id} op drift between parameterDocs and schema`,
+      );
     }
   });
 
