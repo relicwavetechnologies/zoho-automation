@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readdir, readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from '../../src/application/skills/semrush-system-skill.ts';
 import { DIVO_OMS_SITE_DATA_SYSTEM_SKILL } from '../../src/application/skills/oms-site-data-system-skill.ts';
@@ -170,6 +171,23 @@ describe('system skill routes', () => {
     ];
     for (const body of bodies) {
       assert.doesNotMatch(body, /divo_gateway|call_tool|tools\.invoke|payload\.args/);
+    }
+  });
+
+  /*
+   * The guard above covers skills, which is where the envelope was swept from
+   * — and `scheduledWorkflows` still opened its parameterDocs with "Gateway
+   * invocation: tools.invoke payload must be { toolId, args }". Tool docs are
+   * model-facing copy exactly like a skill body, so a check that skips them
+   * misses the layer with the strongest claim on the model's attention.
+   */
+  it('keeps the removed call surface out of tool documentation too', async () => {
+    const dir = new URL('../../src/application/tools/families/', import.meta.url);
+    const files = (await readdir(dir)).filter(name => name.endsWith('.ts'));
+    assert.ok(files.length > 10, 'expected the tool families directory');
+    for (const file of files) {
+      const source = await readFile(new URL(file, dir), 'utf8');
+      assert.doesNotMatch(source, /divo_gateway|tools\.invoke|Gateway invocation/, file);
     }
   });
 

@@ -51,24 +51,33 @@ describe('what the recipe now says about picking a recipient', () => {
     assert.match(instructions, /Tell the user which one the rule is doing before creating it/i);
   });
 
+  /*
+   * Each of these is refused at parse, so the model has to know them before it
+   * proposes a rule — but they are the tool's own shape, and the recipe was a
+   * second copy of all four. They stay asserted, on the layer that owns them.
+   */
   it('states the limits the runtime actually enforces', () => {
-    // Each of these is refused at parse. A recipe that omits one produces a
-    // model that keeps proposing rules the server keeps rejecting.
-    assert.match(recipe, /Two to six routes/i);
-    assert.match(recipe, /every route must send the same way/i);
-    assert.match(recipe, /routed rule takes no .judge./i);
-    assert.match(recipe, /One hourly ceiling for the whole rule/i);
+    assert.match(instructions, /Two to six routes/i);
+    assert.match(instructions, /every route sending the same way/i);
+    assert.match(instructions, /routed rule takes no judge/i);
+    assert.match(instructions, /one hourly ceiling for the whole rule/i);
+    assert.doesNotMatch(recipe, /Two to six routes/i);
   });
 
   it('says the set of recipients is closed, which is the whole safety case', () => {
-    assert.match(recipe, /can never send anywhere else/i);
     assert.match(instructions, /can reach only the destinations written into it/i);
+    // The recipe owns the consequence: say it out loud, because that is the
+    // question a member trusting a rule with a client's mail is answering.
+    assert.match(recipe, /The set of recipients is closed/i);
+    assert.match(recipe, /deciding exactly this question/i);
   });
 
-  it('warns that update replaces the table rather than merging it', () => {
-    // The trap that already cost a rule its question twice.
-    assert.match(recipe, /replaces the whole table/i);
+  it('warns that update replaces rather than merging', () => {
+    // The trap that already cost a rule its question twice. The tool states it
+    // per field; the recipe generalises it, which is the part the tool cannot.
     assert.match(instructions, /update replaces routes and otherwise rather than merging/i);
+    assert.match(recipe, /Every `update` replaces rather than merges/i);
+    assert.match(recipe, /Renaming a rule without doing so deletes its judge/i);
   });
 
   it('says test calls no model, so it is not a preview of the sorting', () => {
