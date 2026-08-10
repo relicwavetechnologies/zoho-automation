@@ -36,6 +36,7 @@ import {
 } from '@/cursor/use-spend'
 import { KEY_PROVIDERS, useProxyStatus, useSaveProxyKey, type KeyScope } from '@/cursor/use-proxy'
 import { useCompanyForwards } from './data/use-mail-governance'
+import { runTitle } from './data/use-my-activity'
 import { useProxyPolicies, useSaveProxyPolicy } from '@/cursor/use-proxy-policy'
 
 /** The cursor hooks take a token and a company; every screen here needs both. */
@@ -1027,13 +1028,21 @@ function TokenProviderRow({ provider, name, blurb, action, status, onOpen }: {
  * a dotted name and nothing else. Grouping by prefix keeps a new action legible
  * — it lands in `other` instead of vanishing from every filter.
  */
-type AuditKind = 'permission' | 'member' | 'connection' | 'approval' | 'other'
+/*
+ * `run` is not a governance change, and that is exactly why it needs its own
+ * name. The log is dominated by `gateway.tool.*` — 174 of the last 200 here —
+ * and with nothing to call them they all fell into "Other", which left five
+ * filters where four read zero and the fifth held everything. A filter that
+ * cannot divide anything is not a filter.
+ */
+type AuditKind = 'permission' | 'member' | 'connection' | 'approval' | 'run' | 'other'
 
 const KIND_LABEL: Record<AuditKind, string> = {
   permission: 'Permissions',
   member: 'People',
   connection: 'Connections',
   approval: 'Approvals',
+  run: 'Tool runs',
   other: 'Other',
 }
 
@@ -1042,6 +1051,9 @@ const kindOf = (action: string): AuditKind => {
   if (action.includes('membership') || action.includes('member') || action.includes('invite')) return 'member'
   if (action.includes('connection')) return 'connection'
   if (action.includes('approval')) return 'approval'
+  // Checked last, so a gateway action that is *about* a grant or an approval
+  // still files under what it changed rather than under where it came from.
+  if (action.startsWith('gateway.') || action.includes('invocation') || action.includes('skill.')) return 'run'
   return 'other'
 }
 
@@ -1062,6 +1074,14 @@ export function CompanyAudit({ replay }: Props) {
   const [open, setOpen] = useState<string | null>(null)
   const { token, companyId } = useAdminScope()
   const { data: entries, loading } = useAuditLog(200)
+  /*
+   * One gate for the whole panel, so its three parts cannot disagree.
+   *
+   * The counts, the chips and the rows each decided for themselves whether the
+   * log had arrived: the rows waited, and the other two did not — which is how
+   * "0 of 0 changes" came to sit directly above six loading rows.
+   */
+  const loadingLog = !r1 || loading
   const directory = useDirectory(token, companyId).data ?? []
 
   const nameById = useMemo(
@@ -1099,7 +1119,12 @@ export function CompanyAudit({ replay }: Props) {
       <PageHeader
         eyebrow={session?.companyName ?? 'Company'}
         title="Activity"
-        description="Who changed what. Every permission grant, connection and approval decision is recorded — including the ones that quietly overrode somebody else."
+        /* It said "every permission grant, connection and approval decision",
+           which is true and describes about one row in eight. The rest is Divo
+           acting — tool runs, skill lookups — and a reader who trusted the
+           sentence would have read 174 tool invocations as governance changes
+           nobody could account for. */
+        description="What Divo did, and who changed what it may do. Permission grants, connections and approval decisions are recorded alongside the runs themselves — including the changes that quietly overrode somebody else."
       />
 
       <div className="filters">
@@ -1121,10 +1146,13 @@ export function CompanyAudit({ replay }: Props) {
             type="button"
             className="ws-chip"
             data-on={kinds.includes(k)}
-            data-empty={!counts[k]}
+            data-empty={!loadingLog && !counts[k]}
             onClick={() => toggleKind(k)}
           >
-            {KIND_LABEL[k]}<span className="n">{counts[k] ?? 0}</span>
+            {/* No number until there is one. A chip reading "Permissions 0"
+                during the read is a claim that nothing was ever changed, and it
+                is the answer an auditor is least able to check. */}
+            {KIND_LABEL[k]}{loadingLog ? null : <span className="n">{counts[k] ?? 0}</span>}
           </button>
         ))}
         {filtered ? (
@@ -1135,12 +1163,24 @@ export function CompanyAudit({ replay }: Props) {
       </div>
 
       <Panel>
-        <div className="ws-sum">
-          <span><b>{list.length}</b> of {entries.length} changes</span>
-          <span className="sep" />
-          <span><b>{new Set(list.map((e) => e.actorId)).size}</b> people</span>
-        </div>
-        {!r1 || loading ? <SkelRows n={6} icon={false} /> : list.length === 0 ? (
+        {/* The tally waits for the rows it is tallying. It sat above the
+            skeletons reading "0 of 0 changes | 0 people" — a page stating the
+            audit log is empty while still fetching it. */}
+        {loadingLog ? (
+          <div className="ws-sum"><Skel w={150} h={11} /></div>
+        ) : (
+          <div className="ws-sum">
+            <span><b>{list.length}</b> of {entries.length} {entries.length === 1 ? 'change' : 'changes'}</span>
+            <span className="sep" />
+            {(() => {
+              // "1 people" — the count is usually plural, so the singular was
+              // never seen until a company had one active person in the window.
+              const actors = new Set(list.map((e) => e.actorId)).size
+              return <span><b>{actors}</b> {actors === 1 ? 'person' : 'people'}</span>
+            })()}
+          </div>
+        )}
+        {loadingLog ? <SkelRows n={6} icon={false} /> : list.length === 0 ? (
           <Empty
             title="Nothing matches"
             body={filtered
@@ -1201,7 +1241,7 @@ export function CompanyAudit({ replay }: Props) {
           </Fade>
         )}
         <div className="ws-panel-foot">
-          Written on every permission change. Reads are never recorded, so an empty day means nothing was altered.
+          Written on every permission change and every governed tool run. A read Divo was never asked to make is not recorded.
         </div>
       </Panel>
     </>
@@ -1343,7 +1383,13 @@ export function CompanyAiOps({ replay, go }: Props) {
                           <span className="avatar">{initialsOf(r.userName, r.userName ?? '?')}</span>
                           <div className="ws-row-main">
                             <b>
-                              {r.latestSummary ?? 'No summary recorded'}
+                              {/* Was `latestSummary ?? 'No summary recorded'`.
+                                  Almost no run has a summary, so this list read
+                                  as the same sentence 174 times — the fallback
+                                  `runTitle` already solved for the member rail,
+                                  hand-rolled again here and twice more on the
+                                  detail screens. */}
+                              {runTitle({ summary: r.latestSummary, channel: r.channel })}
                               {r.status === 'running' && r.channel === 'lark' ? (
                                 <span className="ws-note" title="The LLM proxy creates Lark runs and never closes them, so status and duration are unreliable for this channel.">
                                   status unknown
@@ -1351,7 +1397,13 @@ export function CompanyAiOps({ replay, go }: Props) {
                               ) : null}
                             </b>
                             <p>
-                              {r.userName ?? 'Unattributed'} · {ago(r.startedAt)} · {CHANNEL_LABEL[r.channel] ?? r.channel}
+                              {r.userName ?? 'Unattributed'} · {ago(r.startedAt)}
+                              {/* The channel only when the title above is not
+                                  already the channel. Most runs record no
+                                  summary, so most titles fall back to "Asked in
+                                  Lark" — printing "· Lark" underneath said it
+                                  twice in a two-line row. */}
+                              {r.latestSummary ? ` · ${CHANNEL_LABEL[r.channel] ?? r.channel}` : ''}
                               {durationLabel(r.durationMs) ? ` · ${durationLabel(r.durationMs)}` : ''}
                               {r.errorCode ? ` · ${r.errorCode}` : ''}
                             </p>

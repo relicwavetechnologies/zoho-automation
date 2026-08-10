@@ -275,7 +275,11 @@ export function TeamHome({ replay, go }: Props) {
   const dept = useMyManagedDepartment()
   const [r1, r2] = useStaged([260, 560], replay)
   const { snapshot, loading, refused } = useDepartment(dept?.id)
-  const { usage } = useTeamUsage(dept?.id)
+  // `loading` was dropped on the floor and the panel gated on the staged timer
+  // instead, so "Team cost $0.00 · 0 tasks" appeared at 560ms whether or not
+  // the figure had arrived — a zero that means "not yet" reads exactly like a
+  // zero that means "nobody spent anything".
+  const { usage, loading: usageLoading } = useTeamUsage(dept?.id)
   const { coverage } = useDepartmentMatrix(dept?.id)
   const { awaitingMe } = useApprovals()
 
@@ -327,7 +331,18 @@ export function TeamHome({ replay, go }: Props) {
       <PageHeader
         eyebrow={dept.name}
         title="Your team"
-        description={`${people.length} ${people.length === 1 ? 'person' : 'people'}. You decide what Divo may do for each of them, and what it must ask you first.`}
+        /*
+         * The count waits for the count.
+         *
+         * `people` is an empty array until the snapshot lands, and rendering
+         * its length regardless put "0 people" at the top of the page while the
+         * panel below it was still honestly showing skeletons — the header
+         * asserting a number the page did not have yet, and the worst possible
+         * one for a manager to read about their own team.
+         */
+        description={loading
+          ? 'You decide what Divo may do for each of them, and what it must ask you first.'
+          : `${people.length} ${people.length === 1 ? 'person' : 'people'}. You decide what Divo may do for each of them, and what it must ask you first.`}
       />
       <TeamSwitch />
       <div className="ws-stack">
@@ -378,7 +393,7 @@ export function TeamHome({ replay, go }: Props) {
 
           <Panel title="Team cost" source="teamUsage">
             <div className="ws-panel-body">
-              {!r2 ? <Skel w="100%" h={90} /> : (
+              {!r2 || usageLoading ? <Skel w="100%" h={90} /> : (
                 <Fade>
                   <div className="ws-num" style={{ color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
                   <div className="ws-sub" style={{ marginTop: 6 }}>last {usage.days} days · {usage.runs} tasks</div>
