@@ -6,7 +6,7 @@
  * content lands — the thing that makes an app feel assembled rather than
  * thrown at the screen.
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   AlertTriangle, Boxes, CalendarClock, Check, ChevronRight, FileDown, Globe, Inbox, Library,
   Lock, MoreHorizontal, X,
@@ -483,6 +483,133 @@ export const Spark = ({ data }: { data: number[] }) => {
       {data.map((v, i) => (
         <i key={i} style={{ height: `${(v / max) * 100}%` }} data-hot={i >= data.length - 7} />
       ))}
+    </div>
+  )
+}
+
+/**
+ * Spend over time, as a line with the area under it filled.
+ *
+ * The calendar answers "which days" and lives on Home. Repeating it on the team
+ * page would be the same widget twice, and the question there is different —
+ * a manager wants the shape of the trend, whether spend is climbing or a single
+ * week carried the month, which a grid of squares makes you reconstruct square
+ * by square.
+ *
+ * Drawn in real pixels off a `ResizeObserver` rather than a scaled `viewBox`:
+ * `preserveAspectRatio="none"` stretches the stroke with the box, so a line
+ * that is 1.5px on a narrow card is 4px on a wide one and the grid goes with it.
+ */
+export function TrendChart({ data, format = money, height = 190 }: {
+  data: { date: string; value: number }[]
+  format?: (value: number) => string
+  height?: number
+}) {
+  const [box, setBox] = useState<HTMLDivElement | null>(null)
+  const [width, setWidth] = useState(0)
+  const [hover, setHover] = useState<number | null>(null)
+
+  /*
+   * Measured on layout first, then watched.
+   *
+   * Leaving the first width to `ResizeObserver` alone deadlocks whenever the
+   * element starts at zero — no width means no `<svg>`, no `<svg>` means no
+   * content, and a box with no content never resizes, so the observer has
+   * nothing to report and the chart never appears. Reading `clientWidth`
+   * synchronously breaks that circle; the observer then only has to handle
+   * genuine changes.
+   */
+  useLayoutEffect(() => {
+    if (!box) return
+    const measure = () => setWidth(box.clientWidth)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(box)
+    // A pane that opens at zero width — a hidden tab, a collapsed split — fires
+    // no resize on the element itself, so the window is watched too.
+    window.addEventListener('resize', measure)
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure) }
+  }, [box])
+
+  const PAD = { top: 10, right: 2, bottom: 22, left: 2 }
+  const plotW = Math.max(0, width - PAD.left - PAD.right)
+  const plotH = Math.max(0, height - PAD.top - PAD.bottom)
+  // A flat zero series still gets a baseline rather than dividing by nothing.
+  const max = Math.max(...data.map((d) => d.value), 0) || 1
+
+  const xOf = (i: number) => PAD.left + (data.length < 2 ? plotW / 2 : (i / (data.length - 1)) * plotW)
+  const yOf = (v: number) => PAD.top + plotH - (v / max) * plotH
+
+  const line = data.map((d, i) => `${i === 0 ? 'M' : 'L'}${xOf(i).toFixed(1)},${yOf(d.value).toFixed(1)}`).join(' ')
+  const area = data.length > 0
+    ? `${line} L${xOf(data.length - 1).toFixed(1)},${(PAD.top + plotH).toFixed(1)} L${xOf(0).toFixed(1)},${(PAD.top + plotH).toFixed(1)} Z`
+    : ''
+
+  const at = hover !== null ? data[hover] : undefined
+  const dayText = (iso: string) =>
+    new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+
+  return (
+    <div className="ws-trend" ref={setBox}>
+      {width > 0 && data.length > 0 ? (
+        <svg
+          width={width}
+          height={height}
+          role="img"
+          aria-label={`Daily spend, ${dayText(data[0]!.date)} to ${dayText(data[data.length - 1]!.date)}`}
+          onMouseLeave={() => setHover(null)}
+          onMouseMove={(e) => {
+            const x = e.clientX - e.currentTarget.getBoundingClientRect().left - PAD.left
+            const i = Math.round((x / Math.max(plotW, 1)) * (data.length - 1))
+            setHover(Math.min(data.length - 1, Math.max(0, i)))
+          }}
+        >
+          <defs>
+            <linearGradient id="ws-trend-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--cur-primary)" stopOpacity="0.30" />
+              <stop offset="100%" stopColor="var(--cur-primary)" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+
+          {/* Three rules, dashed and quiet. They give the eye a height to read
+              against; any more and the grid competes with the line. */}
+          {[0, 0.5, 1].map((t) => (
+            <line
+              key={t}
+              x1={PAD.left} x2={PAD.left + plotW}
+              y1={PAD.top + plotH * t} y2={PAD.top + plotH * t}
+              className="ws-trend-grid"
+            />
+          ))}
+
+          <path d={area} fill="url(#ws-trend-fill)" />
+          <path d={line} className="ws-trend-line" fill="none" />
+
+          {at ? (
+            <>
+              <line
+                x1={xOf(hover!)} x2={xOf(hover!)} y1={PAD.top} y2={PAD.top + plotH}
+                className="ws-trend-guide"
+              />
+              <circle cx={xOf(hover!)} cy={yOf(at.value)} r={3.5} className="ws-trend-dot" />
+            </>
+          ) : null}
+        </svg>
+      ) : null}
+
+      <div className="ws-trend-foot">
+        {/* The hovered day replaces the range while the pointer is on the plot,
+            so the number under the cursor is readable without a floating box
+            that would clip at the card's edge. */}
+        {at ? (
+          <span className="ws-trend-read">{dayText(at.date)} · <b>{format(at.value)}</b></span>
+        ) : data.length > 0 ? (
+          <>
+            <span>{dayText(data[0]!.date)}</span>
+            <span>{dayText(data[data.length - 1]!.date)}</span>
+          </>
+        ) : null}
+      </div>
     </div>
   )
 }

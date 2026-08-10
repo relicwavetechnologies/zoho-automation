@@ -20,8 +20,8 @@ import {
   Trash2, TriangleAlert, UserPlus, Users,
 } from 'lucide-react'
 import {
-  Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, Heatmap, NoAccess, PageHeader, Panel, Prompt,
-  RowMenu, Seg, Skel, SkelRows, Switch, ToolMark, listPhrase, money, useStaged,
+  Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt,
+  RowMenu, Seg, Skel, SkelRows, Switch, ToolMark, TrendChart, listPhrase, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
 import { notify } from '@/lib/notify'
@@ -1651,13 +1651,39 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
 }
 
 /* ══ Team usage ════════════════════════════════════════ */
+/**
+ * The ranges the picker offers, all slices of one fetch.
+ *
+ * Sixteen weeks is the window the endpoint returns and the one the personal
+ * page uses, so it stays the default — the shorter ranges answer "what has it
+ * been doing lately" without another round trip.
+ */
+const RANGES = [
+  { days: 7, short: '7d' },
+  { days: 30, short: '30d' },
+  { days: USAGE_DAYS, short: '16w' },
+] as const
+
+const RANGE_LABEL: Record<number, string> = {
+  7: 'Daily spend, last 7 days',
+  30: 'Daily spend, last 30 days',
+  [USAGE_DAYS]: `Daily spend, last ${USAGE_WEEKS} weeks`,
+}
+
 export function TeamUsage({ replay }: Props) {
   const dept = useMyManagedDepartment()
   const [r1] = useStaged([320], replay)
   // The same window as the personal page, so the two calendars are comparable
   // and a manager is not reading their own sixteen weeks against a team thirty.
+  // The full window is fetched once; the picker slices it here. A range change
+  // is a different view of data already in hand, not a reason to ask again.
   const { usage, loading } = useTeamUsage(dept?.id, USAGE_DAYS)
-  const spend = useMemo(() => summarizeSpend(usage.series), [usage.series])
+  const [range, setRange] = useState<number>(USAGE_DAYS)
+  const shown = useMemo(() => usage.series.slice(-range), [usage.series, range])
+  // The figures follow the range, so "busiest day" is always the busiest day of
+  // the chart above it rather than of a window nobody is looking at.
+  const spend = useMemo(() => summarizeSpend(shown), [shown])
+  const shownTotal = useMemo(() => shown.reduce((sum, p) => sum + p.spendUsd, 0), [shown])
 
   if (!dept) return <NoTeam />
 
@@ -1674,16 +1700,24 @@ export function TeamUsage({ replay }: Props) {
       <TeamSwitch />
       <div className="ws-stack">
         {/*
-          The same card as the member dashboard's and Home's, because it answers
-          the same question about a different subject: three figures, a calendar
-          that spans the panel, three facts under it.
-
-          Nothing here is invented. The calendar is the team's own spend by day,
-          priced by the helpers the personal figure uses, and every fact under it
-          is read off that series — so a quiet fortnight is drawn as quiet rather
-          than hidden inside a total.
+          Nothing here is invented. The line is the team's own spend by day,
+          priced by the helpers the personal figure uses, and every figure around
+          it is read off the slice on screen — so changing the range changes the
+          numbers with it rather than leaving them describing a window nobody is
+          looking at.
         */}
-        <Panel title={`Your team's last ${USAGE_WEEKS} weeks`} source="teamUsage">
+        <Panel
+          title="Team usage"
+          description={RANGE_LABEL[range] ?? `Last ${range} days`}
+          source="teamUsage"
+          aside={ready ? (
+            <Seg
+              value={String(range)}
+              onChange={(v) => setRange(Number(v))}
+              options={RANGES.map((r) => ({ value: String(r.days), label: r.short }))}
+            />
+          ) : undefined}
+        >
           <div className="ws-panel-body">
             {!ready ? (
               <>
@@ -1700,8 +1734,15 @@ export function TeamUsage({ replay }: Props) {
                 <div className="ws-stat3">
                   <div>
                     <div className="ws-lbl">Cost</div>
-                    <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
-                    <div className="ws-sub" style={{ marginTop: 5 }}>{usage.runs} task{usage.runs === 1 ? '' : 's'}</div>
+                    {/* The slice on screen, not the whole window — a figure that
+                        disagreed with the chart under it would be the same fault
+                        the calendar's own total had. */}
+                    <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(shownTotal)}</div>
+                    <div className="ws-sub" style={{ marginTop: 5 }}>
+                      {range === USAGE_DAYS
+                        ? `${usage.runs} task${usage.runs === 1 ? '' : 's'}`
+                        : `of ${money(usage.spendUsd)} in ${USAGE_WEEKS} weeks`}
+                    </div>
                   </div>
                   <div>
                     <div className="ws-lbl">Using Divo</div>
@@ -1720,16 +1761,24 @@ export function TeamUsage({ replay }: Props) {
                   </div>
                 </div>
 
-                <div style={{ marginTop: 22 }}>
-                  <Heatmap
-                    data={usage.series.map((p) => ({ date: p.date, value: p.spendUsd }))}
-                    format={(n) => money(n)}
-                  />
+                {/*
+                  A trend, not a calendar. The calendar is on Home answering
+                  "which days"; repeating it here would be the same widget
+                  twice, and the question a manager brings to a team page is
+                  whether spend is climbing or one week carried the quarter —
+                  which a grid of squares makes you reconstruct square by
+                  square.
+                */}
+                <div style={{ marginTop: 18 }}>
+                  <TrendChart data={shown.map((p) => ({ date: p.date, value: p.spendUsd }))} />
                 </div>
                 <div className="ws-heat-facts">
                   <div>
                     <div className="ws-lbl">Days used</div>
-                    <div style={{ marginTop: 5 }}>{spend.activeDays} of {usage.days}</div>
+                    {/* Out of the days on screen, not the days fetched. On the
+                        7-day range this read "7 of 112", which is a true pair of
+                        numbers describing two different windows. */}
+                    <div style={{ marginTop: 5 }}>{spend.activeDays} of {shown.length}</div>
                   </div>
                   <div>
                     <div className="ws-lbl">On a day they used it</div>
