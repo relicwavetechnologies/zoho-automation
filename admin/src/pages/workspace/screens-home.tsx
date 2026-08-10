@@ -23,7 +23,10 @@ import {
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
-import { useMyRuns, useMyUsage, changePct, durationLabel, runTitle } from './data/use-my-activity'
+import {
+  useMyRuns, useMyUsage, changePct, durationLabel, runTitle,
+  dayLabel, summarizeSpend, USAGE_DAYS, USAGE_WEEKS,
+} from './data/use-my-activity'
 import { useConnections, CONNECTABLE } from './data/use-connections'
 import type { MyRun } from './data/use-my-activity'
 import type { Provider } from './fixtures'
@@ -55,50 +58,6 @@ const PITCH: Record<Provider, string> = {
   canva: 'Let Divo open and build on your Canva designs instead of describing them back to you.',
   airtable: 'Give Divo your bases so it can look things up and keep records current.',
   aitable: 'Connect AITable with a key so Divo can read and update your tables.',
-}
-
-/**
- * Sixteen weeks, matching the mail dashboard's calendar.
- *
- * Not a preference — it is the width the heatmap is drawn for. Sixteen columns
- * of seven fills a card at a legible cell size; thirty days is five columns and
- * cannot, however it is laid out. The backend caps `days` at this same number.
- */
-const USAGE_DAYS = 112
-const USAGE_WEEKS = USAGE_DAYS / 7
-
-/** Today, yesterday, or a short date — the same wording the mail card uses. */
-const dayLabel = (iso: string): string => {
-  const at = new Date(iso)
-  const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
-  const days = Math.round((midnight(new Date()) - midnight(at)) / 86_400_000)
-  if (days === 0) return 'Today'
-  if (days === 1) return 'Yesterday'
-  return at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
-}
-
-/**
- * The facts a total cannot give you.
- *
- * `$1.13 over sixteen weeks` reads as nothing at all until you know whether it
- * was one heavy day or eighty quiet ones — so the average is over days that
- * were actually used, not over the window, which would divide by the silence
- * and report a number nobody spent.
- */
-function summarizeSpend(series: { date: string; spendUsd: number }[]) {
-  const active = series.filter((p) => p.spendUsd > 0)
-  const busiest = active.reduce<{ date: string; value: number } | null>(
-    (best, p) => (best && best.value >= p.spendUsd ? best : { date: p.date, value: p.spendUsd }),
-    null,
-  )
-  const total = active.reduce((sum, p) => sum + p.spendUsd, 0)
-  return {
-    busiest,
-    activeDays: active.length,
-    perActiveDay: active.length > 0 ? total / active.length : 0,
-    // Series is oldest-first, so the last spending day is the most recent one.
-    last: active.length > 0 ? active[active.length - 1]!.date : null,
-  }
 }
 
 const DISMISSED_KEY = 'divo.home.dismissed'

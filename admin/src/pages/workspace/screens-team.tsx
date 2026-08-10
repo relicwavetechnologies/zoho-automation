@@ -20,8 +20,8 @@ import {
   Trash2, TriangleAlert, UserPlus, Users,
 } from 'lucide-react'
 import {
-  Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
-  Switch, listPhrase, money, useStaged,
+  Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, Heatmap, NoAccess, PageHeader, Panel, Prompt,
+  Seg, Skel, SkelRows, Switch, listPhrase, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
 import { notify } from '@/lib/notify'
@@ -30,6 +30,7 @@ import {
   useApprovalPolicy, useDepartment, useDepartmentMatrix, useManagedDepartments, useTeamUsage,
   type Candidate, type DeptRole, type MemberActionState, type RoleActionState, type ToolScopeSnapshot,
 } from './data/use-team'
+import { dayLabel, summarizeSpend, USAGE_DAYS, USAGE_WEEKS } from './data/use-my-activity'
 import { useApprovals, expiryLabel } from './data/use-approvals'
 
 type Props = { replay: number; toast: Toast; go: (screen: string) => void }
@@ -1326,60 +1327,125 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
 export function TeamUsage({ replay }: Props) {
   const dept = useMyManagedDepartment()
   const [r1] = useStaged([320], replay)
-  const { usage, loading } = useTeamUsage(dept?.id)
+  // The same window as the personal page, so the two calendars are comparable
+  // and a manager is not reading their own sixteen weeks against a team thirty.
+  const { usage, loading } = useTeamUsage(dept?.id, USAGE_DAYS)
+  const spend = useMemo(() => summarizeSpend(usage.series), [usage.series])
 
   if (!dept) return <NoTeam />
 
   const top = usage.people[0]
+  const ready = r1 && !loading
 
   return (
     <>
-      <PageHeader eyebrow={dept.name} title="Team usage" description="What Divo did for your team, and what it cost." />
+      <PageHeader
+        eyebrow={dept.name}
+        title="Team usage"
+        description={`What Divo did for your team over the last ${USAGE_WEEKS} weeks, and what it cost.`}
+      />
       <TeamSwitch />
       <div className="ws-stack">
-        <div className="ws-cols">
-          <Panel title="Cost by person" source="teamUsage">
-            {!r1 || loading ? <SkelRows n={5} icon={false} /> : usage.people.length === 0 ? (
-              <Empty title="Nobody in this team yet" body="Add someone and their usage will appear here." />
+        {/*
+          The same card as the member dashboard's and Home's, because it answers
+          the same question about a different subject: three figures, a calendar
+          that spans the panel, three facts under it.
+
+          Nothing here is invented. The calendar is the team's own spend by day,
+          priced by the helpers the personal figure uses, and every fact under it
+          is read off that series — so a quiet fortnight is drawn as quiet rather
+          than hidden inside a total.
+        */}
+        <Panel title={`Your team's last ${USAGE_WEEKS} weeks`} source="teamUsage">
+          <div className="ws-panel-body">
+            {!ready ? (
+              <>
+                <div className="ws-stat3">
+                  <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
+                  <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
+                  <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
+                </div>
+                <div style={{ height: 22 }} />
+                <Skel w="100%" h={130} block />
+              </>
             ) : (
               <Fade>
-                <div className="ws-panel-body">
-                  {usage.people.map((p) => (
-                    <div key={p.userId} style={{ marginBottom: 16 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 7, fontSize: 13 }}>
-                        <span>{displayName(p.name, p.email)}</span>
-                        <span className="ws-sub">{money(p.spendUsd)} · {p.runs} tasks</span>
-                      </div>
-                      <Bar
-                        pct={usage.spendUsd > 0 ? (p.spendUsd / usage.spendUsd) * 100 : 0}
-                        tone={top && p.userId === top.userId && p.spendUsd > 0 ? 'brand' : undefined}
-                      />
+                <div className="ws-stat3">
+                  <div>
+                    <div className="ws-lbl">Cost</div>
+                    <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
+                    <div className="ws-sub" style={{ marginTop: 5 }}>{usage.runs} task{usage.runs === 1 ? '' : 's'}</div>
+                  </div>
+                  <div>
+                    <div className="ws-lbl">Using Divo</div>
+                    <div className="ws-num" style={{ marginTop: 8 }}>{usage.activePeople}</div>
+                    {/* Adoption, not headcount — the number a manager acts on. */}
+                    <div className="ws-sub" style={{ marginTop: 5 }}>of {usage.totalPeople} in the team</div>
+                  </div>
+                  <div>
+                    <div className="ws-lbl">Busiest day</div>
+                    <div className="ws-num" style={{ marginTop: 8 }}>
+                      {spend.busiest ? money(spend.busiest.value) : '—'}
                     </div>
-                  ))}
+                    <div className="ws-sub" style={{ marginTop: 5 }}>
+                      {spend.busiest ? dayLabel(spend.busiest.date) : 'Nothing yet'}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 22 }}>
+                  <Heatmap
+                    data={usage.series.map((p) => ({ date: p.date, value: p.spendUsd }))}
+                    format={(n) => money(n)}
+                  />
+                </div>
+                <div className="ws-heat-facts">
+                  <div>
+                    <div className="ws-lbl">Days used</div>
+                    <div style={{ marginTop: 5 }}>{spend.activeDays} of {usage.days}</div>
+                  </div>
+                  <div>
+                    <div className="ws-lbl">On a day they used it</div>
+                    <div style={{ marginTop: 5 }}>{spend.activeDays ? money(spend.perActiveDay) : '—'}</div>
+                  </div>
+                  <div>
+                    <div className="ws-lbl">Last run</div>
+                    <div style={{ marginTop: 5 }}>{spend.last ? dayLabel(spend.last) : '—'}</div>
+                  </div>
                 </div>
               </Fade>
             )}
-          </Panel>
+          </div>
+        </Panel>
 
-          <Panel title="Summary" source="teamUsage">
-            <div className="ws-panel-body">
-              {!r1 || loading ? <Skel w="100%" h={120} /> : (
-                <Fade>
-                  <div className="ws-lbl">{usage.days}-day cost</div>
-                  <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
-                  <div style={{ marginTop: 22 }}>
-                    <div className="kv"><span className="k">Tasks</span><span className="v">{usage.runs}</span></div>
-                    <div className="kv"><span className="k">Using Divo</span><span className="v">{usage.activePeople} of {usage.totalPeople}</span></div>
-                    <div className="kv">
-                      <span className="k">Highest</span>
-                      <span className="v">{top && top.spendUsd > 0 ? displayName(top.name, top.email) : '—'}</span>
+        <Panel
+          title="Cost by person"
+          description={top && top.spendUsd > 0
+            ? `${displayName(top.name, top.email)} is the heaviest`
+            : undefined}
+          source="teamUsage"
+        >
+          {!ready ? <SkelRows n={5} icon={false} /> : usage.people.length === 0 ? (
+            <Empty title="Nobody in this team yet" body="Add someone and their usage will appear here." />
+          ) : (
+            <Fade>
+              <div className="ws-panel-body">
+                {usage.people.map((p) => (
+                  <div key={p.userId} style={{ marginBottom: 16 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 7, fontSize: 13 }}>
+                      <span>{displayName(p.name, p.email)}</span>
+                      <span className="ws-sub">{money(p.spendUsd)} · {p.runs} tasks</span>
                     </div>
+                    <Bar
+                      pct={usage.spendUsd > 0 ? (p.spendUsd / usage.spendUsd) * 100 : 0}
+                      tone={top && p.userId === top.userId && p.spendUsd > 0 ? 'brand' : undefined}
+                    />
                   </div>
-                </Fade>
-              )}
-            </div>
-          </Panel>
-        </div>
+                ))}
+              </div>
+            </Fade>
+          )}
+        </Panel>
       </div>
     </>
   )

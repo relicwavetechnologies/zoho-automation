@@ -51,10 +51,31 @@ export const startOfToday = (): Date => { const d = new Date(); d.setHours(0, 0,
  */
 export function fillSeries(byDay: Map<string, number>, days: number): { date: string; spendUsd: number }[] {
   const out: { date: string; spendUsd: number }[] = [];
-  const today = startOfToday();
+  /*
+   * UTC midnight, because that is the day `costByDay` keys by.
+   *
+   * This walked back from *local* midnight and then formatted with
+   * `toISOString`, so on a server east of Greenwich every key came out as the
+   * previous date — the whole series shifted a day against the map it reads
+   * from. In IST the newest slot was yesterday and today's spend had nowhere to
+   * go, so it was counted in the total and missing from the calendar under it.
+   * The window and the days it draws now agree.
+   */
+  const today = startOfUtcDay();
   for (let i = days - 1; i >= 0; i -= 1) {
     const key = new Date(today.getTime() - i * 86_400_000).toISOString().slice(0, 10);
     out.push({ date: key, spendUsd: byDay.get(key) ?? 0 });
   }
   return out;
 }
+
+/** Midnight UTC today — the boundary Postgres `date_trunc('day', …)` uses. */
+export const startOfUtcDay = (): Date => {
+  const d = new Date();
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+};
+
+/** The first instant of a `days`-long window ending today, in the same UTC days. */
+export const windowStart = (days: number): Date =>
+  new Date(startOfUtcDay().getTime() - (days - 1) * 86_400_000);
