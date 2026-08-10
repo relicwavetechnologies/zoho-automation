@@ -2114,7 +2114,10 @@ export function canReusePiProcess({
 }
 
 export function nativeDbSkillsEnabled(value = process.env.DIVO_PI_NATIVE_DB_SKILLS) {
-	return value === "true";
+	// Native DB skills are the Cloud-Pi architecture, not an experimental path.
+	// Keep one explicit rollback switch without making every launcher remember a
+	// hidden opt-in; unknown values still fail closed.
+	return value === undefined || value === "" || value === "true";
 }
 
 function piProcessBinding({

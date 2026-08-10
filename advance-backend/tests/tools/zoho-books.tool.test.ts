@@ -172,6 +172,34 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(items[0].date, '2026-05-01');
   });
 
+  it('allows terminal pagination beyond the former 20-page ceiling', async () => {
+    const captures: { listInput?: any } = {};
+    const booksClient = {
+      ...makeBooksClient(captures),
+      listRecords: async (input: any) => {
+        captures.listInput = input;
+        return {
+          organizationId: 'org-1',
+          items: [{ expense_id: 'exp-20', total: '10.00', currency_code: 'INR', date: '2026-05-01' }],
+          hasMore: true,
+          page: input.page,
+        };
+      },
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ booksClient });
+
+    const result = await tool.execute({
+      op: 'list_expenses',
+      page: 20,
+      limit: 100,
+    }, ctx);
+
+    assert.equal(result.ok, true);
+    assert.equal(captures.listInput.page, 20);
+    assert.equal(result.ok && result.value.nextPage, 21);
+    assert.match(tool.parameterDocs, /page \(1-100\)/);
+  });
+
   it('surfaces contact payable/receivable totals in list_contacts preview', async () => {
     const booksClient = {
       listRecords: async (input: { moduleName: string }) => ({
@@ -752,6 +780,13 @@ describe('zohoBooks expanded execution', () => {
       exportAll: true,
       destinationConnectionId: '22222222-2222-4222-8222-222222222222',
     }).success, false);
+  });
+
+  it('keeps explicit exports out of the direct Pi preview path', () => {
+    const tool = makeTool();
+    assert.match(tool.description, /Do not call this registered Pi tool for a preview first/i);
+    assert.match(tool.description, /begin the local workflow and call Zoho through divo-local/i);
+    assert.match(tool.description, /Script mode is not an export or transfer contract/i);
   });
 
   it('bounds script results inline and leaves complete artifacts to dataExport', async () => {

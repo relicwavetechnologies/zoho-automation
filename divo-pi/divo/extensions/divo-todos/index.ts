@@ -125,8 +125,9 @@ export default function divoTodosExtension(pi: ExtensionAPI) {
 		description:
 			"Show the user the steps this request was broken into, and which one is in progress. Replaces the whole checklist on every call. Display only: it is not a Lark task, not a document checklist, and not a reminder — it disappears when the run ends, grants no permission, and performs no work.",
 		promptSnippet:
-			"For a request that takes several distinct steps, call divo_todos once with the full plan, then again as each step starts and finishes, so the person watching can see where the work is.",
+			"For a request that takes several distinct steps, first read any exact matched skill, then call divo_todos with the skill-informed plan and update it as each step starts and finishes.",
 		promptGuidelines: [
+			"A specialist skill defines the workflow. When one matches, read it before creating this checklist; never invent a preview, confirmation, or execution step that the skill does not require.",
 			"This is the progress display for work you are doing right now. It is never what the user means when they ask for a to-do list, a task, a checklist, or a reminder they can keep.",
 			"A task the user wants to own, assign, or see later is a Lark task — reach it through the company capability gateway, not here. A checklist that belongs inside a document is a document todo block. Both of those outlive the conversation; this does not.",
 			"If a request could mean either, ask. Showing this checklist when the user wanted a real task looks like it worked and leaves nothing behind.",

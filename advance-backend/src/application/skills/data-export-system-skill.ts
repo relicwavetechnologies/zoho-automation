@@ -11,22 +11,27 @@ import {
   DATA_EXPORT_XLSX_CELL_LIMIT,
   DATA_EXPORT_XLSX_ROW_LIMIT,
 } from '../data-export/data-export-limits';
-import { DATA_EXPORT_SAMPLE_ROW_LIMIT } from '../data-export/export-candidate';
 
 export const DATA_EXPORT_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   slug: 'secure-data-export',
   name: 'Secure Data Export',
-  summary: `Plan and run governed source exports without putting rows in model context; Divo chooses account, format, sample, and queue safely.`,
+  summary: `Complete an opaque provider exportCandidate when its specialist explicitly says terminal-safe paging is unavailable; never use this compatibility route for Zoho Books or CRM.`,
   markdown: `# Secure Data Export
 
 In Lark, supported source tools return bounded chat evidence plus an
 \`exportCandidate\` when the same backend-held recipe can be replayed as a
 private file. This includes Shopify analytics, order lists, and customer lists
 (\`shopify_snapshot\`) as well as
-Semrush, OMS, Menhood, and Zoho governed exports. Preserve that opaque candidate and do not mention its ID to the
+Semrush, OMS, and Menhood governed exports. Preserve that opaque candidate and do not mention its ID to the
 member. If the member asks for Excel/XL/XLSX, CSV, Sheet, all rows, full data,
 or an export artifact, plan the export from the **table you showed** in your
 last answer:
+
+Zoho Books and Zoho CRM are not this route. Their specialists expose
+terminal-safe paging, so a complete Zoho artifact must use
+\`divo-python-automation\` from the start. Do not preview Zoho first, create a
+Zoho \`exportCandidate\`, use a direct \`zoho_books\` recipe, or ask for another
+confirmation when the member already requested the artifact.
 
 1. Export only after the member names a format or asks for a file.
 2. Identify which \`exportCandidate\` matches that table — not every tool call
@@ -55,18 +60,16 @@ instruction, or sources that have no backend-replayable export candidate.
 
 \`dataExport op=plan\` is the only place that decides whether to queue the full
 export, ask which writable Google account should own it, ask the member to
-connect Google, or require a ${DATA_EXPORT_SAMPLE_ROW_LIMIT.toLocaleString('en-IN')}-row sample before the full run. If it returns
+connect Google, or block an unsafe plan. A valid explicit plan queues the full
+export immediately; do not create a sample or ask for another confirmation. If it returns
 \`choose_destination\`, show the returned account labels/emails, ask which
 Google account should own the file, and retry only with the exact returned
 \`connectionId\` after the member picks one. Do not choose a saved, default, or
-guessed account when the backend returned multiple choices. If it returns
-\`sample_required\`, explain that Divo will make a private sample first, call
-\`dataExport op=sample\` when the member agrees, and call
-\`dataExport op=confirm_sample\` only after the member says the sample looks
-right. The sample and final artifacts are created in Google Drive/Sheets; the
-database stores only the control receipt and replay plan.
+guessed account when the backend returned multiple choices. The final artifact
+is created in Google Drive/Sheets; the database stores only the control receipt
+and replay plan.
 
-When \`dataExport\` queues a sample or full export, say it has started or been
+When \`dataExport\` queues a full export, say it has started or been
 queued; do not say the export is finished. The completion or failure card is
 the source of truth for the final artifact. If the member asked for all rows or
 a complete dataset, still say the queued export will run under the selected
@@ -118,16 +121,11 @@ The backend re-checks dataExport permission, source read permission, invoker acc
   toolIds: ['dataExport'],
   tags: ['divo', 'data', 'export', 'google-drive', 'google-sheets'],
   aliases: [
-    'export data',
-    'full export',
-    'complete export',
-    'download csv',
-    'excel export',
-    'xlsx export',
-    'large dataset',
-    'google sheet export',
-    'airtable export',
-    'zoho books export',
+    'export candidate',
+    'provider export candidate',
+    'semrush export',
+    'oms export',
+    'menhood export',
     'shopify export',
   ],
   sortOrder: 29,

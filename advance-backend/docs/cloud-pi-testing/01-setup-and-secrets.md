@@ -91,6 +91,10 @@ Then start the controller in the foreground:
 MAX_ACTIVE_RUNS=2 node divo/local-rpc-server.mjs
 ```
 
+Native backend skills are enabled by default. Use
+`DIVO_PI_NATIVE_DB_SKILLS=false` only as an explicit rollback while diagnosing
+a native-skill bootstrap failure; do not use it for normal harness runs.
+
 The controller listens at `127.0.0.1:4317`. On startup it stops any
 Divo-labelled container left running by an interrupted local test. It does not
 delete the user's durable workspace volume.
@@ -155,4 +159,3 @@ pnpm stop
 `pnpm stop` stops the two local Redis processes and the DB tunnel. It does not
 delete Docker containers, images, networks, or user volumes. Do not add a
 cleanup command unless deletion was explicitly requested.
-

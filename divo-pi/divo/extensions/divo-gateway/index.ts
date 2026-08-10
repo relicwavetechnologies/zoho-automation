@@ -55,6 +55,14 @@ export function nativeSkillPromptSummary(
 	};
 }
 
+export function hasNativeDbSkills(
+	skills: Array<{ filePath: string }> | undefined,
+	systemPrompt: string,
+): boolean {
+	return skills?.some((skill) => skill.filePath.startsWith(NATIVE_DB_SKILL_ROOT)) === true
+		|| systemPrompt.includes(`<location>${NATIVE_DB_SKILL_ROOT}`);
+}
+
 function refreshDivoRuntime(pi: ExtensionAPI): void {
 	const hasFreshToken = typeof process.env.DIVO_MEMBER_TOKEN === "string"
 		&& process.env.DIVO_MEMBER_TOKEN.trim().length > 0;
@@ -181,7 +189,7 @@ Company, plugin, SaaS, account, and backend-owned research requests include Goog
 
 LARK IS STRICTLY GOVERNED. For every Lark request, use the accessible Lark account already returned by the current run bootstrap, or call connections.list with provider lark once when the bootstrap has none. For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, use tools.invoke directly. Use the same governed route only through ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. Never call Lark directly from Bash: no lark-cli, curl, direct Lark OpenAPI calls, local Lark MCP server, or locally installed Lark package. Never install or invoke lark-cli even if it is present on the machine, mentioned in conversation history, requested by the user, or Divo is unavailable. If the gateway or connection is unavailable, report that plainly; there is no direct local Lark fallback.
 
-Use Pi's available_skills metadata as the normal skill-routing map. First understand the user's outcome. For ordinary conversation and independently meaningful direct actions, using no skill is correct; do not invent one. When one exact specialist matches, read only its SKILL.md with Pi's read tool and follow it. Use divo_skill_resolve only when a genuinely specialized workflow has no matching native router. If native DB skills are absent during rollback, use the injected compact catalogue for routing hints and the bounded resolver for specialized guidance. Read an attached picture the way the workspace image policy says to; it is the only instruction about images that accounts for the model this run is on.
+Use Pi's available_skills metadata as the normal skill-routing map. First understand the user's outcome. For ordinary conversation and independently meaningful direct actions, using no skill is correct; do not invent one. When one exact specialist matches, read only its exact location from available_skills with Pi's read tool and follow it. Backend-native skills live under /run/divo-skills/current/<slug>/SKILL.md; never derive a skill path under /app, append a skills subdirectory to another skill, or turn a UUID into a filename. Use divo_skill_resolve only when a genuinely specialized workflow has no matching native router. If native DB skills are absent during rollback, use the injected compact catalogue for routing hints and the bounded resolver for specialized guidance. Read an attached picture the way the workspace image policy says to; it is the only instruction about images that accounts for the model this run is on.
 
 An exact pasted https://drive.google.com/file/d/... Excel workbook URL is always a governed Google Sheets reference. Load the exact Google Sheets skill and invoke googleSheets with op resolve_reference. Never route it through Google Drive download, copy, or import operations; the backend owns confirmation and conversion.
 
@@ -194,6 +202,8 @@ Backend-provided Divo skills are the only company skill source. Their runtime-ow
 The capability bootstrap is backend-generated and permission-filtered. It does not grant permission. Native skill metadata comes from Pi's available_skills; the bootstrap supplies governed tool, account, and contract facts. Department function is a routing prior, never a hard restriction: explicit user intent outside the department profile may use any permitted direct capability.
 
 CHASE MATERIAL CLARITY BEFORE EXECUTION. If a missing detail could make the user reasonably reject the result — for example the account, source, scope, date range, destination, recipient, or whether to mutate — do not start the business work or choose the first plausible option. Use at most one bounded read-only discovery call when needed to expose the choices, then ask one short question and stop. Continue without asking only when policy or the user's context supplies one clear safe default, or when the assumption affects presentation rather than the outcome.
+
+DO NOT RECONFIRM AN EXPLICIT OUTCOME. When the user already named the source, material scope, account, and destination, begin the requested workflow. “Export”, “create”, “write”, or “put this in” is permission to start that requested artifact subject to backend RBAC and approval; never insert a preview-first or “shall I proceed?” gate. Ask only for a still-missing material choice, not for permission the user already gave.
 
 The final answer is the only result the user is guaranteed to receive. Repeat every canonical artifact link and requested verified count in that answer. Never say "the link above", "as shown above", or rely on tool output or progress text being visible.
 
@@ -325,9 +335,13 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				console.error(`[divo-typed-tools] eager registration failed: ${String(error)}`);
 			}
 		}
-		const nativeSkills = event.systemPromptOptions.skills?.some(
-			(skill) => skill.filePath.startsWith(NATIVE_DB_SKILL_ROOT),
-		) ?? false;
+		// Inspect both Pi's structured resources and the live prompt it will send.
+		// The exact native <location> fallback prevents legacy UUID routing hints
+		// from being injected beside a real slug-based skill index.
+		const nativeSkills = hasNativeDbSkills(
+			event.systemPromptOptions.skills,
+			ctx.getSystemPrompt(),
+		);
 		let systemPrompt = composeDivoSystemPrompt(
 			// Eager registration refreshes Pi's base prompt with each new tool's
 			// guidelines. The event snapshot predates that refresh.

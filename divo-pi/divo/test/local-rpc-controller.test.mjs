@@ -457,8 +457,11 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 	}), false);
 });
 
-test("native DB skills are opt-in and render as Pi skill resources", () => {
+test("native DB skills are on by default with an explicit rollback switch", () => {
+	assert.equal(nativeDbSkillsEnabled(undefined), true);
+	assert.equal(nativeDbSkillsEnabled(""), true);
 	assert.equal(nativeDbSkillsEnabled("true"), true);
+	assert.equal(nativeDbSkillsEnabled("false"), false);
 	assert.equal(nativeDbSkillsEnabled("1"), false);
 
 	const bootstrap = validateNativeSkillBootstrap({

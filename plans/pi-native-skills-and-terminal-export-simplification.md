@@ -49,8 +49,10 @@ credentials, approvals, schemas, rate limits, and audit.
   loaded by Pi's native resource loader.
 - The custom `divo_skill_view` tool and process-local skill provenance ledger
   have been removed. Skills are guidance; backend policy remains authoritative.
-- `dataExport` still owns candidates, plans, samples, queues, Lark cards,
-  workers, provider replay, Google delivery, and follow-up continuity.
+- `dataExport` still owns compatibility candidates, plans, queues, Lark cards,
+  workers, provider replay, Google delivery, and follow-up continuity. Its
+  model-facing sample/confirm workflow has been removed: a valid explicit plan
+  queues the full governed job after destination and policy checks.
 - Cloud `divo-local` enablement is committed in `0d1c083fe`. The launcher lives
   under runtime-owned `DIVO_HOME`, survives warm turn rotation, and is removed
   on session shutdown.
@@ -234,6 +236,10 @@ resume tokens, caps, and failure classification.
       Airtable, files/documents, and Google guidance as each contract migrates.
 - [ ] Keep a temporary `dataExport` compatibility instruction only for sources
       that still lack the new contract; never fake missing rows.
+- [x] Remove `dataExport op=sample` and `op=confirm_sample` from the typed tool,
+      orchestration service, skills, and routers. Explicit valid plans now go
+      directly to the full governed job; legacy persistence/worker fields stay
+      only until pre-cutover jobs are drained.
 
 Current proof: Zoho Books exposes `page`/`nextPage`; Zoho CRM exposes
 `page`/`nextPage`/`pageToken`; their native skills, data router, Python skill,
@@ -322,6 +328,18 @@ calls because URL resolution required an account choice and two exact mutation
 schemas; those metadata descriptions no longer consume connection data budgets.
 Real Google create/update/read calls remain rate-limited and governed.
 
+The full April–July Zoho expense replay now passes the primary multi-page
+scenario. Cloud Pi read the native Zoho Books, Python automation, and Google
+Sheets skills, wrote one persistent script, and used three Bash executions
+while correcting the script in place. The final run fetched 1,110 expenses
+across 45 governed pages, wrote 1,111 Sheet rows including the header, and
+verified the top and last rows. The Pi transcript contained 13 top-level tool
+calls and no `dataExport`; the script contained no credential, member token,
+or backend URL. The real Sheet link and `1,110/1,110/verified` outcome were
+delivered through the production Lark final-card path. This run also exposed
+and removed two stale hard-coded page-20 limits: schema, docs, and `nextPage`
+now share one 100-page ceiling, with a regression proving page 20 returns 21.
+
 **Exit gate:** real Google artifact link, verified values, reconciled counts,
 and trace evidence showing only governed calls.
 
@@ -333,7 +351,7 @@ and trace evidence showing only governed calls.
 - [ ] Decide the long-running-job boundary from evidence:
   - interactive/bounded work stays in terminal;
   - if work can exceed the Pi run limit, retain one minimal backend async job
-    surface rather than the current candidate/offer/sample state machine.
+      surface rather than the remaining candidate/offer state machine.
 - [ ] Preserve Google resource continuity and workbook conversion separately;
       they are not inherently part of export planning.
 

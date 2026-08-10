@@ -169,7 +169,7 @@ describe("department persona", () => {
 				availableTools: [{ toolId: "googleSheets", actions: ["read", "update"] }],
 				preferredSkills: [],
 				preferredTools: [],
-				routingHints: [],
+				routingHints: ["load skill-daily-report with divo_skill_view"],
 			},
 		}));
 
@@ -193,6 +193,7 @@ describe("department persona", () => {
 		assert.match(nativePrompt, /googleSheets: read, update/);
 		assert.doesNotMatch(nativePrompt, /Daily Report \[skillId=/);
 		assert.doesNotMatch(nativePrompt, /skill IDs are not authorization tokens/);
+		assert.doesNotMatch(nativePrompt, /skill-daily-report|divo_skill_view/);
 	});
 
 	it("injects the v3 family hierarchy without treating family IDs as executable tools", async () => {

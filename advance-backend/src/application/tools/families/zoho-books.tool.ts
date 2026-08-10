@@ -78,6 +78,7 @@ import {
   type StagedInvoice,
   type StagedInvoiceStore,
 } from '../../zoho/zoho-invoice-staging';
+
 import type { InvoiceReviewer } from '../../zoho/zoho-invoice-reviewer';
 import { validateAttachmentPolicy }        from '../../email/attachment-policy';
 import { WriteNotDispatchedError }         from '../../../shared/errors';
@@ -108,6 +109,8 @@ import {
 } from '../../data-export/dataset-preview';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
+
+const MAX_TERMINAL_PAGE = 100;
 
 const Schema = z.object({
   connectionId: z.string().uuid(),
@@ -158,7 +161,10 @@ const Schema = z.object({
   email:          z.string().email().optional(),
   fields:         z.record(z.unknown()).optional(),
   limit:          z.number().int().min(1).max(100).optional(),
-  page:           z.number().int().min(1).max(20).optional(),
+  // Each response remains bounded to at most 25 model-facing rows. A higher
+  // cursor ceiling lets governed terminal workflows page large date ranges
+  // without routing back through the legacy export pipeline.
+  page:           z.number().int().min(1).max(MAX_TERMINAL_PAGE).optional(),
   exportAll:      z.boolean().optional(),
   organizationId: z.string().optional(),
   dateFrom:       z.string().optional(),
@@ -730,15 +736,15 @@ export const createZohoBooksTool = (deps: {
     'A created invoice is a draft until mark_invoice_sent or send_invoice; report the status the tool returns rather than assuming it was issued.',
     'attach_document puts a file the member sent in this Lark conversation onto an invoice or bill, and verifies it against Zoho documents[].',
     'Plain list operations fetch one bounded page and return only the requested limit.',
-    'For custom analysis (grouping, aggregation, ranking), add a `script` parameter to fetch up to 4000 records with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr).',
-    'For a complete artifact or exact multi-page aggregate, use page/nextPage from one governed local Python file.',
+    'For custom chat analysis (grouping, aggregation, ranking), add a `script` parameter to fetch up to 4000 records with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr). Script mode is not an export or transfer contract: never stringify or return source rows from it for an artifact.',
+    'For a complete artifact or exact multi-page aggregate, use page/nextPage from one governed local Python file. Do not call this registered Pi tool for a preview first when the user already requested an export; begin the local workflow and call Zoho through divo-local.',
     'Use populated _amount_inr/_balance_inr for INR calculations; never infer an original currency when _currency is UNKNOWN.',
   ].join(' '),
 
   parameterDocs: [
     'connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.',
     'op: list_invoices|get_invoice|create_invoice|update_invoice|mark_invoice_sent|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
-    'read params: invoiceId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, limit (1-100), page (1-20)',
+    `read params: invoiceId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, limit (1-100), page (1-${MAX_TERMINAL_PAGE})`,
     'For terminal paging, start with page=1 and continue with nextPage while hasMore=true.',
     'get_invoice accepts a Zoho numeric invoice ID or an exact human invoice number. list_invoices forwards searchQuery to Zoho and returns newest invoice dates first.',
     'limit is the requested maximum. Once that many rows are returned, do not fetch more pages or switch to script mode unless the user explicitly asks for an export or an aggregate within script mode’s documented 4,000-record ceiling.',
@@ -964,7 +970,7 @@ export const createZohoBooksTool = (deps: {
           ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
           expiresAt: candidate.expiresAt.toISOString(),
         },
-        message: 'Zoho Books export candidate is ready. Use dataExport op=plan with this candidate to choose Sheet, Excel, CSV, destination account, direct export, or sample-first review.',
+        message: 'Legacy Zoho Books export candidate is ready. New complete Zoho artifacts should use terminal-safe paging through divo-python-automation.',
       });
     }
 
@@ -1595,7 +1601,7 @@ export const createZohoBooksTool = (deps: {
         truncated: result.truncated,
         hasMore: result.hasMore,
         page: result.page,
-        ...(result.hasMore && result.page < 20 ? { nextPage: result.page + 1 } : {}),
+        ...(result.hasMore && result.page < MAX_TERMINAL_PAGE ? { nextPage: result.page + 1 } : {}),
         suggestExport: result.suggestExport,
       } satisfies Res;
     };

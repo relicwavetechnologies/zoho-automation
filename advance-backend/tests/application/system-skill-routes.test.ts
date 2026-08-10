@@ -82,8 +82,8 @@ describe('system skill routes', () => {
     assert.match(data.markdown, /Complete Zoho Books or CRM artifact/);
     assert.match(data.markdown, /temporary compatibility route/);
     assert.match(data.markdown, /`op=plan`/);
-    assert.match(data.markdown, /`op=sample`/);
-    assert.match(data.markdown, /`op=confirm_sample`/);
+    assert.match(data.markdown, /full governed export without a sample or another confirmation/);
+    assert.doesNotMatch(data.markdown, /`op=sample`|`op=confirm_sample`|sample_required/);
     assert.match(data.markdown, /destinationReferenceId.*resourceRef.*google-sheets/s);
     assert.match(data.markdown, /xlsx[\s\S]*csv[\s\S]*google-drive/);
     assert.match(data.markdown, /No eligible Google destination.*backend-provided account labels/s);

@@ -103,3 +103,11 @@ test("the tool says plainly that it is not a real task or a document checklist",
 	assert.match(text, /ask/i);
 	assert.match(text, /separate final message/i);
 });
+
+test("the model reads a matched skill before committing a checklist", () => {
+	const tool = registeredTool();
+	const text = `${tool.promptSnippet}\n${tool.promptGuidelines.join("\n")}`;
+	assert.match(text, /first read any exact matched skill/i);
+	assert.match(text, /read it before creating this checklist/i);
+	assert.match(text, /never invent a preview, confirmation, or execution step/i);
+});

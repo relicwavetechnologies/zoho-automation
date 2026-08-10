@@ -120,6 +120,12 @@ describe('governed local-workflow instruction contract', () => {
   it('routes complete Zoho Books work through cloud-capable governed Python', () => {
     assert.match(zohoBooksReadAnalysisSkill.instructions, /load `divo-python-automation`/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /each returned `nextPage`/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /export all expenses.*new Google Sheet/i);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /Do not call the registered zohoBooks tool for a preview first/i);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /do not ask whether to proceed/i);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /do not use the Zoho `script` parameter/i);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /use `page`, `hasMore`, and `nextPage` through `divo-local`/i);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /page 100 still reports more rows/i);
     assert.doesNotMatch(zohoBooksReadAnalysisSkill.instructions, /server channels there is no divo-local/);
     assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /divo_skill_view/);
   });
@@ -135,5 +141,9 @@ describe('governed local-workflow instruction contract', () => {
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /`op=plan`/i);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Use a direct `dataExport` recipe only.*backend-replayable source/s);
     assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Airtable MCP is not\s+a bulk-export source/s);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /Zoho Books and Zoho CRM are not this route/i);
+    assert.match(DATA_EXPORT_SYSTEM_SKILL.markdown, /complete Zoho artifact must use\s+`divo-python-automation` from the start/i);
+    assert.equal(DATA_EXPORT_SYSTEM_SKILL.aliases.includes('zoho books export'), false);
+    assert.equal(DATA_EXPORT_SYSTEM_SKILL.aliases.includes('full export'), false);
   });
 });

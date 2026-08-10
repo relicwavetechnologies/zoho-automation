@@ -275,7 +275,11 @@ function formatCapabilityBootstrap(
 		}
 	}
 
-	if (bootstrap.routingHints.length > 0) {
+	// Native Pi skills already provide the exact slug and readable SKILL.md
+	// location. The legacy hints contain DB skill IDs and divo_skill_view
+	// instructions; exposing both makes the model turn UUIDs into fake local
+	// paths after that compatibility tool has been removed.
+	if (!nativeSkills && bootstrap.routingHints.length > 0) {
 		lines.push("", "Fast routing:");
 		for (const hint of bootstrap.routingHints) lines.push(`- ${safeInline(hint)}`);
 	}

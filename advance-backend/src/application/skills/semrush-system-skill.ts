@@ -42,7 +42,7 @@ Only the three **Callable** operations below may be invoked through the \`semrus
    - \`empty\`: the request was valid but Semrush had no matching coverage.
    - \`partial\`: Semrush has another available page. State that limitation for the chat preview.
    - \`blocked\` or an invocation error: explain whether configuration, permission, unsupported capability, or provider availability prevented the lookup. Never invent the missing data.
-5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. Present **one main table** when one operation is enough. When \`exportCandidate\` is present and the member asks for Sheet, Excel, CSV, all rows, or a full export, call \`dataExport\` with \`op=plan\` using the candidate that matches the table you showed — not every candidate from the run. If unsure which candidate matches, call \`dataExport\` \`op=list_candidates\` first, then plan. If the member did not ask for a file but the result is a useful table, ranking, gap, or comparison with \`exportCandidate\`, end with one soft follow-up asking whether to export it to Google Sheets, Excel, or CSV, unless the member explicitly said not to export, not now, or chat-only. Do not manually follow \`nextPage\`, create or upload a CSV/XLSX/Sheet, run Python or a local workflow, or rerun the provider query after the member chooses a format. The central governed export owns provider pagination, sample/full decisions, destination access, and artifact creation. It retrieves current Semrush data, so describe it as a current export rather than an immutable copy of the preview.
+5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. Present **one main table** when one operation is enough. When \`exportCandidate\` is present and the member asks for Sheet, Excel, CSV, all rows, or a full export, call \`dataExport\` with \`op=plan\` using the candidate that matches the table you showed — not every candidate from the run. If unsure which candidate matches, call \`dataExport\` \`op=list_candidates\` first, then plan. If the member did not ask for a file but the result is a useful table, ranking, gap, or comparison with \`exportCandidate\`, end with one soft follow-up asking whether to export it to Google Sheets, Excel, or CSV, unless the member explicitly said not to export, not now, or chat-only. Do not manually follow \`nextPage\`, create or upload a CSV/XLSX/Sheet, run Python or a local workflow, or rerun the provider query after the member chooses a format. The central governed export owns provider pagination, destination access, and artifact creation. A valid explicit plan queues the full export without a sample or another confirmation. It retrieves current Semrush data, so describe it as a current export rather than an immutable copy of the preview.
 
 ## When \`dataExport\` asks you something back
 
@@ -55,9 +55,6 @@ has exactly one correct reply:
   account, never reuse a previous one.
 - \`connect_required\` — no writable Google account. Say the export needs Google
   connected, and stop; do not build the file another way.
-- \`sample_required\` — the dataset is large enough that Divo makes a private
-  sample first. Explain that, call \`op=sample\` once the member agrees, and call
-  \`op=confirm_sample\` only after they say the sample looks right.
 - \`ambiguous\` — your plan named more than one dataset without saying how they
   fit. Repair it (one dataset, or a \`tabName\` per dataset). Never show the
   member a candidate list or any ID.

@@ -146,8 +146,8 @@ Keep each opaque handle in its owning route:
 
 - legacy \`preview.exportOfferId\` → Divo's verified Lark final-response card, then
   \`dataExport\` \`op=confirm\` for an explicit later natural-language format;
-- \`exportCandidate\` → \`dataExport\` \`op=plan\`, then \`op=sample\` and
-  \`op=confirm_sample\` if the backend requires review before the full run;
+- \`exportCandidate\` → \`dataExport\` \`op=plan\`; a valid explicit plan queues
+  the full governed export without a sample or another confirmation;
   never rebuild the provider request.
 - \`destinationReferenceId\` or \`resourceRef\` for a **google_sheet** →
   \`google-sheets\` for the exact resolved or recent Sheet.

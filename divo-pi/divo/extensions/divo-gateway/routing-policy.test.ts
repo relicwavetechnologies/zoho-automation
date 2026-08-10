@@ -9,6 +9,7 @@ import {
 	DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION,
 	DIVO_LOCAL_EXECUTION_PROMPT,
 	DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT,
+	hasNativeDbSkills,
 	nativeSkillPromptSummary,
 } from "./index.ts";
 import { localCliEnabled } from "./local-broker.ts";
@@ -30,6 +31,23 @@ describe("Divo normal-session routing policy", () => {
 				"<available_skills><skill></skill><skill></skill></available_skills>",
 			),
 			{ loaded: 2, native: 1, exposed: 2 },
+		);
+	});
+
+	it("recognizes native DB skills from Pi's live prompt when the event snapshot is stale", () => {
+		assert.equal(
+			hasNativeDbSkills(
+				undefined,
+				"<available_skills><skill><location>/run/divo-skills/current/google-sheets/SKILL.md</location></skill></available_skills>",
+			),
+			true,
+		);
+		assert.equal(
+			hasNativeDbSkills(
+				[{ filePath: "/app/divo/skills/divo-gateway/SKILL.md" }],
+				"<available_skills><skill><location>/app/divo/skills/divo-gateway/SKILL.md</location></skill></available_skills>",
+			),
+			false,
 		);
 	});
 
@@ -60,6 +78,9 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(ROUTER_SKILL, /Never derive a Google ID, request a download URL, or call `import_to_google_sheets` directly/i);
 		assert.match(ROUTER_SKILL, /backend delivers the confirmation card and owns creation/i);
 		assert.doesNotMatch(ROUTER_SKILL, /compact capability catalogue as the normal routing map/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /exact location from available_skills/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /never derive a skill path under \/app/i);
+		assert.match(ROUTER_SKILL, /\/run\/divo-skills\/current\/<slug>\/SKILL\.md/i);
 	});
 
 	it("requires artifact links and verified counts in the terminal answer", () => {
@@ -135,6 +156,13 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(ROUTER_SKILL, /missing detail that could make the user reasonably reject the result/i);
 		assert.match(ROUTER_SKILL, /Never choose the first plausible option/i);
 		assert.match(ROUTER_SKILL, /one clear safe default.*presentation only/is);
+	});
+
+	it("does not ask again after the user explicitly requested a complete artifact", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /DO NOT RECONFIRM AN EXPLICIT OUTCOME/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /never insert a preview-first or “shall I proceed\?” gate/i);
+		assert.match(ROUTER_SKILL, /Do not reconfirm an explicit outcome/i);
+		assert.match(ROUTER_SKILL, /ask only for a still-missing material choice/i);
 	});
 
 	it("keeps direct provider access forbidden while permitting the governed local bridge", () => {
