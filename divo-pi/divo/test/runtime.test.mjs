@@ -196,6 +196,14 @@ describe("Divo Pi runtime boundary", () => {
 		assert.doesNotMatch(dockerfile, /RUN npm run build\s*$/m);
 		assert.match(dockerfile, /DIVO_PI_ENTRY_MODE="compiled"/);
 	});
+
+	it("packages the trusted runtime manifest with the controller", () => {
+		const dockerfile = fs.readFileSync(
+			path.join(import.meta.dirname, "..", "..", "Dockerfile.controller"),
+			"utf8",
+		);
+		assert.match(dockerfile, /COPY .*divo\/runtime-manifest\.json .*\.\/divo\//);
+	});
 });
 
 describe("Pi session scope", () => {
