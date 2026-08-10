@@ -490,12 +490,25 @@ export const Bar = ({ pct, tone }: { pct: number; tone?: 'brand' }) => (
   <div className="ws-bar"><i style={{ width: `${Math.min(100, Math.max(2, pct))}%` }} data-tone={tone} /></div>
 )
 
+/**
+ * Thirty days of spend, as bars.
+ *
+ * `data-hot` warms the last week, because recent spend is the part worth
+ * noticing. It used to warm the last week *whatever it was worth* — and since
+ * an empty bar still draws a 2px sliver, somebody with no activity at all got
+ * a row of orange marks under a card reading "$0.00" and "0 tasks". Every
+ * pixel of it was false: it said this person has been busy lately, on the one
+ * screen an admin opens to find out whether they have.
+ *
+ * A day with no spend is now never hot. It keeps its sliver, which is the
+ * baseline the other bars are read against, in the colour of nothing happening.
+ */
 export const Spark = ({ data }: { data: number[] }) => {
   const max = Math.max(...data, 1)
   return (
     <div className="ws-spark">
       {data.map((v, i) => (
-        <i key={i} style={{ height: `${(v / max) * 100}%` }} data-hot={i >= data.length - 7} />
+        <i key={i} style={{ height: `${(v / max) * 100}%` }} data-hot={v > 0 && i >= data.length - 7} />
       ))}
     </div>
   )

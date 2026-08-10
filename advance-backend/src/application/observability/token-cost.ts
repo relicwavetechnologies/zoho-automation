@@ -43,6 +43,25 @@ export function costByDay(rows: DailyModelRow[]): Map<string, number> {
 export const startOfToday = (): Date => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
 
 /**
+ * A spend series as bar heights, 0–100.
+ *
+ * Zero stays zero. The version this replaced floored every bar at 6 and
+ * returned a flat 6 for a window with no spend at all, so a member who had run
+ * nothing got fourteen full-height bars beneath a card reading "$0.00" and
+ * "0 tasks" — the endpoint reporting activity that never happened, on the one
+ * screen an admin opens to find out whether it did.
+ *
+ * Keeping an empty bar visible is a drawing problem, and the stylesheet already
+ * solves it: `.ws-spark i` carries a 2px minimum. A floor in the data cannot be
+ * told apart from a real small day.
+ */
+export function sparklineHeights(series: readonly number[]): number[] {
+  const max = Math.max(...series, 0);
+  if (max <= 0) return series.map(() => 0);
+  return series.map((v) => Math.round((v / max) * 100));
+}
+
+/**
  * A dense series with zeroes for quiet days.
  *
  * A chart drawn straight from grouped rows silently omits days with no usage,
