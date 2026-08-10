@@ -7,7 +7,6 @@ import { provisionLarkSkillsForExistingCompanies } from '../src/application/skil
 import { provisionDivoOmsSiteDataForExistingCompanies } from '../src/application/skills/oms-site-data-system-skill';
 import { provisionDivoSemrushForExistingCompanies } from '../src/application/skills/semrush-system-skill';
 import { provisionZohoFinanceSkillsForExistingCompanies } from '../src/application/skills/zoho-finance-system-skills';
-import { provisionDataExportSystemSkillForExistingCompanies } from '../src/application/skills/data-export-system-skill';
 import { seedRegisteredTools } from './seed-registered-tools';
 import {
   provisionMailOpsPermissionsForExistingCompanies,
@@ -22,6 +21,7 @@ import { provisionMenhoodDataForExistingCompanies } from '../src/application/ski
 import { PermissionCache } from '../src/application/permissions/permission.cache';
 import { RedisCache } from '../src/infrastructure/cache/redis-cache';
 import { disconnectAllRedis, getRedisClient } from '../src/infrastructure/cache/redis.client';
+import { retireDataExportCapability } from '../src/application/skills/retired-data-export-capability';
 
 export async function provisionConnectedProviderSkillsForExistingCompanies(prisma: PrismaClient) {
   const totals = { companies: 0, created: 0, updated: 0, existing: 0, skipped: 0 };
@@ -40,6 +40,7 @@ export async function reconcileCapabilities(
   prisma: PrismaClient,
   invalidator?: (companyId: string, departmentId: string) => Promise<void>,
 ) {
+  const retiredDataExport = await retireDataExportCapability(prisma);
   const registeredTools = await seedRegisteredTools(prisma);
   const skills = {
     lark: await provisionLarkSkillsForExistingCompanies(prisma),
@@ -47,7 +48,6 @@ export async function reconcileCapabilities(
     airtableAndAitable: await provisionConnectedProviderSkillsForExistingCompanies(prisma),
     menhood: await provisionMenhoodDataForExistingCompanies(prisma),
     zoho: await provisionZohoFinanceSkillsForExistingCompanies(prisma),
-    dataExport: await provisionDataExportSystemSkillForExistingCompanies(prisma),
     semrush: await provisionDivoSemrushForExistingCompanies(prisma),
     oms: await provisionDivoOmsSiteDataForExistingCompanies(prisma),
     scheduling: await provisionScheduleDivoWorkForExistingCompanies(prisma),
@@ -62,7 +62,7 @@ export async function reconcileCapabilities(
       invalidateDept: invalidator,
     }),
   };
-  return { registeredTools, skills, skillRoutes, permissions };
+  return { retiredDataExport, registeredTools, skills, skillRoutes, permissions };
 }
 
 /**

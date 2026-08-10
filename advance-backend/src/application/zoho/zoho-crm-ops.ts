@@ -4,8 +4,7 @@
  * Design principles (same as ZohoFinanceOps):
  *   1. ALL filtering is done in CODE, not by the LLM.
  *   2. Pagination is exhaustive: loops pages up to 50 × 200 = 10,000 records.
- *   3. Token budget: LLM receives summary + top-N inline. The full dataset
- *      leaves only through the central governed export offer.
+ *   3. Token budget: LLM receives summary + top-N inline.
  *   4. No LLM calls — pure data transformation.
  */
 

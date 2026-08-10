@@ -1,4 +1,4 @@
-/** Env var name for the Lark chat where export cards and chat-scoped tools deliver. */
+/** Env var name for the Lark chat where chat-scoped tools deliver. */
 export const AGENT_SEAT_DELIVERY_CHAT_ID_ENV = 'AGENT_SEAT_DELIVERY_CHAT_ID';
 
 const LARK_CHAT_ID_PATTERN = /^oc_[a-z0-9]+$/;
@@ -22,7 +22,7 @@ export function resolveAgentSeatDeliveryChatId(
   const candidate = (input.cliChatId ?? input.envChatId ?? '').trim();
   if (!candidate) {
     throw new Error(
-      'Agent Seat requires a Lark delivery chat id (export candidates and runtime chat context). '
+      'Agent Seat requires a Lark delivery chat id for runtime chat context. '
       + `Set ${AGENT_SEAT_DELIVERY_CHAT_ID_ENV} in advance-backend/.env `
       + 'or pass init --chat-id <oc_...>. '
       + 'Use your Lark DM with Divo or a dedicated test group you control. '

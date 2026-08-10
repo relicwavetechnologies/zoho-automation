@@ -55,7 +55,6 @@ import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
 import { createTraceIngestRoutes } from './http/desktop/trace-ingest.routes';
 import { ExecutionRepository } from './infrastructure/persistence/execution.repository';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
-import { DataExportWorker } from './application/data-export/data-export.worker';
 import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
 import { GoogleConnectionContinuationWorker } from './application/connections/google-connection-continuation';
 import { getGmailPubSubConfig } from './config/env';
@@ -122,7 +121,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     appBaseUrl:            c.env.APP_BASE_URL,
     approvalGate:          c.approvalGate,
     approvalCardHandler:   c.approvalCardHandler,
-    dataExportCardHandler: c.dataExportCardHandler,
+    workbookConversionCardHandler: c.workbookConversionCardHandler,
     knowledgeReviewService: c.larkKnowledgeReviewService,
     larkOAuthService:      c.larkOAuthService,
     connectionRepo:        c.integrationConnectionRepo,
@@ -158,7 +157,6 @@ export const createServer = (c: Container): DivoServerApplication => {
       intentRepo: c.connectionAuthorizationRepo,
       identityRepo: c.channelIdentityRepo,
       connectionRepo: c.integrationConnectionRepo,
-      resumeDataExport: c.resumeDataExportAfterGoogleConnection,
       runPi: async input => (await runPiAndDeliver({
         ...input,
         deps: {
@@ -199,21 +197,6 @@ export const createServer = (c: Container): DivoServerApplication => {
     c.mailOpsWorker.start();
   }
 
-  const dataExportWorker = new DataExportWorker({
-    redisUrl: c.queueRedisUrl,
-    sources: c.dataExportSources,
-    sink: c.googleWorkspaceExportSink,
-    identityRepo: c.channelIdentityRepo,
-    permissions: c.permissions,
-    resolveGoogleAuth: c.resolveGoogleExportAuth,
-    larkAdapter: c.larkAdapter,
-    conversationHistory: c.conversationRepo,
-    completionDelivery: c.channelDeliveryRepo,
-    exportPlans: c.dataExportCandidateRepo,
-    runLeaseHolder: c.laneLeaseHolder,
-    logger: c.logger,
-  });
-  dataExportWorker.start();
   c.workbookConversionWorker.start();
 
   // Manager persona promotion remains independent from memory, skills, RBAC,
@@ -984,7 +967,6 @@ export const createServer = (c: Container): DivoServerApplication => {
       await closePhase([
         { name: 'lark-ingress-worker', close: () => larkIngressWorker.stop() },
         { name: 'google-continuation-worker', close: () => googleConnectionContinuationWorker.stop() },
-        { name: 'data-export-worker', close: () => dataExportWorker.stop() },
         { name: 'workbook-conversion-worker', close: () => c.workbookConversionWorker.stop() },
         { name: 'persona-learning-worker', close: () => personaLearningWorker.stop() },
         ...(knowledgeLearningWorker
@@ -996,7 +978,6 @@ export const createServer = (c: Container): DivoServerApplication => {
       await closePhase([
         { name: 'lark-ingress-queue', close: () => c.larkIngressQueue.close() },
         { name: 'google-continuation-queue', close: () => c.googleConnectionContinuationQueue.close() },
-        { name: 'data-export-queue', close: () => c.dataExportQueue.close() },
         { name: 'workbook-conversion-queue', close: () => c.workbookConversionQueue.close() },
         { name: 'persona-learning-queue', close: () => c.personaLearningQueue.close() },
         { name: 'knowledge-learning-queue', close: () => c.knowledgeLearningQueue.close() },

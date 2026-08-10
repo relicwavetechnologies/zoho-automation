@@ -295,15 +295,14 @@ A search/read task is complete only after the requested message or thread conten
 5. Use \`copy_drive_file\` before modifying a copy. Use \`update_drive_file\` for metadata or placement changes supported by its described schema.
 6. Inspect permissions with \`get_drive_file_permissions\` or \`check_drive_file_public_access\` before changing access. Use \`manage_drive_access\` / \`set_drive_file_permissions\` only for the exact recipient and role requested; never make a file public merely to obtain a link.
 
-## Pasted workbook or Divo export URL (read-only)
+## Pasted Google workbook URL (read-only)
 
 \`https://docs.google.com/spreadsheets/d/<id>\` and
 \`https://drive.google.com/file/d/<id>\` may point to a native Google Sheet
-**or** an Office file stored in Drive (Divo xlsx/csv exports often use either
-URL shape).
+**or** an Office file stored in Drive.
 
 When the member wants to **read, inspect, look up a row or column, or verify a
-value** in a pasted link or a \`RECENT DIVO EXPORTS\` \`artifactUrl\`:
+value** in a pasted link:
 
 1. Extract the Drive file ID from the URL path segment after \`/d/\`.
 2. Call \`get_drive_file_content\` with that \`file_id\` **before** any Sheets
@@ -312,7 +311,7 @@ value** in a pasted link or a \`RECENT DIVO EXPORTS\` \`artifactUrl\`:
    result.
 
 Never answer from an earlier Menhood, Semrush, or other provider table when the
-member references a file link or recent export. If \`get_drive_file_content\`
+member references a file link. If \`get_drive_file_content\`
 succeeds, that result is the only evidence for the answer.
 
 ### Completion contract
@@ -435,40 +434,6 @@ nothing and they will do it and fail again. Recover by running
 copy. Say that the file is an Excel export and that editing needs a Sheet copy,
 and let the member decide.
 
-When RECENT DIVO EXPORTS lists a recent artifact:
-
-- **\`google_sheet\`** → use its opaque \`resourceRef\` for every read or edit
-  in Lark. Never copy an ID from its URL and never supply a connection or
-  spreadsheet ID:
-
-\`\`\`json
-{
-  "toolId": "googleSheets",
-  "args": {
-    "op": "call_exported_sheet",
-    "resourceRef": "<opaque recent-export reference>",
-    "nativeTool": "read_sheet_values",
-    "input": { "range": "Sheet1!A1:Z100" }
-  }
-}
-\`\`\`
-
-- **\`xlsx\` or \`csv\`** → load \`google-drive\` and call
-  \`get_drive_file_content\` with the file ID from that row's \`artifactUrl\`.
-  Do **not** use Sheets API, \`resolve_reference\`, or
-  \`call_exported_sheet\` for these artifact types.
-
-Never answer from an earlier provider query when the member references a recent
-export or pastes its \`artifactUrl\`.
-
-For follow-up **edits** on a \`google_sheet\` export, inspect workbook metadata
-or the exact header range first, perform the narrow requested native operation
-through \`call_exported_sheet\`, then read the exact changed range back through
-the same opaque reference. Divo revalidates the original Google account and
-workbook on every call. \`xlsx\` and \`csv\` exports are not editable through
-\`call_exported_sheet\`; for read-only inspection use \`google-drive\`. For
-editing, ask the member to use a Google Sheet destination instead.
-
 When the connected source is authoritative and the member asks to correct or
 replace an existing tab, inspect the header plus the final populated row once;
 do not sample several arbitrary existing ranges. Validate all replacement rows
@@ -495,12 +460,9 @@ partial instead of claiming it was applied.
 
 For a new structured spreadsheet, use this order:
 
-This workflow is for an ordinary workbook in the member's selected Google
-account. It is not an export-delivery path. When connected provider data must
-be delivered as Sheet, Excel, or CSV and the source returns \`exportCandidate\`,
-load \`secure-data-export\` and call \`dataExport op=plan\`; never use
-\`create_spreadsheet\` to bypass the configured company export account or its
-invoker-only sharing verification.
+This workflow creates a workbook through the selected governed Google
+connection. Keep bulk source rows in local files, write in bounded calls, and
+verify the important written range before reporting completion.
 
 1. \`create_spreadsheet\` and retain the returned \`spreadsheetId\` and \`spreadsheetUrl\` fields. Treat a successful create as final even if later parsing or code fails; never create a second spreadsheet to rediscover the first response.
 2. \`modify_sheet_values\` to write headers and rows.

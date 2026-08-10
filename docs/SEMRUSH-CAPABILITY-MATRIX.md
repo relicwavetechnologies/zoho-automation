@@ -22,4 +22,4 @@ cookie and `ERROR 130 :: API DISABLED` with one, on every key tested.
 | `organic_positions`, `domain_comparison`, `keyword_gap`, `keyword_research`, `organic_position_trend` | Official API (removed) | Removed |
 | AI Visibility / Prompt Research / etc. | UI-only | Not registered |
 
-**Also wired:** `semrush` gateway tool, `divo-semrush-seo-research` skill, governed `dataExport` replay (`semrush_snapshot`), `scripts/validate-semrush-web.ts`
+**Also wired:** `semrush` typed gateway tool, `divo-semrush-seo-research` skill, and `scripts/validate-semrush-web.ts`. Current operations are bounded; no complete paging contract is claimed.

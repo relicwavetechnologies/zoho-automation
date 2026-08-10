@@ -86,7 +86,6 @@ const FAMILY_OF: Record<string, ToolFamily> = {
 
   webSearch: 'context',
   knowledge: 'memory',
-  dataExport: 'data',
   mailAutomations: 'scheduling', scheduledWorkflows: 'scheduling',
   semrush: 'semrush',
   omsSiteData: 'oms',

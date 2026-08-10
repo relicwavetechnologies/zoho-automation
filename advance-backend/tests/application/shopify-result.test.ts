@@ -7,38 +7,15 @@ import {
   flattenShopifyOrderRows,
   previewCoverageForAnalytics,
   previewCoverageForShopifyList,
-  shopifyArgsFingerprint,
-  shopifyExportTitle,
-} from '../../src/application/shopify/shopify-export.ts';
+} from '../../src/application/shopify/shopify-result.ts';
 
-describe('shopify export helpers', () => {
+describe('Shopify model-facing results', () => {
   it('flattens analytics rows using display names', () => {
     const rows = flattenShopifyAnalyticsRows(
       [{ name: 'total_sales', dataType: 'MONEY', displayName: 'Total sales' }],
       [{ total_sales: '123.45' }],
     );
     assert.deepEqual(rows, [{ 'Total sales': '123.45' }]);
-  });
-
-  it('builds stable fingerprints for equivalent args', () => {
-    const left = shopifyArgsFingerprint({
-      connectionId: '11111111-1111-4111-8111-111111111111',
-      operation: 'product_performance',
-      period: { kind: 'preset', value: 'last_30_days' },
-      metrics: ['net_sales', 'orders'],
-      dimensions: ['product_title'],
-      limit: 25,
-    });
-    const right = shopifyArgsFingerprint({
-      connectionId: '11111111-1111-4111-8111-111111111111',
-      operation: 'product_performance',
-      metrics: ['net_sales', 'orders'],
-      dimensions: ['product_title'],
-      limit: 25,
-      period: { kind: 'preset', value: 'last_30_days' },
-    });
-    assert.equal(left, right);
-    assert.match(left, /^[a-f0-9]{64}$/);
   });
 
   it('marks ranked analytics below schema max as provider limited', () => {
@@ -64,24 +41,7 @@ describe('shopify export helpers', () => {
     assert.deepEqual(coverage, { kind: 'complete', totalRows: 30 });
   });
 
-  it('builds bounded export titles', () => {
-    const title = shopifyExportTitle(
-      'shopifyAnalytics',
-      {
-        connectionId: '11111111-1111-4111-8111-111111111111',
-        operation: 'product_performance',
-        period: { kind: 'preset', value: 'last_30_days' },
-        metrics: ['net_sales'],
-        dimensions: ['product_title'],
-        limit: 25,
-      },
-      'demo.myshopify.com',
-    );
-    assert.match(title, /Shopify product performance — demo\.myshopify\.com/);
-    assert.ok(title.length <= 120);
-  });
-
-  it('flattens order list nodes into stable export columns', () => {
+  it('flattens order list nodes into stable preview columns', () => {
     const rows = flattenShopifyOrderRows([{
       id: 'gid://shopify/Order/1',
       name: '#1001',
@@ -123,22 +83,6 @@ describe('shopify export helpers', () => {
       'Amount spent': '500.00',
       Currency: 'USD',
     }]);
-  });
-
-  it('ignores pagination fields in list fingerprints', () => {
-    const left = shopifyArgsFingerprint({
-      connectionId: '11111111-1111-4111-8111-111111111111',
-      operation: 'list_orders',
-      first: 25,
-      after: 'cursor-a',
-    });
-    const right = shopifyArgsFingerprint({
-      connectionId: '11111111-1111-4111-8111-111111111111',
-      operation: 'list_orders',
-      first: 100,
-      after: 'cursor-b',
-    });
-    assert.equal(left, right);
   });
 
   it('marks paginated Shopify lists as truncated when more pages exist', () => {

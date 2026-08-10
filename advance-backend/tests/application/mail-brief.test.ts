@@ -151,6 +151,7 @@ describe('composing a brief', () => {
 
   const window = {
     mailboxEmail: 'rahul@emiactech.com',
+    mailboxActive: true,
     from: at('2026-08-09T22:30:00.000Z'),
     to: at('2026-08-10T03:30:00.000Z'),
     timeZone: IST,
@@ -245,12 +246,17 @@ describe('composing a brief', () => {
       config: { summary?: { content: string } };
       header: {
         template?: string;
-        title: { content: string };
-        subtitle: { content: string };
+        title?: { content: string };
+        subtitle?: { content: string };
+        text_tag_list?: Array<{ text: { content: string } }>;
       };
       body: { elements: Array<{ tag: string; content?: string }> };
     };
   };
+
+  /** The bold line the body opens on: the verdict, without its asterisks. */
+  const cardVerdict = (payload: string): string =>
+    String(readCard(payload).body.elements[0]?.content ?? '').replace(/^\*\*|\*\*$/g, '');
 
   const cardMarkdown = (payload: string): string =>
     readCard(payload).body.elements
@@ -277,34 +283,34 @@ describe('composing a brief', () => {
   });
 
   /*
-   * The verdict is the line a reader decides on, so it is the header subtitle
-   * and the notification preview — and it appears in neither twice. The card
-   * this replaced spent its subtitle on a timestamp and its header on a block
-   * of blue, and put the one sentence that mattered in body grey underneath.
+   * The verdict is the line a reader decides on, so it opens the body in bold
+   * and it is the notification preview. It appears in neither twice. Earlier
+   * cards spent the subtitle on a timestamp and the header on a block of blue,
+   * and put the one sentence that mattered in body grey underneath.
    */
-  it('puts the verdict in the header and the notification, and not in the body', async () => {
+  it('opens the body on the verdict, and carries it into the notification', async () => {
     const compose = createMailBriefComposer({
       model: modelReturning('{"wants":[]}') as never,
     });
 
-    const card = readCard((await compose(window)).card);
-    assert.equal(card.header.title.content, 'Your mail');
-    assert.equal(card.header.subtitle.content, 'Nothing is waiting on you');
+    const brief = await compose(window);
+    const card = readCard(brief.card);
+    assert.equal(cardVerdict(brief.card), 'Nothing is waiting on you');
     assert.match(card.config.summary?.content ?? '', /Nothing is waiting on you/);
-    assert.doesNotMatch(
-      cardMarkdown((await compose(window)).card),
-      /Nothing is waiting on you/,
-      'the verdict belongs to the header only',
+    assert.equal(
+      (cardMarkdown(brief.card).match(/Nothing is waiting on you/g) ?? []).length,
+      1,
+      'the verdict is stated once',
     );
   });
 
   /*
-   * Colour is spent only where it means something, and this header's blue was
-   * the same blue on the morning a contract was waiting as on the morning
-   * nothing was. The mailbox and window are provenance, so they sit in the
-   * footer rather than in the widest line of the card.
+   * Lark already prints the sender's name and its Agent tag above every card,
+   * so a title band is the third line in a row that says who is talking. The
+   * badge names the report and gives the width back; the mailbox and window are
+   * provenance, so they stay in the footer.
    */
-  it('does not colour the header, and keeps the mailbox out of it', async () => {
+  it('names itself with a badge rather than a title band', async () => {
     const compose = createMailBriefComposer({
       model: modelReturning('{"wants":[]}') as never,
     });
@@ -312,7 +318,13 @@ describe('composing a brief', () => {
     const brief = await compose(window);
     const card = readCard(brief.card);
     assert.equal(card.header.template, 'default');
-    assert.doesNotMatch(card.header.subtitle.content, /rahul@emiactech\.com/);
+    assert.equal(card.header.title, undefined);
+    assert.equal(card.header.subtitle, undefined);
+    assert.deepEqual(
+      card.header.text_tag_list?.map(chip => chip.text.content),
+      ['Divo Mailer'],
+    );
+    assert.match(card.config.summary?.content ?? '', /^Divo Mailer — /);
     assert.match(cardMarkdown(brief.card), /04:00–09:00 · rahul@emiactech\.com/);
   });
 
@@ -334,7 +346,7 @@ describe('composing a brief', () => {
     const brief = await compose({ ...window, messages: many, handled: [] });
     const card = readCard(brief.card);
 
-    assert.equal(card.header.subtitle.content, 'Nothing waiting in your newest 60');
+    assert.equal(cardVerdict(brief.card), 'Nothing waiting in your newest 60');
     assert.doesNotMatch(card.config.summary?.content ?? '', /Nothing is waiting on you/);
     assert.match(
       cardMarkdown(brief.card),
@@ -427,20 +439,20 @@ describe('composing a brief', () => {
   });
 
   /*
-   * The quietest possible brief: no mail, no rules, nothing to divide. A card
-   * that opens on a horizontal rule reads as one whose top half failed to
-   * render, which is the wrong impression for the case that means "all clear".
+   * The quietest possible brief: no mail, no rules, nothing between the verdict
+   * and the footer. The verdict is always present now, so the card can never
+   * open on a horizontal rule — which used to read as one whose top half had
+   * failed to render, in precisely the case that means "all clear".
    */
-  it('draws no rule when there is nothing on either side of it', async () => {
+  it('is a verdict and a footer when there is nothing else to say', async () => {
     const compose = createMailBriefComposer({
       model: modelReturning('{"wants":[]}') as never,
     });
 
-    const card = readCard((await compose({
-      ...window, messages: [], handled: [],
-    })).card);
-    assert.equal(card.header.subtitle.content, 'No mail arrived in this window');
-    assert.deepEqual(card.body.elements.map(e => e.tag), ['markdown']);
+    const brief = await compose({ ...window, messages: [], handled: [] });
+    const card = readCard(brief.card);
+    assert.equal(cardVerdict(brief.card), 'No mail arrived in this window');
+    assert.deepEqual(card.body.elements.map(e => e.tag), ['markdown', 'hr', 'markdown']);
   });
 
   /*
@@ -461,30 +473,72 @@ describe('composing a brief', () => {
     assert.doesNotMatch(brief.text, /<\/?font/);
     assert.match(brief.text, /Wants the revised cap confirmed before Friday\./);
     assert.match(brief.text, /\*\*Vendor invoices → Finance\*\* — 3 passed on/);
-    // The opening line is the one thing the text says that the card puts in a
-    // header instead.
-    assert.equal(brief.text.split('\n\n')[0], '**Your mail** · 1 message needs you');
-    assert.equal(
-      readCard(brief.card).header.subtitle.content,
-      '1 message needs you',
-    );
+    // The opening line is the one thing the text says that the card wears as a
+    // badge instead. The verdict is not part of it: that is a body block now,
+    // and stating it here too would say it twice.
+    assert.equal(brief.text.split('\n\n')[0], '**Divo Mailer**');
+    assert.equal(brief.text.split('\n\n')[1], '**1 message needs you**');
+    assert.equal(cardVerdict(brief.card), '1 message needs you');
   });
 
   /*
    * The degraded verdict is the one a member most needs to read without
    * opening anything: it is the difference between "you are up to date" and
-   * "Divo did not look". It reaches them through the header and the phone
+   * "Divo did not look". It reaches them through the opening line and the phone
    * notification, so both are asserted rather than the text alone.
    */
-  it('carries the degraded verdict into the header and the notification', async () => {
+  it('carries the degraded verdict into the opening line and the notification', async () => {
     const compose = createMailBriefComposer({
       model: modelReturning('I could not do that.') as never,
     });
 
-    const card = readCard((await compose(window)).card);
-    assert.equal(card.header.subtitle.content, 'Divo could not read your mail this time');
+    const brief = await compose(window);
+    const card = readCard(brief.card);
+    assert.equal(cardVerdict(brief.card), 'Divo could not read your mail this time');
     assert.match(card.config.summary?.content ?? '', /could not read your mail/);
     assert.doesNotMatch(card.config.summary?.content ?? '', /Nothing is waiting/);
+  });
+
+  /*
+   * A paused mailbox syncs nothing, so its window is empty — and "No mail
+   * arrived in this window" is indistinguishable from a quiet Tuesday. Read off
+   * a phone twice a day, that is a member concluding their inbox is calm while
+   * Divo has stopped looking at it. It is the same false all-clear the degraded
+   * verdict exists to refuse, arriving through a different door.
+   */
+  it('does not call a mailbox nobody is watching a quiet one', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning('{"wants":[]}') as never,
+    });
+
+    const brief = await compose({
+      ...window, mailboxActive: false, messages: [],
+    });
+    const card = readCard(brief.card);
+    assert.equal(cardVerdict(brief.card), 'Divo is not watching this mailbox');
+    assert.doesNotMatch(cardMarkdown(brief.card), /No mail arrived/);
+    assert.doesNotMatch(card.config.summary?.content ?? '', /No mail arrived/);
+    // What to do about it, not only what happened: this state does not heal
+    // itself, and a verdict with no remedy is half a message.
+    assert.match(cardMarkdown(brief.card), /Resume it to start getting briefs again\./);
+    // The rules still ran before it was paused, so what they did stays on.
+    assert.match(cardMarkdown(brief.card), /Vendor invoices → Finance/);
+  });
+
+  /*
+   * The paused verdict outranks every other one, including the model's. A
+   * mailbox nobody is reading cannot have three messages waiting in it, and
+   * naming any would be reporting stale mail as though it had just arrived.
+   */
+  it('says nobody is watching even when the model named mail', async () => {
+    const compose = createMailBriefComposer({
+      model: modelReturning(
+        '{"wants":[{"index":0,"want":"Needs a decision."}]}',
+      ) as never,
+    });
+
+    const brief = await compose({ ...window, mailboxActive: false });
+    assert.equal(cardVerdict(brief.card), 'Divo is not watching this mailbox');
   });
 
   /*

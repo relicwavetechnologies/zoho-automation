@@ -34,7 +34,7 @@ export function isFinalFailedAttempt(
  *
  * The `instanceof` clause has to come first, and has to be here rather than
  * only in BullMQ: `UnrecoverableError` sets `name` to the *constructor* name,
- * so a subclass is called e.g. `PermanentDataExportError` and matches neither
+ * so a subclass is called e.g. `PermanentWorkbookError` and matches neither
  * string test. BullMQ still declined to retry it, but callers asking "is this
  * job dead?" were told no — and a data export that could never succeed died
  * without ever updating the member's progress card.

@@ -21,14 +21,6 @@ const result = {
   queryFingerprint: 'a'.repeat(64),
 };
 
-const truncatedResult = {
-  columns: [{ name: 'order_number', dataTypeId: 25 }],
-  rows: Array.from({ length: 25 }, (_, index) => ({ order_number: `MR${index + 1}` })),
-  coverage: { returnedRows: 25, truncated: true },
-  elapsedMs: 12,
-  queryFingerprint: 'b'.repeat(64),
-};
-
 const createTool = (overrides: Record<string, unknown> = {}) => createMenhoodDataTool({
   service: {
     preflight: () => undefined,
@@ -49,7 +41,7 @@ const tool_execute_ok = async () => {
 };
 
 describe('Menhood Data tool', () => {
-  it('tells the model to keep row-level export order deterministic', () => {
+  it('tells the model to keep row-level result order deterministic', () => {
     assert.match(createTool().parameterDocs, /deterministic ORDER BY/);
     assert.match(createTool().parameterDocs, /order_date, order_number, id/);
   });
@@ -230,124 +222,4 @@ describe('Menhood Data tool', () => {
     assert.doesNotMatch(serialized, /SELECT|Delivered/);
   });
 
-  it('publishes one opaque export candidate from the validated query without storing preview rows', async () => {
-    const payloads: unknown[] = [];
-    const tool = createTool({
-      exportCandidates: {
-        publishCandidate: async (payload: unknown) => {
-          payloads.push(payload);
-          return {
-            candidateId: '11111111-1111-4111-8111-111111111111',
-            expiresAt: new Date(),
-            estimatedRows: 1,
-          };
-        },
-      },
-    });
-    const ctx = makeCtx('menhoodData', ['read'], {
-      chatId: 'chat-1',
-      requestId: 'request-1',
-      runtimeRunId: 'run-1',
-      runtimeThreadId: 'thread-1',
-    });
-    ctx.perm.allowedToolIds.add('dataExport' as never);
-    ctx.perm.allowedActionsByTool.set('dataExport' as never, new Set(['create']));
-    const output = await tool.execute(
-      { sql: 'SELECT * FROM menhood_products WHERE category = $1', parameters: ['Hair'], exportTitle: 'Products' },
-      ctx,
-    );
-    assert.equal(output.ok, true);
-    if (output.ok) {
-      assert.equal(output.value.exportCandidate?.candidateId, '11111111-1111-4111-8111-111111111111');
-    }
-    assert.equal(payloads.length, 1);
-    const payload = payloads[0] as {
-      source: { kind: string; connectionId: string; query: { sql: string; parameters: unknown[] }; queryFingerprint: string };
-      destination: { title: string };
-      requestId: string;
-    };
-    assert.equal(payload.source.kind, 'menhood_query');
-    assert.equal(payload.source.connectionId, 'backend_managed');
-    assert.deepEqual(payload.source.query.parameters, ['Hair']);
-    assert.match(payload.source.queryFingerprint, /^[a-f0-9]{64}$/);
-    assert.equal(payload.destination.title, 'Products');
-    assert.equal(payload.requestId, 'run-1');
-    assert.doesNotMatch(JSON.stringify(payload), /134418/);
-  });
-
-  it('withholds export candidates for truncated Menhood previews without deterministic ordering', async () => {
-    let published = 0;
-    const tool = createMenhoodDataTool({
-      service: {
-        preflight: () => undefined,
-        coverageWindow: async () => COVERAGE,
-        execute: async () => truncatedResult,
-      },
-      exportCandidates: {
-        publishCandidate: async () => {
-          published += 1;
-          return {
-            candidateId: '11111111-1111-4111-8111-111111111111',
-            expiresAt: new Date(),
-          };
-        },
-      },
-    });
-    const ctx = makeCtx('menhoodData', ['read'], {
-      chatId: 'chat-1',
-      requestId: 'request-1',
-      runtimeRunId: 'run-1',
-    });
-    ctx.perm.allowedToolIds.add('dataExport' as never);
-    ctx.perm.allowedActionsByTool.set('dataExport' as never, new Set(['create']));
-
-    const output = await tool.execute(
-      { sql: 'SELECT order_number FROM menhood_orders' },
-      ctx,
-    );
-
-    assert.equal(output.ok, true);
-    assert.equal(published, 0);
-    if (output.ok) {
-      assert.equal(output.value.exportCandidate, undefined);
-      assert.match(output.value.message, /deterministic ORDER BY/);
-      assert.match(output.value.message, /o\.order_date, o\.order_number, o\.id/);
-    }
-  });
-
-  it('withholds truncated Menhood order-line candidates without an id tie-breaker', async () => {
-    let published = 0;
-    const tool = createMenhoodDataTool({
-      service: {
-        preflight: () => undefined,
-        coverageWindow: async () => COVERAGE,
-        execute: async () => truncatedResult,
-      },
-      exportCandidates: {
-        publishCandidate: async () => {
-          published += 1;
-          return {
-            candidateId: '11111111-1111-4111-8111-111111111111',
-            expiresAt: new Date(),
-          };
-        },
-      },
-    });
-    const ctx = makeCtx('menhoodData', ['read'], {
-      chatId: 'chat-1',
-      requestId: 'request-1',
-      runtimeRunId: 'run-1',
-    });
-    ctx.perm.allowedToolIds.add('dataExport' as never);
-    ctx.perm.allowedActionsByTool.set('dataExport' as never, new Set(['create']));
-
-    const output = await tool.execute(
-      { sql: 'SELECT order_number FROM menhood_orders ORDER BY order_number' },
-      ctx,
-    );
-
-    assert.equal(output.ok, true);
-    assert.equal(published, 0);
-    if (output.ok) assert.equal(output.value.exportCandidate, undefined);
-  });
 });

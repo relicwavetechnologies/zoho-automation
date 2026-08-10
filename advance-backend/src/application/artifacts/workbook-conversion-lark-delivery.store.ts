@@ -61,6 +61,8 @@ export class RedisWorkbookConversionLarkDeliveryStore
 }
 
 function stateKey(jobKey: string): string {
+  // Stable compatibility namespace; changing it would duplicate Lark delivery
+  // for conversions already running during the exporter removal release.
   return `data-export:workbook-conversion:lark:${jobKey}`;
 }
 

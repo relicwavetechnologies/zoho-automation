@@ -16,7 +16,6 @@ import { provisionDivoOmsSiteDataSystemSkill } from '../../application/skills/om
 import { provisionDivoLocalPythonSystemSkill } from '../../application/skills/divo-local-python-system-skill';
 import { provisionDivoSemrushSystemSkill } from '../../application/skills/semrush-system-skill';
 import { provisionConnectedProviderSystemSkills } from '../../application/skills/connected-provider-system-skills';
-import { provisionDataExportSystemSkill } from '../../application/skills/data-export-system-skill';
 import { provisionFilesAndDocumentsSystemSkills } from '../../application/skills/files-and-documents-system-skills';
 import { provisionMailOpsSystemSkills } from '../../application/skills/mail-ops-system-skills';
 import { provisionSystemSkillRoutes } from '../../application/skills/system-skill-routes';
@@ -412,7 +411,6 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
         await provisionGoogleWorkspaceSystemSkills(tx, company.id);
         await provisionConnectedProviderSystemSkills(tx, company.id);
         await provisionMenhoodDataSystemSkill(tx, company.id);
-        await provisionDataExportSystemSkill(tx, company.id);
         await provisionFilesAndDocumentsSystemSkills(tx, company.id);
         await provisionScheduleDivoWorkSystemSkill(tx, company.id);
         await provisionDivoPresentationsSystemSkill(tx, company.id);

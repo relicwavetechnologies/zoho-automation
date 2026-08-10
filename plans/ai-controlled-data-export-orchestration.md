@@ -1,6 +1,9 @@
 # AI-controlled data export orchestration
 
-Status: compatibility-path implementation note, updated 2026-08-10.
+> **Archived 2026-08-11.** The capability described here was removed.
+> Keep this file only as decision history; do not implement or invoke it.
+
+Status: retired architecture record, updated 2026-08-11.
 
 The former sample/confirm workflow is retired. An explicit valid plan now
 queues the full governed export after destination, RBAC, cap, and source-safety

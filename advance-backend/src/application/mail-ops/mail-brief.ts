@@ -59,6 +59,14 @@ export interface MailBriefRuleActivity {
 
 export interface MailBriefWindow {
   mailboxEmail: string;
+  /**
+   * Whether Divo is still watching this mailbox.
+   *
+   * False means paused or disconnected: nothing is being synced, so the window
+   * is empty for a reason that has nothing to do with a quiet inbox. It changes
+   * the verdict rather than suppressing the brief — see `composeMailBrief`.
+   */
+  mailboxActive: boolean;
   from: Date;
   to: Date;
   timeZone: string;
@@ -270,31 +278,53 @@ interface BriefContent {
 const GREY = (text: string): string => `<font color='grey'>${text}</font>`;
 
 /**
+ * What this report is called, wherever it names itself.
+ *
+ * One constant rather than three literals, because it appears in the card
+ * badge, in the push-notification summary, and in the plain-text rendering —
+ * and a brief that is called one thing on a phone and another in the chat list
+ * is one nobody learns to recognise at a glance.
+ */
+const BRIEF_BADGE = 'Divo Mailer';
+
+/**
  * The brief, as Lark renders it.
  *
  * The design rule is the one every other Divo card follows: each fact appears
  * exactly once, and colour is spent only where it carries meaning.
  *
- *   which report this is → header title
- *   whether it needs you → header subtitle
+ *   which report this is → the header badge
+ *   whether it needs you → the first line of the body
  *   what needs you       → one block per message
  *   what it leaves out   → the grey aside
  *   what the rules did   → the grey footnote
  *   which window, whose mailbox → the footer
  *
- * The header was `template: 'blue'` and spent the widest, loudest band of the
- * card on the word "Your mail" and a timestamp, while the one sentence a reader
- * actually wanted sat below it in body grey. Blue said nothing — it was the
- * same blue on the morning a contract was waiting and on the morning nothing
- * was — so the template is now `default` like every other card Divo sends, and
- * the subtitle carries the verdict instead of the timestamp.
+ * The header was `template: 'blue'` with a title and a timestamp, and spent the
+ * widest, loudest band of the card on the words "Your mail" while the one
+ * sentence a reader actually wanted sat below it in body grey. Blue said
+ * nothing — it was the same blue on the morning a contract was waiting and on
+ * the morning nothing was.
+ *
+ * There is now no title and no subtitle, only a badge. Lark already prints the
+ * sender's name and its Agent tag directly above every card, so a title band is
+ * the third place in a row that says who is talking; the badge names the report
+ * in a chip and gives the rest of the width back. It is the shape
+ * `buildHeader` in the card builder already uses for department chips, not a
+ * new one. The verdict moves down to be the first line of the body, which is
+ * where the eye lands anyway and where it can be bold rather than grey.
  *
  * `config.summary` is what Lark puts in the push notification and the chat
  * list. Without it a twice-daily brief arrives on a phone as the client's
  * generic card placeholder, which is the one moment the verdict is worth most.
  */
 const briefBody = (content: BriefContent): Array<Record<string, unknown>> => {
-  const elements: Array<Record<string, unknown>> = [];
+  // Always first, and always present. It is the one line that answers "do I
+  // need to open this?", and it is the only element every brief has — which is
+  // what lets the separators below assume something precedes them.
+  const elements: Array<Record<string, unknown>> = [
+    { tag: 'markdown', content: `**${content.verdict}**` },
+  ];
 
   for (const note of content.notes) {
     elements.push({
@@ -303,6 +333,7 @@ const briefBody = (content: BriefContent): Array<Record<string, unknown>> => {
       // stray separator, so it is dropped rather than rendered as ` · 07:30`.
       content: `**${note.sender}**  `
         + `${GREY([note.subject, note.time].filter(Boolean).join(' · '))}\n${note.want}`,
+      margin: '8px 0 0 0',
     });
   }
 
@@ -311,7 +342,7 @@ const briefBody = (content: BriefContent): Array<Record<string, unknown>> => {
       tag: 'markdown',
       content: GREY(content.aside),
       text_size: 'notation',
-      ...(elements.length > 0 ? { margin: '4px 0 0 0' } : {}),
+      margin: '8px 0 0 0',
     });
   }
 
@@ -324,7 +355,7 @@ const briefBody = (content: BriefContent): Array<Record<string, unknown>> => {
    * and grey is the honest weight for it.
    */
   if (content.handled.length > 0) {
-    if (elements.length > 0) elements.push({ tag: 'hr', margin: '8px 0 0 0' });
+    elements.push({ tag: 'hr', margin: '8px 0 0 0' });
     elements.push({
       tag: 'markdown',
       content: [GREY('What Divo handled'), ...content.handled].join('\n'),
@@ -332,10 +363,7 @@ const briefBody = (content: BriefContent): Array<Record<string, unknown>> => {
     });
   }
 
-  // A rule only where it separates two things. On the quietest brief there is
-  // no aside and no rule activity, and a card that opens on a horizontal line
-  // reads as one whose top half failed to render.
-  if (elements.length > 0) elements.push({ tag: 'hr', margin: '8px 0 0 0' });
+  elements.push({ tag: 'hr', margin: '8px 0 0 0' });
   elements.push({
     tag: 'markdown',
     content: GREY(content.window),
@@ -355,15 +383,21 @@ const briefCard = (content: BriefContent): string =>
         width_mode: 'fill',
         update_multi: false,
         enable_forward: true,
-        summary: { content: `Your mail — ${content.verdict}` },
+        summary: { content: `${BRIEF_BADGE} — ${content.verdict}` },
       },
       header: {
         template: 'default',
-        title: { tag: 'plain_text', content: 'Your mail' },
-        subtitle: { tag: 'plain_text', content: content.verdict },
+        text_tag_list: [{
+          tag: 'text_tag',
+          text: { tag: 'plain_text', content: BRIEF_BADGE },
+          color: 'blue',
+        }],
       },
       body: {
-        vertical_spacing: '8px',
+        // Tighter than the 8px this card used, because every element that needs
+        // separating now carries its own top margin. Left at 8px the two would
+        // compound and the card would read as a list of loose cards.
+        vertical_spacing: '4px',
         padding: '12px 12px 10px 12px',
         elements: briefBody(content),
       },
@@ -379,11 +413,14 @@ const briefCard = (content: BriefContent): string =>
  * failure this shape exists to make impossible, and a hand-written list of
  * things to compare is a guard that only covers what someone remembered.
  *
- * The opening line is the one deliberate difference: the card says it in a
- * header, which the text has no equivalent of.
+ * The opening line is the one deliberate difference: the card wears the name as
+ * a badge, which the text has no equivalent of. The verdict is no longer part
+ * of that line — it is a body block now, so repeating it here would state it
+ * twice in a rendering whose whole purpose is that it cannot drift from the
+ * card.
  */
 const briefText = (content: BriefContent): string => [
-  `**Your mail** · ${content.verdict}`,
+  `**${BRIEF_BADGE}**`,
   ...briefBody(content)
     .filter(element => element.tag === 'markdown')
     .map(element => String(element.content).replace(/<\/?font[^<>]*>/g, '')),
@@ -500,15 +537,32 @@ export function createMailBriefComposer(deps: MailBriefDeps) {
     const arrived = window.messages.length;
     const unread = arrived - recent.length;
 
-    const verdict = wants === null
-      ? 'Divo could not read your mail this time'
-      : wants.length > 0
-        ? `${plural(wants.length, 'message needs', 'messages need')} you`
-        : arrived === 0
-          ? 'No mail arrived in this window'
-          : unread > 0
-            ? `Nothing waiting in your newest ${recent.length}`
-            : 'Nothing is waiting on you';
+    /*
+     * A paused mailbox is checked before everything else, because every verdict
+     * below it would be a lie about it.
+     *
+     * Nothing is synced while a mailbox is paused, so its window is empty — and
+     * the old wording, "No mail arrived in this window", is indistinguishable
+     * from a quiet Tuesday. A member read that twice a day and concluded their
+     * inbox was calm, when in fact Divo had stopped looking at it. That is the
+     * same false all-clear the degraded verdict exists to prevent, arriving
+     * through a different door.
+     *
+     * It still sends. A standing report whose absence means either "quiet" or
+     * "broken" is one nobody can rely on, and this is precisely the state
+     * somebody most needs told.
+     */
+    const verdict = !window.mailboxActive
+      ? 'Divo is not watching this mailbox'
+      : wants === null
+        ? 'Divo could not read your mail this time'
+        : wants.length > 0
+          ? `${plural(wants.length, 'message needs', 'messages need')} you`
+          : arrived === 0
+            ? 'No mail arrived in this window'
+            : unread > 0
+              ? `Nothing waiting in your newest ${recent.length}`
+              : 'Nothing is waiting on you';
 
     /*
      * What the verdict leaves out: how much else arrived, how much of it Divo
@@ -521,7 +575,15 @@ export function createMailBriefComposer(deps: MailBriefDeps) {
     if (hidden > 0) {
       asides.push(`${hidden} more ${hidden === 1 ? 'is' : 'are'} waiting in your mail.`);
     }
-    if (wants === null) {
+    if (!window.mailboxActive) {
+      // What to do about it, not just what happened. A verdict that reports a
+      // stopped mailbox and leaves the member to work out how to restart it is
+      // half a message, and this one is not self-healing.
+      asides.push(
+        'No new mail is being read while it is paused. '
+        + 'Resume it to start getting briefs again.',
+      );
+    } else if (wants === null) {
       // No "Divo read the N newest" below: this run read none of them, and a
       // failed brief claiming to have read sixty messages is the confusion the
       // degraded verdict exists to prevent.

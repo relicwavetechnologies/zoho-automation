@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { handleZohoList } from '../../src/application/zoho/zoho-list-handler.ts';
 
 describe('handleZohoList', () => {
-  it('reads one bounded page and points overflow to the governed export pipeline', async () => {
+  it('reads one bounded page and reports truthful truncated coverage', async () => {
     let listAllCalled = false;
     const result = await handleZohoList({
       companyId: 'co-1',
@@ -27,11 +27,10 @@ describe('handleZohoList', () => {
       } as any,
     });
     assert.deepEqual(result.items, [{ id: '1' }, { id: '2' }]);
-    assert.equal(result.suggestExport, true);
     assert.equal(result.truncated, true);
     assert.equal(result.hasMore, true);
     assert.equal(result.totalCount, undefined);
-    assert.match(result.summary, /prepare the remaining data as an export/i);
+    assert.equal(result.summary, '2 invoices shown.');
     assert.deepEqual(result.coverage, {
       kind: 'truncated',
       returnedRows: 2,
@@ -40,7 +39,7 @@ describe('handleZohoList', () => {
     assert.equal(listAllCalled, false);
   });
 
-  it('does not suggest an export when the bounded result fits inline', async () => {
+  it('reports complete coverage when the bounded result fits inline', async () => {
     const result = await handleZohoList({
       companyId: 'co-1',
       moduleName: 'bills',
@@ -55,7 +54,6 @@ describe('handleZohoList', () => {
         }),
       } as any,
     });
-    assert.equal(result.suggestExport, false);
     assert.equal(result.truncated, false);
     assert.equal(result.totalCount, 1);
     assert.equal(result.summary, '1 bills.');

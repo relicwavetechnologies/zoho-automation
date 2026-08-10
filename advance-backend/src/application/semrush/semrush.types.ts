@@ -49,12 +49,10 @@ export const SemrushToolArgsSchema = z.discriminatedUnion('operation', [
     operation: z.literal('domain_overview'),
     domain,
     database: SemrushDatabaseSchema.optional(),
-    exportCsv: z.boolean().optional(),
   }).strict(),
   z.object({
     operation: z.literal('backlinks_comparison'),
     targets: uniqueTargets,
-    exportCsv: z.boolean().optional(),
   }).strict(),
   z.object({
     operation: z.literal('keyword_position_trend'),
@@ -73,7 +71,6 @@ export interface SemrushFetchedData {
   readonly status: 'complete' | 'empty' | 'partial';
   readonly coverage: Record<string, unknown>;
   readonly rows: Array<Record<string, unknown>>;
-  readonly nextPage?: string;
 }
 
 export class SemrushServiceError extends Error {

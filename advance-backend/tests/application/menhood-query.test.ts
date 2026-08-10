@@ -25,7 +25,6 @@ describe('Menhood query validation', () => {
         ORDER BY 1 DESC
       `,
       parameters: ['Delivered'],
-      exportTitle: 'Delivered orders by SKU',
     });
     assert.deepEqual(query.tables, ['menhood_orders', 'menhood_products']);
     assert.equal(query.fingerprint.length, 64);
@@ -142,10 +141,6 @@ describe('Menhood query validation', () => {
         sql: 'SELECT 1',
         parameters: Array.from({ length: 9 }, () => 'x'.repeat(4_000)),
       }),
-      MenhoodQueryValidationError,
-    );
-    assert.throws(
-      () => validateMenhoodQuery({ sql: 'SELECT 1', exportTitle: 'x'.repeat(121) }),
       MenhoodQueryValidationError,
     );
   });

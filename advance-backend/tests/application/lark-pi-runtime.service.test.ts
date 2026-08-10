@@ -15,7 +15,6 @@ const logger = {
 } as any;
 const runEffectReceipts = {
   getVerifiedKnowledgeEffect: async () => null,
-  getVerifiedDataExportOffer: async () => null,
   getVerifiedWorkbookConversionOffer: async () => null,
 };
 
@@ -150,87 +149,6 @@ test('uses the same signed private lease for chat-session preparation and reset'
   assert.equal(claims.threadId, input.threadId);
 });
 
-test('injects verified recent exports for the exact conversation without backend handles', async () => {
-  let controllerBody: Record<string, unknown> | undefined;
-  let historyLookup: unknown;
-  const service = new LarkPiRuntimeService({
-    prisma: {
-      memberSession: {
-        findFirst: async () => ({
-          sessionId: 'session-1',
-          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
-        }),
-      },
-    } as any,
-    logger,
-    memberJwtSecret: 'test-secret',
-    backendUrl: 'https://backend.example',
-    controllerUrl: 'http://127.0.0.1:4317',
-    instanceId: 'pi-local-1',
-    leaseTtlSeconds: 3_600,
-    runTimeoutMs: 30_000,
-    runEffectReceipts,
-    conversationHistory: {
-      getHistory: async () => assert.fail('dedicated export lookup must be used'),
-      getRecentToolTurns: async (conversationKey, toolName, limit, scope, ownerUserId) => {
-        historyLookup = { conversationKey, toolName, limit, scope, ownerUserId };
-        return {
-          ok: true as const,
-          value: [{
-            id: 'turn-1',
-            role: 'tool' as const,
-            content: 'verified export',
-            timestamp: '2026-08-02T00:00:00.000Z',
-            toolName: 'dataExportResource',
-            toolOutcome: {
-              version: 1,
-              kind: 'data_export_resource',
-              resourceRef: 'resource-safe-1',
-              ownerUserId: 'user-1',
-              artifactId: 'sheet-secret-id',
-              artifactUrl: 'https://docs.google.com/spreadsheets/d/sheet-secret-id/edit',
-              artifactType: 'google_sheet',
-              rowCount: 50,
-              connectionId: 'connection-secret-id',
-              spreadsheetId: 'sheet-secret-id',
-              createdAt: '2026-08-02T00:00:00.000Z',
-              expiresAt: '2099-08-09T00:00:00.000Z',
-            },
-          }],
-        };
-      },
-      appendTurn: async () => assert.fail('non-p2p test must not append conversation turns'),
-    },
-    fetch: async (_url, init) => {
-      controllerBody = JSON.parse(String(init?.body));
-      return new Response(JSON.stringify({ text: 'Finished' }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
-    },
-  });
-
-  await service.run(runtimeInput());
-
-  assert.deepEqual(historyLookup, {
-    conversationKey: 'lark:chat-1:user-1',
-    toolName: 'dataExportResource',
-    limit: 5,
-    scope: { companyId: 'company-1', channel: 'lark' },
-    ownerUserId: 'user-1',
-  });
-  const message = String(controllerBody?.['message']);
-  assert.match(message, /RECENT DIVO EXPORTS/);
-  assert.match(message, /resource-safe-1/);
-  assert.match(message, /https:\/\/docs\.google\.com\/spreadsheets\/d\/sheet-secret-id\/edit/);
-  assert.match(message, /op=call_exported_sheet and resourceRef/);
-  assert.match(message, /xlsx or csv.*get_drive_file_content/s);
-  assert.match(message, /Never answer from an earlier provider query/);
-  assert.match(message, /Do not resolve its URL, choose an account/);
-  assert.match(message, /CURRENT USER REQUEST:\nDo the work/);
-  assert.doesNotMatch(message, /connection-secret-id|connectionId|spreadsheetId/);
-});
-
 test('binds a group run to a shared audience in the signed runtime lease', async () => {
   let controllerBody: Record<string, unknown> | undefined;
   const service = serviceCapturingBody(value => { controllerBody = value; });
@@ -245,61 +163,6 @@ test('binds a group run to a shared audience in the signed runtime lease', async
   const claims = JSON.parse(Buffer.from(token.split('.')[1]!, 'base64url').toString('utf8'));
   assert.equal(claims.contextAudience, 'shared');
   assert.equal(controllerBody?.['sessionScope'], 'run');
-});
-
-test('turns a verified export offer receipt into explicit governed format choices', async () => {
-  const offerId = '11111111-1111-4111-8111-111111111111';
-  const service = new LarkPiRuntimeService({
-    prisma: {
-      memberSession: {
-        findFirst: async () => ({
-          sessionId: 'session-1',
-          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
-        }),
-      },
-    } as any,
-    logger,
-    memberJwtSecret: 'test-secret',
-    backendUrl: 'https://backend.example',
-    controllerUrl: 'http://127.0.0.1:4317',
-    instanceId: 'pi-local-1',
-    leaseTtlSeconds: 3_600,
-    runTimeoutMs: 30_000,
-    runEffectReceipts: {
-      getVerifiedKnowledgeEffect: async () => null,
-      getVerifiedDataExportOffer: async identity => ({
-        version: 1,
-        kind: 'data_export_offer',
-        status: 'offered',
-        effectKind: 'data_export_offered',
-        ...identity,
-        offerId,
-        createdAt: '2026-08-02T00:00:00.000Z',
-      }),
-    },
-    fetch: async () => new Response(JSON.stringify({ text: 'I found more rows.' }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    }),
-  });
-
-  const result = await service.run(runtimeInput());
-
-  assert.deepEqual(result.actions, [
-    {
-      label: 'Google Sheet',
-      value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'google_sheet' }),
-      style: 'primary',
-    },
-    {
-      label: 'CSV in Drive',
-      value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'csv' }),
-    },
-    {
-      label: 'Excel (.xlsx)',
-      value: JSON.stringify({ kind: 'data_export_confirm', offerId, format: 'xlsx' }),
-    },
-  ]);
 });
 
 test('turns a verified workbook receipt into one explicit copy confirmation', async () => {
@@ -322,7 +185,6 @@ test('turns a verified workbook receipt into one explicit copy confirmation', as
     runTimeoutMs: 30_000,
     runEffectReceipts: {
       getVerifiedKnowledgeEffect: async () => null,
-      getVerifiedDataExportOffer: async () => null,
       getVerifiedWorkbookConversionOffer: async identity => ({
         version: 1,
         kind: 'workbook_conversion_offer',
@@ -742,7 +604,6 @@ test('allows a verified explicit personal save and does not enqueue duplicate im
     runTimeoutMs: 30_000,
     runEffectReceipts: {
       getVerifiedKnowledgeEffect: async () => effect,
-      getVerifiedDataExportOffer: async () => null,
     },
     knowledgeLearning: {
       captureCompletedTurn: async () => { learningCaptures++; },
@@ -1663,7 +1524,7 @@ test('a caller-issued session is used verbatim, not the member\'s own sign-in', 
   assert.equal(where['revokedAt'], null);
 });
 
-test('the run asks for the Pro model pinned to the Lark channel', async () => {
+test('the run asks for the Flash model pinned to the Lark channel', async () => {
   let runBody: Record<string, unknown> | undefined;
   const service = new LarkPiRuntimeService({
     prisma: {
@@ -1692,7 +1553,7 @@ test('the run asks for the Pro model pinned to the Lark channel', async () => {
 
   await service.run(runtimeInput());
 
-  assert.equal(runBody?.['model'], 'deepseek-v4-pro');
+  assert.equal(runBody?.['model'], 'deepseek-v4-flash');
   assert.equal(runBody?.['provider'], 'deepseek');
 });
 
@@ -1793,56 +1654,4 @@ test('a run survives an unwritable origin, losing only the Connect card', async 
   });
 
   assert.equal((await service.run(larkIngressInput())).text, 'Finished');
-});
-
-test('the export lookup and the knowledge recall are in flight together', async () => {
-  const events: string[] = [];
-  const settleLater = () => new Promise(resolve => setTimeout(resolve, 5));
-  const service = new LarkPiRuntimeService({
-    prisma: {
-      memberSession: {
-        findFirst: async () => ({
-          sessionId: 'session-1',
-          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
-        }),
-      },
-    } as any,
-    logger,
-    memberJwtSecret: 'test-secret',
-    backendUrl: 'https://backend.example',
-    controllerUrl: 'http://127.0.0.1:4317',
-    instanceId: 'pi-local-1',
-    leaseTtlSeconds: 3_600,
-    runTimeoutMs: 30_000,
-    runEffectReceipts,
-    conversationHistory: {
-      getHistory: async () => ({ ok: true as const, value: [] }),
-      getRecentToolTurns: async () => {
-        events.push('history:start');
-        await settleLater();
-        events.push('history:end');
-        return { ok: true as const, value: [] };
-      },
-      appendTurn: async () => assert.fail('non-p2p test must not append conversation turns'),
-    },
-    knowledgeRecall: {
-      recall: async () => {
-        events.push('recall:start');
-        await settleLater();
-        events.push('recall:end');
-        return { facts: [] };
-      },
-    } as any,
-    fetch: async () => new Response(JSON.stringify({ text: 'Finished' }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    }),
-  });
-
-  await service.run(runtimeInput());
-
-  // Run one behind the other, the history read would have finished before the
-  // recall was even issued, putting both round trips in front of the container
-  // start. Overlapping is the whole point.
-  assert.deepEqual(events, ['history:start', 'recall:start', 'history:end', 'recall:end']);
 });

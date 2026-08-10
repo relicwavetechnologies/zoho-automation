@@ -88,12 +88,6 @@ import {
   serializeToolArgsSchema,
   type WorkBootstrap,
 } from './work-bootstrap.service';
-import type { ConversationRepoPort } from '../../infrastructure/persistence/conversation.repository';
-import {
-  DATA_EXPORT_RESOURCE_TOOL,
-  parseDataExportResourceRecord,
-  type DataExportResourceRecord,
-} from '../data-export/data-export-continuity';
 
 /**
  * Per-skill RBAC. Skill discovery is deny-by-default: a member sees/uses only
@@ -121,7 +115,6 @@ export interface GatewayDispatcherDeps {
   readonly larkKnowledgeReview?: Pick<LarkKnowledgeReviewService, 'openMemoryForRuntime' | 'openResourceForRuntime'>;
   readonly knowledgeMutations?: KnowledgeMutationService;
   readonly personalMemoryCommands?: PersonalMemoryCommandService;
-  readonly dataExportResources?: Pick<ConversationRepoPort, 'getToolTurnByResourceRef'>;
   readonly resolveGoogleSheetReference?: (input: {
     readonly companyId: string;
     readonly userId: string;
@@ -137,8 +130,6 @@ export interface GatewayDispatcherDeps {
     | 'getPersonalMemory'
     | 'reservePersonalMemory'
     | 'releasePersonalMemory'
-    | 'recordDataExportOffer'
-    | 'clearDataExportOffer'
     | 'recordGoogleSheetDestination'
     | 'getVerifiedGoogleSheetDestination'
     | 'recordWorkbookConversionOffer'
@@ -146,16 +137,15 @@ export interface GatewayDispatcherDeps {
   readonly logger: Logger;
 }
 
-interface MaterializedExportedSheetCall {
+interface MaterializedSavedSheetCall {
   readonly args: Record<string, unknown>;
   readonly connectionId: string;
   readonly spreadsheetId: string;
-  readonly resource?: DataExportResourceRecord;
 }
 
-type ExportedSheetMaterialization =
+type SavedSheetMaterialization =
   | { readonly kind: 'ordinary'; readonly args: Record<string, unknown> }
-  | { readonly kind: 'materialized'; readonly value: MaterializedExportedSheetCall }
+  | { readonly kind: 'materialized'; readonly value: MaterializedSavedSheetCall }
   | { readonly kind: 'failure'; readonly response: GatewayResponse };
 
 export class GatewayDispatcher {
@@ -798,16 +788,15 @@ export class GatewayDispatcher {
     }
   }
 
-  private async materializeExportedSheetCall(
+  private async materializeSavedSheetCall(
     member: GatewayMemberContext,
     toolId: string,
     args: Record<string, unknown>,
     execution: GatewayExecutionContext | undefined,
-  ): Promise<ExportedSheetMaterialization> {
-    const op = args['op'];
-    if (op !== 'call_exported_sheet' && op !== 'call_resolved_sheet') return { kind: 'ordinary', args };
+  ): Promise<SavedSheetMaterialization> {
+    if (args['op'] !== 'call_resolved_sheet') return { kind: 'ordinary', args };
     if (toolId !== 'googleSheets') {
-      return { kind: 'failure', response: gatewayFailure('bad_request', 'Exported Sheet references are only valid for Google Sheets') };
+      return { kind: 'failure', response: gatewayFailure('bad_request', 'Resolved Sheet references are only valid for Google Sheets') };
     }
     if (
       member.channel !== 'lark'
@@ -816,7 +805,7 @@ export class GatewayDispatcher {
       || member.runtimeRunId !== execution.runId
       || member.runtimeThreadId !== execution.threadId
     ) {
-      return { kind: 'failure', response: gatewayFailure('permission_denied', 'This exported Sheet reference is not valid for the current Lark request') };
+      return { kind: 'failure', response: gatewayFailure('permission_denied', 'This resolved Sheet reference is not valid for the current Lark request') };
     }
     const nativeTool = args['nativeTool'];
     const nativeInput = args['input'] ?? {};
@@ -829,122 +818,43 @@ export class GatewayDispatcher {
       || nativeInput['spreadsheet_id'] !== undefined
       || nativeInput['spreadsheetId'] !== undefined
     ) {
-      return { kind: 'failure', response: gatewayFailure('bad_request', 'Invalid exported Sheet call') };
+      return { kind: 'failure', response: gatewayFailure('bad_request', 'Invalid resolved Sheet call') };
     }
-    if (op === 'call_resolved_sheet') {
-      const referenceId = args['destinationReferenceId'];
-      if (typeof referenceId !== 'string' || !isUuid(referenceId) || !this.deps.runEffectReceipts) {
-        return { kind: 'failure', response: gatewayFailure('bad_request', 'Invalid resolved Sheet call') };
-      }
-      let destination;
-      try {
-        destination = await this.deps.runEffectReceipts.getVerifiedGoogleSheetDestination({
-          companyId: member.companyId,
-          userId: member.userId,
-          chatId: member.runtimeChatId,
-          threadId: execution.threadId,
-          runId: execution.runId,
-        }, referenceId);
-      } catch (error) {
-        this.deps.logger.error('gateway.resolved_sheet.lookup_failed', {
-          companyId: member.companyId,
-          userId: member.userId,
-          runId: execution.runId,
-          error: safeGatewayMessage(error),
-        });
-        return { kind: 'failure', response: gatewayFailure('tool_error', 'Divo could not open that Sheet reference. Please try again.') };
-      }
-      if (!destination) {
-        return { kind: 'failure', response: gatewayFailure('bad_request', 'That Sheet reference is unavailable or expired. Paste its link to open it again.') };
-      }
-      return {
-        kind: 'materialized',
-        value: {
-          connectionId: destination.connectionId,
-          spreadsheetId: destination.spreadsheetId,
-          args: {
-            op: 'call',
-            connectionId: destination.connectionId,
-            nativeTool,
-            input: { ...nativeInput, spreadsheet_id: destination.spreadsheetId },
-          },
-        },
-      };
+    const referenceId = args['destinationReferenceId'];
+    if (typeof referenceId !== 'string' || !isUuid(referenceId) || !this.deps.runEffectReceipts) {
+      return { kind: 'failure', response: gatewayFailure('bad_request', 'Invalid resolved Sheet call') };
     }
-    const resourceRef = args['resourceRef'];
-    if (typeof resourceRef !== 'string' || !isUuid(resourceRef)) {
-      return { kind: 'failure', response: gatewayFailure('bad_request', 'Invalid exported Sheet call') };
-    }
-    const lookup = this.deps.dataExportResources?.getToolTurnByResourceRef;
-    if (!lookup || !this.deps.resolveGoogleSheetReference) {
-      return { kind: 'failure', response: gatewayFailure('tool_error', 'Exported Sheet follow-up is not configured') };
-    }
-    const stored = await lookup.call(
-      this.deps.dataExportResources,
-      execution.threadId,
-      DATA_EXPORT_RESOURCE_TOOL,
-      resourceRef,
-      member.userId,
-      { companyId: member.companyId, channel: 'lark' },
-    );
-    if (!stored.ok) {
-      this.deps.logger.error('gateway.exported_sheet.lookup_failed', {
-        companyId: member.companyId,
-        userId: member.userId,
-        runId: execution.runId,
-        error: stored.error.message,
-      });
-      return { kind: 'failure', response: gatewayFailure('tool_error', 'Divo could not open the saved Sheet reference. Please try again.') };
-    }
-    const resource = parseDataExportResourceRecord(stored.value?.toolOutcome);
-    if (
-      !resource
-      || resource.resourceRef !== resourceRef
-      || resource.ownerUserId !== member.userId
-      || resource.artifactType !== 'google_sheet'
-      || !resource.connectionId
-      || !resource.spreadsheetId
-      || Date.parse(resource.expiresAt) <= Date.now()
-    ) {
-      return { kind: 'failure', response: gatewayFailure('bad_request', 'That saved Sheet reference is unavailable or expired. Paste its link to open it again.') };
-    }
-    let resolution: unknown;
+    let destination;
     try {
-      resolution = await this.deps.resolveGoogleSheetReference({
+      destination = await this.deps.runEffectReceipts.getVerifiedGoogleSheetDestination({
         companyId: member.companyId,
         userId: member.userId,
-        url: resource.artifactUrl,
-        connectionId: resource.connectionId,
-      });
+        chatId: member.runtimeChatId,
+        threadId: execution.threadId,
+        runId: execution.runId,
+      }, referenceId);
     } catch (error) {
-      this.deps.logger.error('gateway.exported_sheet.resolve_failed', {
+      this.deps.logger.error('gateway.resolved_sheet.lookup_failed', {
         companyId: member.companyId,
         userId: member.userId,
         runId: execution.runId,
-        error: error instanceof Error ? error.message : String(error),
+        error: safeGatewayMessage(error),
       });
-      return { kind: 'failure', response: gatewayFailure('tool_error', 'Divo could not verify that Sheet right now. Please try again.') };
+      return { kind: 'failure', response: gatewayFailure('tool_error', 'Divo could not open that Sheet reference. Please try again.') };
     }
-    if (
-      !isRecord(resolution)
-      || resolution['status'] !== 'resolved'
-      || !isRecord(resolution['resource'])
-      || resolution['resource']['connectionId'] !== resource.connectionId
-      || resolution['resource']['resourceId'] !== resource.spreadsheetId
-    ) {
-      return { kind: 'failure', response: gatewayFailure('permission_denied', 'Divo can no longer edit that Sheet with the connected Google account. Reconnect it or paste the link again.') };
+    if (!destination) {
+      return { kind: 'failure', response: gatewayFailure('bad_request', 'That Sheet reference is unavailable or expired. Paste its link to open it again.') };
     }
     return {
       kind: 'materialized',
       value: {
-        resource,
-        connectionId: resource.connectionId,
-        spreadsheetId: resource.spreadsheetId,
+        connectionId: destination.connectionId,
+        spreadsheetId: destination.spreadsheetId,
         args: {
           op: 'call',
-          connectionId: resource.connectionId,
+          connectionId: destination.connectionId,
           nativeTool,
-          input: { ...nativeInput, spreadsheet_id: resource.spreadsheetId },
+          input: { ...nativeInput, spreadsheet_id: destination.spreadsheetId },
         },
       },
     };
@@ -974,7 +884,7 @@ export class GatewayDispatcher {
     ) {
       return this.permissionDenied(`No access to ${parsed.data.toolId}`);
     }
-    const materialized = await this.materializeExportedSheetCall(
+    const materialized = await this.materializeSavedSheetCall(
       member,
       parsed.data.toolId,
       parsed.data.args,
@@ -1200,80 +1110,9 @@ export class GatewayDispatcher {
           success: true,
           nativeTool: 'resolve_sheet_reference',
           data: { status: 'resolved', destinationReferenceId: referenceId },
-          message: 'Divo can open this Google Sheet. Keep the destination reference for a later governed export.',
+          message: 'Divo can open this Google Sheet. Keep the destination reference for a later governed Sheet call.',
         },
       });
-    }
-    if (
-      dataExportWithdrawnFrom(response)
-      && member.channel === 'lark'
-      && this.deps.runEffectReceipts
-      && execution
-      && member.runtimeChatId
-    ) {
-      try {
-        await this.deps.runEffectReceipts.clearDataExportOffer({
-          companyId: member.companyId,
-          userId: member.userId,
-          chatId: member.runtimeChatId,
-          threadId: execution.threadId,
-          runId: execution.runId,
-        });
-      } catch (error) {
-        // Failing to revoke would leave a button covering part of the answer,
-        // which is worse than losing the tool result.
-        this.deps.logger.error('gateway.data_export_offer.revoke_failed', {
-          companyId: member.companyId,
-          userId: member.userId,
-          runId: execution.runId,
-          error: safeGatewayMessage(error),
-        });
-        return gatewayFailure(
-          'tool_error',
-          'Divo could not withdraw an export offer that no longer matches this answer. Retry the same request.',
-        );
-      }
-    }
-    const exportOfferId = dataExportOfferIdFrom(response);
-    const exportRowCount = dataExportRowCountFrom(response);
-    if (exportOfferId && member.channel === 'lark') {
-      if (
-        !this.deps.runEffectReceipts
-        || !execution
-        || !member.runtimeChatId
-        || !member.runtimeRunId
-        || !member.runtimeThreadId
-        || execution.runId !== member.runtimeRunId
-        || execution.threadId !== member.runtimeThreadId
-      ) {
-        return gatewayFailure(
-          'tool_error',
-          'The export offer was created, but its verified Lark action could not be bound to this run. Retry the same request.',
-        );
-      }
-      try {
-        await this.deps.runEffectReceipts.recordDataExportOffer({
-          companyId: member.companyId,
-          userId: member.userId,
-          chatId: member.runtimeChatId,
-          threadId: execution.threadId,
-          runId: execution.runId,
-        }, {
-          offerId: exportOfferId,
-          ...(exportRowCount !== null ? { observedRowCount: exportRowCount } : {}),
-        });
-      } catch (error) {
-        this.deps.logger.error('gateway.data_export_offer.receipt_failed', {
-          companyId: member.companyId,
-          userId: member.userId,
-          runId: execution.runId,
-          error: safeGatewayMessage(error),
-        });
-        return gatewayFailure(
-          'tool_error',
-          'The export offer was created, but its verified Lark action could not be recorded. Retry the same request.',
-        );
-      }
     }
     return materialized.kind === 'materialized'
       ? safeMaterializedSheetResponse(response, materialized.value)
@@ -1856,7 +1695,7 @@ export class GatewayDispatcher {
           error: { code: 'permission_denied', message: `No access to ${invocation.toolId}` },
         };
       }
-      const materialized = await this.materializeExportedSheetCall(
+      const materialized = await this.materializeSavedSheetCall(
         member,
         invocation.toolId,
         invocation.args,
@@ -1908,7 +1747,7 @@ export class GatewayDispatcher {
       return gatewayFailure('bad_request', `Invalid tools.prepare payload — ${issues}`);
     }
     if (isOpaqueSheetCall(parsed.data.args)) {
-      return gatewayFailure('bad_request', 'Exported Sheet references are available only through Lark tools.invoke or tools.preflight');
+      return gatewayFailure('bad_request', 'Saved Sheet references are available only through Lark tools.invoke or tools.preflight');
     }
     if (!this.deps.localApprovalIntents) {
       return gatewayFailure('tool_error', 'Local approval intents are not configured');
@@ -2174,35 +2013,6 @@ export class GatewayDispatcher {
   }
 }
 
-function dataExportOfferIdFrom(response: GatewayResponse): string | null {
-  if (!response.ok || !isRecord(response.data)) return null;
-  const result = response.data['result'];
-  if (!isRecord(result) || !isRecord(result['preview'])) return null;
-  const offerId = result['preview']['exportOfferId'];
-  return typeof offerId === 'string' && isUuid(offerId) ? offerId : null;
-}
-
-/** Backend-measured row total for the offer, when the tool published one. */
-function dataExportRowCountFrom(response: GatewayResponse): number | null {
-  if (!response.ok || !isRecord(response.data)) return null;
-  const result = response.data['result'];
-  if (!isRecord(result) || !isRecord(result['preview'])) return null;
-  const count = result['preview']['exportRowCount'];
-  return typeof count === 'number' && Number.isInteger(count) && count >= 0 ? count : null;
-}
-
-/**
- * A tool reporting that this run's export can no longer be represented
- * honestly. The offer row is already cancelled by the offer service; the run's
- * receipt still has to go, or the final card renders a button for it.
- */
-function dataExportWithdrawnFrom(response: GatewayResponse): boolean {
-  if (!response.ok || !isRecord(response.data)) return false;
-  const result = response.data['result'];
-  if (!isRecord(result) || !isRecord(result['preview'])) return false;
-  return result['preview']['exportWithdrawn'] === true;
-}
-
 function googleSheetDestinationFrom(
   toolId: string,
   args: Record<string, unknown>,
@@ -2266,7 +2076,7 @@ function googleDriveWorkbookConversionFrom(
 
 function safeMaterializedSheetResponse(
   response: GatewayResponse,
-  materialized: MaterializedExportedSheetCall,
+  materialized: MaterializedSavedSheetCall,
 ): GatewayResponse {
   const safeData = redactSheetHandles(
     response.data,
@@ -2277,15 +2087,7 @@ function safeMaterializedSheetResponse(
     ...(safeData === undefined
       ? {}
       : {
-          data: response.ok && isRecord(safeData) && materialized.resource
-            ? {
-                ...safeData,
-                exportedSheet: {
-                  resourceRef: materialized.resource.resourceRef,
-                  url: materialized.resource.artifactUrl,
-                },
-              }
-            : safeData,
+          data: safeData,
         }),
   };
 }
@@ -2305,7 +2107,7 @@ function redactSheetHandles(value: unknown, secrets: readonly string[]): unknown
 }
 
 function isOpaqueSheetCall(args: Readonly<Record<string, unknown>>): boolean {
-  return args['op'] === 'call_exported_sheet' || args['op'] === 'call_resolved_sheet';
+  return args['op'] === 'call_resolved_sheet';
 }
 
 function isUuid(value: string): boolean {

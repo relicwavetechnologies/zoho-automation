@@ -133,11 +133,6 @@ export const TOOLS: Tool[] = [
     verb: { read: 'search the web' },
   },
   {
-    id: 'dataExport', name: 'Data export', family: 'Research',
-    actions: ['create'],
-    verb: { create: 'export data out of Divo' },
-  },
-  {
     id: 'memoryRecall', name: 'Memory', family: 'Divo',
     actions: ['read'],
     verb: { read: 'recall what it has learned' },
@@ -172,7 +167,6 @@ export const ROLE_GRANTS: Record<string, GrantMap> = {
     zohoBooks: { read: g('department_role') },
     webSearch: { read: g('department_role') },
     memoryRecall: { read: g('company_default') },
-    dataExport: { create: g('derived') },
   },
   ANALYST: {
     googleGmail: { read: g('department_role') },
@@ -186,7 +180,6 @@ export const ROLE_GRANTS: Record<string, GrantMap> = {
     airtableRecords: { read: g('department_role'), create: g('department_role'), update: g('department_role') },
     webSearch: { read: g('department_role') },
     memoryRecall: { read: g('company_default') },
-    dataExport: { create: g('derived') },
   },
   MANAGER: {
     googleGmail: { read: g('department_role'), create: g('department_role'), send: g('department_role') },
@@ -201,7 +194,6 @@ export const ROLE_GRANTS: Record<string, GrantMap> = {
     airtableRecords: { read: g('department_role'), create: g('department_role'), update: g('department_role') },
     webSearch: { read: g('department_role') },
     memoryRecall: { read: g('company_default') },
-    dataExport: { create: g('derived') },
   },
 }
 
@@ -224,7 +216,6 @@ export const COMPANY_CEILING: Record<string, ActionGroup[]> = {
   zohoCrm: ['read', 'create', 'update'],
   canvaDesign: ['read', 'create', 'update'],
   webSearch: ['read'],
-  dataExport: ['create'],
   memoryRecall: ['read'],
   skillPublishing: [],
 }

@@ -4,10 +4,10 @@ import { GOOGLE_SCOPE } from '../../src/domain/google/google-workspace-scope.ts'
 import {
   GoogleSheetResourceResolver,
   type GoogleSheetResourceProbe,
-} from '../../src/application/data-export/google-sheet-resource-resolver.ts';
-import type { GoogleSheetReference } from '../../src/application/data-export/google-sheet-resource-reference.ts';
-import { GoogleDriveXlsxResourceResolver } from '../../src/application/data-export/google-drive-xlsx-resource-resolver.ts';
-import type { GoogleDriveXlsxReference } from '../../src/application/data-export/google-drive-xlsx-resource-reference.ts';
+} from '../../src/application/artifacts/google-sheet-resource-resolver.ts';
+import type { GoogleSheetReference } from '../../src/application/artifacts/google-sheet-resource-reference.ts';
+import { GoogleDriveXlsxResourceResolver } from '../../src/application/artifacts/google-drive-xlsx-resource-resolver.ts';
+import type { GoogleDriveXlsxReference } from '../../src/application/artifacts/google-drive-xlsx-resource-reference.ts';
 import type { AccessibleConnection } from '../../src/application/connections/connection-registry.port.ts';
 
 const spreadsheetId = 'sheet_123-AbC';

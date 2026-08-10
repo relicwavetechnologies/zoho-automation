@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import Ajv from 'ajv';
 import type { Tool } from '../tool.contract';
-import type { ConnectionContinuationPayload } from '../../connections/connection-authorization-intent';
 import type { Result } from '../../../shared/result';
 import { err, ok } from '../../../shared/result';
 import { PermissionError, ToolError } from '../../../shared/errors';
@@ -15,15 +14,32 @@ import {
   googleWorkspaceScopeGroupsFor,
   type GoogleWorkspaceProductDefinition,
 } from '../../google/google-workspace-mcp-manifest';
-import type { GoogleSheetReferenceParseResult } from '../../data-export/google-sheet-resource-reference';
-import type { GoogleSheetResourceResolution } from '../../data-export/google-sheet-resource-resolver';
+import type { GoogleSheetReferenceParseResult } from '../../artifacts/google-sheet-resource-reference';
+import type { GoogleSheetResourceResolution } from '../../artifacts/google-sheet-resource-resolver';
 import {
   parseGoogleDriveXlsxReference,
   type GoogleDriveXlsxReferenceParseResult,
-} from '../../data-export/google-drive-xlsx-resource-reference';
-import type { GoogleDriveXlsxResourceResolution } from '../../data-export/google-drive-xlsx-resource-resolver';
+} from '../../artifacts/google-drive-xlsx-resource-reference';
+import type { GoogleDriveXlsxResourceResolution } from '../../artifacts/google-drive-xlsx-resource-resolver';
 
-function createArgsSchema(nativeTool: z.ZodType<string>) {
+function createNativeArgsSchema(nativeTool: z.ZodType<string>) {
+  return z.discriminatedUnion('op', [
+    z.object({
+      connectionId: z.string().uuid().optional(),
+      op: z.literal('describe'),
+      nativeTool,
+      input: z.record(z.unknown()).optional(),
+    }),
+    z.object({
+      connectionId: z.string().uuid(),
+      op: z.literal('call'),
+      nativeTool,
+      input: z.record(z.unknown()).optional(),
+    }),
+  ]);
+}
+
+function createSheetArgsSchema(nativeTool: z.ZodType<string>) {
   return z.discriminatedUnion('op', [
     z.object({
       connectionId: z.string().uuid().optional(),
@@ -42,10 +58,16 @@ function createArgsSchema(nativeTool: z.ZodType<string>) {
       op: z.literal('resolve_reference'),
       url: z.string().trim().min(1).max(2_048),
     }),
+    z.object({
+      op: z.literal('call_resolved_sheet'),
+      destinationReferenceId: z.string().uuid(),
+      nativeTool,
+      input: z.record(z.unknown()),
+    }),
   ]);
 }
 
-const ArgsSchema = createArgsSchema(z.string().min(1));
+const ArgsSchema = createSheetArgsSchema(z.string().min(1));
 type Args = z.infer<typeof ArgsSchema>;
 
 function nativeToolEnum(values: readonly string[]): z.ZodEnum<[string, ...string[]]> {
@@ -133,7 +155,6 @@ export type BeginGoogleWorkspaceAuthorization = (input: {
   readonly toolId: string;
   readonly reason: string;
   readonly runContext: import('../../../domain/orchestration/run-context').RunContext;
-  readonly continuationPayload?: ConnectionContinuationPayload;
 }) => Promise<
   | { readonly status: 'sent'; readonly intentId: string }
   | { readonly status: 'already_pending'; readonly intentId: string }
@@ -176,13 +197,15 @@ function createProductTool(
     id: asToolId(product.toolId),
     family: 'google',
     actionGroups: supportedActions,
-    argsSchema: createArgsSchema(nativeToolEnum(product.tools)),
+    argsSchema: (product.toolId === 'googleSheets'
+      ? createSheetArgsSchema(nativeToolEnum(product.tools))
+      : createNativeArgsSchema(nativeToolEnum(product.tools))) as z.ZodType<Args>,
     resultSchema: ResultSchema,
     description: product.description,
     parameterDocs: [
       'connectionId: reuse the exact run-bootstrap account when supplied. In backend-hosted channels, omit it when no account was supplied; the backend selects only one eligible account or returns safe choices. Reuse the same connectionId for describe and call.',
       product.toolId === 'googleSheets'
-        ? 'op: describe|call|resolve_reference. Use resolve_reference with url for an exact pasted Google Sheet or Google Drive Excel workbook before any web lookup; connectionId is optional until Divo returns an account choice. Excel workbooks require explicit confirmation before Divo creates a new Google Sheet copy; the original workbook is never changed. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required native operation whose schema is absent; input may be omitted for describe.'
+        ? 'op: describe|call|resolve_reference|call_resolved_sheet. Use resolve_reference with url for an exact pasted Google Sheet or Google Drive Excel workbook before any web lookup. Use call_resolved_sheet only with the destinationReferenceId returned by resolve_reference in the same Lark run; the backend injects the verified connection and spreadsheet IDs. Excel workbooks require explicit confirmation before Divo creates a new Google Sheet copy; the original workbook is never changed. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required operation whose schema is absent.'
         : 'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required native operation whose schema is absent; input may be omitted for describe.',
       `nativeTool: one of ${product.tools.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}`,
@@ -194,6 +217,14 @@ function createProductTool(
         return allowed
           ? ok('read')
           : err(new PermissionError({ toolId: product.toolId, action: 'read', reason: 'not_allowed' }));
+      }
+      if (args.op === 'call_resolved_sheet') {
+        const action = googleWorkspaceActionFor(args.nativeTool, args.input);
+        const allowed = product.toolId === 'googleSheets'
+          && (permission.allowedActionsByTool.get(asToolId(product.toolId))?.has(action) ?? false);
+        return allowed
+          ? ok(action)
+          : err(new PermissionError({ toolId: product.toolId, action, reason: 'not_allowed' }));
       }
       if (!product.tools.includes(args.nativeTool)) {
         return err(new PermissionError({
@@ -221,6 +252,9 @@ function createProductTool(
           nativeTool: 'resolve_sheet_reference',
           action: 'read' as const,
         });
+      }
+      if (args.op === 'call_resolved_sheet') {
+        return badArgs(product.toolId, 'Resolved Sheet handles must be materialized by the governed gateway');
       }
       if (!product.tools.includes(args.nativeTool)) {
         return badArgs(product.toolId, `${args.nativeTool} is not an approved ${product.name} operation`);
@@ -358,6 +392,9 @@ function createProductTool(
             message: cause instanceof Error ? cause.message : String(cause),
           }));
         }
+      }
+      if (args.op === 'call_resolved_sheet') {
+        return badArgs(product.toolId, 'Resolved Sheet handles must be materialized by the governed gateway');
       }
       if (!product.tools.includes(args.nativeTool)) {
         return badArgs(product.toolId, `${args.nativeTool} is not an approved ${product.name} operation`);

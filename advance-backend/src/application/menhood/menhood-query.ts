@@ -25,7 +25,6 @@ export const MenhoodQueryRequestSchema = z.object({
     message: `SQL must be at most ${MAX_SQL_BYTES} bytes`,
   }),
   parameters: z.array(queryParameter).max(100).optional(),
-  exportTitle: z.string().trim().min(1).max(120).optional(),
 }).superRefine((request, ctx) => {
   if (Buffer.byteLength(JSON.stringify(request.parameters ?? []), 'utf8') > MAX_PARAMETER_BYTES) {
     ctx.addIssue({ code: 'custom', path: ['parameters'], message: 'Query parameters are too large' });
@@ -70,7 +69,6 @@ export class MenhoodQueryValidationError extends Error {
 export type ValidatedMenhoodQuery = {
   readonly normalizedSql: string;
   readonly parameters: NonNullable<MenhoodQueryRequest['parameters']>;
-  readonly exportTitle?: string;
   readonly tables: readonly string[];
   readonly fingerprint: string;
   readonly hasTopLevelOrderBy: boolean;
@@ -133,7 +131,6 @@ export function validateMenhoodQuery(input: unknown): ValidatedMenhoodQuery {
     topLevelOrderBySql,
     isTopLevelRowLevelSelect: isRowLevelSelect(topLevel),
     ...(topLevelLimit === undefined ? {} : { topLevelLimit }),
-    ...(request.data.exportTitle ? { exportTitle: request.data.exportTitle } : {}),
   };
 }
 

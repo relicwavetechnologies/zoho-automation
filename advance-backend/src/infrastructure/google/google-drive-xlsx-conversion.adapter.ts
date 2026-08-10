@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream';
 import { google } from 'googleapis';
-import type { GoogleDriveXlsxConversionWorkerDeps } from '../../application/data-export/google-drive-xlsx-conversion.worker';
+import type { GoogleDriveXlsxConversionWorkerDeps } from '../../application/artifacts/google-drive-xlsx-conversion.worker';
 
 const GOOGLE_SHEET_MIME_TYPE = 'application/vnd.google-apps.spreadsheet';
 const XLSX_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';

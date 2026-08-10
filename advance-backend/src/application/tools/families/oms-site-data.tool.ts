@@ -9,14 +9,7 @@ import { asToolId } from '../../../shared/ids';
 import type { AuditService } from '../../observability/audit.service';
 import { CompanyOmsSiteDataService } from '../../oms/company-oms-site-data.service';
 import { defaultSortDirection, excludesUnmeasuredSpamScore, OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, type OmsSiteDataToolArgs } from '../../oms/oms-site-data.types';
-import type { DataExportOrchestrationService } from '../../data-export/data-export-orchestration.service';
-import type { DataExportOfferPayload } from '../../data-export/export-offer';
-import {
-  exportCandidateMetadata,
-  publishExportCandidate,
-} from '../../data-export/tool-export-candidate';
-import { dataExportRunRequestId } from '../../data-export/export-request-identity';
-import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT } from '../../data-export/dataset-preview';
+import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT } from '../../provider-data/dataset-preview';
 
 const ResultSchema = z.object({
   status: z.enum(['complete', 'empty', 'partial', 'blocked']),
@@ -42,13 +35,6 @@ const ResultSchema = z.object({
       z.object({ kind: z.literal('unknown'), returnedRows: z.number().int().nonnegative() }),
     ]),
   }).optional(),
-  exportCandidate: z.object({
-    candidateId: z.string().uuid(),
-    sourceKind: z.literal('oms_snapshot'),
-    previewRowCount: z.number().int().nonnegative(),
-    estimatedRows: z.number().int().nonnegative().optional(),
-    expiresAt: z.string(),
-  }).strict().optional(),
   message: z.string(),
 });
 
@@ -56,7 +42,6 @@ type Res = z.infer<typeof ResultSchema>;
 
 export const createOmsSiteDataTool = (deps: {
   service: CompanyOmsSiteDataService;
-  exportCandidates?: Pick<DataExportOrchestrationService, 'publishCandidate'>;
   audit?: AuditService;
 }): Tool<OmsSiteDataToolArgs, Res> => ({
   id: asToolId('omsSiteData'),
@@ -96,23 +81,6 @@ export const createOmsSiteDataTool = (deps: {
     try {
       ctx.onProgress?.('Retrieving governed OMS site inventory…');
       const data = await deps.service.execute({ companyId: ctx.runContext.companyId, args });
-      const candidate = await publishExportCandidate({
-        candidates: deps.exportCandidates,
-        eligible: data.rows.length > 0
-          && ctx.runContext.channel === 'lark'
-          && Boolean(ctx.runContext.chatId)
-          && ctx.perm.allowedActionsByTool.get(asToolId('dataExport'))?.has('create') === true,
-        payload: () => exportPayloadFor(args, ctx),
-        metadata: exportCandidateMetadata({
-          columns: data.rows.length > 0 ? Object.keys(data.rows[0]!) : [],
-          previewRowCount: data.rows.length,
-          estimatedRows: data.status === 'complete' ? data.rows.length : undefined,
-          coverage: data.coverage,
-        }),
-        logger: ctx.logger,
-        scope: 'oms',
-        correlationId: ctx.correlationId,
-      });
       const preview = createDatasetPreview({
         rows: data.rows,
         coverage: {
@@ -129,22 +97,10 @@ export const createOmsSiteDataTool = (deps: {
         retrievedAt: new Date().toISOString(),
         coverage: data.coverage,
         preview,
-        ...(candidate.kind === 'published'
-          ? {
-              exportCandidate: {
-                candidateId: candidate.candidateId,
-                sourceKind: 'oms_snapshot' as const,
-                previewRowCount: data.rows.length,
-                ...(candidate.estimatedRows === undefined ? {} : { estimatedRows: candidate.estimatedRows }),
-                expiresAt: candidate.expiresAt.toISOString(),
-              },
-            }
-          : {}),
         message: messageFor(
           data.status,
           data.rows.length,
           preview.rows.length,
-          candidate.kind === 'published',
           args,
         ),
       };
@@ -158,7 +114,6 @@ export const createOmsSiteDataTool = (deps: {
           status: result.status,
           rowCount: data.rows.length,
           returnedRowCount: preview.rows.length,
-          exportCandidateId: candidate.kind === 'published' ? candidate.candidateId : null,
           latencyMs: Date.now() - startedAt,
           correlationId: ctx.correlationId,
         },
@@ -204,7 +159,6 @@ function messageFor(
   status: 'complete' | 'empty' | 'partial',
   rowCount: number,
   returnedRows: number,
-  hasCandidate: boolean,
   args: OmsSiteDataToolArgs,
 ): string {
   // Divo injects a spamScore >= 0 filter to drop the unmeasured sentinel, which
@@ -226,36 +180,7 @@ function messageFor(
 
   parts.push(`OMS never paginates and never reports a total count.${spamNote}`);
   if (rowCount > returnedRows) parts.push(`Showing the first ${returnedRows} rows in chat.`);
-  if (hasCandidate) parts.push('If the member asks for Sheet, Excel, or CSV, use the returned export candidate for this OMS snapshot.');
   return parts.join(' ');
-}
-
-function exportPayloadFor(
-  args: OmsSiteDataToolArgs,
-  ctx: ToolExecutionContext,
-): DataExportOfferPayload {
-  return {
-    companyId: ctx.runContext.companyId,
-    userId: ctx.runContext.userId,
-    ...(ctx.runContext.departmentId ? { departmentId: ctx.runContext.departmentId } : {}),
-    source: {
-      kind: 'oms_snapshot',
-      connectionId: 'backend_managed',
-      args,
-    },
-    destination: {
-      format: 'auto',
-      title: `OMS ${args.operation.replaceAll('_', ' ')} snapshot`,
-    },
-    chatId: ctx.runContext.chatId!,
-    ...(ctx.runContext.runtimeThreadId
-      ? { conversationKey: ctx.runContext.runtimeThreadId }
-      : {}),
-    ...(ctx.runContext.replyToMessageId ? { replyToMessageId: ctx.runContext.replyToMessageId } : {}),
-    ...(ctx.runContext.replyInThread !== undefined ? { replyInThread: ctx.runContext.replyInThread } : {}),
-    requestId: dataExportRunRequestId(ctx.runContext, ctx.correlationId),
-    ...(ctx.runContext.traceId ? { traceId: ctx.runContext.traceId } : {}),
-  };
 }
 
 /**

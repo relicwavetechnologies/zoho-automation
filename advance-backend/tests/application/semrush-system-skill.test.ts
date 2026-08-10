@@ -4,26 +4,6 @@ import { DIVO_SEMRUSH_SYSTEM_SKILL } from '../../src/application/skills/semrush-
 import { SEMRUSH_OPERATIONS } from '../../src/application/semrush/semrush.types.ts';
 
 describe('Semrush system skill', () => {
-  it('answers every question dataExport op=plan can ask back', () => {
-    // Semrush may receive these compatibility statuses immediately after its
-    // candidate plan, before another skill read. Keep each response truthful
-    // under the company-owned destination policy.
-    for (const state of ['choose_destination', 'connect_required', 'ambiguous']) {
-      assert.match(
-        DIVO_SEMRUSH_SYSTEM_SKILL.markdown,
-        new RegExp(`\`${state}\``),
-        `the skill must say what to do when op=plan returns ${state}`,
-      );
-    }
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /stale plan from before company-owned\s+exports/s);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /administrator-approved company export account/);
-    assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /retry.*exact `connectionId`/s);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /queues the full export without a sample or another confirmation/);
-    assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /sample_required|op=sample|confirm_sample/);
-    // A queued export is not a finished one.
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /started, not that it is finished/);
-  });
-
   it('forbids treating a country Semrush omitted as a measured zero', () => {
     // Observed 2026-08-08: asked which markets emiactech.com was invisible in,
     // the model listed Germany, Japan, Brazil and five others as "no organic
@@ -45,20 +25,14 @@ describe('Semrush system skill', () => {
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /check it against the rows before writing it/);
   });
 
-  it('never tells the model to expose export internals to a member', () => {
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never show the\s+member a candidate list or any ID/);
-  });
-
   it('is discoverable by SEO terms and constrained to the canonical Semrush tool', () => {
     assert.deepEqual(DIVO_SEMRUSH_SYSTEM_SKILL.toolIds, ['semrush']);
     assert.ok(DIVO_SEMRUSH_SYSTEM_SKILL.aliases.includes('semrush'));
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Do not call Semrush.*directly/i);
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /partial/i);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Do not manually follow `nextPage`/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /`exportCandidate`/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /call `dataExport` with `op=plan`/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /one soft follow-up asking whether to export it to Google Sheets, Excel, or CSV/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Do not manually follow `nextPage`, create or upload a CSV\/XLSX\/Sheet, run Python or a local workflow/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /continuation as incomplete coverage/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /never pull bulk rows through model context/);
+    assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /exportCandidate|dataExport/);
     // Naming a store the tool can no longer reach only tells the model it exists.
     assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /cloudinary/i);
     assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /legacy rollback/i);

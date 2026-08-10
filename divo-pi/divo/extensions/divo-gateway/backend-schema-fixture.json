@@ -182,10 +182,7 @@
    "page": {
     "type": "integer",
     "minimum": 1,
-    "maximum": 20
-   },
-   "exportAll": {
-    "type": "boolean"
+    "maximum": 100
    },
    "organizationId": {
     "type": "string"

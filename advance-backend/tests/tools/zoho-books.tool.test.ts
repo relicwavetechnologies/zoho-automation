@@ -12,7 +12,6 @@ import { formatAmount, formatDate } from '../../src/application/zoho/zoho-format
 import { normalizeStatus, parseDateFilter } from '../../src/application/zoho/zoho-filter.utils.ts';
 import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
 import { arrayToCsv } from '../../src/application/tools/shared/sandbox-runner.ts';
-import { asToolId } from '../../src/shared/ids.ts';
 import { assertLosslessPagingFixture } from './lossless-paging.fixture.ts';
 
 /** What Zoho answers a write with, keyed by the module path being written to. */
@@ -100,13 +99,11 @@ function makeBooksClient(captures: {
 function makeTool(overrides: {
   booksClient?:  ZohoBooksPaginatedClient;
   financeOps?:   ZohoFinanceOps;
-  exportCandidates?: Parameters<typeof createZohoBooksTool>[0]['exportCandidates'];
   attachmentSource?: Parameters<typeof createZohoBooksTool>[0]['attachmentSource'];
 } = {}) {
   return createZohoBooksTool({
     booksClient:     overrides.booksClient ?? makeBooksClient(),
     financeOps:      overrides.financeOps ?? (fakeFinanceOps as ZohoFinanceOps),
-    ...(overrides.exportCandidates ? { exportCandidates: overrides.exportCandidates } : {}),
     ...(overrides.attachmentSource ? { attachmentSource: overrides.attachmentSource } : {}),
     inlineThreshold: 25,
     appBaseUrl: 'https://books.zoho.com',
@@ -127,24 +124,6 @@ describe('zohoBooks expanded permissions', () => {
     assert.equal((del as any).value, 'delete');
   });
 
-  it('requires dataExport:create for exportAll', () => {
-    const tool = makeTool();
-    const denied = tool.permissionCheck(
-      { op: 'list_invoices', exportAll: true },
-      makeAllowedPerm('zohoBooks', ['read']),
-    );
-    const allowedPerm = makeAllowedPerm('zohoBooks', ['read']);
-    allowedPerm.allowedToolIds.add(asToolId('dataExport'));
-    allowedPerm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-    const allowed = tool.permissionCheck(
-      { op: 'list_invoices', exportAll: true },
-      allowedPerm,
-    );
-
-    assert.equal(denied.ok, false);
-    assert.equal(!denied.ok && denied.error.payload.toolId, 'dataExport');
-    assert.equal(allowed.ok, true);
-  });
 });
 
 describe('zohoBooks expanded execution', () => {
@@ -513,8 +492,8 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(captures.allInput, undefined);
     if (!result.ok) return;
     assert.equal(result.value.preview?.rows.length, 5);
-    assert.equal(result.value.suggestExport, false);
-    assert.doesNotMatch(result.value.message ?? '', /exportAll/);
+    assert.equal(result.value.hasMore, true);
+    assert.equal(result.value.nextPage, 2);
   });
 
   it('projects wide list records to documented fields without duplicating rows', async () => {
@@ -551,168 +530,6 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(item.unwanted_blob, undefined);
     assert.equal((result.value.report as any).items, undefined);
     assert.ok(JSON.stringify(result.value).length < 5_000);
-  });
-
-  it('returns one persisted opaque export candidate for a default list overflow without queueing', async () => {
-    let candidatePayload: any;
-    const booksClient = {
-      listRecords: async () => ({
-        organizationId: 'org-1',
-        items: Array.from({ length: 25 }, (_, index) => ({
-          invoice_id: `inv-${index}`,
-          invoice_number: `INV-${index}`,
-          total: index + 1,
-          currency_code: 'INR',
-        })),
-        hasMore: true,
-        page: 1,
-      }),
-    } as unknown as ZohoBooksPaginatedClient;
-    const tool = makeTool({
-      booksClient,
-      exportCandidates: {
-        publishCandidate: async (input) => {
-          candidatePayload = input;
-          return {
-            candidateId: '11111111-1111-4111-8111-111111111111',
-            expiresAt: new Date('2026-08-03T00:00:00.000Z'),
-          };
-        },
-      },
-    });
-    const candidateCtx = makeCtx('zohoBooks', ['read'], {
-      chatId: 'oc_test',
-      replyToMessageId: 'om_thread_root',
-      replyInThread: true,
-      requestId: 'om_preview',
-    });
-    candidateCtx.perm.allowedToolIds.add(asToolId('dataExport'));
-    candidateCtx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-
-    const result = await tool.execute({
-      op: 'list_invoices',
-      connectionId: '11111111-1111-4111-8111-111111111111',
-      dateFrom: '2026-07-01',
-      dateTo: '2026-07-31',
-      status: 'partially paid',
-    }, candidateCtx);
-
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.equal(result.value.preview?.rows.length, 25);
-    assert.equal(result.value.preview?.coverage.kind, 'truncated');
-    assert.equal(result.value.exportCandidate?.candidateId, '11111111-1111-4111-8111-111111111111');
-    assert.match(result.value.message ?? '', /Showing 25 invoices/);
-    assert.equal((result.value.report as any).returnedCount, 25);
-    assert.equal((result.value.report as any).totalCount, undefined);
-    assert.equal(result.value.data, undefined);
-    assert.equal(candidatePayload.source.kind, 'zoho_books');
-    assert.equal(candidatePayload.source.module, 'invoices');
-    assert.equal(candidatePayload.source.connectionId, '11111111-1111-4111-8111-111111111111');
-    assert.deepEqual(candidatePayload.source.filters, {
-      date_start: '2026-07-01',
-      date_end: '2026-07-31',
-      status: 'partially_paid',
-    });
-    assert.equal(candidatePayload.replyToMessageId, 'om_thread_root');
-    assert.equal(candidatePayload.replyInThread, true);
-    assert.equal('rows' in candidatePayload, false);
-  });
-
-  it('does not create an export candidate when any candidate guard is missing', async () => {
-    const booksClient = {
-      listRecords: async () => ({
-        organizationId: 'org-1',
-        items: Array.from({ length: 25 }, (_, index) => ({
-          invoice_id: `inv-${index}`,
-          invoice_number: `INV-${index}`,
-          customer_email: 'member@example.com',
-          total: index + 1,
-          currency_code: 'INR',
-        })),
-        hasMore: true,
-        page: 1,
-      }),
-    } as unknown as ZohoBooksPaginatedClient;
-    let candidateCalls = 0;
-    const exportCandidates = {
-      publishCandidate: async () => {
-        candidateCalls += 1;
-        return { candidateId: '11111111-1111-4111-8111-111111111111', expiresAt: new Date() };
-      },
-    };
-    const cases = [
-      {
-        name: 'explicit limit',
-        args: { limit: 5 },
-        chatId: 'oc_test',
-        allowExport: true,
-        candidatesEnabled: true,
-      },
-      {
-        name: 'personalized scope',
-        args: {},
-        chatId: 'oc_test',
-        allowExport: true,
-        candidatesEnabled: true,
-        personalized: true,
-      },
-      {
-        name: 'missing dataExport permission',
-        args: {},
-        chatId: 'oc_test',
-        allowExport: false,
-        candidatesEnabled: true,
-      },
-      {
-        name: 'missing Lark chat',
-        args: {},
-        allowExport: true,
-        candidatesEnabled: true,
-      },
-      {
-        name: 'missing candidate service',
-        args: {},
-        chatId: 'oc_test',
-        allowExport: true,
-        candidatesEnabled: false,
-      },
-    ] as const;
-
-    for (const testCase of cases) {
-      const before = candidateCalls;
-      const tool = makeTool({
-        booksClient,
-        ...(testCase.candidatesEnabled ? { exportCandidates } : {}),
-      });
-      const guardedCtx = makeCtx('zohoBooks', ['read'], {
-        ...(testCase.chatId ? { chatId: testCase.chatId } : {}),
-        requestId: `om_${testCase.name}`,
-        ...(testCase.personalized ? { requesterEmail: 'member@example.com' } : {}),
-      });
-      if (testCase.allowExport) {
-        guardedCtx.perm.allowedToolIds.add(asToolId('dataExport'));
-        guardedCtx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-      }
-      if (testCase.personalized) {
-        (guardedCtx.perm as any).department = {
-          id: 'dept-1',
-          name: 'Finance',
-          roleSlug: 'MEMBER',
-          zohoReadScope: 'personalized',
-        };
-      }
-
-      const result = await tool.execute({
-        op: 'list_invoices',
-        connectionId: '11111111-1111-4111-8111-111111111111',
-        ...testCase.args,
-      }, guardedCtx);
-
-      assert.equal(result.ok, true, testCase.name);
-      assert.equal(result.ok && result.value.exportCandidate, undefined, testCase.name);
-      assert.equal(candidateCalls, before, testCase.name);
-    }
   });
 
   it('returns mapped Zoho error messages from upstream failures', async () => {
@@ -758,130 +575,6 @@ describe('zohoBooks expanded execution', () => {
     }
   });
 
-  it('publishes every list operation through the export candidate contract when exportAll=true', async () => {
-    const candidates: any[] = [];
-    const tool = createZohoBooksTool({
-      booksClient: makeBooksClient(),
-      financeOps: fakeFinanceOps as ZohoFinanceOps,
-      exportCandidates: {
-        publishCandidate: async (payload) => {
-          candidates.push(payload);
-          return {
-            candidateId: `11111111-1111-4111-8111-${String(candidates.length).padStart(12, '0')}`,
-            expiresAt: new Date('2026-08-03T00:00:00.000Z'),
-          };
-        },
-      },
-      inlineThreshold: 25,
-    });
-
-    const ops = [
-      { op: 'list_invoices' as const },
-      { op: 'list_bills' as const },
-      { op: 'list_payments' as const },
-      { op: 'list_expenses' as const },
-      { op: 'list_contacts' as const },
-      { op: 'list_bank_transactions' as const },
-      { op: 'search_transactions' as const, searchQuery: 'Acme' },
-    ];
-
-    for (const args of ops) {
-      const ctx = makeCtx('zohoBooks', ['read'], {
-        chatId: 'oc_test',
-        requestId: `om_test_${args.op}`,
-      });
-      ctx.perm.allowedToolIds.add(asToolId('dataExport'));
-      ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-      const result = await tool.execute({
-        ...args,
-        connectionId: '11111111-1111-4111-8111-111111111111',
-        exportAll: true,
-      }, ctx);
-      assert.equal(result.ok, true);
-      assert.match((result as any).value.exportCandidate.candidateId, /^11111111-1111-4111-8111-/);
-      assert.match((result as any).value.message, /export candidate is ready/i);
-    }
-
-    assert.deepEqual(candidates.map(job => job.source.module), [
-      'invoices',
-      'bills',
-      'customerpayments',
-      'expenses',
-      'contacts',
-      'banktransactions',
-      'banktransactions',
-    ]);
-    assert.ok(candidates.every(job => job.source.kind === 'zoho_books'));
-    assert.ok(candidates.every(job => job.destination.format === 'auto'));
-  });
-
-  // exportAll returns before the per-op switch, so the guards on the individual
-  // bank-transaction cases never see it. This candidate path must still refuse
-  // a replay recipe the provider rejects.
-  it('refuses an exportAll bank transaction recipe the provider would reject', async () => {
-    let published = 0;
-    const tool = makeTool({
-      exportCandidates: {
-        publishCandidate: async () => {
-          published += 1;
-          return { candidateId: '11111111-1111-4111-8111-111111111111', expiresAt: new Date() };
-        },
-      } as any,
-    });
-    const ctx = makeCtx('zohoBooks', ['read'], { chatId: 'oc_test', requestId: 'om_export_all' });
-    ctx.perm.allowedToolIds.add(asToolId('dataExport'));
-    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-
-    const result = await tool.execute({
-      op: 'list_bank_transactions',
-      exportAll: true,
-      status: 'uncategorized',
-      connectionId: '11111111-1111-4111-8111-111111111111',
-    }, ctx);
-
-    assert.equal(result.ok, false);
-    assert.match(String((result as any).error.message), /accountId/);
-    assert.equal(published, 0, 'no candidate may be written for a recipe that cannot run');
-  });
-
-  it('publishes an exportAll bank transaction candidate once the account is named', async () => {
-    const candidates: any[] = [];
-    const tool = makeTool({
-      exportCandidates: {
-        publishCandidate: async (payload: any) => {
-          candidates.push(payload);
-          return { candidateId: '11111111-1111-4111-8111-111111111111', expiresAt: new Date() };
-        },
-      } as any,
-    });
-    const ctx = makeCtx('zohoBooks', ['read'], { chatId: 'oc_test', requestId: 'om_export_all_ok' });
-    ctx.perm.allowedToolIds.add(asToolId('dataExport'));
-    ctx.perm.allowedActionsByTool.set(asToolId('dataExport'), new Set(['create']));
-
-    const result = await tool.execute({
-      op: 'list_bank_transactions',
-      exportAll: true,
-      status: 'uncategorized',
-      accountId: '3846597000009355454',
-      connectionId: '11111111-1111-4111-8111-111111111111',
-    }, ctx);
-
-    assert.equal(result.ok, true);
-    assert.equal(candidates.length, 1);
-    assert.equal(candidates[0].source.filters.account_id, '3846597000009355454');
-    assert.equal(candidates[0].source.filters.status, 'uncategorized');
-  });
-
-  it('keeps Google destination selection out of the Zoho Books tool schema', () => {
-    const tool = makeTool();
-    assert.equal(tool.argsSchema.safeParse({
-      op: 'list_invoices' as const,
-      connectionId: '11111111-1111-4111-8111-111111111111',
-      exportAll: true,
-      destinationConnectionId: '22222222-2222-4222-8222-222222222222',
-    }).success, false);
-  });
-
   it('keeps explicit exports out of the direct Pi preview path', () => {
     const tool = makeTool();
     assert.match(tool.description, /Do not call this registered Pi tool for a preview first/i);
@@ -889,7 +582,7 @@ describe('zohoBooks expanded execution', () => {
     assert.match(tool.description, /Script mode is not an export or transfer contract/i);
   });
 
-  it('bounds script results inline and leaves complete artifacts to dataExport', async () => {
+  it('bounds script results inline', async () => {
     const booksClient = {
       listAllRecords: async () => ({
         organizationId: 'org-1',

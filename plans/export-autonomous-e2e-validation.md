@@ -1,5 +1,9 @@
 # Autonomous export E2E validation
 
+> **Archived 2026-08-10.** These traces validate the retired export planner.
+> New evidence belongs in `cloud-pi-production-tool-e2e-tracker.md` and must use
+> provider paging → protected local files → governed destination read-back.
+
 ## Scope and rules
 
 Command-driven tests of isolated cloud Pi only. Lark presentation and browser

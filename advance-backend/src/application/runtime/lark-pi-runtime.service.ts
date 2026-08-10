@@ -18,7 +18,6 @@ import type {
 } from '../knowledge/knowledge-recall.service';
 import type {
   LarkRunEffectIdentity,
-  OfferedDataExportEffect,
   OfferedWorkbookConversionEffect,
   RunEffectReceiptStore,
   VerifiedKnowledgeEffect,
@@ -31,13 +30,9 @@ import {
   renderContextBlock,
   type GroupContextBlock,
 } from '../chat-context/group-context.hydrator';
-import {
-  DATA_EXPORT_RESOURCE_TOOL,
-  parseDataExportResourceRecord,
-} from '../data-export/data-export-continuity';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
-const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-pro';
+const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
 
 function asyncIterableBody(source: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
   const iterator = source[Symbol.asyncIterator]();
@@ -235,18 +230,11 @@ export interface LarkPiRuntimeServiceDeps {
   readonly runTimeoutMs: number;
   readonly runEffectReceipts?: Pick<
     RunEffectReceiptStore,
-    'getVerifiedKnowledgeEffect' | 'getVerifiedDataExportOffer' | 'getVerifiedWorkbookConversionOffer'
+    'getVerifiedKnowledgeEffect' | 'getVerifiedWorkbookConversionOffer'
   >;
   readonly knowledgeLearning?: Pick<KnowledgeLearningService, 'captureCompletedTurn'>;
   readonly conversationHistory?: {
     getHistory(chatId: string, limit?: number, scope?: ConversationScope): Promise<Result<Turn[], InfraError>>;
-    getRecentToolTurns?(
-      chatId: string,
-      toolName: string,
-      limit: number,
-      scope: ConversationScope,
-      ownerUserId?: string,
-    ): Promise<Result<Turn[], InfraError>>;
     appendTurn(
       chatId: string,
       turn: Omit<Turn, 'id'>,
@@ -984,18 +972,8 @@ export class LarkPiRuntimeService {
     signal: AbortSignal,
   ): Promise<string> {
     const ask = input.incoming.text;
-    // Two unrelated reads: recent exports come from conversation history, the
-    // recall from the knowledge store, and neither uses the other's answer.
-    // Awaiting them in turn put both round trips in front of the container
-    // being asked to start, on every single message.
-    const [exportContext, recalledContext] = await Promise.all([
-      this.recentExportContext(input),
-      this.recalledKnowledgeContext(input, ask, signal),
-    ]);
-    const request = exportContext
-      ? `${exportContext}\n\nCURRENT USER REQUEST:\n${ask}`
-      : ask;
-    return recalledContext ? `${recalledContext}\n\n${request}` : request;
+    const recalledContext = await this.recalledKnowledgeContext(input, ask, signal);
+    return recalledContext ? `${recalledContext}\n\n${ask}` : ask;
   }
 
   /** Recalled knowledge is advisory: an unavailable store contributes nothing. */
@@ -1023,52 +1001,6 @@ export class LarkPiRuntimeService {
     } catch (error) {
       if (signal.aborted) throw error;
       this.log.warn('pi.knowledge-recall.unavailable', {
-        correlationId: input.incoming.traceId,
-        error: String(error),
-      });
-      return '';
-    }
-  }
-
-  private async recentExportContext(input: LarkPiRuntimeInput): Promise<string> {
-    if (!this.deps.conversationHistory) return '';
-    try {
-      const scope = { companyId: String(input.runContext.companyId), channel: 'lark' } as const;
-      const history = this.deps.conversationHistory.getRecentToolTurns
-        ? await this.deps.conversationHistory.getRecentToolTurns(
-          input.threadId,
-          DATA_EXPORT_RESOURCE_TOOL,
-          5,
-          scope,
-          String(input.runContext.userId),
-        )
-        : await this.deps.conversationHistory.getHistory(input.threadId, 60, scope);
-      if (!history.ok) throw history.error;
-      const now = Date.now();
-      const exports = history.value
-        .filter(turn => turn.role === 'tool' && turn.toolName === DATA_EXPORT_RESOURCE_TOOL)
-        .map(turn => parseDataExportResourceRecord(turn.toolOutcome))
-        .filter((resource): resource is NonNullable<typeof resource> => (
-          resource !== null
-          && resource.ownerUserId === String(input.runContext.userId)
-          && Date.parse(resource.expiresAt) > now
-        ))
-        .slice(-5);
-      if (exports.length === 0) return '';
-      return [
-        'RECENT DIVO EXPORTS — backend-verified conversation context:',
-        ...exports.map(resource => (
-          `- ${resource.resourceRef} | ${resource.artifactType} | ${
-            resource.rowCount === undefined ? 'row count not inspected' : `${resource.rowCount} rows`
-          } | ${resource.artifactUrl}`
-        )),
-        'Use these only when the user refers to a recent export. Resource references never bypass backend permissions.',
-        'For a google_sheet follow-up, invoke googleSheets with op=call_exported_sheet and resourceRef from this list. Do not resolve its URL, choose an account, or supply connection/spreadsheet IDs.',
-        'For xlsx or csv, invoke google-drive with get_drive_file_content using the file ID from artifactUrl; do not use Sheets API or call_exported_sheet.',
-        'Never answer from an earlier provider query when the member references one of these exports.',
-      ].join('\n');
-    } catch (error) {
-      this.log.warn('pi.data-export-context.unavailable', {
         correlationId: input.incoming.traceId,
         error: String(error),
       });
@@ -1123,7 +1055,6 @@ export class LarkPiRuntimeService {
       runId: input.incoming.traceId,
     };
     let effect: VerifiedKnowledgeEffect | null = null;
-    let exportEffect: OfferedDataExportEffect | null = null;
     let workbookEffect: OfferedWorkbookConversionEffect | null = null;
     let googleAuthorization: RunOrigin['googleAuthorization'];
     let effectVerification: 'verified' | 'unavailable' = 'verified';
@@ -1135,16 +1066,6 @@ export class LarkPiRuntimeService {
         this.log.error('pi.run_effect.lookup_failed', {
           correlationId: input.incoming.traceId,
           effectKind: 'knowledge',
-          error: String(error),
-        });
-      }
-      try {
-        exportEffect = await this.deps.runEffectReceipts.getVerifiedDataExportOffer(identity);
-      } catch (error) {
-        effectVerification = 'unavailable';
-        this.log.error('pi.run_effect.lookup_failed', {
-          correlationId: input.incoming.traceId,
-          effectKind: 'data_export_offer',
           error: String(error),
         });
       }
@@ -1208,52 +1129,15 @@ export class LarkPiRuntimeService {
       }
     }
 
-    // The chat answer may summarise; the file always carries the underlying
-    // rows. Saying so — with a count the backend measured, not one the model
-    // inferred from a 25-row preview — stops the sheet from looking like it
-    // disagrees with the message above it.
-    const exportNote = exportEffect && !googleAuthorization
-      ? `\n\n---\n\n*Export: ${
-          exportEffect.observedRowCount === undefined
-            ? 'the full rows'
-            : `all ${exportEffect.observedRowCount.toLocaleString('en-IN')} row${exportEffect.observedRowCount === 1 ? '' : 's'}`
-        } behind this answer, as a private file in your Google account.*`
-      : '';
-
     return {
       text: googleAuthorization
         ? '# Connect Google Workspace\n\nConnect or reconnect your Google account below. '
           + "Once it’s connected, I’ll continue this request automatically—no need to send it again."
-        : assistantText + exportNote,
+        : assistantText,
       effects: effect ? [effect] : [],
-      ...(exportEffect || workbookEffect || googleAuthorization
+      ...(workbookEffect || googleAuthorization
         ? {
             actions: [
-              ...(exportEffect ? [{
-                label: 'Google Sheet',
-                value: JSON.stringify({
-                  kind: 'data_export_confirm',
-                  offerId: exportEffect.offerId,
-                  format: 'google_sheet',
-                }),
-                style: 'primary',
-              } as const,
-              {
-                label: 'CSV in Drive',
-                value: JSON.stringify({
-                  kind: 'data_export_confirm',
-                  offerId: exportEffect.offerId,
-                  format: 'csv',
-                }),
-              } as const,
-              {
-                label: 'Excel (.xlsx)',
-                value: JSON.stringify({
-                  kind: 'data_export_confirm',
-                  offerId: exportEffect.offerId,
-                  format: 'xlsx',
-                }),
-              } as const] : []),
               ...(workbookEffect ? [{
                 label: 'Create Google Sheet copy',
                 value: JSON.stringify({
