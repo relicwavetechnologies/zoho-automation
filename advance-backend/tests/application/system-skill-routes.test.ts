@@ -172,6 +172,18 @@ describe('system skill routes', () => {
     for (const body of bodies) {
       assert.doesNotMatch(body, /divo_gateway|call_tool|tools\.invoke|payload\.args/);
     }
+    /*
+     * `tools.preflight` and `tools.list` are internal gateway ops. Pi exposes
+     * the first as the typed tool `divo_preflight` and never exposed the
+     * second, so two Google skills were naming a call the model cannot make.
+     * The op survives inside the backend, which is why the gateway sweep did
+     * not catch it — the name is real, just not model-facing.
+     */
+    for (const skill of GOOGLE_WORKSPACE_SYSTEM_SKILLS) {
+      assert.doesNotMatch(skill.markdown, /tools\.preflight|tools\.list/, skill.slug);
+    }
+    const gmail = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find(skill => skill.slug === 'google-gmail')!;
+    assert.match(gmail.markdown, /call `divo_preflight` once/);
   });
 
   /*

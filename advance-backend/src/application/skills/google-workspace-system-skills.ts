@@ -261,7 +261,7 @@ When the user asks for the single latest or one deduplicated thread, this contra
 
 ### Newsletter cleanup
 
-1. Before scanning a large candidate set, decide every intended mutation and call \`tools.preflight\` once with one complete proposed \`googleGmail\` invocation per mutation. For Google calls, preflight validates RBAC/action, the exact pinned native schema, selected connection eligibility, and required OAuth scopes. It does not execute the mutation or create an approval intent. Never preflight placeholder or empty native input.
+1. Before scanning a large candidate set, decide every intended mutation and call \`divo_preflight\` once with one complete proposed \`googleGmail\` invocation per mutation.
 2. Map actions exactly: \`manage_gmail_label\` with a create action requires \`googleGmail:create\`; \`modify_gmail_message_labels\` and \`batch_modify_gmail_message_labels\` (apply or remove labels) require \`googleGmail:update\`; \`manage_gmail_label\` with a delete action requires \`googleGmail:delete\`.
 3. If required preflight entries are denied, say so before scanning the candidate set and offer only a read-only report when useful. Do not scan/classify a large batch in preparation for a mutation that cannot run.
 4. Keep counts distinct: report the number of search candidates separately from the number classified as newsletters. Do not describe every candidate as a newsletter.
@@ -313,7 +313,7 @@ Creation, import, copy, or sharing is complete only when the successful response
 1. Resolve relative dates against the current date and the user's timezone. Keep start/end times, all-day intent, recurrence, attendees, and timezone explicit; never silently assume a timezone for a cross-region meeting.
 2. Use \`list_calendars\` when the target calendar is unknown. Use \`get_events\` for a bounded time window and identify the exact event before update or deletion.
 3. Use \`query_freebusy\` before scheduling when attendee availability matters. Free/busy data shows availability, not permission to expose private event details.
-4. Use \`manage_event\` for event create, update, or delete exactly as its described action schema requires. Before claiming an event is ready to create, call \`describe\`, construct the complete proposed event including action, calendar, times, timezone and grounded attendees, and pass that exact invocation to \`tools.preflight\`. Empty or placeholder event input is not a preflight. Use \`manage_out_of_office\` and \`manage_focus_time\` only for those specialized event types.
+4. Use \`manage_event\` for event create, update, or delete exactly as its described action schema requires. Before claiming an event is ready to create, call \`describe\`, construct the complete proposed event including action, calendar, times, timezone and grounded attendees, and pass that exact invocation to \`divo_preflight\`. Use \`manage_out_of_office\` and \`manage_focus_time\` only for those specialized event types.
 5. Use \`create_calendar\` only when the user asks for a separate calendar, not for an ordinary event.
 
 ### Completion contract

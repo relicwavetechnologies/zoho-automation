@@ -166,7 +166,9 @@ describe('Google Workspace system skills', () => {
         'draft_gmail_message',
         'After an ambiguous mutation failure',
         'Newsletter cleanup',
-        'tools.preflight',
+        // Not `tools.preflight` — that is the internal gateway op. Pi exposes
+        // it to the model as the typed tool `divo_preflight`.
+        'divo_preflight',
         'googleGmail:create',
         'number of search candidates separately from the number classified as newsletters',
         'Hard bounded latest-thread contract',
@@ -187,7 +189,10 @@ describe('Google Workspace system skills', () => {
         'manage_event',
         'resolved date and timezone',
         'avoid duplicate meetings',
-        'Empty or placeholder event input is not a preflight',
+        // `divo_preflight` states in its own promptGuidelines that a
+        // placeholder input validates nothing; the skill keeps the part that
+        // is specific to calendar — build the complete event first.
+        'pass that exact invocation to `divo_preflight`',
       ],
       'google-docs': [
         'create_doc',
