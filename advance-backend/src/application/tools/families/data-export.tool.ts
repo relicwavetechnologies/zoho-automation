@@ -9,7 +9,6 @@ import type {
   DataExportOfferService,
   NaturalLanguageDataExportConfirmationResult,
 } from '../../data-export/data-export-offer.service';
-import type { BeginGoogleWorkspaceAuthorization } from './google-workspace-mcp.tool';
 import {
   directDatasetSourceSchema,
   datasetSourceToolId,
@@ -172,7 +171,6 @@ type DataExportOrchestration = Pick<
 export function createDataExportTool(deps: {
   readonly offers: DataExportOffers;
   readonly orchestration?: DataExportOrchestration;
-  readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
 }): Tool<Args, Res> {
   return {
     id: asToolId('dataExport'),
@@ -181,7 +179,7 @@ export function createDataExportTool(deps: {
     argsSchema: Schema,
     resultSchema: ResultSchema,
     description:
-      `Complete an opaque exportCandidate for a provider whose specialist explicitly lacks terminal-safe paging, up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} governed rows, or confirm an existing provider export offer. Never use this compatibility tool for Zoho Books or CRM; complete Zoho artifacts use one governed local Python workflow. Source pages and sandboxed transforms stay server-side; only a verified invoker-only Google Sheet, Excel file, or Drive CSV is returned.`,
+      `Complete an opaque backend-replayable provider exportCandidate, up to ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} governed rows, or confirm an existing provider export offer. Source pages and sandboxed transforms stay server-side; only a company-owned, verified invoker-reader Google Sheet, Excel file, or Drive CSV is returned.`,
     parameterDocs: [
       `Format limits: Excel ${DATA_EXPORT_XLSX_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_XLSX_CELL_LIMIT.toLocaleString('en-IN')} cells; Google Sheets ${DATA_EXPORT_GOOGLE_SHEET_ROW_LIMIT.toLocaleString('en-IN')} rows/${DATA_EXPORT_GOOGLE_SHEET_CELL_LIMIT.toLocaleString('en-IN')} cells; CSV/auto ${DATA_EXPORT_CSV_ROW_LIMIT.toLocaleString('en-IN')} rows. If the user requests more or every row, disclose the applicable cap and never call a truncated result complete.`,
       'When a source result returns exportCandidate, use op=plan to export that candidate. If the user did not ask for a file, do not call dataExport.',
@@ -189,13 +187,13 @@ export function createDataExportTool(deps: {
       'op=plan: use one or more backend-returned candidate IDs plus the requested format/title. Assign tabName per dataset when exporting multiple tables to Sheet or Excel. A valid explicit plan queues the full governed export after destination and policy checks; do not create a sample or ask for another confirmation.',
       'Legacy op=confirm remains only for old provider offers that returned preview.exportOfferId. Do not use it for exportCandidate results.',
       'op=confirm.format: use google_sheet for Google Sheet/Sheet, csv for CSV, and xlsx for Excel/XL/XLSX. Do not invent source rows, filters, accounts, or a new offer. The backend resolves the active offer in the current authenticated Lark chat when offerId is omitted.',
-      'op=confirm.offerId: optional opaque offer ID from the preceding governed result; use it to disambiguate a listed offer but never show it to the user. op=confirm.connectionId is allowed only when Divo returned that exact account choice.',
-      'Direct source.kind is legacy/manual compatibility only. Never construct a direct zoho_books source; Zoho Books and CRM complete artifacts use terminal-safe paging through divo-python-automation. Always use the exact source connection UUID for supported compatibility sources.',
+      'op=confirm.offerId: optional opaque offer ID from the preceding governed result; use it to disambiguate a listed offer but never show it to the user. Do not supply connectionId; the backend derives the administrator-approved company export account.',
+      'Direct source.kind is legacy/manual compatibility only. Prefer an opaque backend-returned exportCandidate for every provider. Never invent a direct source recipe; when an approved compatibility recipe is unavoidable, use only exact backend-resolved identifiers.',
       'transform.script: optional JavaScript function body. It receives row, index, and args. Return an object, an array of objects, or null to filter.',
       'destination.format: auto chooses Google Sheets for manageable datasets and CSV in Google Drive for large datasets.',
       'Use destination.format=xlsx only when the user explicitly requests Excel. Excel is limited to 5,000 rows and 100,000 cells; use CSV for wider datasets.',
       'destination.title: human-readable artifact title. destination.columns optionally fixes column order.',
-      'Artifact access is fixed by the backend: a selected personal Google account owns its export; the governed company fallback grants reader access only to the verified invoker. Additional recipients, domain sharing, and public links are unsupported and must be refused.',
+      'Artifact access is fixed by the backend: the administrator-approved company Google account owns every new export and the verified invoker receives reader access only. Owner, recipient, and connection selection are not model arguments. Additional recipients, domain sharing, and public links are unsupported and must be refused.',
       'The backend re-checks requester RBAC, source access, the configured Google export account, invoker-only sharing, and artifact integrity before delivery.',
     ].join('\n'),
 
@@ -354,7 +352,6 @@ async function executePlan(
   ctx: ToolExecutionContext,
   deps: {
     readonly orchestration?: DataExportOrchestration;
-    readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
   },
 ): Promise<Result<Res, ToolError>> {
   if (!deps.orchestration) {
@@ -373,13 +370,6 @@ async function executePlan(
       ...(ctx.runContext.replyToMessageId ? { progressMessageId: ctx.runContext.replyToMessageId } : {}),
       plan: plan as ExportPlanRequest,
     });
-    if (result.status === 'connect_required') {
-      return requestGoogleConnectionForPlan(ctx, deps, {
-        operation: 'plan',
-        planId: result.planId,
-        format: args.destination.format,
-      });
-    }
     return ok(planResultToToolResult(result, args.destination.format));
   } catch (cause) {
     return err(new ToolError({
@@ -396,7 +386,6 @@ async function executeConfirmation(
   ctx: ToolExecutionContext,
   deps: {
     readonly offers: DataExportOffers;
-    readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
   },
 ): Promise<Result<Res, ToolError>> {
   const format = args.format as DataExportFormat;
@@ -426,7 +415,7 @@ async function executeConfirmation(
           : {}),
       });
       if (confirmation.disposition === 'connect_required') {
-        return requestGoogleConnection(ctx, deps, format, args.offerId);
+        return companyExportUnavailableConfirmation();
       }
       naturalResult = { ...confirmation, offerId: args.offerId };
     } else {
@@ -445,9 +434,7 @@ async function executeConfirmation(
       });
     }
     if (naturalResult.disposition === 'connect_required') {
-      const offerId = 'offerId' in naturalResult ? naturalResult.offerId : undefined;
-      if (!offerId) throw new Error('Google continuation is missing the export offer ID.');
-      return requestGoogleConnection(ctx, deps, format, offerId);
+      return companyExportUnavailableConfirmation();
     }
     ctx.logger.info('data_export.natural_confirmation.resolved', {
       correlationId: ctx.correlationId,
@@ -486,8 +473,7 @@ async function executeConfirmation(
         success: false,
         exportQueued: false,
         status: 'choose_destination',
-        message: 'Choose which Google account should own this export, then tell me the format again.',
-        connections: Array.from(naturalResult.connections),
+        message: 'This stale export offer predates the company-owned destination policy. Prepare the data again before exporting.',
       });
     }
 
@@ -532,60 +518,13 @@ async function executeConfirmation(
   }
 }
 
-async function requestGoogleConnection(
-  ctx: ToolExecutionContext,
-  deps: {
-    readonly offers: DataExportOffers;
-    readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
-  },
-  format: DataExportFormat,
-  offerId: string,
-): Promise<Result<Res, ToolError>> {
-  const authorization = await deps.beginAuthorization?.({
-    toolId: 'dataExport',
-    reason: `Connect a writable Google account to create this ${formatLabel(format)} export.`,
-    runContext: ctx.runContext,
-    ...(ctx.runContext.replyToMessageId
-      ? {
-          continuationPayload: {
-            kind: 'data_export_confirmation' as const,
-            offerId,
-            progressMessageId: ctx.runContext.replyToMessageId,
-            format,
-          },
-        }
-      : {}),
-  });
-  if (authorization && authorization.status !== 'unavailable') {
-    ctx.logger.info('data_export.natural_confirmation.authorization_pending', {
-      correlationId: ctx.correlationId,
-      companyId: ctx.runContext.companyId,
-      userId: ctx.runContext.userId,
-      format,
-      authorizationStatus: authorization.status,
-    });
-    return ok({
-      operation: 'confirm',
-      success: false,
-      exportQueued: false,
-      status: 'connect_pending',
-      message: ctx.runContext.replyToMessageId
-        ? 'The Google connection card was sent. Divo will continue this exact export after Google is connected.'
-        : 'The Google connection card was sent. After Google is connected, ask Divo for this format again.',
-    });
-  }
-  ctx.logger.warn('data_export.natural_confirmation.authorization_unavailable', {
-    correlationId: ctx.correlationId,
-    companyId: ctx.runContext.companyId,
-    userId: ctx.runContext.userId,
-    format,
-  });
+function companyExportUnavailableConfirmation(): Result<Res, ToolError> {
   return ok({
     operation: 'confirm',
     success: false,
     exportQueued: false,
     status: 'connect_required',
-    message: 'A writable Google account is required for this export. Connect Google in Divo, then ask for the same format again.',
+    message: 'The company Google export account is unavailable. Ask an administrator to configure or reconnect it, then retry this export.',
   });
 }
 
@@ -612,7 +551,7 @@ function planResultToToolResult(
       status: 'choose_destination',
       planId: result.planId,
       connections: Array.from(result.connections),
-      message: 'Choose which Google account should own this export, then retry the same plan with that account.',
+      message: 'This stale export plan predates the company-owned destination policy. Prepare the data again before exporting.',
     };
   }
   if (result.status === 'connect_required') {
@@ -622,7 +561,7 @@ function planResultToToolResult(
       exportQueued: false,
       status: 'connect_required',
       planId: result.planId,
-      message: 'A writable Google account is required for this export. Connect Google in Divo, then ask for the same export again.',
+      message: 'The company Google export account is unavailable. Ask an administrator to configure or reconnect it, then retry this export.',
     };
   }
   return {
@@ -633,42 +572,6 @@ function planResultToToolResult(
     reason: result.status === 'blocked' ? result.reason : undefined,
     message: result.message,
   };
-}
-
-async function requestGoogleConnectionForPlan(
-  ctx: ToolExecutionContext,
-  deps: {
-    readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
-  },
-  input: {
-    readonly operation: 'plan';
-    readonly planId: string;
-    readonly format: DataExportFormat;
-  },
-): Promise<Result<Res, ToolError>> {
-  const authorization = await deps.beginAuthorization?.({
-    toolId: 'dataExport',
-    reason: `Connect your Google account to own this ${formatLabel(input.format)} export. Otherwise Divo can use the company export account and give you read-only access when available.`,
-    runContext: ctx.runContext,
-  });
-  if (authorization && authorization.status !== 'unavailable') {
-    return ok({
-      operation: input.operation,
-      success: false,
-      exportQueued: false,
-      status: 'connect_pending',
-      planId: input.planId,
-      message: 'The Google connection card was sent. After Google is connected, ask Divo to continue this export.',
-    });
-  }
-  return ok({
-    operation: input.operation,
-    success: false,
-    exportQueued: false,
-    status: 'connect_required',
-    planId: input.planId,
-    message: 'A writable Google account is required for this export. Connect Google in Divo, then ask for the same export again.',
-  });
 }
 
 function formatLabel(format: DataExportFormat): string {

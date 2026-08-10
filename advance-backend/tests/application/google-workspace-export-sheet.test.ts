@@ -97,7 +97,11 @@ it('creates a typed Semrush sheet in the company account and grants only the inv
 
   const sink = new GoogleWorkspaceExportSink();
   const result = await sink.write({
-    auth: { accessToken: 'token', readerDomain: 'emiactech.com' },
+    auth: {
+      accessToken: 'token',
+      readerDomain: 'emiactech.com',
+      companyOwnerEmail: 'divo@emiactech.com',
+    },
     readerEmail: 'member@emiactech.com',
     exportKey: 'job-sheet',
     source: {

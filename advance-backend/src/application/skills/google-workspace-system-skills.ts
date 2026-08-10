@@ -495,6 +495,13 @@ partial instead of claiming it was applied.
 
 For a new structured spreadsheet, use this order:
 
+This workflow is for an ordinary workbook in the member's selected Google
+account. It is not an export-delivery path. When connected provider data must
+be delivered as Sheet, Excel, or CSV and the source returns \`exportCandidate\`,
+load \`secure-data-export\` and call \`dataExport op=plan\`; never use
+\`create_spreadsheet\` to bypass the configured company export account or its
+invoker-only sharing verification.
+
 1. \`create_spreadsheet\` and retain the returned \`spreadsheetId\` and \`spreadsheetUrl\` fields. Treat a successful create as final even if later parsing or code fails; never create a second spreadsheet to rediscover the first response.
 2. \`modify_sheet_values\` to write headers and rows.
    A successful write may return only an acknowledgement under \`data.result\`, not \`updatedRows\`. In a terminal workflow, count the intended rows from the local \`input.values\`; claim that count as written only after the exact read-back matches. Never turn a missing \`updatedRows\` field into a zero-row claim when verification proves the rows exist.

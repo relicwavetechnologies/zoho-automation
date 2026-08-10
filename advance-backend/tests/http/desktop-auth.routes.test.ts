@@ -1126,6 +1126,106 @@ describe('desktop auth routes', () => {
     assert.equal(mailBriefInput, undefined);
   });
 
+  it('lets only a company admin connect the company-owned Google export account', async () => {
+    let storedConnection: Record<string, unknown> | undefined;
+    const router = createDesktopAuthRoutes(makeDeps({
+      googleOAuthService: {
+        getAuthorizeUrl: ({ state }: { state: string }) =>
+          `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}`,
+        exchangeAuthorizationCode: async () => ({
+          accessToken: 'google-access-token',
+          refreshToken: 'google-refresh-token',
+          expiresIn: 3600,
+          scope: 'openid https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/spreadsheets',
+        }),
+        fetchUserInfo: async () => ({ sub: 'google-company-1', email: 'divo@emiactech.com', name: 'Divo' }),
+      },
+      connectionRepo: {
+        upsertGoogleConnection: async (input: Record<string, unknown>) => {
+          storedConnection = input;
+          return { ok: true, value: { id: 'google-company-connection-1', accountEmail: 'divo@emiactech.com' } };
+        },
+      },
+      prisma: {
+        adminMembership: {
+          findFirst: async () => ({ id: 'membership-admin-1' }),
+        },
+      },
+    }));
+
+    const forbidden = await callRoute(router, 'GET', '/google/authorize-url', {
+      locals: { userId: 'member-1', companyId: 'company-1', aiRole: 'MEMBER' },
+      query: { for: 'dataExport', owner: 'company' },
+    });
+    assert.equal(forbidden.status, 403);
+
+    const overbroad = await callRoute(router, 'GET', '/google/authorize-url', {
+      locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+      query: { owner: 'company' },
+    });
+    assert.equal(overbroad.status, 400);
+
+    const authorize = await callRoute(router, 'GET', '/google/authorize-url', {
+      locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+      query: { for: 'dataExport', owner: 'company' },
+    });
+    assert.equal(authorize.status, 200);
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state')!;
+    const signedPayload = JSON.parse(Buffer.from(state.split('.')[1]!, 'base64url').toString('utf8'));
+    assert.equal(signedPayload.ownerType, 'company');
+
+    const callback = await callRoute(router, 'GET', '/google/callback', {
+      query: { code: 'google-code', state },
+    });
+    assert.equal(callback.status, 200);
+    assert.equal(storedConnection?.['ownerType'], 'company');
+    assert.equal(storedConnection?.['ownerUserId'], undefined);
+    assert.equal(storedConnection?.['createdBy'], 'admin-1');
+    assert.equal(storedConnection?.['googleEmail'], 'divo@emiactech.com');
+  });
+
+  it('rejects company Google OAuth when the initiating admin was demoted before callback', async () => {
+    let exchanges = 0;
+    let upserts = 0;
+    const router = createDesktopAuthRoutes(makeDeps({
+      googleOAuthService: {
+        getAuthorizeUrl: ({ state }: { state: string }) =>
+          `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}`,
+        exchangeAuthorizationCode: async () => {
+          exchanges += 1;
+          return { accessToken: 'must-not-exchange' };
+        },
+        fetchUserInfo: async () => ({ sub: 'must-not-fetch' }),
+      },
+      connectionRepo: {
+        upsertGoogleConnection: async () => {
+          upserts += 1;
+          return { ok: true, value: { id: 'must-not-save' } };
+        },
+      },
+      prisma: {
+        adminMembership: {
+          findFirst: async () => null,
+        },
+      },
+    }));
+
+    const authorize = await callRoute(router, 'GET', '/google/authorize-url', {
+      locals: { userId: 'admin-1', companyId: 'company-1', aiRole: 'COMPANY_ADMIN' },
+      query: { for: 'dataExport', owner: 'company' },
+    });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state')!;
+
+    const callback = await callRoute(router, 'GET', '/google/callback', {
+      query: { code: 'google-code', state },
+    });
+
+    assert.equal(callback.status, 403);
+    assert.match(String(callback.body), /current company admin/i);
+    assert.equal(exchanges, 0);
+    assert.equal(upserts, 0);
+  });
+
   it('starts mail brief after desktop Gmail OAuth', async () => {
     let authorizeScopes: string[] | undefined;
     let mailBriefInput: Record<string, unknown> | undefined;

@@ -5,10 +5,9 @@ import { SEMRUSH_OPERATIONS } from '../../src/application/semrush/semrush.types.
 
 describe('Semrush system skill', () => {
   it('answers every question dataExport op=plan can ask back', () => {
-    // These states are only explained in secure-data-export, which data-router
-    // reaches for when a source returned NO candidate. Semrush always returns
-    // one, so that skill never loads on this path and the model would be left
-    // guessing at a question the backend genuinely asked it.
+    // Semrush may receive these compatibility statuses immediately after its
+    // candidate plan, before another skill read. Keep each response truthful
+    // under the company-owned destination policy.
     for (const state of ['choose_destination', 'connect_required', 'ambiguous']) {
       assert.match(
         DIVO_SEMRUSH_SYSTEM_SKILL.markdown,
@@ -16,7 +15,9 @@ describe('Semrush system skill', () => {
         `the skill must say what to do when op=plan returns ${state}`,
       );
     }
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /exact `connectionId`/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /stale plan from before company-owned\s+exports/s);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /administrator-approved company export account/);
+    assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /retry.*exact `connectionId`/s);
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /queues the full export without a sample or another confirmation/);
     assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /sample_required|op=sample|confirm_sample/);
     // A queued export is not a finished one.

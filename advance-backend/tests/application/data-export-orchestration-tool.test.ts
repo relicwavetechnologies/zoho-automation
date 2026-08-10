@@ -6,11 +6,12 @@ import { createDataExportTool } from '../../src/application/tools/families/data-
 import { makeCtx } from '../tools/tool-test.helpers.ts';
 
 describe('dataExport candidate orchestration tool contract', () => {
-  it('describes itself as compatibility-only and excludes terminal-pageable Zoho', () => {
+  it('describes one backend-replayable provider export boundary', () => {
     const tool = createDataExportTool({ offers: {} as never });
-    assert.match(tool.description, /provider whose specialist explicitly lacks terminal-safe paging/i);
-    assert.match(tool.description, /Never use this compatibility tool for Zoho Books or CRM/i);
-    assert.match(tool.parameterDocs, /Never construct a direct zoho_books source/i);
+    assert.match(tool.description, /backend-replayable provider exportCandidate/i);
+    assert.match(tool.description, /company-owned, verified invoker-reader/i);
+    assert.match(tool.parameterDocs, /Prefer an opaque backend-returned exportCandidate for every provider/i);
+    assert.doesNotMatch(tool.description, /Never use.*Zoho/i);
   });
 
   it('routes an explicit candidate plan directly to the full export', async () => {

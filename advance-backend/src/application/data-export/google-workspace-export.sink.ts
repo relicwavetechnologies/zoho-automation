@@ -1616,6 +1616,7 @@ async function verifyUserReader(
   drive: ReturnType<typeof google.drive>,
   fileId: string,
   emailAddress: string,
+  ownerEmail: string,
   signal?: AbortSignal,
 ): Promise<void> {
   const permissions = await drive.permissions.list({
@@ -1632,19 +1633,27 @@ async function verifyUserReader(
       'Google Drive verification failed: invoker reader permission is missing',
     );
   }
-  const broad = permissions.data.permissions?.some((permission) =>
-    permission.type === 'anyone'
-    || permission.type === 'domain'
-    || permission.type === 'group'
-    || (
-      permission.type === 'user'
-      && permission.role !== 'owner'
-      && permission.emailAddress?.toLowerCase() !== emailAddress.toLowerCase()
-    ),
+  const ownerFound = permissions.data.permissions?.some((permission) =>
+    permission.type === 'user'
+    && permission.role === 'owner'
+    && permission.emailAddress?.toLowerCase() === ownerEmail.toLowerCase(),
   );
-  if (broad) {
+  if (!ownerFound) {
     throw exportPrivacyVerificationError(
-      'Google Drive verification failed: export has access beyond the invoker',
+      'Google Drive verification failed: configured company owner permission is missing',
+    );
+  }
+  const unexpected = permissions.data.permissions?.some((permission) => {
+    if (permission.type !== 'user') return true;
+    const email = permission.emailAddress?.toLowerCase();
+    return !(
+      (permission.role === 'owner' && email === ownerEmail.toLowerCase())
+      || (permission.role === 'reader' && email === emailAddress.toLowerCase())
+    );
+  });
+  if (unexpected) {
+    throw exportPrivacyVerificationError(
+      'Google Drive verification failed: export access is not limited to the company owner and invoker reader',
     );
   }
 }
@@ -1871,7 +1880,11 @@ function artifactAccess(
 ): DataExportArtifactAccess {
   return 'ownerEmail' in auth
     ? { kind: 'owner', email: auth.ownerEmail }
-    : { kind: 'reader', email: readerEmail };
+    : {
+        kind: 'reader',
+        email: readerEmail,
+        ownerEmail: auth.companyOwnerEmail,
+      };
 }
 
 function accessLabel(access: DataExportArtifactAccess): string {
@@ -1896,7 +1909,7 @@ async function verifyArtifactAccess(
   signal?: AbortSignal,
 ): Promise<void> {
   if (access.kind === 'reader') {
-    await verifyUserReader(drive, fileId, access.email, signal);
+    await verifyUserReader(drive, fileId, access.email, access.ownerEmail, signal);
     return;
   }
   const permissions = await drive.permissions.list({

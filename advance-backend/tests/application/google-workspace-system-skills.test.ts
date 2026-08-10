@@ -73,6 +73,8 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /acknowledgement under `data\.result`, not `updatedRows`/);
     assert.match(sheets.markdown, /claim that count as written only after the exact read-back matches/);
     assert.match(sheets.markdown, /Never turn a missing `updatedRows` field into a zero-row claim/);
+    assert.match(sheets.markdown, /not an export-delivery path/);
+    assert.match(sheets.markdown, /never use\s+`create_spreadsheet` to bypass the configured company export account/s);
     assert.match(sheets.markdown, /`get_spreadsheet_info` returns machine-readable `spreadsheetId`/);
     assert.match(sheets.markdown, /Never parse or inspect its compatibility prose in\s+`data\.result`/);
     assert(sheets.aliases.includes('dropdown'));

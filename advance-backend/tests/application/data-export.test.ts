@@ -607,6 +607,7 @@ describe('data export profile', () => {
       integrationConnection: {
         findFirst: async () => ({
           id: '11111111-1111-4111-8111-111111111111',
+          ownerType: 'company',
           accountEmail: ' Divo@EmiacTech.com ',
           scopes: [GOOGLE_SCOPE.driveFull, GOOGLE_SCOPE.sheetsFull],
         }),
@@ -634,6 +635,7 @@ describe('data export profile', () => {
       integrationConnection: {
         findFirst: async () => ({
           id: '11111111-1111-4111-8111-111111111111',
+          ownerType: 'company',
           accountEmail: 'divo@emiactech.com',
           scopes: [GOOGLE_SCOPE.driveFull],
         }),
@@ -649,9 +651,71 @@ describe('data export profile', () => {
       /Drive write and Sheets write/i,
     );
   });
+
+  it('rejects a user-owned Google connection as the company export account', async () => {
+    let where: unknown;
+    const db = {
+      integrationConnection: {
+        findFirst: async (input: unknown) => {
+          where = input;
+          return null;
+        },
+      },
+      companyCapabilityGovernance: { upsert: async () => assert.fail('must not persist') },
+    };
+    await assert.rejects(
+      () => configureDataExportProfile(db as any, {
+        companyId: 'company-1',
+        googleConnectionId: '11111111-1111-4111-8111-111111111111',
+        configuredBy: 'admin-1',
+      }),
+      /company-owned Google Workspace account/i,
+    );
+    assert.deepEqual(where, {
+      where: {
+        id: '11111111-1111-4111-8111-111111111111',
+        companyId: 'company-1',
+        provider: 'google_workspace',
+        ownerType: 'company',
+        status: 'connected',
+        revokedAt: null,
+      },
+      select: { id: true, accountEmail: true, scopes: true },
+    });
+  });
 });
 
 describe('Google export retry recovery', () => {
+  function recoveredDriveWithPermissions(
+    permissions: readonly Record<string, unknown>[],
+    onDelete: () => void,
+  ) {
+    return {
+      files: {
+        list: async () => ({
+          data: {
+            files: [{
+              id: 'file-exact-acl',
+              webViewLink: 'https://drive.google.com/file/d/file-exact-acl/view',
+              appProperties: {
+                divoExportKey: 'job-exact-acl',
+                divoExportState: 'complete',
+                divoExportRowCount: '10',
+                divoExportTruncated: 'false',
+                divoExportType: 'csv',
+              },
+            }],
+          },
+        }),
+        delete: async () => { onDelete(); },
+      },
+      permissions: {
+        list: async () => ({ data: { permissions } }),
+        create: async () => assert.fail('verified invoker access already exists'),
+      },
+    };
+  }
+
   it('recovers one completed job-keyed artifact without creating or deleting a file', async () => {
     let permissionCreates = 0;
     let fileDeletes = 0;
@@ -689,7 +753,11 @@ describe('Google export retry recovery', () => {
     const recovered = await recoverCompletedExport(
       drive as any,
       'job-1',
-      { kind: 'reader', email: 'abhishek@emiactech.com' },
+      {
+        kind: 'reader',
+        email: 'abhishek@emiactech.com',
+        ownerEmail: 'divo@emiactech.com',
+      },
     );
     assert.equal(recovered?.artifactId, 'file-1');
     assert.equal(recovered?.rowCount, 87_044);
@@ -1066,11 +1134,60 @@ describe('Google export retry recovery', () => {
       () => recoverCompletedExport(
         drive as any,
         'job-1',
-        { kind: 'reader', email: 'abhishek@emiactech.com' },
+        {
+          kind: 'reader',
+          email: 'abhishek@emiactech.com',
+          ownerEmail: 'divo@emiactech.com',
+        },
       ),
-      /access beyond the invoker/i,
+      /company owner and invoker reader/i,
     );
     assert.equal(deleted, 1, 'a Divo-created file that violates privacy must be removed');
+  });
+
+  it('rejects a company artifact with an additional owner', async () => {
+    let deleted = 0;
+    const drive = recoveredDriveWithPermissions([
+      { type: 'user', role: 'owner', emailAddress: 'divo@emiactech.com' },
+      { type: 'user', role: 'owner', emailAddress: 'other-owner@emiactech.com' },
+      { type: 'user', role: 'reader', emailAddress: 'abhishek@emiactech.com' },
+    ], () => { deleted += 1; });
+
+    await assert.rejects(
+      () => recoverCompletedExport(
+        drive as any,
+        'job-exact-acl',
+        {
+          kind: 'reader',
+          email: 'abhishek@emiactech.com',
+          ownerEmail: 'divo@emiactech.com',
+        },
+      ),
+      /company owner and invoker reader/i,
+    );
+    assert.equal(deleted, 1);
+  });
+
+  it('rejects a company artifact without the configured owner', async () => {
+    let deleted = 0;
+    const drive = recoveredDriveWithPermissions([
+      { type: 'user', role: 'owner', emailAddress: 'other-owner@emiactech.com' },
+      { type: 'user', role: 'reader', emailAddress: 'abhishek@emiactech.com' },
+    ], () => { deleted += 1; });
+
+    await assert.rejects(
+      () => recoverCompletedExport(
+        drive as any,
+        'job-exact-acl',
+        {
+          kind: 'reader',
+          email: 'abhishek@emiactech.com',
+          ownerEmail: 'divo@emiactech.com',
+        },
+      ),
+      /configured company owner permission is missing/i,
+    );
+    assert.equal(deleted, 1);
   });
 
   it('recovers a personal-account artifact only when that account is the sole owner', async () => {
@@ -1233,7 +1350,11 @@ describe('data export worker', () => {
         },
       }),
     } as any,
-    resolveGoogleAuth: async () => ({ accessToken: 'short-lived', readerDomain: 'emiactech.com' }),
+    resolveGoogleAuth: async () => ({
+      accessToken: 'short-lived',
+      readerDomain: 'emiactech.com',
+      companyOwnerEmail: 'divo@emiactech.com',
+    }),
     larkAdapter: input.larkAdapter as any,
     ...(input.conversationHistory ? { conversationHistory: input.conversationHistory as any } : {}),
     ...(input.runLeaseHolder ? { runLeaseHolder: input.runLeaseHolder as any } : {}),
@@ -2339,7 +2460,11 @@ describe('data export worker', () => {
           },
         }),
       } as any,
-      resolveGoogleAuth: async () => ({ accessToken: 'unused', readerDomain: 'emiactech.com' }),
+      resolveGoogleAuth: async () => ({
+        accessToken: 'unused',
+        readerDomain: 'emiactech.com',
+        companyOwnerEmail: 'divo@emiactech.com',
+      }),
       larkAdapter: {
         sendToChatId: async () => ({ ok: true as const, value: 'om-progress' }),
         updateMessageById: async (_messageId, content) => {
@@ -2997,8 +3122,7 @@ describe('data export access contract', () => {
     });
   });
 
-  it('reports a truthful connect-and-resume outcome', async () => {
-    let authorizationInput: unknown;
+  it('reports that an administrator must restore the company export account', async () => {
     const confirmTool = createDataExportTool({
       offers: {
         submitAuthorized: async () => 'unused',
@@ -3007,10 +3131,6 @@ describe('data export access contract', () => {
           replyInThread: false,
           offerId: '11111111-1111-4111-8111-111111111111',
         }),
-      },
-      beginAuthorization: async input => {
-        authorizationInput = input;
-        return { status: 'sent' as const, intentId: 'intent-1' };
       },
     });
 
@@ -3023,23 +3143,9 @@ describe('data export access contract', () => {
     );
 
     assert.equal(result.ok, true);
-    assert.equal(result.value.status, 'connect_pending');
+    assert.equal(result.value.status, 'connect_required');
     assert.equal(result.value.exportQueued, false);
-    assert.match(result.value.message, /connection card was sent/i);
-    assert.deepEqual(authorizationInput, {
-      toolId: 'dataExport',
-      reason: 'Connect a writable Google account to create this Google Sheet export.',
-      continuationPayload: {
-        kind: 'data_export_confirmation',
-        offerId: '11111111-1111-4111-8111-111111111111',
-        progressMessageId: 'om_user',
-        format: 'google_sheet',
-      },
-      runContext: makeCtx('dataExport', ['create'], {
-        chatId: 'oc_chat',
-        replyToMessageId: 'om_user',
-      }).runContext,
-    });
+    assert.match(result.value.message, /administrator.*configure or reconnect/i);
   });
 
   it('pins a direct recipe to the backend-derived Lark reply address', async () => {
@@ -3137,7 +3243,11 @@ describe('Exports built from several tool calls', () => {
         },
       }),
     } as any,
-    resolveGoogleAuth: async () => ({ accessToken: 'short-lived', readerDomain: 'emiactech.com' }),
+    resolveGoogleAuth: async () => ({
+      accessToken: 'short-lived',
+      readerDomain: 'emiactech.com',
+      companyOwnerEmail: 'divo@emiactech.com',
+    }),
     larkAdapter: {
       sendToChatId: async () => ({ ok: true as const, value: 'om_progress' }),
       updateMessageById: async () => ({ ok: true as const, value: undefined }),
@@ -3326,7 +3436,11 @@ describe('Truncation across part boundaries', () => {
           },
         }),
       } as any,
-      resolveGoogleAuth: async () => ({ accessToken: 't', readerDomain: 'emiactech.com' }),
+      resolveGoogleAuth: async () => ({
+        accessToken: 't',
+        readerDomain: 'emiactech.com',
+        companyOwnerEmail: 'divo@emiactech.com',
+      }),
       larkAdapter: {
         sendToChatId: async () => ({ ok: true as const, value: 'om_progress' }),
         updateMessageById: async () => ({ ok: true as const, value: undefined }),

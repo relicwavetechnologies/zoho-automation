@@ -49,12 +49,11 @@ Only the three **Callable** operations below may be invoked through the \`semrus
 \`op=plan\` does not always queue. It can answer with a question, and each one
 has exactly one correct reply:
 
-- \`choose_destination\` — the member has more than one writable Google account.
-  Show the returned account labels/emails, ask which should own the file, and
-  retry \`op=plan\` with the exact \`connectionId\` they pick. Never guess an
-  account, never reuse a previous one.
-- \`connect_required\` — no writable Google account. Say the export needs Google
-  connected, and stop; do not build the file another way.
+- \`choose_destination\` — this is a stale plan from before company-owned
+  exports. Prepare the data again; never ask the member to select an account.
+- \`connect_required\` — the administrator-approved company export account is
+  unavailable. Ask an administrator to configure or reconnect it, and stop;
+  never start personal Google OAuth or build the file another way.
 - \`ambiguous\` — your plan named more than one dataset without saying how they
   fit. Repair it (one dataset, or a \`tabName\` per dataset). Never show the
   member a candidate list or any ID.

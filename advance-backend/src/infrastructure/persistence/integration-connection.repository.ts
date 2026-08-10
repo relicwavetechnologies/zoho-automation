@@ -1522,6 +1522,7 @@ export class IntegrationConnectionRepository {
           id: input.connectionId,
           companyId: input.companyId,
           provider: GOOGLE_PROVIDER,
+          ownerType: 'company',
           revokedAt: null,
           status: 'connected',
         },

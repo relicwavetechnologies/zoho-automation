@@ -13,11 +13,16 @@ export type GoogleExportAuth =
   | {
       readonly accessToken: string;
       readonly readerDomain: string;
+      readonly companyOwnerEmail: string;
     };
 
 export type DataExportArtifactAccess =
   | { readonly kind: 'owner'; readonly email: string }
-  | { readonly kind: 'reader'; readonly email: string };
+  | {
+      readonly kind: 'reader';
+      readonly email: string;
+      readonly ownerEmail: string;
+    };
 
 export interface DataExportDestinationWriteProgress {
   readonly stage: 'writing';
