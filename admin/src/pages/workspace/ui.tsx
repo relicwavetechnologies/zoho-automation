@@ -86,7 +86,7 @@ export const Fade = ({ children }: { children: ReactNode }) => <div className="w
 
 /* ── Page furniture ──────────────────────────────────── */
 export function PageHeader({
-  eyebrow, title, description, actions,
+  eyebrow, title, description, actions, badge,
   // `eyebrow` is a node rather than a string so a sub-page can put its way back
   // where the section name would otherwise sit — a wizard's breadcrumb belongs
   // above its own title, not in a rail the wizard has replaced.
@@ -95,12 +95,24 @@ export function PageHeader({
   title: string
   description?: string
   actions?: ReactNode
+  /*
+   * A word about the page itself, set beside its name.
+   *
+   * Distinct from `actions`, which is where the controls live: a status is not
+   * a control, and putting it there had it read as a button nobody could
+   * press. Beside the title is where a reader looks to find out what a screen
+   * is, so a screen that is not finished says so there.
+   */
+  badge?: ReactNode
 }) {
   return (
     <div className="ws-ph">
       <div>
         {eyebrow ? <div className="eyebrow">{eyebrow}</div> : null}
-        <h1 style={{ marginTop: eyebrow ? 7 : 0 }}>{title}</h1>
+        <div className="ws-ph-title" style={{ marginTop: eyebrow ? 7 : 0 }}>
+          <h1>{title}</h1>
+          {badge}
+        </div>
         {description ? <p>{description}</p> : null}
       </div>
       {/*

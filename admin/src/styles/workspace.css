@@ -113,6 +113,34 @@
 .cur .ws-ph h1 { font-size: 30px; letter-spacing: -0.025em; font-weight: 400; line-height: 1.12; }
 .cur .ws-ph p { font-size: 13px; color: var(--cur-body); margin-top: 8px; max-width: 620px; line-height: 1.55; }
 .cur .ws-ph-act { display: flex; gap: 8px; flex-shrink: 0; }
+/* Title and its status on one line. `baseline` rather than `center`: against a
+   30px heading, a centred pill sits visibly low, because a line box is taller
+   than the letters in it. */
+.cur .ws-ph-title { display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap; }
+
+/* A page that is not built yet, said beside its name.
+   Reads as a label, not a control: no pointer, no hover, nothing to press. The
+   accent carries it — this is the one thing on the page that should be noticed
+   before the content, since the content is a preview of something absent. */
+.cur .ws-soon {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 4px 11px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+  white-space: nowrap; position: relative; top: -3px;
+  color: var(--cur-accent);
+  background: color-mix(in srgb, var(--cur-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cur-accent) 30%, transparent);
+}
+/* The dot is the eye-catch. It pulses slowly enough to register as alive and
+   not as an alarm, and holds still for anyone who asked motion to stop. */
+.cur .ws-soon::before {
+  content: ''; width: 5px; height: 5px; border-radius: 999px;
+  background: var(--cur-accent); animation: ws-soon-pulse 2.4s ease-in-out infinite;
+}
+@keyframes ws-soon-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.35 } }
+@media (prefers-reduced-motion: reduce) {
+  .cur .ws-soon::before { animation: none }
+}
 
 /* ── Panel ───────────────────────────────────────────── */
 .cur .ws-panel { background: var(--cur-surface); border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); }
