@@ -55,10 +55,21 @@ describe('governed local-workflow instruction contract', () => {
     assert(bootstrap.routingHints.some(hint => hint.includes(GOVERNED_LOCAL_WORKFLOW_CRITERION)));
   });
 
-  it('keeps Zoho skills aligned with backend-owned connection selection', () => {
+  /*
+   * Both Zoho tools state in parameterDocs how connectionId itself behaves —
+   * omit it when one account qualifies, retry with the exact ID an error
+   * returns. Six skills repeated that, so the same rule shipped seven times.
+   * The skills keep only what a schema cannot say: ask the member when Divo
+   * offers choices, stop when nothing is accessible, and never re-discover an
+   * account through a different tool.
+   */
+  it('leaves connectionId selection to the Zoho tools that state it', () => {
     for (const skill of [zohoBooksInvoiceSkill, zohoBooksReadAnalysisSkill, zohoBooksBillSkill, zohoBillNotifyAccountsSkill]) {
-      assert.match(skill.instructions, /Otherwise omit it: the backend selects an account only when exactly one accessible account qualifies/);
       assert.doesNotMatch(skill.instructions, /Before every Zoho action, use connections\.list|Divo never auto-selects a Zoho account/);
+      assert.doesNotMatch(skill.instructions, /the backend selects an account only when exactly one/);
+      assert.match(skill.instructions, /ask one short account-choice question/);
+      assert.match(skill.instructions, /If no connection is accessible, tell the member to connect/);
+      assert.match(skill.instructions, /Do not call connections\.list to rediscover an account/);
     }
   });
 

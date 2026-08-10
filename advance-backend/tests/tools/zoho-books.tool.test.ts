@@ -12,6 +12,10 @@ import { formatAmount, formatDate } from '../../src/application/zoho/zoho-format
 import { normalizeStatus, parseDateFilter } from '../../src/application/zoho/zoho-filter.utils.ts';
 import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
 import { arrayToCsv } from '../../src/application/tools/shared/sandbox-runner.ts';
+import {
+  ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE,
+  ZOHO_BOOKS_ROW_CONTRACT,
+} from '../../src/shared/zoho-books-row-contract.ts';
 import { assertLosslessPagingFixture } from './lossless-paging.fixture.ts';
 
 /** What Zoho answers a write with, keyed by the module path being written to. */
@@ -580,6 +584,32 @@ describe('zohoBooks expanded execution', () => {
     assert.match(tool.description, /Do not call this registered Pi tool for a preview first/i);
     assert.match(tool.description, /begin the local workflow and call Zoho through divo-local/i);
     assert.match(tool.description, /Script mode is not an export or transfer contract/i);
+  });
+
+  /*
+   * These are facts about what this tool returns, so they belong to this tool.
+   * They were asserted on `zoho-books-read-analysis`, which held a second copy
+   * of each — and the row contract was a third, since parameterDocs already
+   * interpolated the same shared constants.
+   */
+  it('states its own row shape, ordering, and currency rules', () => {
+    const tool = makeTool();
+    assert.match(tool.parameterDocs, /returns newest invoice dates first/i);
+    assert.match(tool.parameterDocs, /get_invoice accepts a Zoho numeric invoice ID or an exact human invoice number/i);
+    assert.match(tool.parameterDocs, /_currency = ISO code or UNKNOWN; never label UNKNOWN as INR/);
+    assert.match(tool.parameterDocs, /never produce an original-currency breakdown from UNKNOWN rows/);
+    assert.match(tool.parameterDocs, /list_items gives item_id and rate/);
+    assert.match(tool.parameterDocs, /never guess a tax rate or tax id/);
+    /*
+     * The normalized fields are on every list row. Nested under SCRIPT MODE
+     * they read as script-only, so deleting the skill's copy would have left
+     * `_balance_inr` looking unavailable to an ordinary list read.
+     */
+    const rowFields = tool.parameterDocs.indexOf('ROW FIELDS');
+    const scriptMode = tool.parameterDocs.indexOf('SCRIPT MODE');
+    assert.ok(rowFields > 0 && rowFields < scriptMode);
+    assert.ok(tool.parameterDocs.includes(ZOHO_BOOKS_ROW_CONTRACT));
+    assert.ok(tool.parameterDocs.includes(ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE));
   });
 
   it('bounds script results inline', async () => {

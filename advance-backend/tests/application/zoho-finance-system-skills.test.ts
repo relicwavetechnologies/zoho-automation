@@ -32,18 +32,37 @@ describe('Zoho Finance system skill provisioning', () => {
     assert.deepEqual(referencedSlugs.filter(slug => !provisionedSlugs.has(slug)), []);
   });
 
-  it('keeps the read specialist truthful about exact lookups, latest ordering, and missing currency', () => {
+  it('keeps the read specialist truthful about exact lookups and reported figures', () => {
     const specialist = ZOHO_FINANCE_SYSTEM_SKILLS.find(
       skill => skill.slug === 'zoho-books-read-analysis',
     );
     assert.ok(specialist);
     assert.deepEqual(specialist.toolIds, ['zohoBooks']);
     assert.match(specialist.markdown, /exact normalized invoice_number match/i);
-    assert.match(specialist.markdown, /sorted by invoice date newest-first/i);
-    assert.match(specialist.markdown, /_currency is UNKNOWN/i);
-    assert.match(specialist.markdown, /do not call it INR/i);
+    assert.match(specialist.markdown, /never substitute a fuzzy result/i);
     assert.match(specialist.markdown, /Preserve Zoho identifiers exactly as returned/i);
     assert.match(specialist.markdown, /Do not add uncomputed remainders/i);
+    /*
+     * Newest-first ordering, the row-field contract, and the UNKNOWN-currency
+     * rule describe what zohoBooks returns. The tool's own docs state all
+     * three, and tests/tools/zoho-books.tool.test.ts asserts them there.
+     */
+    assert.doesNotMatch(specialist.markdown, /sorted by invoice date newest-first/i);
+    assert.doesNotMatch(specialist.markdown, /_amount_inr|_balance_inr|_currency/);
+  });
+
+  /*
+   * Every specialist embeds the same connection preamble, so one duplicated
+   * sentence there is six in the catalogue. This guards the reverse direction
+   * of the compression: no skill may restate what a Zoho tool's schema and
+   * parameterDocs already carry.
+   */
+  it('never reprints a Zoho tool contract across the family', () => {
+    for (const skill of ZOHO_FINANCE_SYSTEM_SKILLS) {
+      assert.doesNotMatch(skill.markdown, /payment_terms_label|supersedesStagingId|review\.attemptsRemaining/);
+      assert.doesNotMatch(skill.markdown, /takes ONLY stagingId|requires a stagingId/);
+      assert.doesNotMatch(skill.markdown, /limit \(1-100\)|page \(1-\d+\)/);
+    }
   });
 
   it('creates department-scoped skills directly under Finance and grants the department', async () => {
