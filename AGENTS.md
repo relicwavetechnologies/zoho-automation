@@ -10,6 +10,11 @@ never copy its secrets into tracked files or output. New teammates: copy
 `AGENTS.local.example.md` to `AGENTS.local.md`, then fill secrets from a team
 lead and `advance-backend/.env.example`.
 
+For local backend + controller + Dockerized Cloud-Pi runs delivered to Lark,
+follow [`advance-backend/docs/cloud-pi-testing/07-local-runtime-harness-framework.md`](advance-backend/docs/cloud-pi-testing/07-local-runtime-harness-framework.md).
+It defines the executable Development path, inspection-only Main boundary,
+prompt disclosure, evidence, rerun, and Divo-only cleanup rules.
+
 ## Prime Directive
 
 Code quality is the priority. Do not rush wiring that creates dead code, unclear ownership, duplicated flows, conflicting comments, or hidden security gaps. Reason from the existing code structure before editing.
@@ -29,7 +34,8 @@ Divo should integrate with Pi through a backend-owned capability gateway:
 Desktop: Jan auths with advance-backend -> bundled Pi runs locally
 Lark: webhook admission -> LarkPiRuntimeService -> private controller
   -> isolated per-user Divo container -> Pi runtime
-Both: Pi calls one Divo tool with op + payload
+Both: the Divo extension registers typed Pi tools from backend contracts
+  -> every call crosses one backend capability gateway
   -> advance-backend authenticates, resolves user/departments, enforces RBAC/HITL, executes tool
 ```
 
@@ -95,8 +101,10 @@ Do not flatten tool results into LLM string envelopes for the external gateway. 
 
 Pi integration should be additive:
 
-- Add one Divo gateway tool extension.
-- Tool input should be `{ op, departmentId?, payload }`.
+- Use one Divo gateway extension that registers one typed Pi tool per reachable
+  backend contract.
+- Generate tool inputs from the backend `argsSchema`; do not recreate the
+  removed mega-tool `{ op, payload }` envelope.
 - Skills/instructions may be loaded from backend responses, but enforcement remains backend-side.
 - Pi should not know implementation details of Zoho/Lark/Google tools beyond what backend capabilities expose.
 

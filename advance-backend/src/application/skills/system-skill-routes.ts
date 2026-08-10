@@ -108,14 +108,14 @@ The Shopify specialist is read-only and routes every request through governed Di
 
 Choose the exact approved specialist returned by this router.
 
-- One bounded provider lookup or preview → load that provider's specialist.
-  If its result contains \`exportCandidate\`, keep only that opaque candidate.
-  If the member asks for Sheet/CSV/XLSX/all/full/export, call \`dataExport\`
-  with \`op=plan\`; never rerun the provider query or create a local file.
-  If the member did not ask for a file but the answer is a useful table,
-  ranking, report, or diagnostic with \`exportCandidate\`, the specialist may
-  ask one soft follow-up about exporting to Google Sheets, Excel, or CSV,
-  unless the member explicitly said not to export, not now, or chat-only.
+- One bounded provider lookup or preview → load that provider's specialist and
+  keep the response in chat.
+- Complete Zoho Books or CRM artifact → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`.
+  Page through the governed Zoho tool into one local file, then use the
+  destination specialist and reconcile source/written/read-back counts.
+- A provider skill that explicitly says it lacks terminal-safe paging may
+  return \`exportCandidate\`. Keep that handle opaque and use \`dataExport\`
+  with \`op=plan\` only as that provider's temporary compatibility route.
 - Produce a governed complete-data artifact without a provider candidate →
   \`secure-data-export\`. Its direct recipes are only for backend-replayable
   sources with exact backend-resolved identifiers. Airtable MCP pagination is
@@ -137,17 +137,17 @@ Choose the exact approved specialist returned by this router.
   request a download URL or import it directly.
 - Read or analyse a file that is already in the workspace → \`${READ_FILES_SKILL_SLUG}\`.
 
-Use the provider preview and governed export path for one source's complete
-dataset. Use the scripted workflow only when the work needs pagination for a
-calculation or transform, more than one connected product, or related writes.
-Neither route carries a record set through the conversation.
+Use the scripted workflow for complete datasets when the source exposes real
+pagination, even for one source. Keep the compatibility export path only for a
+provider whose specialist explicitly says paging is unavailable. Neither route
+carries a record set through the conversation.
 
 Keep each opaque handle in its owning route:
 
 - legacy \`preview.exportOfferId\` → Divo's verified Lark final-response card, then
   \`dataExport\` \`op=confirm\` for an explicit later natural-language format;
-- \`exportCandidate\` → \`dataExport\` \`op=plan\`, then \`op=sample\` and
-  \`op=confirm_sample\` if the backend requires review before the full run;
+- \`exportCandidate\` → \`dataExport\` \`op=plan\`; a valid explicit plan queues
+  the full governed export without a sample or another confirmation;
   never rebuild the provider request.
 - \`destinationReferenceId\` or \`resourceRef\` for a **google_sheet** →
   \`google-sheets\` for the exact resolved or recent Sheet.
@@ -162,6 +162,8 @@ Examples:
 - “Show me our best keywords” → research specialist and bounded preview.
 - “Put the complete keyword result in a Sheet” → use the provider
   \`exportCandidate\` with \`dataExport op=plan\`.
+- “Put every Zoho invoice in a Sheet” → \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`,
+  then the Zoho and Google Sheets specialists.
 - “Combine invoices with Airtable owners and calculate totals” → relevant
   provider specialists plus \`${DIVO_LOCAL_PYTHON_SKILL_SLUG}\`.
 - A pasted spreadsheet or Drive file URL to **read or inspect** → \`google-drive\`
@@ -170,8 +172,8 @@ Examples:
   metadata, then ask what the member wants to do.
 - “Add a Notes column to that Sheet” after a Divo export → \`google-sheets\`
   with its recent opaque resource reference and read-back verification.
-- No eligible Google destination → let \`dataExport\` ask for an eligible
-  account or Google connection; never choose an account yourself.
+- No eligible Google destination → report the governed connection error or ask
+  one short choice question from backend-provided account labels; never guess.
 
 Never treat this router as permission to process or export data. Load the specialist first.`,
     toolIds: [],

@@ -1,6 +1,11 @@
 # AI-controlled data export orchestration
 
-Status: implementation note, 2026-08-04.
+Status: compatibility-path implementation note, updated 2026-08-10.
+
+The former sample/confirm workflow is retired. An explicit valid plan now
+queues the full governed export after destination, RBAC, cap, and source-safety
+checks. Historical database fields and worker handling remain temporarily only
+so pre-cutover jobs can drain; they are not exposed to Pi.
 
 Related foundation:
 
@@ -49,13 +54,10 @@ Current implemented scope:
 - `dataExport op=plan` validates candidates, RBAC, source read permission,
   personalized Zoho restrictions, destination account availability, CSV
   single-dataset rules, and shape compatibility.
-- `dataExport op=sample` queues a 100-row governed sample artifact using the
-  same worker pipeline with `exportKind="sample"` and `rowLimitOverride=100`.
-- The worker marks the plan `sample_ready` only after the sample artifact has
-  completed and the sample-ready card has been delivered.
-- `dataExport op=confirm_sample` revalidates the same stored plan and queues
-  the full export idempotently only from `sample_ready`, never from merely
-  `sample_queued`.
+- `dataExport op=plan` queues the complete governed export directly after all
+  destination, permission, replay, shape, and format-cap checks pass.
+- The removed `op=sample` and `op=confirm_sample` operations are rejected by
+  the model-facing tool schema.
 - Google account choice is centralized in `dataExport`; provider tools no
   longer accept destination account knobs for export planning.
 - Multi-shape/multi-tab workbook execution is enabled when the model assigns
@@ -235,7 +237,7 @@ type ExportPlan = {
     title: string;
     connectionId?: string;
   };
-  userIntent: 'explicit_export' | 'sample_then_confirm';
+  userIntent: 'explicit_export';
 };
 ```
 
@@ -266,14 +268,12 @@ Plain-language flow:
    account should own the export.
 4. If the user asks for a clear small export and one Google account is known,
    the backend queues the full export directly.
-5. If the export is huge, unknown, multi-tab, or transformed, Divo creates a
-   clearly labelled sample first and asks the user to confirm it before full
-   scale.
-6. If the user changes columns, filters, account, format, or destination after
-   seeing the sample, the backend treats it as a new plan and preflights again.
+5. If the export is huge, unknown, multi-tab, or transformed, the backend
+   validates the requested format caps and either queues the full export or
+   blocks with a precise reason. It does not create a sample.
 
 The model may say what it is about to export in human terms: source, filters,
-format, destination account label, estimated rows, and sample/full status. It
+format, destination account label, and estimated rows. It
 must not expose candidate IDs, offer IDs, connection IDs, SQL, spreadsheet IDs,
 provider tokens, or internal plan hashes.
 
@@ -284,48 +284,9 @@ I will export the delivered orders from the last 7 days to Excel in your
 abhishek@emiactech.com Google account. Divo will deliver the private file here.
 ```
 
-Recommended model copy before sample-first review:
-
-```txt
-This looks large, so I will first prepare a 100-row sample with the same
-filters and columns. Please confirm if it looks right, then I will run the full
-export.
-```
-
-## Sample-first policy for huge data
-
-The sample export idea is good and should be first-class. It prevents a member
-from waiting for a huge file only to discover that the wrong columns, filters,
-date range, account, or tab layout were chosen.
-
-Recommended default policy:
-
-- Queue full export directly only when the user explicitly asked for an export
-  and the preflight estimate is at or below 5,000 rows and within the selected
-  format's cell limit.
-- Require sample confirmation when estimated rows exceed 5,000, when the user
-  asks for "everything" and the count is unknown, when multiple datasets/tabs
-  are involved, or when a transform materially changes columns.
-- Block or ask for a different format/window when the plan exceeds the chosen
-  destination cap: XLSX over 5,000 rows or 100,000 cells, Google Sheets over
-  50,000 rows or 2,000,000 cells, CSV over 1,000,000 rows, or Menhood over the
-  spool limit.
-- Default sample artifact: first 100 rows after the exact same filters,
-  column selection, transforms, and tab layout. The sample must be clearly
-  titled as a sample and must not be treated as the final export.
-
-The model copy should be simple:
-
-```txt
-I prepared a 100-row sample with the exact filters and columns I will use for
-the full export. Please confirm if this looks right, and I will run the full
-export.
-```
-
-Full-scale execution requires a backend-held `sampleRunId` or confirmation
-token bound to the exact `ExportPlan` hash. If the user changes filters,
-columns, format, account, or destination after seeing the sample, Divo must
-create a new sample or re-preflight the changed plan.
+Large requests use the same full-plan path. Existing row/cell/spool caps remain
+hard backend limits, and a request outside them is blocked or reported as
+capped rather than turned into a sample.
 
 ## Tool surface
 
@@ -335,22 +296,17 @@ authority.
 Candidate operations:
 
 - `dataExport op=plan`: accepts an `ExportPlan`, validates candidates, returns
-  `direct_queue`, `sample_required`, `choose_destination`, `ambiguous`, or
+  `direct_queue`, `choose_destination`, `ambiguous`, or
   `blocked`.
-- `dataExport op=sample`: queues a private sample artifact for a plan that
-  requires review.
-- `dataExport op=confirm_sample`: queues the full export only after the member
-  confirms the matching sample/plan hash.
 - Keep existing `op=confirm` for legacy/current provider offers during
   migration.
 
 The model can control timing and UX, but not authority. It cannot invent a
-candidate, broaden scope, change recipient access, bypass caps, or queue full
-scale when review policy says sample first.
+candidate, broaden scope, change recipient access, or bypass caps.
 
 Every `dataExport` orchestration call returns a structured result to the model.
 The backend never silently asks a question or starts a sample out-of-band. If it
-needs a format, account, dataset choice, or sample approval, the tool result
+needs a format, account, or dataset choice, the tool result
 says that explicitly and includes only safe display labels. The model then
 turns that result into the next user message. Async worker progress and final
 artifact delivery can still be sent directly through the existing Lark
@@ -483,39 +439,8 @@ If several eligible Google accounts exist, backend answers:
 Then the model asks which account, and calls the same plan again with the exact
 backend-returned `connectionId`.
 
-If the plan is large, backend answers:
-
-```json
-{
-  "status": "sample_required",
-  "sampleRows": 100,
-  "reason": "estimated_rows_above_threshold"
-}
-```
-
-Then the model queues a sample:
-
-```json
-{
-  "tool": "dataExport",
-  "args": {
-    "op": "sample",
-    "planId": "opaque_plan_id"
-  }
-}
-```
-
-After the user confirms the sample:
-
-```json
-{
-  "tool": "dataExport",
-  "args": {
-    "op": "confirm_sample",
-    "sampleRunId": "opaque_sample_run_id"
-  }
-}
-```
+Large plans use the same `direct_queue` response when they fit the selected
+format caps. Plans outside hard caps are blocked with a precise reason.
 
 ## Skill contract
 
@@ -525,8 +450,8 @@ Create one Export Orchestration system skill that teaches:
 - If the member explicitly asks for Sheet, Excel, CSV, XL, XLSX, or "download",
   build a plan from the current eligible candidate.
 - If several candidates are possible, ask one concise question.
-- If data is huge or uncertain, create a sample first and ask for confirmation
-  before full scale.
+- If data is huge or uncertain, rely on backend caps and measured completion
+  coverage; do not create a sample or ask for another confirmation.
 - Do not fetch bulk pages through chat, Python, Google Drive, or provider MCPs.
 - Do not run full Airtable exports through Airtable MCP. Use MCP only for
   connection/base/table discovery and bounded preview. Full export needs a
@@ -550,7 +475,7 @@ Implemented migration:
    publishing.
 4. Retired Zoho Books direct export queueing from provider calls. `exportAll`
    now means "publish a complete-data candidate", then the model plans format,
-   account, sample/full, and delivery through `dataExport`.
+   account and delivery through `dataExport`.
 5. Updated provider and routing skills so export behavior lives in the central
    data-export skill instead of provider-by-provider folklore.
 
@@ -572,22 +497,17 @@ Still intentionally compatible:
   no user-visible offer/card.
 - "Give this in XLSX" after a single eligible preview calls `dataExport`
   with the candidate plan and queues the right format.
-- A query over 5,000 estimated rows creates a sample first and does not queue
-  full scale until the user confirms.
-- Confirming a sample with an unchanged plan queues full scale; confirming
-  after changing columns/filter/format forces a new preflight or sample.
+- A large explicit plan queues directly when it fits the selected format caps.
+- Removed sample operations are rejected by the typed tool schema.
 - XLSX over 5,000 rows is blocked or asks for CSV/Sheet; it is never silently
   truncated as "complete".
 - Multiple compatible datasets become named tabs in Sheet/XLSX. Not enabled in
   this slice; current behavior is to block mixed shapes with `ambiguous`.
 - Multiple incompatible datasets are rejected for CSV and never blended into
   one table.
-- RBAC or OAuth revoked after sample but before full confirmation stops the run
-  before reading source rows.
-- Source row counts changing between sample and full export are disclosed in
-  the final card using the actual full-run coverage.
-- Late/duplicate confirmations are idempotent and cannot queue duplicate full
-  exports.
+- RBAC or OAuth revoked before execution stops the run before reading source
+  rows.
+- Late/duplicate plans are idempotent and cannot queue duplicate full exports.
 - Airtable MCP discovery/preview never escalates into MCP-backed bulk export.
   If no REST/connector replay path exists for the chosen base/table, Divo asks
   for a bounded preview or blocks the full export with a clear explanation.
@@ -678,13 +598,10 @@ reports for a keyword-row export.
 
 Confirmed 2026-08-04.
 
-1. **Sample artifact location:** the sample file itself lives in the selected
-   Google Drive account, exactly like the final artifact. The database stores
-   only the control receipt: candidate ID, sample run ID, plan hash, source
-   recipe hash, user/chat binding, destination account, status, expiry, and
-   cleanup state. Google Drive is the file store; Divo DB is the authoritative
-   ledger that prevents duplicate confirmations, stale plan reuse, and unsafe
-   cross-chat/account replay.
+1. **Artifact location:** the final file lives in the selected Google Drive
+   account. The database stores only the control receipt and replay plan.
+   Google Drive is the file store; Divo DB prevents duplicate plans, stale
+   reuse, and unsafe cross-chat/account replay.
 2. **Google account UX:** if Divo has only the company/default export account,
    tell the user upfront that the export will be created there and they will
    receive read-only access. Offer a Google OAuth button if they want the file
@@ -696,19 +613,11 @@ Confirmed 2026-08-04.
 3. **Small explicit export:** if the user clearly says "give this in Excel",
    "make a Sheet", or "export CSV" and the plan is small/safe, queue directly.
    Do not ask a second "are you sure?" question.
-4. **Huge or uncertain export:** require sample-first review above 5,000
-   estimated rows, for unknown "everything", for multi-tab workbooks, or for
-   material transforms.
-5. **Sample size and cleanup:** create a 100-row private sample in the selected
-   destination account and format. After full export succeeds, mark the sample
-   superseded and auto-trash it after 72 hours. If full export fails, retain the
-   sample for 7 days for debugging and user continuity.
-6. **Multi-dataset exports:** allow Google Sheets/XLSX workbooks with named
+4. **Huge or uncertain export:** queue the full governed job when it fits hard
+   caps; otherwise block or report the applicable cap precisely.
+5. **Multi-dataset exports:** allow Google Sheets/XLSX workbooks with named
    tabs only when the user asked for the combined workbook or the model can
    explain the tabs clearly. CSV stays single-dataset only.
-7. **Confirmation surface:** support both natural-language confirmation and a
-   signed Lark button for sample approval. They resolve to the same backend
-   `confirm_sample` action and same plan hash.
 
 ## Skill cleanup
 
@@ -721,7 +630,7 @@ Required skill rules:
 - Provider skills explain how to ask/read their source data; they do not teach
   provider-specific export workflows except to preserve the returned candidate.
 - The export orchestration skill owns format choice, Google account choice,
-  sample-first policy, confirmation wording, caps, and refusal cases.
+  caps, and refusal cases.
 - Copy must be consistent: if using the company/default Google account, say the
   file will be created in that account and the requester will get read-only
   access; if the requester wants ownership/editing, ask them to connect their

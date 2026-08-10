@@ -12,7 +12,7 @@ import type { RateLimitCheck, RateLimitStore, RateLimitWindow } from './rate-lim
 export type ConnectionRateLimitDecision =
   | { readonly kind: 'not_governed' }
   | { readonly kind: 'allowed'; readonly policySource: 'company_admin_override' | 'manager_policy'; readonly check: RateLimitCheck }
-  | { readonly kind: 'limited'; readonly policySource: 'company_admin_override' | 'manager_policy'; readonly check: RateLimitCheck; readonly message: string }
+  | { readonly kind: 'limited'; readonly policySource: 'company_admin_override' | 'manager_policy'; readonly check: RateLimitCheck; readonly message: string; readonly retryAfterSeconds: number }
   | { readonly kind: 'unavailable'; readonly message: string };
 
 /**
@@ -50,7 +50,7 @@ export class ConnectionRateLimitService {
     if (!checked.ok) return { kind: 'unavailable', message: 'Divo could not verify the connection rate budget. Please retry; the request was not executed.' };
     return checked.value.allowed
       ? { kind: 'allowed', policySource: resolved.policySource, check: checked.value }
-      : { kind: 'limited', policySource: resolved.policySource, check: checked.value, message: blockedMessage(checked.value) };
+      : limitedDecision(resolved.policySource, checked.value);
   }
 
   async consume(input: {
@@ -64,7 +64,7 @@ export class ConnectionRateLimitService {
     if (!consumed.ok) return { kind: 'unavailable', message: 'Divo could not reserve the connection rate budget. Please retry; the request was not executed.' };
     return consumed.value.allowed
       ? { kind: 'allowed', policySource: resolved.policySource, check: consumed.value }
-      : { kind: 'limited', policySource: resolved.policySource, check: consumed.value, message: blockedMessage(consumed.value) };
+      : limitedDecision(resolved.policySource, consumed.value);
   }
 
   async approval(input: {
@@ -137,7 +137,11 @@ function windowsFor(
   const windows: RateLimitWindow[] = [];
   if (policy.requestsPerMinute) {
     const minute = now.toISOString().slice(0, 16).replace(/[-:T]/g, '');
-    windows.push({ key: `${base}:minute:${minute}`, limit: policy.requestsPerMinute, ttlSeconds: 120 });
+    windows.push({
+      key: `${base}:minute:${minute}`,
+      limit: policy.requestsPerMinute,
+      ttlSeconds: secondsUntilNextUtcMinute(now),
+    });
   }
   if (policy.requestsPerDay) {
     const day = now.toISOString().slice(0, 10).replace(/-/g, '');
@@ -146,13 +150,41 @@ function windowsFor(
   return windows;
 }
 
+function secondsUntilNextUtcMinute(now: Date): number {
+  const nextMinute = Math.floor(now.getTime() / 60_000) * 60_000 + 60_000;
+  return Math.max(1, Math.ceil((nextMinute - now.getTime()) / 1000));
+}
+
 function secondsUntilUtcTomorrow(now: Date): number {
   const tomorrow = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
-  return Math.max(60, Math.ceil((tomorrow - now.getTime()) / 1000) + 60);
+  return Math.max(1, Math.ceil((tomorrow - now.getTime()) / 1000));
 }
 
 function blockedMessage(check: RateLimitCheck): string {
-  const exceeded = check.windows.find(window => window.used >= window.limit) ?? check.windows[0];
+  const exceeded = exceededWindows(check)[0] ?? check.windows[0];
   if (!exceeded) return 'This connection is temporarily unavailable. Please retry shortly.';
-  return `This connection has reached its ${exceeded.limit}-request rate limit. Try again in about ${exceeded.retryAfterSeconds} seconds.`;
+  return `This connection has reached its ${exceeded.limit}-request rate limit. Try again in about ${retryAfterSeconds(check)} seconds.`;
+}
+
+function limitedDecision(
+  policySource: 'company_admin_override' | 'manager_policy',
+  check: RateLimitCheck,
+): Extract<ConnectionRateLimitDecision, { kind: 'limited' }> {
+  return {
+    kind: 'limited',
+    policySource,
+    check,
+    message: blockedMessage(check),
+    retryAfterSeconds: retryAfterSeconds(check),
+  };
+}
+
+function exceededWindows(check: RateLimitCheck): RateLimitCheck['windows'] {
+  return check.windows.filter(window => window.used >= window.limit);
+}
+
+function retryAfterSeconds(check: RateLimitCheck): number {
+  const blocked = exceededWindows(check);
+  const windows = blocked.length > 0 ? blocked : check.windows;
+  return Math.max(1, ...windows.map(window => window.retryAfterSeconds));
 }

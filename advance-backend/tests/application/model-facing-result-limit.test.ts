@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { describe, it } from 'node:test';
 import {
+  limitLocalFileResult,
   limitModelFacingResult,
+  LOCAL_FILE_RESULT_MAX_BYTES,
   MODEL_FACING_RESULT_MAX_BYTES,
 } from '../../src/application/gateway/model-facing-result-limit';
 
@@ -71,5 +73,16 @@ describe('model-facing gateway result ceiling', () => {
     assert.equal(limited.resultUnavailable, true);
     assert.equal(limited.error.code, 'result_serialization_failed');
     assert.equal(limited.valueType, 'object');
+  });
+
+  it('keeps local-file results beyond the model ceiling but still applies a hard cap', () => {
+    const medium = { rows: ['x'.repeat(MODEL_FACING_RESULT_MAX_BYTES * 2)] };
+    assert.equal(limitLocalFileResult(medium), medium);
+
+    const oversized = limitLocalFileResult({ rows: ['x'.repeat(LOCAL_FILE_RESULT_MAX_BYTES + 1)] }) as {
+      truncation: { reason: string; maxBytes: number };
+    };
+    assert.equal(oversized.truncation.reason, 'local_file_result_limit');
+    assert.equal(oversized.truncation.maxBytes, LOCAL_FILE_RESULT_MAX_BYTES);
   });
 });

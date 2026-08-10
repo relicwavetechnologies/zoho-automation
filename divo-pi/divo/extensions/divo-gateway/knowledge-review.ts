@@ -53,7 +53,6 @@ const KnowledgeReviewParams = Type.Object({
 
 export interface KnowledgeReviewDependencies {
 	resolveConfig: () => DivoGatewayConfig | { error: string };
-	resolveSkillId: (toolId: string, runId: string) => string | undefined;
 	callGateway: (
 		config: DivoGatewayConfig,
 		request: GatewayRequestBody,
@@ -72,7 +71,6 @@ interface PreparedLocalFile {
 
 const DEFAULT_DEPENDENCIES: KnowledgeReviewDependencies = {
 	resolveConfig: resolveDivoGatewayConfig,
-	resolveSkillId: () => undefined,
 	callGateway: callDivoGateway,
 };
 
@@ -170,13 +168,12 @@ async function resolveTarget(
 	request: ReturnType<typeof parseRequest>,
 	config: DivoGatewayConfig,
 	execution: GatewayExecutionContext,
-	skillId: string,
 	deps: KnowledgeReviewDependencies,
 ): Promise<{ label: string; departmentId?: string }> {
 	const response = await deps.callGateway(config, {
 		op: "tools.invoke",
 		execution,
-		payload: { skillId, toolId: "knowledge", args: { operation: "check_targets" } },
+		payload: { toolId: "knowledge", args: { operation: "check_targets" } },
 	});
 	if (!response.body.ok || response.body.status !== "success") {
 		throw new Error(formatGatewayResponse(response.body).text);
@@ -277,15 +274,13 @@ export async function executeKnowledgeReview(
 	if ("error" in config) return { content: [{ type: "text" as const, text: config.error }], isError: true as const };
 	try {
 		const correlation = await readDivoRunCorrelation();
-		const skillId = deps.resolveSkillId("knowledge", correlation.runId);
-		if (!skillId) throw new Error("No loaded backend skill is authorized to request this knowledge change.");
 		const execution: GatewayExecutionContext = {
 			version: 1,
 			threadId: correlation.threadId,
 			runId: correlation.runId,
 			actionId: `knowledge-review:${randomUUID()}`,
 		};
-		const target = await resolveTarget(request, config, execution, skillId, deps);
+		const target = await resolveTarget(request, config, execution, deps);
 		const preparedFile = request.kind === "file" && request.action !== "delete"
 			? await (deps.prepareFile ?? prepareLocalFile)(asText(request.content?.localPath)!)
 			: undefined;
@@ -306,7 +301,6 @@ export async function executeKnowledgeReview(
 				execution,
 				...(target.departmentId ? { departmentId: target.departmentId } : {}),
 				payload: {
-					skillId,
 					requestId,
 					kind: request.kind,
 					action: request.action,
@@ -337,7 +331,7 @@ export async function executeKnowledgeReview(
 			op: "tools.prepare",
 			execution,
 			...(target.departmentId ? { departmentId: target.departmentId } : {}),
-			payload: { skillId, toolId: "knowledge", args },
+			payload: { toolId: "knowledge", args },
 		});
 		if (!prepared.body.ok || prepared.body.status !== "success") {
 			return { content: [{ type: "text" as const, text: formatGatewayResponse(prepared.body).text }], isError: true as const };
@@ -384,7 +378,6 @@ export async function executeKnowledgeReview(
 			execution,
 			...(target.departmentId ? { departmentId: target.departmentId } : {}),
 			payload: {
-				skillId,
 				toolId: "knowledge",
 				args: {
 					operation: "apply",
@@ -413,7 +406,6 @@ export async function executeKnowledgeReview(
 
 export function registerKnowledgeReviewTool(
 	pi: ExtensionAPI,
-	options: { resolveLoadedSkillId?: (toolId: string, runId: string) => string | undefined } = {},
 ): void {
 	pi.registerTool({
 		name: "divo_knowledge_review",
@@ -429,10 +421,7 @@ export function registerKnowledgeReviewTool(
 		],
 		parameters: KnowledgeReviewParams,
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			return executeKnowledgeReview(toolCallId, params, ctx, {
-				...DEFAULT_DEPENDENCIES,
-				resolveSkillId: options.resolveLoadedSkillId ?? DEFAULT_DEPENDENCIES.resolveSkillId,
-			});
+			return executeKnowledgeReview(toolCallId, params, ctx, DEFAULT_DEPENDENCIES);
 		},
 	});
 }

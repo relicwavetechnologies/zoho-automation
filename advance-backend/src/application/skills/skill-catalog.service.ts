@@ -61,6 +61,8 @@ export class SkillCatalogService {
     grantedSkillIds?: ReadonlySet<string>;
     includeGrantedDepartments?: boolean;
     limit?: number;
+    complete?: boolean;
+    failClosed?: boolean;
   }): Promise<CatalogSkill[]> {
     const result = await this.deps.repo.list({
       companyId: input.companyId,
@@ -68,10 +70,11 @@ export class SkillCatalogService {
       ...(input.includeGrantedDepartments && input.grantedSkillIds
         ? { additionalDepartmentSkillIds: [...input.grantedSkillIds] }
         : {}),
-      limit: input.limit ?? 50,
+      ...(input.complete ? {} : { limit: input.limit ?? 50 }),
     });
     if (!result.ok) {
       this.log.warn('skills.catalog.list.failed', { companyId: input.companyId, error: result.error.message });
+      if (input.failClosed) throw result.error;
       return [];
     }
     const visibleRows = await this.filterVisibleRows({

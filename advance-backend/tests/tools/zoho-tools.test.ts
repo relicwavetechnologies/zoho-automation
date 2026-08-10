@@ -13,6 +13,7 @@ import type { ZohoFinanceOps } from '../../src/application/zoho/zoho-finance-ops
 import type { ZohoCrmOps } from '../../src/application/zoho/zoho-crm-ops.ts';
 import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
 import type { ZohoCrmPaginatedClient } from '../../src/infrastructure/zoho/zoho-crm-paginated.client.ts';
+import { assertLosslessPagingFixture } from './lossless-paging.fixture.ts';
 
 // ─── zoho-crm ─────────────────────────────────────────────────────────────────
 
@@ -100,6 +101,12 @@ describe('zohoCrm tool', () => {
   describe('execute', () => {
     const ctx = makeCtx('zohoCrm', ['read', 'create', 'update', 'delete']);
 
+    it('documents governed terminal paging instead of the legacy export planner', () => {
+      const tool = makeCrmTool();
+      assert.match(tool.description, /governed local script using page\/nextPage/);
+      assert.doesNotMatch(`${tool.description}\n${tool.parameterDocs}`, /dataExport|export candidate/i);
+    });
+
     it('list: bad_args when module missing', async () => {
       const tool = makeCrmTool();
       const r = await tool.execute({ op: 'list' }, ctx);
@@ -111,6 +118,104 @@ describe('zohoCrm tool', () => {
       const tool = makeCrmTool();
       const r = await tool.execute({ op: 'list', module: 'Leads' }, ctx);
       assert.equal(r.ok, true);
+    });
+
+    it('list exposes the exact next page or provider continuation token', async () => {
+      const calls: unknown[] = [];
+      const paginatedClient = {
+        ...fakePaginatedCrmClient,
+        listRecords: async (input: unknown) => {
+          calls.push(input);
+          return { items: [{ id: 'lead-1' }], hasMore: true, nextPageToken: 'next-token' };
+        },
+      } as unknown as ZohoCrmPaginatedClient;
+      const tool = createZohoCrmTool({ getClient: yesClient, crmClient: paginatedClient, crmOps: fakeCrmOps });
+
+      const r = await tool.execute({ op: 'list', module: 'Leads', pageToken: 'current-token' }, ctx);
+
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.hasMore, true);
+      assert.equal((r as any).value.nextPageToken, 'next-token');
+      assert.equal((r as any).value.page, undefined);
+      assert.deepEqual(calls, [{
+        companyId: 'co-test',
+        userId: 'user-test',
+        connectionId: undefined,
+        module: 'Leads',
+        perPage: 25,
+        pageToken: 'current-token',
+      }]);
+    });
+
+    it('preserves a complete fixture across page and opaque-token continuations', async () => {
+      const source = Array.from({ length: 405 }, (_, index) => ({
+        id: `lead-${String(index + 1).padStart(3, '0')}`,
+        Last_Name: `Lead ${index + 1}`,
+      }));
+      const calls: Array<{ page?: number; pageToken?: string; perPage?: number }> = [];
+      const paginatedClient = {
+        ...fakePaginatedCrmClient,
+        listRecords: async (input: any) => {
+          calls.push(input);
+          if (input.pageToken === 'cursor-final') {
+            return { items: source.slice(400), hasMore: false };
+          }
+          const page = input.page ?? 1;
+          const start = (page - 1) * 200;
+          return {
+            items: source.slice(start, start + 200),
+            hasMore: true,
+            page,
+            ...(page === 2 ? { nextPageToken: 'cursor-final' } : {}),
+          };
+        },
+      } as unknown as ZohoCrmPaginatedClient;
+      const tool = createZohoCrmTool({
+        getClient: yesClient,
+        crmClient: paginatedClient,
+        crmOps: fakeCrmOps,
+      });
+      type Cursor = { readonly page: number } | { readonly pageToken: string };
+
+      const proof = await assertLosslessPagingFixture<Record<string, unknown>, Cursor>({
+        expectedIds: source.map(row => row.id),
+        initialCursor: { page: 1 },
+        readPage: async cursor => {
+          const result = await tool.execute({
+            op: 'list',
+            module: 'Leads',
+            limit: 200,
+            ...cursor,
+          }, { ...ctx, resultAudience: 'local_file' });
+          assert.equal(result.ok, true);
+          if (!result.ok) throw result.error;
+          const nextCursor = result.value.nextPageToken
+            ? { pageToken: result.value.nextPageToken } as const
+            : result.value.nextPage
+              ? { page: result.value.nextPage } as const
+              : undefined;
+          return {
+            rows: Array.isArray(result.value.data)
+              ? result.value.data as Record<string, unknown>[]
+              : [],
+            hasMore: result.value.hasMore ?? false,
+            ...(nextCursor ? { nextCursor } : {}),
+          };
+        },
+        rowId: row => String(row['id']),
+      });
+
+      assert.equal(proof.rows.length, 405);
+      assert.deepEqual(proof.pageSizes, [200, 200, 5]);
+      assert.deepEqual(calls.map(call => ({
+        page: call.page,
+        pageToken: call.pageToken,
+        perPage: call.perPage,
+      })), [
+        { page: 1, pageToken: undefined, perPage: 200 },
+        { page: 2, pageToken: undefined, perPage: 200 },
+        { page: undefined, pageToken: 'cursor-final', perPage: 200 },
+      ]);
     });
 
     it('personalized scope returns only records with the signed-in email', async () => {
@@ -399,6 +504,12 @@ describe('zohoBooks tool', () => {
   describe('execute', () => {
     const ctx = makeCtx('zohoBooks', ['read', 'create']);
 
+    it('documents governed terminal paging instead of the legacy export planner', () => {
+      const tool = makeBooksTool();
+      assert.match(tool.description, /page\/nextPage from one governed local Python file/);
+      assert.doesNotMatch(`${tool.description}\n${tool.parameterDocs}`, /dataExport|export candidate/i);
+    });
+
     it('get_invoice: provider error → upstream_failure', async () => {
       const tool = createZohoBooksTool({
         financeOps: fakeFinanceOps as ZohoFinanceOps,
@@ -415,6 +526,24 @@ describe('zohoBooks tool', () => {
       const tool = makeBooksTool();
       const r = await tool.execute({ op: 'list_invoices' }, ctx);
       assert.equal(r.ok, true);
+    });
+
+    it('list_invoices forwards and returns provider pages', async () => {
+      const calls: unknown[] = [];
+      const booksClient = {
+        listRecords: async (input: unknown) => {
+          calls.push(input);
+          return { organizationId: 'org-1', items: [{ invoice_id: 'inv-26' }], hasMore: true, page: 2 };
+        },
+      } as unknown as ZohoBooksPaginatedClient;
+      const tool = createZohoBooksTool({ financeOps: fakeFinanceOps as ZohoFinanceOps, booksClient });
+
+      const r = await tool.execute({ op: 'list_invoices', page: 2 }, ctx);
+
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.page, 2);
+      assert.equal((r as any).value.nextPage, 3);
+      assert.equal((calls[0] as any).page, 2);
     });
 
     it('personalized scope filters Books records after Zoho responds', async () => {

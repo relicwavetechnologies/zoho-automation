@@ -37,7 +37,7 @@ class MemoryRateLimitStore implements RateLimitStore {
 }
 
 describe('ToolExecutor connection rate limiting', () => {
-  it('checks budget in preflight and atomically consumes it before a governed tool executes', async () => {
+  it('limits governed data calls without charging cached native schema descriptions', async () => {
     let executions = 0;
     const registry = new ToolRegistry();
     const tool: Tool<{ connectionId: string }, { completed: boolean }> = {
@@ -90,5 +90,35 @@ describe('ToolExecutor connection rate limiting', () => {
     assert.equal((await executor.invoke({ member, toolId: 'fakeTool', args })).status, 'success');
     assert.equal((await executor.invoke({ member, toolId: 'fakeTool', args })).status, 'rate_limited');
     assert.equal(executions, 1);
+
+    let googleExecutions = 0;
+    registry.register({
+      id: asToolId('googleSheets'),
+      family: 'google',
+      actionGroups: new Set(['read']),
+      argsSchema: z.object({
+        connectionId: z.string().uuid(),
+        op: z.enum(['describe', 'call']),
+        nativeTool: z.string(),
+      }),
+      resultSchema: z.object({ completed: z.boolean() }),
+      description: 'governed Google schema test tool',
+      parameterDocs: 'native schema test',
+      permissionCheck: () => ok('read'),
+      execute: async () => {
+        googleExecutions += 1;
+        return ok({ completed: true });
+      },
+    });
+    const googleArgs = {
+      connectionId: '00000000-0000-4000-8000-000000000002',
+      nativeTool: 'read_sheet_values',
+    };
+
+    assert.equal((await executor.invoke({ member, toolId: 'googleSheets', args: { ...googleArgs, op: 'describe' } })).status, 'success');
+    assert.equal((await executor.invoke({ member, toolId: 'googleSheets', args: { ...googleArgs, op: 'describe' } })).status, 'success');
+    assert.equal((await executor.invoke({ member, toolId: 'googleSheets', args: { ...googleArgs, op: 'call' } })).status, 'success');
+    assert.equal((await executor.invoke({ member, toolId: 'googleSheets', args: { ...googleArgs, op: 'call' } })).status, 'rate_limited');
+    assert.equal(googleExecutions, 3);
   });
 });

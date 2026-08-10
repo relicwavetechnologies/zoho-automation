@@ -126,11 +126,12 @@ export function parseWorkBootstrap(value: unknown): WorkBootstrap | undefined {
 
 export function formatWorkBootstrap(bootstrap: WorkBootstrap): string[] {
 	const lines = ["Run bootstrap (already loaded; do not rediscover these items):"];
+	// Only the tool's identity and reach belong here. Its description, parameter
+	// documentation, and JSON Schema now arrive as a registered typed tool, so
+	// repeating them in prose would cost the same tokens twice and let the two
+	// copies drift apart.
 	for (const tool of bootstrap.tools) {
 		lines.push(`- Tool ${tool.id} [${tool.allowedActions.join(", ") || "no allowed actions"}]`);
-		lines.push(`  ${tool.description}`);
-		lines.push(`  parameters: ${tool.parameterDocs}`);
-		lines.push(`  args schema: ${JSON.stringify(tool.argsSchema)}`);
 	}
 	for (const contract of bootstrap.nativeContracts) {
 		lines.push(`- Native contract ${contract.toolId}.${contract.nativeTool}`);

@@ -1,6 +1,8 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { normalizeLocalInvokeResponse } from "./local-broker-response.mjs";
 
 function usage(message) {
@@ -8,8 +10,8 @@ function usage(message) {
 	process.stderr.write([
 		"Divo governed company-call client",
 		"",
-		"  divo-local invoke --tool <toolId> (--args-json <json> | --args-file <path>) [--label <text>]",
-		"  divo-local request --op <connections.list|tools.list|tools.invoke> (--payload-json <json> | --payload-file <path>)",
+		"  divo-local invoke --tool <toolId> (--args-json <json> | --args-file <path>) [--output <run-path>] [--label <text>]",
+		"  divo-local request --op <connections.list|tools.list> (--payload-json <json> | --payload-file <path>)",
 		"",
 		"The client contains no member or SaaS credentials. The local Divo broker applies runtime approval and the backend applies RBAC, connection policy, rate limits, manager approval, and audit.",
 	].join("\n"));
@@ -55,46 +57,135 @@ if (command === "invoke") {
 	};
 } else {
 	if (!options.op) usage("--op is required for request.");
+	const requestOp = options.op.trim();
+	if (!["connections.list", "tools.list"].includes(requestOp)) {
+		usage("request supports only connections.list or tools.list; use invoke for tool execution.");
+	}
 	request = {
-		op: options.op,
+		op: requestOp,
 		payload: await readJson(options, "payload-json", "payload-file", {}),
 	};
 }
+if (options.output && command !== "invoke") usage("--output is available only for invoke.");
 if (options["department-id"]) request.departmentId = options["department-id"];
+
+let outputPath;
+if (command === "invoke") {
+	const runRoot = process.env.DIVO_RUN_DIR;
+	if (!runRoot) usage("DIVO_RUN_DIR is required for invoke.");
+	const root = resolve(runRoot);
+	const requestedOutput = options.output
+		?? `divo-${options.tool.replaceAll(/[^a-zA-Z0-9_-]/g, "-")}-${randomUUID()}.json`;
+	outputPath = isAbsolute(requestedOutput) ? resolve(requestedOutput) : resolve(root, requestedOutput);
+	const child = relative(root, outputPath);
+	if (!child || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) {
+		usage("--output must name a new file inside DIVO_RUN_DIR.");
+	}
+}
 
 const socketPath = process.env.DIVO_LOCAL_BROKER_SOCKET;
 if (!socketPath) usage("The Divo local broker is not available in this shell.");
+const MAX_AUTOMATIC_RATE_LIMIT_RETRY_SECONDS = 60;
 const envelope = {
 	version: 1,
 	...(options.label ? { label: options.label } : {}),
+	...(command === "invoke" ? { resultMode: "local-file" } : {}),
 	request,
 };
 process.stderr.write(`[Divo] ${options.label ?? (command === "invoke" ? options.tool : options.op)}\n`);
 
-const socket = createConnection(socketPath);
-let responseText = "";
-const timeout = setTimeout(() => socket.destroy(new Error("Divo broker timed out.")), 125_000);
-process.once("SIGINT", () => socket.destroy(new Error("Cancelled")));
-socket.setEncoding("utf8");
-socket.on("connect", () => socket.write(`${JSON.stringify(envelope)}\n`));
-socket.on("data", (chunk) => { responseText += chunk; });
-socket.on("error", (error) => {
-	clearTimeout(timeout);
-	process.stderr.write(`Divo broker error: ${error.message}\n`);
-	process.exitCode = error.message === "Cancelled" ? 130 : 3;
-});
-socket.on("close", () => {
-	clearTimeout(timeout);
-	if (process.exitCode) return;
-	try {
-		const rawResponse = JSON.parse(responseText.trim());
-		const response = command === "invoke"
-			? normalizeLocalInvokeResponse(rawResponse)
-			: rawResponse;
-		process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
-		process.exitCode = response.ok && response.status === "success" ? 0 : 3;
-	} catch (error) {
-		process.stderr.write(`Divo broker returned invalid JSON: ${error instanceof Error ? error.message : String(error)}\n`);
-		process.exitCode = 3;
+const abortController = new AbortController();
+process.once("SIGINT", () => abortController.abort());
+
+try {
+	let response = normalizeResponse(await exchange(envelope, abortController.signal));
+	const retryAfterSeconds = automaticRetryDelay(response);
+	if (retryAfterSeconds !== undefined) {
+		process.stderr.write(`[Divo] governed rate budget reached; retrying this exact call once in ${retryAfterSeconds}s\n`);
+		await wait(retryAfterSeconds * 1_000, abortController.signal);
+		response = normalizeResponse(await exchange(envelope, abortController.signal));
 	}
-});
+	if (outputPath && response.ok && response.status === "success") {
+		const serialized = `${JSON.stringify(response, null, 2)}\n`;
+		await writeFile(outputPath, serialized, { flag: "wx", mode: 0o600 });
+		process.stdout.write(`${JSON.stringify({
+			ok: response.ok,
+			status: response.status,
+			output: outputPath,
+			bytes: Buffer.byteLength(serialized, "utf8"),
+			...(response.trace ? { trace: response.trace } : {}),
+		}, null, 2)}\n`);
+	} else {
+		process.stdout.write(`${JSON.stringify(response, null, 2)}\n`);
+	}
+	process.exitCode = response.ok && response.status === "success" ? 0 : 3;
+} catch (error) {
+	const cancelled = abortController.signal.aborted;
+	process.stderr.write(`Divo broker error: ${cancelled ? "Cancelled" : error instanceof Error ? error.message : String(error)}\n`);
+	process.exitCode = cancelled ? 130 : 3;
+}
+
+function normalizeResponse(rawResponse) {
+	return command === "invoke"
+		? normalizeLocalInvokeResponse(rawResponse)
+		: rawResponse;
+}
+
+function automaticRetryDelay(response) {
+	if (command !== "invoke" || response?.status !== "rate_limited") return undefined;
+	const seconds = response?.error?.retryAfterSeconds;
+	return Number.isInteger(seconds)
+		&& seconds >= 1
+		&& seconds <= MAX_AUTOMATIC_RATE_LIMIT_RETRY_SECONDS
+		? seconds
+		: undefined;
+}
+
+function wait(milliseconds, signal) {
+	return new Promise((resolveWait, rejectWait) => {
+		if (signal.aborted) {
+			rejectWait(new Error("Cancelled"));
+			return;
+		}
+		const timer = setTimeout(() => {
+			signal.removeEventListener("abort", cancel);
+			resolveWait();
+		}, milliseconds);
+		const cancel = () => {
+			clearTimeout(timer);
+			rejectWait(new Error("Cancelled"));
+		};
+		signal.addEventListener("abort", cancel, { once: true });
+	});
+}
+
+function exchange(requestEnvelope, signal) {
+	return new Promise((resolveResponse, rejectResponse) => {
+		const socket = createConnection(socketPath);
+		let responseText = "";
+		let settled = false;
+		const finish = (callback, value) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			signal.removeEventListener("abort", cancel);
+			callback(value);
+		};
+		const cancel = () => socket.destroy(new Error("Cancelled"));
+		const timeout = setTimeout(() => socket.destroy(new Error("Divo broker timed out.")), 125_000);
+		if (signal.aborted) cancel();
+		else signal.addEventListener("abort", cancel, { once: true });
+		socket.setEncoding("utf8");
+		socket.on("connect", () => socket.write(`${JSON.stringify(requestEnvelope)}\n`));
+		socket.on("data", (chunk) => { responseText += chunk; });
+		socket.on("error", (error) => finish(rejectResponse, error));
+		socket.on("close", () => {
+			if (settled) return;
+			try {
+				finish(resolveResponse, JSON.parse(responseText.trim()));
+			} catch (error) {
+				finish(rejectResponse, new Error(`Divo broker returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
+			}
+		});
+	});
+}

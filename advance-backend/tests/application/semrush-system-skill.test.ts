@@ -9,7 +9,7 @@ describe('Semrush system skill', () => {
     // reaches for when a source returned NO candidate. Semrush always returns
     // one, so that skill never loads on this path and the model would be left
     // guessing at a question the backend genuinely asked it.
-    for (const state of ['choose_destination', 'connect_required', 'sample_required', 'ambiguous']) {
+    for (const state of ['choose_destination', 'connect_required', 'ambiguous']) {
       assert.match(
         DIVO_SEMRUSH_SYSTEM_SKILL.markdown,
         new RegExp(`\`${state}\``),
@@ -17,7 +17,8 @@ describe('Semrush system skill', () => {
       );
     }
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /exact `connectionId`/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /`op=confirm_sample`/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /queues the full export without a sample or another confirmation/);
+    assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /sample_required|op=sample|confirm_sample/);
     // A queued export is not a finished one.
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /started, not that it is finished/);
   });

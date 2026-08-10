@@ -6,7 +6,9 @@
  * content lands — the thing that makes an app feel assembled rather than
  * thrown at the screen.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode,
+} from 'react'
 import {
   AlertTriangle, Boxes, CalendarClock, Check, ChevronRight, FileDown, Globe, Inbox, Library,
   Lock, MoreHorizontal, X,
@@ -783,6 +785,57 @@ export function Drawer({ title, subtitle, onClose, children, footer }: {
     </>
   )
 }
+
+/* ── Resizable drawer ─────────────────────────────────
+   A drawer holding a tool picker and a system prompt is a workbench, not a
+   detail popover, and how wide a workbench should be is the person's call, not
+   ours. The width is remembered per drawer, because someone who widened the
+   agent editor once meant it. */
+
+export function useDrawerWidth(storageKey: string, initial: number) {
+  const [width, setWidth] = useState(() => {
+    const saved = Number(localStorage.getItem(storageKey))
+    return Number.isFinite(saved) && saved >= 380 ? saved : initial
+  })
+
+  const clamp = (px: number) => Math.min(Math.max(px, 380), Math.max(480, window.innerWidth - 160))
+
+  const onGrab = useCallback((e: React.PointerEvent) => {
+    e.preventDefault()
+    document.body.classList.add('ws-resizing')
+    // Width is measured from the right edge, because the drawer is anchored
+    // there — dragging left makes it wider, which is the direction people
+    // expect from a right-hand panel.
+    const move = (ev: PointerEvent) => setWidth(clamp(window.innerWidth - ev.clientX))
+    const done = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', done)
+      document.body.classList.remove('ws-resizing')
+      setWidth((w) => { try { localStorage.setItem(storageKey, String(w)) } catch { /* quota */ } return w })
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', done)
+  }, [storageKey])
+
+  const reset = useCallback(() => {
+    setWidth(initial)
+    try { localStorage.removeItem(storageKey) } catch { /* quota */ }
+  }, [initial, storageKey])
+
+  return { width, onGrab, reset }
+}
+
+/** The drag edge. Double-click puts it back where it started. */
+export const DrawerGrip = ({ onGrab, reset }: { onGrab: (e: React.PointerEvent) => void; reset: () => void }) => (
+  <div
+    className="ws-drawer-grip"
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="Resize panel"
+    onPointerDown={onGrab}
+    onDoubleClick={reset}
+  />
+)
 
 /* ── Permission language ──────────────────────────────
    Managers do not think in grants, they think in sentences about people.

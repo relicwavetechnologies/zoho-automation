@@ -246,7 +246,12 @@ const zohoSelfClientSchema = z.object({
 const runtimeContextQuerySchema = z.object({
   departmentId: z.string().uuid().optional(),
   capabilityVersion: z.literal('3').optional(),
+  nativeSkills: z.literal('1').optional(),
 });
+const NATIVE_SKILL_LIMIT = 100;
+const NATIVE_SKILL_DESCRIPTION_BYTES = 1_024;
+const NATIVE_SKILL_INSTRUCTIONS_BYTES = 100_000;
+const NATIVE_SKILL_TOTAL_BYTES = 2_000_000;
 
 const connectionManagerGovernanceUpdateSchema = z.object({
   managerPolicy: connectionGovernancePolicySchema,
@@ -1714,6 +1719,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       capabilityVersion: typeof req.query.capabilityVersion === 'string'
         ? req.query.capabilityVersion
         : undefined,
+      nativeSkills: typeof req.query.nativeSkills === 'string'
+        ? req.query.nativeSkills
+        : undefined,
     });
     if (!parsed.success) {
       res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? 'Invalid departmentId' });
@@ -1723,6 +1731,17 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     const userId = res.locals['userId'] as string;
     const companyId = res.locals['companyId'] as string;
     const departmentId = parsed.data.departmentId;
+    const nativeSkillsRequested = parsed.data.nativeSkills === '1';
+    if (nativeSkillsRequested) {
+      if (res.locals['isPiRuntimeLease'] !== true) {
+        res.status(403).json({ success: false, message: 'Native skills are available only to the Pi runtime' });
+        return;
+      }
+      if (!departmentId || res.locals['runtimeDepartmentId'] !== departmentId) {
+        res.status(403).json({ success: false, message: 'Runtime department does not match the native skill request' });
+        return;
+      }
+    }
     const personalMemoryLoad: Promise<string[]> = deps.memory
       ? deps.memory.getPersonalSnapshot({
         userId,
@@ -1790,6 +1809,70 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
       const config = membership.department.agentConfig;
       const active = config?.isActive === true;
+      let nativeSkillBootstrap;
+      if (nativeSkillsRequested) {
+        const companyRole = String(res.locals['aiRole'] ?? 'MEMBER');
+        const permissionResult = await deps.permissions.resolve({
+          companyId: asCompanyId(companyId),
+          userId: asUserId(userId),
+          companyRole: asCompanyRoleSlug(companyRole),
+          departmentId: asDepartmentId(membership.department.id),
+          channel: 'lark',
+        });
+        if (!permissionResult.ok) {
+          res.status(403).json({ success: false, message: 'Runtime skill access denied' });
+          return;
+        }
+        const [grantedSkillIds, registryRevision] = await Promise.all([
+          deps.skillAccessEnforcement.listGrantedSkillIds(companyId, userId),
+          deps.skillCatalog.registryRevision(companyId),
+        ]);
+        const visibleSkills = await deps.skillCatalog.listVisible({
+          companyId,
+          departmentId: membership.department.id,
+          permission: permissionResult.value,
+          grantedSkillIds,
+          complete: true,
+          failClosed: true,
+        });
+        const boundedSkills = [];
+        const omittedSlugs: string[] = [];
+        let totalBytes = 0;
+        for (const skill of visibleSkills) {
+          const descriptionBytes = Buffer.byteLength(skill.description, 'utf8');
+          const instructionBytes = Buffer.byteLength(skill.instructions, 'utf8');
+          if (
+            boundedSkills.length >= NATIVE_SKILL_LIMIT
+            || descriptionBytes > NATIVE_SKILL_DESCRIPTION_BYTES
+            || instructionBytes > NATIVE_SKILL_INSTRUCTIONS_BYTES
+            || totalBytes + descriptionBytes + instructionBytes > NATIVE_SKILL_TOTAL_BYTES
+          ) {
+            omittedSlugs.push(skill.slug);
+            continue;
+          }
+          totalBytes += descriptionBytes + instructionBytes;
+          boundedSkills.push(skill);
+        }
+        if (omittedSlugs.length > 0) {
+          log.warn('runtime.native_skills.bounded', {
+            visibleCount: visibleSkills.length,
+            loadedCount: boundedSkills.length,
+            omittedCount: omittedSlugs.length,
+            omittedSlugs: omittedSlugs.slice(0, 20),
+          });
+        }
+        nativeSkillBootstrap = {
+          registryRevision,
+          skills: boundedSkills.map(skill => ({
+            id: skill.id,
+            slug: skill.slug,
+            name: skill.name,
+            description: skill.description,
+            instructions: skill.instructions,
+            revision: skill.revision,
+          })),
+        };
+      }
       let managerPersonaPrompt = '';
       let managerPersonaVersion: string | null = null;
       try {
@@ -1875,6 +1958,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           ].filter((value): value is string => Boolean(value)).join('|') || null,
           personalMemory,
           ...(capabilityBootstrap ? { capabilityBootstrap } : {}),
+          ...(nativeSkillBootstrap ? { nativeSkillBootstrap } : {}),
         },
       });
     } catch (e) {

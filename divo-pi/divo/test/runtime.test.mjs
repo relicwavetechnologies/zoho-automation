@@ -8,12 +8,14 @@ import {
 	buildAgentConfiguration,
 	buildChildEnvironment,
 	buildPiArguments,
+	buildPiArgumentsWithResources,
 	buildPiLaunch,
 	buildRunCorrelationContext,
 	deleteDurablePiSession,
 	imagePolicyFor,
 	resolveRuntimeThreadId,
 	prepareSessionDirectories,
+	prepareDivoPiRun,
 	readInterruptedWorkFact,
 	recordInterruptedWorkFact,
 	removePreviousRunDirectories,
@@ -104,6 +106,7 @@ describe("Divo Pi runtime boundary", () => {
 	it("removes direct provider keys and injects only Divo authentication", () => {
 		const environment = buildChildEnvironment(
 			{
+				DIVO_LOCAL_CLI_DISABLED: "1",
 				OPENAI_API_KEY: "openai-secret",
 				DEEPSEEK_API_KEY: "deepseek-secret",
 				PATH: "/usr/bin",
@@ -114,6 +117,7 @@ describe("Divo Pi runtime boundary", () => {
 		assert.equal(environment.DEEPSEEK_API_KEY, undefined);
 		assert.equal(environment.DIVO_MEMBER_TOKEN, "member-token");
 		assert.equal(environment.DIVO_BACKEND_URL, "https://divo.example.com");
+		assert.equal(environment.DIVO_LOCAL_CLI_DISABLED, undefined);
 		assert.equal(environment.PATH, "/usr/bin");
 	});
 
@@ -138,6 +142,40 @@ describe("Divo Pi runtime boundary", () => {
 		assert.doesNotMatch(systemPrompt, /DIVO_ARTIFACTS_DIR|divo_artifact/i);
 	});
 
+	it("loads authenticated DB skills through Pi's native resource loader", () => {
+		const nativeSkillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "divo-native-skills-"));
+		fs.mkdirSync(path.join(nativeSkillsRoot, "google-sheets"));
+		fs.writeFileSync(path.join(nativeSkillsRoot, "google-sheets", "SKILL.md"), "---\nname: google-sheets\ndescription: Test\n---\n");
+
+		const args = buildPiArgumentsWithResources(
+			{ ...values, nativeSkills: true },
+			{ nativeSkillsRoot },
+		);
+		const nativeSkillIndex = args.lastIndexOf("--skill");
+		assert.deepEqual(args.slice(nativeSkillIndex, nativeSkillIndex + 2), ["--skill", nativeSkillsRoot]);
+		assert.equal(buildPiArgumentsWithResources(
+			{ ...values, nativeSkills: false },
+			{ nativeSkillsRoot },
+		).includes(nativeSkillsRoot), false);
+	});
+
+	it("preserves the authenticated native-skill flag through runtime preparation", () => {
+		const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "divo-native-runtime-"));
+		const nativeSkillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "divo-native-skills-"));
+		const prepared = prepareDivoPiRun({
+			backendUrl: "https://divo.example.com",
+			token: "member-token",
+			stateRoot,
+			nativeSkills: true,
+		});
+
+		assert.equal(prepared.values.nativeSkills, true);
+		assert.equal(
+			buildPiArgumentsWithResources(prepared.values, { nativeSkillsRoot }).includes(nativeSkillsRoot),
+			true,
+		);
+	});
+
 	it("launches compiled Pi without tsx-only arguments and keeps the source fallback", () => {
 		const launch = buildPiLaunch(values, "compiled");
 		assert.equal(launch.executable, process.execPath);
@@ -157,6 +195,14 @@ describe("Divo Pi runtime boundary", () => {
 		assert.match(dockerfile, /npm run build --workspace packages\/coding-agent/);
 		assert.doesNotMatch(dockerfile, /RUN npm run build\s*$/m);
 		assert.match(dockerfile, /DIVO_PI_ENTRY_MODE="compiled"/);
+	});
+
+	it("packages the trusted runtime manifest with the controller", () => {
+		const dockerfile = fs.readFileSync(
+			path.join(import.meta.dirname, "..", "..", "Dockerfile.controller"),
+			"utf8",
+		);
+		assert.match(dockerfile, /COPY .*divo\/runtime-manifest\.json .*\.\/divo\//);
 	});
 });
 
@@ -379,10 +425,10 @@ describe("How a run is told to look at a picture", () => {
 	// of this is wrong for the running model, the failure is quiet.
 	it("sends a vision model to the file and a text model to the gateway", () => {
 		assert.match(imagePolicyFor("gpt-5.6-luna"), /read tool/);
-		assert.doesNotMatch(imagePolicyFor("gpt-5.6-luna"), /media\.image_ocr/);
+		assert.doesNotMatch(imagePolicyFor("gpt-5.6-luna"), /divo_image_read/);
 
-		assert.match(imagePolicyFor("deepseek-v4-flash"), /media\.image_ocr/);
-		assert.match(imagePolicyFor("deepseek-v4-pro"), /media\.image_ocr/);
+		assert.match(imagePolicyFor("deepseek-v4-flash"), /divo_image_read/);
+		assert.match(imagePolicyFor("deepseek-v4-pro"), /divo_image_read/);
 	});
 
 	it("runs V4 Flash at the provider's upgraded high reasoning level", () => {
@@ -432,10 +478,27 @@ describe("Past-chat recall is a direct-message capability", () => {
 	it("leaves the rest of the runtime untouched for a group turn", () => {
 		const args = buildPiArguments(groupValues);
 		const tools = args[args.indexOf("--tools") + 1].split(",");
-		assert.ok(tools.includes("divo_gateway"));
+		assert.ok(tools.includes("divo_connections"));
+		assert.ok(tools.includes("divo_zoho_books"));
 		assert.ok(!tools.includes("divo_memory_recall"));
 		assert.ok(!tools.includes("divo_memory"));
 		assert.ok(args.some((argument) => argument.endsWith("/divo-gateway/index.ts")));
+	});
+
+	it("loads only the shared run's authorized native skill root", () => {
+		const nativeSkillsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "divo-shared-skills-"));
+		fs.mkdirSync(path.join(nativeSkillsRoot, "shared-skill"));
+		fs.writeFileSync(
+			path.join(nativeSkillsRoot, "shared-skill", "SKILL.md"),
+			"---\nname: shared-skill\ndescription: Shared test\n---\n",
+		);
+		const args = buildPiArgumentsWithResources(
+			{ ...groupValues, nativeSkills: true },
+			{ nativeSkillsRoot },
+		);
+		assert.ok(args.includes(nativeSkillsRoot));
+		assert.ok(!args.some((argument) => argument.includes("divo-chat-history")));
+		fs.rmSync(nativeSkillsRoot, { recursive: true, force: true });
 	});
 
 	it("gives a direct message the recall tools, extension, and skill", () => {

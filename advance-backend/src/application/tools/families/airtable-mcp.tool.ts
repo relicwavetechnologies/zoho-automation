@@ -16,25 +16,35 @@ import {
   type AirtableProductDefinition,
 } from '../../airtable/airtable-mcp-manifest';
 
-const ArgsSchema = z.object({
-  connectionId: z.string().uuid().optional(),
-  op: z.enum(['describe', 'call']),
-  nativeTool: z.string().min(1),
-  input: z.record(z.unknown()).optional(),
-  exportAll: z.boolean().optional(),
-}).superRefine((value, context) => {
-  // A real call must name exactly one account. Besides preventing accidental
-  // cross-account writes, this is what lets the backend apply the connection
-  // owner's governance policy and rate budget to the request.
-  if (value.op === 'call' && !value.connectionId) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['connectionId'],
-      message: 'is required for Airtable calls; reuse the run-bootstrap account or use connections.list once when none was loaded',
-    });
-  }
-});
+function createArgsSchema(nativeTool: z.ZodType<string>) {
+  return z.object({
+    connectionId: z.string().uuid().optional(),
+    op: z.enum(['describe', 'call']),
+    nativeTool,
+    input: z.record(z.unknown()).optional(),
+    exportAll: z.boolean().optional(),
+  }).superRefine((value, context) => {
+    // A real call must name exactly one account. Besides preventing accidental
+    // cross-account writes, this is what lets the backend apply the connection
+    // owner's governance policy and rate budget to the request.
+    if (value.op === 'call' && !value.connectionId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['connectionId'],
+        message: 'is required for Airtable calls; reuse the run-bootstrap account or use connections.list once when none was loaded',
+      });
+    }
+  });
+}
+
+const ArgsSchema = createArgsSchema(z.string().min(1));
 export type AirtableMcpArgs = z.infer<typeof ArgsSchema>;
+
+function nativeToolEnum(values: readonly string[]): z.ZodEnum<[string, ...string[]]> {
+  const [first, ...rest] = values;
+  if (!first) throw new Error('Airtable product must publish at least one native tool');
+  return z.enum([first, ...rest]);
+}
 
 const ResultSchema = z.object({
   success: z.boolean(),
@@ -159,7 +169,7 @@ function createProductTool(
     id: asToolId(product.toolId),
     family: 'airtable',
     actionGroups: supportedActions,
-    argsSchema: ArgsSchema,
+    argsSchema: createArgsSchema(nativeToolEnum(nativeToolNames)),
     resultSchema: ResultSchema,
     description: product.description,
     parameterDocs: [

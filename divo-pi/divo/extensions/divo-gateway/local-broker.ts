@@ -2,7 +2,6 @@ import type {
 	ExtensionAPI,
 	ToolCallEvent,
 } from "@earendil-works/pi-coding-agent";
-import { authorizeToolInvocation, type LoadedSkillLookup } from "./skill-authorization.ts";
 import { randomBytes } from "node:crypto";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type Socket } from "node:net";
@@ -32,6 +31,7 @@ type JsonRecord = Record<string, unknown>;
 export interface LocalBrokerRequestV1 {
 	version: 1;
 	label?: string;
+	resultMode?: "local-file";
 	request: {
 		op: string;
 		departmentId?: string;
@@ -66,21 +66,12 @@ export interface LocalBrokerExecutionDependencies {
 	resolveConfig: typeof resolveDivoGatewayConfig;
 	readCorrelation: typeof readDivoRunCorrelation;
 	executeGateway: typeof executeGatewayRequest;
-	/**
-	 * Which skill registered a tool in this run. Supplied by the extension that
-	 * owns the registry, so the broker enforces the same gate as the tool path
-	 * instead of trusting whatever a script sends.
-	 */
-	lookupLoadedSkill: LoadedSkillLookup;
 }
 
 export const DEFAULT_EXECUTION_DEPENDENCIES: LocalBrokerExecutionDependencies = {
 	resolveConfig: resolveDivoGatewayConfig,
 	readCorrelation: readDivoRunCorrelation,
 	executeGateway: executeGatewayRequest,
-	// No registry wired means nothing was ever loaded, so every invocation is
-	// refused. Failing closed is the only safe default for an authorization gate.
-	lookupLoadedSkill: () => undefined,
 };
 
 function asRecord(value: unknown): JsonRecord | undefined {
@@ -117,9 +108,16 @@ export function parseLocalBrokerRequest(value: unknown): LocalBrokerRequestV1 {
 	if (!ALLOWED_BROKER_OPS.has(op)) {
 		throw new Error(`Divo local broker operation "${op}" is not exposed.`);
 	}
+	if (input.resultMode !== undefined && input.resultMode !== "local-file") {
+		throw new Error("Invalid Divo local broker result mode.");
+	}
+	if (input.resultMode === "local-file" && op !== "tools.invoke") {
+		throw new Error("Local-file results are available only for tools.invoke.");
+	}
 	return {
 		version: 1,
 		...(cleanString(input.label, 120) ? { label: cleanString(input.label, 120) } : {}),
+		...(input.resultMode === "local-file" ? { resultMode: "local-file" as const } : {}),
 		request: {
 			op,
 			...(cleanString(request.departmentId) ? { departmentId: cleanString(request.departmentId) } : {}),
@@ -156,36 +154,27 @@ export async function executeLocalBrokerRequest(
 		active.nextBrokerCall += 1;
 		const actionId = `${active.toolCallId}:broker:${active.nextBrokerCall}`;
 		const label = brokerLabel(input);
-		// Same gate the divo_gateway tool applies. A script reaching the backend
-		// through this socket has no more authority than the model calling the
-		// tool directly, and the skillId is taken from what was actually loaded.
+		// A script reaching the backend through this socket has no more authority
+		// than the model. Ignore any caller-supplied legacy skill provenance; the
+		// backend checks identity, RBAC, schema, connection access, and approval.
 		const payload = asRecord(input.request.payload);
+		let trustedPayload = input.request.payload;
+		if (input.request.op === "tools.invoke" && payload) {
+			trustedPayload = { ...payload };
+			delete trustedPayload.skillId;
+		}
 		if (
 			input.request.op === "tools.invoke"
 			&& (payload?.["toolId"] === "shopifyOrders" || payload?.["toolId"] === "shopifyCustomers")
 		) {
-			throw new Error("Protected Shopify record tools must be called directly through divo_gateway; divo-local cannot retain or print their results.");
+			throw new Error("Protected Shopify record tools must be called directly through their Divo tool; divo-local cannot retain or print their results.");
 		}
-		const authorization = authorizeToolInvocation({
-			op: input.request.op,
-			toolId: payload?.["toolId"],
-			runId: correlation.runId,
-			lookup: dependencies.lookupLoadedSkill,
-			scheduling: payload?.["toolId"] === "scheduledWorkflows",
-		});
-		if (authorization && !authorization.ok) {
-			throw new Error(authorization.message);
-		}
-		const authorizedPayload = authorization?.ok
-			? { ...(payload ?? {}), skillId: authorization.skillId }
-			: input.request.payload;
-
 		const request: GatewayRequestBody = {
 			op: input.request.op,
 			...(input.request.departmentId || correlation.departmentId
 				? { departmentId: input.request.departmentId ?? correlation.departmentId }
 				: {}),
-			...(Object.hasOwn(input.request, "payload") ? { payload: authorizedPayload } : {}),
+			...(Object.hasOwn(input.request, "payload") ? { payload: trustedPayload } : {}),
 			execution: {
 				version: 1,
 				threadId: correlation.threadId,
@@ -201,6 +190,7 @@ export async function executeLocalBrokerRequest(
 					...active.context,
 					...(combinedSignal.signal ? { signal: combinedSignal.signal } : {}),
 					...(correlation.channel ? { runtimeChannel: correlation.channel } : {}),
+					...(input.resultMode ? { resultMode: input.resultMode } : {}),
 				},
 		);
 		return {
@@ -276,18 +266,10 @@ function shellQuote(value: string): string {
 /**
  * Whether this runtime offers the `divo-local` CLI at all.
  *
- * The CLI exists so a desktop workflow can page through a large record set
+ * The CLI exists so a workflow can page through a large record set
  * from one persistent Python file without every row landing in the model's
- * context. A server channel has no use for it: the backend's own export path
- * already owns complete data sets, and the cloud container mounts `/tmp`
- * `noexec`, so a staged launcher cannot even be executed.
- *
- * Leaving it there anyway was not neutral. A run that had already read its
- * data through the governed tool would find the binary on `PATH`, conclude it
- * must be the intended route, and spend turns discovering `Permission denied`
- * and working around it. Telling the agent not to use it did not help while
- * the binary was still discoverable — so the runtime stops offering it, and
- * there is nothing left to find.
+ * context. Cloud `/tmp` is `noexec`, so launchers are staged in the
+ * runtime-owned home there; the socket itself can remain under `/tmp`.
  */
 export function localCliEnabled(): boolean {
 	return process.env["DIVO_LOCAL_CLI_DISABLED"] !== "1";
@@ -362,8 +344,8 @@ export function registerLocalDivoBroker(
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (server) return;
-		// No socket, no launchers, no PATH entry: on a server channel the CLI is
-		// not merely unused, it is absent. Say so in the log, because an absence
+		// No socket, no launchers, no PATH entry: when explicitly disabled the CLI
+		// is absent. Say so in the log, because an absence
 		// nobody records is one nobody notices — this stayed invisible for four
 		// days while the prompt kept prescribing the client it had removed.
 		if (!localCliEnabled()) {
@@ -377,7 +359,8 @@ export function registerLocalDivoBroker(
 			return;
 		}
 		try {
-			cliDirectory = await mkdtemp(join(tmpdir(), "divo-cli-"));
+			const launcherRoot = process.env["DIVO_HOME"] || tmpdir();
+			cliDirectory = await mkdtemp(join(launcherRoot, "divo-cli-"));
 			await writeCliLaunchers(cliDirectory);
 			socketPath = socketAddress();
 			server = createServer((socket) => {

@@ -19,7 +19,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, Bot, Building2, Check, ChevronsUpDown, CircleCheck, CircleDashed, Diamond, FileClock,
   FileStack, Grid2X2, LogOut, Mail, Minus, Moon, Plus, Search, Settings, ShieldCheck, Sun,
-  Users, UserSquare, type LucideIcon,
+  Users, UserSquare, Waypoints, type LucideIcon,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useManagedDepartments } from '@/pages/workspace/data/use-team'
@@ -66,6 +66,10 @@ const NAV: Record<ScopeKind, NavGroup[]> = {
         /* Watching the company is work. Governing it is configuration, and
            that half now lives behind Settings. */
         { to: '/ai-ops', label: 'AI Ops', icon: Activity },
+        /* The permission matrix already exists in Settings. This is the same
+           truth asked the other way round — not "who holds this grant" but
+           "what happens when this person asks Divo for something". */
+        { to: '/agents', label: 'Agents', icon: Waypoints },
         { to: '/activity', label: 'Activity', icon: FileClock },
       ],
     },

@@ -26,7 +26,7 @@ const PLAN_ID = '33333333-3333-4333-8333-333333333333';
 const ZOHO_CONNECTION_ID = '44444444-4444-4444-8444-444444444444';
 
 describe('DataExportOrchestrationService', () => {
-  it('queues an unknown-size sample with a 100-row override, then confirms the same plan once', async () => {
+  it('queues an unknown-size explicit export directly without sampling or reconfirming', async () => {
     const repo = new InMemoryCandidateRepo([
       candidate(SEMRUSH_CANDIDATE_ID, semrushPayload(), { estimatedRows: undefined }),
     ]);
@@ -51,65 +51,17 @@ describe('DataExportOrchestrationService', () => {
       },
     });
     assert.deepEqual(plan, {
-      status: 'sample_required',
+      status: 'direct_queue',
       planId: PLAN_ID,
-      sampleRows: 100,
-      reason: 'unknown_everything',
+      exportJobId: 'job-1',
       destinationLabel: 'Divo company Google account',
     });
-
-    const sample = await service.queueSample({
-      planId: PLAN_ID,
-      companyId: COMPANY_ID,
-      userId: USER_ID,
-      chatId: CHAT_ID,
-    });
-    assert.equal(sample.status, 'sample_queued');
-    assert.equal(sample.status === 'sample_queued' && sample.exportJobId, 'job-1');
-    assert.equal(submitted[0]!.payload.exportKind, 'sample');
-    assert.equal(submitted[0]!.payload.rowLimitOverride, 100);
-    assert.equal(submitted[0]!.payload.sampleOfPlanId, PLAN_ID);
-    assert.equal(submitted[0]!.payload.destination.title, 'Sample - Large Semrush export');
-    assert.equal(submitted[0]!.payload.requestId, `${PLAN_ID}:sample`);
-
-    const earlyConfirm = await service.confirmSample({
-      sampleRunId: PLAN_ID,
-      companyId: COMPANY_ID,
-      userId: USER_ID,
-      chatId: CHAT_ID,
-    });
-    assert.equal(earlyConfirm.status, 'blocked');
-    assert.equal(earlyConfirm.status === 'blocked' && earlyConfirm.reason, 'sample_not_ready');
+    assert.equal(submitted[0]!.payload.exportKind, 'full');
+    assert.equal(submitted[0]!.payload.rowLimitOverride, undefined);
+    assert.equal(submitted[0]!.payload.sampleOfPlanId, undefined);
+    assert.equal(submitted[0]!.payload.destination.title, 'Large Semrush export');
+    assert.equal(submitted[0]!.payload.requestId, `${PLAN_ID}:full`);
     assert.equal(submitted.length, 1);
-
-    const ready = await repo.markSampleReady({
-      planId: PLAN_ID,
-      companyId: COMPANY_ID,
-      userId: USER_ID,
-      sampleJobId: 'job-1',
-    });
-    assert.equal(ready.ok, true);
-
-    const confirm = await service.confirmSample({
-      sampleRunId: PLAN_ID,
-      companyId: COMPANY_ID,
-      userId: USER_ID,
-      chatId: CHAT_ID,
-    });
-    assert.equal(confirm.status, 'full_queued');
-    assert.equal(confirm.status === 'full_queued' && confirm.exportJobId, 'job-2');
-    assert.equal(submitted[1]!.payload.exportKind, 'full');
-    assert.equal(submitted[1]!.payload.rowLimitOverride, undefined);
-    assert.equal(submitted[1]!.payload.requestId, `${PLAN_ID}:full`);
-
-    const duplicate = await service.confirmSample({
-      sampleRunId: PLAN_ID,
-      companyId: COMPANY_ID,
-      userId: USER_ID,
-      chatId: CHAT_ID,
-    });
-    assert.equal(duplicate.status, 'already_confirmed');
-    assert.equal(submitted.length, 2);
   });
 
   it('blocks complete Zoho exports when fresh permissions are personalized', async () => {
@@ -175,7 +127,7 @@ describe('DataExportOrchestrationService', () => {
       plan: {
         datasets: [{ candidateId: MENHOOD_CANDIDATE_ID }],
         destination: { format: 'xlsx', title: 'Menhood raw export' },
-        userIntent: 'sample_then_confirm',
+        userIntent: 'explicit_export',
       },
     });
 
@@ -208,7 +160,7 @@ describe('DataExportOrchestrationService', () => {
       plan: {
         datasets: [{ candidateId: MENHOOD_CANDIDATE_ID }],
         destination: { format: 'xlsx', title: 'Menhood raw export' },
-        userIntent: 'sample_then_confirm',
+        userIntent: 'explicit_export',
       },
     });
 
@@ -238,55 +190,11 @@ describe('DataExportOrchestrationService', () => {
       plan: {
         datasets: [{ candidateId: MENHOOD_CANDIDATE_ID }],
         destination: { format: 'xlsx', title: 'Menhood raw export' },
-        userIntent: 'sample_then_confirm',
+        userIntent: 'explicit_export',
       },
     });
 
-    assert.equal(result.status, 'sample_required');
-  });
-
-  it('does not reuse an already-ready Menhood sample plan when its candidate lacks stable ordering', async () => {
-    const repo = new InMemoryCandidateRepo([
-      candidate(MENHOOD_CANDIDATE_ID, menhoodPayload(), {
-        estimatedRows: undefined,
-        coverage: { truncated: true, returnedRows: 25 },
-      }),
-    ], {
-      id: PLAN_ID,
-      companyId: COMPANY_ID,
-      userId: USER_ID,
-      chatId: CHAT_ID,
-      candidateIds: [MENHOOD_CANDIDATE_ID],
-      plan: {
-        datasets: [{ candidateId: MENHOOD_CANDIDATE_ID }],
-        destination: { format: 'xlsx', title: 'Menhood raw export' },
-        userIntent: 'sample_then_confirm',
-      },
-      planHash: 'plan-hash',
-      destinationFormat: 'xlsx',
-      status: 'sample_ready',
-      sampleRows: 100,
-      sampleJobId: 'old-sample-job',
-      sampleReadyAt: new Date('2026-08-04T00:00:00.000Z'),
-      expiresAt: new Date('2026-08-05T00:00:00.000Z'),
-      createdAt: new Date('2026-08-04T00:00:00.000Z'),
-      updatedAt: new Date('2026-08-04T00:00:00.000Z'),
-    });
-    const service = serviceWith({
-      repo,
-      permission: permissionFor(['dataExport:create', 'menhoodData:read']),
-      submitAuthorized: async () => 'should-not-queue',
-    });
-
-    const result = await service.queueSample({
-      planId: PLAN_ID,
-      companyId: COMPANY_ID,
-      userId: USER_ID,
-      chatId: CHAT_ID,
-    });
-
-    assert.equal(result.status, 'blocked');
-    assert.equal(result.status === 'blocked' && result.reason, 'menhood_unordered_candidate');
+    assert.equal(result.status, 'direct_queue');
   });
 
   it('lists active candidates with safe planning metadata', async () => {
@@ -392,7 +300,7 @@ describe('DataExportOrchestrationService', () => {
     );
   });
 
-  it('requires a sample when combined estimated rows exceed the threshold', async () => {
+  it('queues a large explicit workbook directly within the existing format caps', async () => {
     const backlinksId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const overviewId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
     const repo = new InMemoryCandidateRepo([
@@ -402,7 +310,7 @@ describe('DataExportOrchestrationService', () => {
     const service = serviceWith({
       repo,
       permission: permissionFor(['dataExport:create', 'semrush:read']),
-      submitAuthorized: async () => 'should-not-queue',
+      submitAuthorized: async () => 'job-large',
     });
 
     const result = await service.planForActor({
@@ -419,8 +327,8 @@ describe('DataExportOrchestrationService', () => {
       },
     });
 
-    assert.equal(result.status, 'sample_required');
-    assert.equal(result.status === 'sample_required' && result.reason, 'estimated_rows_above_threshold');
+    assert.equal(result.status, 'direct_queue');
+    assert.equal(result.status === 'direct_queue' && result.exportJobId, 'job-large');
   });
 });
 

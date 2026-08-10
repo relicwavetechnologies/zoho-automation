@@ -12,6 +12,58 @@ describe('normalizeGoogleWorkspaceResult', () => {
     });
   });
 
+  it('turns spreadsheet metadata prose into one stable machine-readable contract', () => {
+    const prose = [
+      'Spreadsheet: "Quarterly Ops" (ID: sheet_123-AbC) | Locale: en_GB',
+      'Sheets (2):',
+      ' - "Expenses" (ID: 460309361) | Size: 1000x26 | Conditional formats: 3',
+      ' - "Revenue Plan" (ID: 987654321) | Size: 250x12 | Conditional formats: 0',
+    ].join('\n');
+    assert.deepEqual(normalizeGoogleWorkspaceResult('get_spreadsheet_info', { result: prose }), {
+      result: prose,
+      spreadsheetId: 'sheet_123-AbC',
+      spreadsheetTitle: 'Quarterly Ops',
+      locale: 'en_GB',
+      sheets: [
+        {
+          title: 'Expenses',
+          sheetId: 460309361,
+          rowCount: 1000,
+          columnCount: 26,
+          conditionalFormatCount: 3,
+        },
+        {
+          title: 'Revenue Plan',
+          sheetId: 987654321,
+          rowCount: 250,
+          columnCount: 12,
+          conditionalFormatCount: 0,
+        },
+      ],
+      sheetCount: 2,
+      structuredSheetCount: 2,
+      complete: true,
+    });
+  });
+
+  it('marks incomplete spreadsheet metadata instead of inviting a guessed tab count', () => {
+    const result = normalizeGoogleWorkspaceResult('get_spreadsheet_info', {
+      result: [
+        'Spreadsheet: "Quarterly Ops" (ID: sheet-456) | Locale: en_US',
+        'Sheets (2):',
+        ' - "Expenses" (ID: 123) | Size: 100x10 | Conditional formats: 0',
+        ' - provider emitted an unknown tab shape',
+      ].join('\n'),
+    }) as Record<string, unknown>;
+
+    assert.equal(result.sheetCount, 2);
+    assert.equal(result.structuredSheetCount, 1);
+    assert.equal(result.complete, false);
+    assert.deepEqual((result.advisories as Array<Record<string, unknown>>).map(({ code }) => code), [
+      'sheet_metadata_unstructured',
+    ]);
+  });
+
   it('adds structured Gmail search results', () => {
     const result = normalizeGoogleWorkspaceResult('search_gmail_messages', {
       result: [

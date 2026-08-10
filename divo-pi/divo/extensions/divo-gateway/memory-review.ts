@@ -62,7 +62,6 @@ export interface MemoryReviewResponseV1 {
 
 export interface MemoryReviewDependencies {
 	resolveConfig: () => DivoGatewayConfig | { error: string };
-	resolveSkillId: (toolId: string, runId: string) => string | undefined;
 	callGateway: (
 		config: DivoGatewayConfig,
 		request: GatewayRequestBody,
@@ -72,7 +71,6 @@ export interface MemoryReviewDependencies {
 
 const DEFAULT_DEPENDENCIES: MemoryReviewDependencies = {
 	resolveConfig: resolveDivoGatewayConfig,
-	resolveSkillId: () => undefined,
 	callGateway: (config, request, options) => callDivoGateway(config, request, fetch, options),
 };
 
@@ -214,7 +212,6 @@ async function buildAuthorizedReviewRequest(
 	proposal: MemoryReviewProposalV1,
 	config: DivoGatewayConfig,
 	execution: GatewayExecutionContext,
-	skillId: string,
 	dependencies: MemoryReviewDependencies,
 	signal?: AbortSignal,
 ): Promise<MemoryReviewPayloadV1> {
@@ -222,7 +219,6 @@ async function buildAuthorizedReviewRequest(
 		op: "tools.invoke",
 		execution,
 		payload: {
-			skillId,
 			toolId: "knowledge",
 			args: { operation: "check_targets" },
 		},
@@ -358,7 +354,6 @@ async function publishApprovedMemory(
 	response: MemoryReviewResponseV1,
 	config: DivoGatewayConfig,
 	execution: GatewayExecutionContext,
-	skillId: string,
 	ctx: Pick<ExtensionContext, "ui" | "signal">,
 	dependencies: MemoryReviewDependencies,
 ): Promise<
@@ -382,7 +377,6 @@ async function publishApprovedMemory(
 		execution,
 		...(departmentId ? { departmentId } : {}),
 		payload: {
-			skillId,
 			toolId: "knowledge",
 			args: {
 				operation: "propose",
@@ -449,7 +443,6 @@ async function publishApprovedMemory(
 			execution,
 			...(departmentId ? { departmentId } : {}),
 			payload: {
-				skillId,
 				toolId: "knowledge",
 				args: {
 					operation: "apply",
@@ -477,7 +470,6 @@ async function openLarkMemoryReview(
 	proposal: MemoryReviewProposalV1,
 	config: DivoGatewayConfig,
 	execution: GatewayExecutionContext,
-	skillId: string,
 	dependencies: MemoryReviewDependencies,
 	signal?: AbortSignal,
 ) {
@@ -488,7 +480,6 @@ async function openLarkMemoryReview(
 		op: "knowledge.review.open",
 		execution,
 		payload: {
-			skillId,
 			requestId: proposal.proposalId,
 			kind: "memory",
 			bullets: proposal.bullets.map((bullet) => bullet.text),
@@ -556,21 +547,12 @@ export async function executeMemoryReview(
 		runId: runCorrelation.runId,
 		actionId: `memory-review:${randomUUID()}`,
 	};
-	const skillId = dependencies.resolveSkillId("knowledge", runCorrelation.runId);
-	if (!skillId) {
-		const message = "The exact Manage Knowledge skill is not loaded in this run.";
-		return {
-			content: [{ type: "text" as const, text: `Memory review cancelled safely: ${message}` }],
-			details: { decision: "cancel", error: message },
-		};
-	}
 	if (runCorrelation.channel === "lark") {
 		try {
 			return await openLarkMemoryReview(
 				proposal,
 				resolved,
 				execution,
-				skillId,
 				dependencies,
 				ctx.signal,
 			);
@@ -587,10 +569,9 @@ export async function executeMemoryReview(
 	let request: MemoryReviewPayloadV1;
 	try {
 		request = await buildAuthorizedReviewRequest(
-		proposal,
+			proposal,
 			resolved,
 			execution,
-			skillId,
 			dependencies,
 			ctx.signal,
 		);
@@ -637,7 +618,6 @@ export async function executeMemoryReview(
 			response,
 			resolved,
 			execution,
-			skillId,
 			ctx,
 			dependencies,
 		);
@@ -687,9 +667,6 @@ export async function executeMemoryReview(
 
 export function registerMemoryReviewTool(
 	pi: ExtensionAPI,
-	options: {
-		resolveLoadedSkillId?: (toolId: string, runId: string) => string | undefined;
-	} = {},
 ) {
 	pi.registerTool({
 		name: "divo_memory_review",
@@ -697,18 +674,15 @@ export function registerMemoryReviewTool(
 		description:
 			"Review durable department or company facts against the authenticated runtime department and publish only the exact approved selection. Always pass requestedScope for Lark reviews; Personal is never a shared-memory target. Personal saves use divo_memory and are synchronously confirmed by its verified result.",
 		promptSnippet:
-			"Use divo_memory_review only for department or company memory after the Manage Knowledge skill checks backend authority.",
+			"Use divo_memory_review only for department or company memory; the tool checks backend authority before opening review.",
 		promptGuidelines: [
-			"Call only after the Manage Knowledge skill performs its orchestration authority check. Pass proposalId, bounded bullets, and requestedScope only when the user explicitly chose department/team or company. Never pass departmentId or allowed targets.",
+			"Read the Manage Knowledge skill for guidance. Pass proposalId, bounded bullets, and requestedScope only when the user explicitly chose department/team or company. Never pass departmentId or allowed targets.",
 			"Do not call the knowledge mutation operations directly; divo_memory_review binds the exact user-approved selection to the backend knowledge state machine.",
 			"If the result requests revision, create a new bounded proposal from the revision and call this tool again. If cancelled, save nothing.",
 		],
 		parameters: MEMORY_REVIEW_PARAMS,
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
-			return executeMemoryReview(toolCallId, params, ctx, {
-				...DEFAULT_DEPENDENCIES,
-				resolveSkillId: options.resolveLoadedSkillId ?? DEFAULT_DEPENDENCIES.resolveSkillId,
-			});
+			return executeMemoryReview(toolCallId, params, ctx, DEFAULT_DEPENDENCIES);
 		},
 	});
 }

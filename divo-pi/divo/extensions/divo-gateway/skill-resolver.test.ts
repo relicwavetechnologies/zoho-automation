@@ -161,6 +161,8 @@ describe("resolveDivoSkills", () => {
 		assert.deepEqual(requests.map(request => request.op), ["work.resolve"]);
 		assert.match(result.selected?.instructions ?? "", /Compact parent guidance/);
 		assert.match(formatSkillResolveResult(result), /Google Contacts — contacts-id/);
+		assert.match(formatSkillResolveResult(result), /read each matching native phase skill by name/i);
+		assert.doesNotMatch(formatSkillResolveResult(result), /load each later exact skill ID/i);
 	});
 
 	it("does not expose a partial searched skill when unified work resolution marks vendor onboarding unavailable", async () => {

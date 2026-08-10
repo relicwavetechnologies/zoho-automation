@@ -44,7 +44,17 @@ const MODEL_RETRY_PROMPT =
  */
 export const RUNTIME_IDLE_TIMEOUT_MS = 45 * 60_000;
 export const RUNTIME_STOP_RETRY_MS = 30_000;
-const RUNTIME_CONTAINER_MODE = "exec-v1";
+const RUNTIME_CONTAINER_MODE = "exec-v2";
+const NATIVE_SKILLS_ROOT = "/run/divo-skills";
+const MAX_NATIVE_SKILLS = 100;
+const MAX_NATIVE_SKILL_DESCRIPTION_BYTES = 1_024;
+const MAX_NATIVE_SKILL_INSTRUCTIONS_BYTES = 100_000;
+const MAX_NATIVE_SKILLS_TOTAL_BYTES = 2_000_000;
+const RESERVED_NATIVE_SKILL_SLUGS = new Set(
+	JSON.parse(fs.readFileSync(fileURLToPath(new URL("./runtime-manifest.json", import.meta.url)), "utf8"))
+		.trustedSkills ?? [],
+);
+const stagedNativeSkillDigests = new Map();
 let tokenReadTail = Promise.resolve();
 
 /**
@@ -130,6 +140,7 @@ export function resourcesFor(profileName, resourcePrefix = RESOURCE_PREFIX) {
 		authVolume: `${prefix}-${profile}-auth`,
 		container: `${prefix}-${profile}`,
 		network: `${prefix}-${profile}`,
+		skillsVolume: `${prefix}-${profile}-skills`,
 		volume: `${prefix}-${profile}`,
 	};
 }
@@ -341,6 +352,8 @@ export function buildContainerCreateArgs(
 		`type=volume,src=${resources.volume},dst=/data`,
 		"--mount",
 		`type=volume,src=${resources.authVolume},dst=/run/divo-auth`,
+		"--mount",
+		`type=volume,src=${resources.skillsVolume},dst=${NATIVE_SKILLS_ROOT},readonly`,
 		"--read-only",
 		"--tmpfs",
 		"/tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777",
@@ -368,6 +381,241 @@ export function backendUrlForContainer(value) {
 		url.hostname = "host.docker.internal";
 	}
 	return url.toString().replace(/\/+$/, "");
+}
+
+export function validateNativeSkillBootstrap(value) {
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Native skill bootstrap must be an object");
+	}
+	if (!Number.isSafeInteger(value.registryRevision) || value.registryRevision < 0) {
+		throw new Error("Native skill registry revision is invalid");
+	}
+	if (!Array.isArray(value.skills) || value.skills.length > MAX_NATIVE_SKILLS) {
+		throw new Error(`Native skill bootstrap must contain at most ${MAX_NATIVE_SKILLS} skills`);
+	}
+	const slugs = new Set();
+	let totalBytes = 0;
+	const skills = value.skills.map((skill) => {
+		if (!skill || typeof skill !== "object" || Array.isArray(skill)) {
+			throw new Error("Native skill entry must be an object");
+		}
+		const { id, slug, name, description, instructions, revision } = skill;
+		if (typeof id !== "string" || !id.trim() || id.length > 100) {
+			throw new Error("Native skill id is invalid");
+		}
+		if (
+			typeof slug !== "string"
+			|| slug.length > 64
+			|| !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)
+		) {
+			throw new Error(`Native skill slug is invalid: ${String(slug)}`);
+		}
+		if (RESERVED_NATIVE_SKILL_SLUGS.has(slug)) {
+			throw new Error(`Native skill slug is reserved by the runtime: ${slug}`);
+		}
+		if (slugs.has(slug)) throw new Error(`Duplicate native skill slug: ${slug}`);
+		slugs.add(slug);
+		if (typeof name !== "string" || !name.trim() || name.length > 120) {
+			throw new Error(`Native skill name is invalid: ${slug}`);
+		}
+		if (
+			typeof description !== "string"
+			|| !description.trim()
+			|| Buffer.byteLength(description, "utf8") > MAX_NATIVE_SKILL_DESCRIPTION_BYTES
+		) {
+			throw new Error(`Native skill description is invalid: ${slug}`);
+		}
+		if (
+			typeof instructions !== "string"
+			|| !instructions.trim()
+			|| Buffer.byteLength(instructions, "utf8") > MAX_NATIVE_SKILL_INSTRUCTIONS_BYTES
+		) {
+			throw new Error(`Native skill instructions are invalid: ${slug}`);
+		}
+		if (!Number.isSafeInteger(revision) || revision < 1) {
+			throw new Error(`Native skill revision is invalid: ${slug}`);
+		}
+		totalBytes += Buffer.byteLength(description, "utf8")
+			+ Buffer.byteLength(instructions, "utf8");
+		return { id, slug, name: name.trim(), description, instructions, revision };
+	});
+	if (totalBytes > MAX_NATIVE_SKILLS_TOTAL_BYTES) {
+		throw new Error("Native skill bootstrap exceeds the total size limit");
+	}
+	return { registryRevision: value.registryRevision, skills };
+}
+
+export function renderNativeSkillFiles(bootstrap) {
+	return validateNativeSkillBootstrap(bootstrap).skills.map((skill) => ({
+		slug: skill.slug,
+		content: [
+			"---",
+			`name: ${skill.slug}`,
+			`description: ${JSON.stringify(skill.description)}`,
+			"---",
+			"",
+			skill.instructions.trim(),
+			"",
+		].join("\n"),
+	}));
+}
+
+export function nativeSkillBootstrapDigest(bootstrap, scope) {
+	const validated = validateNativeSkillBootstrap(bootstrap);
+	return createHash("sha256")
+		.update(JSON.stringify({
+			scope: {
+				companyId: scope.companyId,
+				userId: scope.userId,
+				departmentId: scope.departmentId,
+				channel: scope.channel,
+			},
+			bootstrap: validated,
+		}))
+		.digest("hex");
+}
+
+export function nativeSkillLifecycleEvent({
+	bootstrap,
+	digest,
+	staged,
+	fetchMs,
+	stageMs,
+	ephemeral,
+	sessionScope,
+}) {
+	return {
+		event: "native_skills.ready",
+		registryRevision: bootstrap.registryRevision,
+		skillCount: bootstrap.skills.length,
+		digest: digest.slice(0, 12),
+		staged,
+		fetchMs,
+		stageMs,
+		audience: ephemeral ? "shared" : "private",
+		sessionScope,
+	};
+}
+
+export async function fetchNativeSkillBootstrap({
+	backendUrl,
+	token,
+	departmentId,
+	fetchImpl = fetch,
+}) {
+	if (!departmentId) throw new Error("Native skills require a selected department");
+	const query = new URLSearchParams({
+		capabilityVersion: "3",
+		departmentId,
+		nativeSkills: "1",
+	});
+	const response = await fetchImpl(
+		`${normalizeBackendUrl(backendUrl)}/api/desktop/auth/runtime-context?${query}`,
+		{ headers: { Authorization: `Bearer ${token}` } },
+	);
+	const body = await response.json().catch(() => undefined);
+	if (!response.ok || body?.success !== true || !body.data?.nativeSkillBootstrap) {
+		const error = new Error(body?.message ?? `Native skill bootstrap failed (${response.status})`);
+		error.status = response.status;
+		throw error;
+	}
+	return validateNativeSkillBootstrap(body.data.nativeSkillBootstrap);
+}
+
+export async function fetchNativeSkillBootstrapOrEmpty(input) {
+	try {
+		return await fetchNativeSkillBootstrap(input);
+	} catch (error) {
+		if (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500) throw error;
+		console.error(`[Pi] Native skill bootstrap unavailable; using bundled skills only: ${error.message}`);
+		return { registryRevision: 0, skills: [] };
+	}
+}
+
+const NATIVE_SKILL_STAGING_SCRIPT = String.raw`
+const fs = require("node:fs");
+const path = require("node:path");
+const root = process.env.DIVO_NATIVE_SKILLS_ROOT || "/run/divo-skills";
+const next = path.join(root, ".next");
+const previous = path.join(root, ".previous");
+const current = path.join(root, "current");
+const payload = JSON.parse(fs.readFileSync(0, "utf8"));
+if (!payload || !/^[a-f0-9]{64}$/.test(payload.digest) || !Array.isArray(payload.files)) {
+	throw new Error("Invalid native skill staging payload");
+}
+const files = payload.files;
+function removeTree(directory) {
+	if (!fs.existsSync(directory)) return;
+	fs.chmodSync(directory, 0o755);
+	for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+		if (entry.isDirectory()) removeTree(path.join(directory, entry.name));
+	}
+	fs.rmSync(directory, { recursive: true, force: true });
+}
+try {
+	const marker = JSON.parse(fs.readFileSync(path.join(current, ".bootstrap.json"), "utf8"));
+	if (marker.digest === payload.digest) process.exit(0);
+} catch {}
+removeTree(next);
+removeTree(previous);
+fs.mkdirSync(next, { recursive: true, mode: 0o755 });
+for (const file of files) {
+	if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(file.slug)) throw new Error("Invalid staged skill slug");
+	const directory = path.join(next, file.slug);
+	fs.mkdirSync(directory, { mode: 0o755 });
+	fs.writeFileSync(path.join(directory, "SKILL.md"), file.content, { mode: 0o444 });
+}
+fs.writeFileSync(
+	path.join(next, ".bootstrap.json"),
+	JSON.stringify({ digest: payload.digest }),
+	{ mode: 0o444 },
+);
+if (fs.existsSync(current)) fs.renameSync(current, previous);
+fs.renameSync(next, current);
+removeTree(previous);
+`;
+
+export function buildNativeSkillStagingArgs(volume, image = IMAGE) {
+	return [
+		"run",
+		"--rm",
+		"--interactive",
+		"--network",
+		"none",
+		"--user",
+		"0:0",
+		"--read-only",
+		"--cap-drop",
+		"ALL",
+		"--security-opt",
+		"no-new-privileges:true",
+		"--mount",
+		`type=volume,src=${volume},dst=${NATIVE_SKILLS_ROOT}`,
+		"--entrypoint",
+		"node",
+		image,
+		"-e",
+		NATIVE_SKILL_STAGING_SCRIPT,
+	];
+}
+
+export async function stageNativeSkillBootstrap(
+	volume,
+	bootstrap,
+	scope,
+	{ force = false, runStaging = runWithInput } = {},
+) {
+	const digest = nativeSkillBootstrapDigest(bootstrap, scope);
+	if (!force && stagedNativeSkillDigests.get(volume) === digest) {
+		return { digest, staged: false };
+	}
+	await runStaging(
+		"docker",
+		buildNativeSkillStagingArgs(volume),
+		JSON.stringify({ digest, files: renderNativeSkillFiles(bootstrap) }),
+	);
+	stagedNativeSkillDigests.set(volume, digest);
+	return { digest, staged: true };
 }
 
 export function runtimeContainerNeedsReplacement(container, image = IMAGE, imageId) {
@@ -800,6 +1048,7 @@ async function ensureRuntime(profile, { ephemeral = false } = {}) {
 		ensureNetwork(profile, resources.network),
 		ensureVolume(profile, resources.volume),
 		ensureVolume(profile, resources.authVolume),
+		ensureVolume(profile, resources.skillsVolume),
 	]);
 	let container = existing;
 	if (container) {
@@ -837,7 +1086,7 @@ async function destroyEphemeralRuntime(profileName) {
 		if (container.State.Running) await docker(["stop", resources.container]);
 		await docker(["rm", resources.container]);
 	}
-	for (const volume of [resources.authVolume, resources.volume]) {
+	for (const volume of [resources.authVolume, resources.skillsVolume, resources.volume]) {
 		if (await dockerObjectExists("volume", volume)) await docker(["volume", "rm", volume]);
 	}
 	if (await dockerObjectExists("network", resources.network)) {
@@ -1182,7 +1431,18 @@ function progressToolId(toolName, args) {
 	const nested = args?.payload?.toolId;
 	const value = typeof direct === "string" ? direct : typeof nested === "string" ? nested : undefined;
 	if (!value || !/^[A-Za-z0-9._-]{1,80}$/.test(value)) return undefined;
-	return toolName === "divo_gateway" || toolName === "call_tool" ? value : undefined;
+	return isGovernedDivoTool(toolName) || toolName === "call_tool" ? value : undefined;
+}
+
+/**
+ * A governed Divo capability call.
+ *
+ * Every governed tool is now its own typed Pi tool named `divo_<toolId>`, so
+ * there is no single mega-tool name left to match on. The prefix is the
+ * boundary: Divo registers it, Pi's own built-ins never use it.
+ */
+export function isGovernedDivoTool(toolName) {
+	return typeof toolName === "string" && toolName.startsWith("divo_");
 }
 
 const PROGRESS_LABEL_MAX = 80;
@@ -1220,22 +1480,12 @@ function progressToolDetail(toolName, args) {
 	if (toolName === "read" || toolName === "write" || toolName === "edit") {
 		return progressLabel(fileName(args.file_path ?? args.path), PROGRESS_DETAIL_MAX);
 	}
-	// A skill is addressed by UUID, which names nothing to the person reading the
-	// card. The row stays bare until the call returns and can be labelled with
-	// the skill's actual name.
-	if (toolName === "divo_skill_view") {
-		return UUID_PATTERN.test(String(args.skillId ?? ""))
-			? undefined
-			: progressLabel(args.skillId, PROGRESS_DETAIL_MAX);
-	}
 	// The tool id already travels as its own field, and the backend holds the
 	// table that turns it into a product name — so only the operation goes here.
 	// Sending the raw id too would print it twice, untranslated.
-	if (toolName === "divo_gateway") return progressLabel(args.op, PROGRESS_DETAIL_MAX);
+	if (isGovernedDivoTool(toolName)) return progressLabel(args.op ?? args.operation, PROGRESS_DETAIL_MAX);
 	return undefined;
 }
-
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The text block the model is writing right now, out of the accumulated message. */
 function assistantBlockText(assistantMessageEvent) {
@@ -1339,9 +1589,7 @@ function progressDetail(details) {
 	if (children) return { children };
 	const todos = progressTodos(details);
 	if (todos) return { todos };
-	// A loaded skill knows its own name, which is the only readable thing about
-	// a call the model addressed by UUID. It is only knowable once the call has
-	// returned, so the row is named on the way out rather than the way in.
+	// Some tools can name their work only after returning structured details.
 	const name = progressLabel(details.name, PROGRESS_DETAIL_MAX);
 	if (name && typeof details.revision === "number") return { detail: name };
 	return undefined;
@@ -1453,7 +1701,7 @@ export function collectProtectedRunMetadata(messages) {
 	const gatewayCalls = currentRun.flatMap((message) =>
 		message?.role === "assistant" && Array.isArray(message.content)
 			? message.content.filter((content) =>
-				content?.type === "toolCall" && content.name === "divo_gateway")
+				content?.type === "toolCall" && isGovernedDivoTool(content.name))
 			: [],
 	);
 	if (gatewayCalls.length === 0) {
@@ -1531,8 +1779,7 @@ function gatewayActionState(messages) {
 		message?.role === "assistant" && Array.isArray(message.content)
 			? message.content.filter((content) =>
 				content?.type === "toolCall"
-				&& content.name === "divo_gateway"
-				&& ["tools.invoke", "teach.learning.apply"].includes(content.arguments?.op))
+				&& isGovernedDivoTool(content.name))
 			: [],
 	);
 	if (calls.length === 0) return "none";
@@ -1541,7 +1788,7 @@ function gatewayActionState(messages) {
 		const result = currentRun.find((message) =>
 			message?.role === "toolResult"
 			&& message.toolCallId === call.id
-			&& message.toolName === "divo_gateway",
+			&& isGovernedDivoTool(message.toolName),
 		);
 		const action = result?.details?.data?.action;
 		if (
@@ -1821,7 +2068,7 @@ export function approveHeadlessWorkspaceAction(title, message) {
 	}
 }
 
-function createHeadlessExtensionResponder() {
+export function createHeadlessExtensionResponder() {
 	return async (request, respond) => {
 		if (
 			["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"].includes(
@@ -1856,13 +2103,31 @@ const warmPiProcesses = new Map();
 export function canReusePiProcess({
 	enabled = process.env.DIVO_PI_KEEPALIVE !== "false",
 	ephemeral = false,
+	nativeSkills = false,
+	nativeSkillDigest = "",
 	sessionScope = "thread",
 	lifecycle,
 } = {}) {
-	return enabled && !ephemeral && sessionScope === "thread" && lifecycle === undefined;
+	const nativeSkillsCompatible = !nativeSkills || /^[a-f0-9]{64}$/.test(nativeSkillDigest);
+	return enabled && !ephemeral && nativeSkillsCompatible
+		&& sessionScope === "thread" && lifecycle === undefined;
 }
 
-function piProcessBinding({ profile, thread, backendUrl, departmentId, selectedModel }) {
+export function nativeDbSkillsEnabled(value = process.env.DIVO_PI_NATIVE_DB_SKILLS) {
+	// Native DB skills are the Cloud-Pi architecture, not an experimental path.
+	// Keep one explicit rollback switch without making every launcher remember a
+	// hidden opt-in; unknown values still fail closed.
+	return value === undefined || value === "" || value === "true";
+}
+
+function piProcessBinding({
+	profile,
+	thread,
+	backendUrl,
+	departmentId,
+	selectedModel,
+	nativeSkillDigest,
+}) {
 	return {
 		profile,
 		thread,
@@ -1870,6 +2135,7 @@ function piProcessBinding({ profile, thread, backendUrl, departmentId, selectedM
 		departmentId: departmentId ?? "",
 		provider: selectedModel?.provider ?? "",
 		model: selectedModel?.model ?? "",
+		nativeSkillDigest: nativeSkillDigest ?? "",
 	};
 }
 
@@ -1880,7 +2146,8 @@ export function piProcessBindingMatches(current, next) {
 		&& current.backendUrl === next.backendUrl
 		&& current.departmentId === next.departmentId
 		&& current.provider === next.provider
-		&& current.model === next.model;
+		&& current.model === next.model
+		&& current.nativeSkillDigest === next.nativeSkillDigest;
 }
 
 function runtimeExitPromise(child) {
@@ -2217,6 +2484,7 @@ async function runPrompt({
 	lifecycle,
 }) {
 	const normalizedSessionScope = validateSessionScope(sessionScope);
+	const nativeSkills = nativeDbSkillsEnabled();
 	if (lifecycle !== undefined) validateSessionLifecycleOperation(lifecycle);
 	if (lifecycle !== undefined && normalizedSessionScope !== "thread") {
 		throw new Error("Session lifecycle operations require a thread-scoped session");
@@ -2227,8 +2495,19 @@ async function runPrompt({
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 	let resources = resourcesFor(profile);
 	const selectedModel = validateRuntimeModel(model);
+	const nativeSkillFetchStartedAt = Date.now();
+	const nativeSkillBootstrap = nativeSkills
+		? await fetchNativeSkillBootstrapOrEmpty({ backendUrl, token, departmentId })
+		: undefined;
+	const nativeSkillFetchMs = Date.now() - nativeSkillFetchStartedAt;
+	const nativeSkillScope = { companyId, userId, departmentId, channel };
+	const nativeSkillDigest = nativeSkillBootstrap
+		? nativeSkillBootstrapDigest(nativeSkillBootstrap, nativeSkillScope)
+		: "";
 	const piKeepAlive = canReusePiProcess({
 		ephemeral,
+		nativeSkills,
+		nativeSkillDigest,
 		sessionScope: normalizedSessionScope,
 		lifecycle,
 	});
@@ -2245,6 +2524,7 @@ async function runPrompt({
 		departmentId,
 		sessionScope: normalizedSessionScope,
 		...(channel ? { channel } : {}),
+		...(nativeSkills ? { nativeSkills: true } : {}),
 		...(channel === "lark" ? { interruptionTask: message } : {}),
 		...(selectedModel ?? {}),
 	};
@@ -2254,9 +2534,13 @@ async function runPrompt({
 		backendUrl: bootstrap.backendUrl,
 		departmentId,
 		selectedModel,
+		nativeSkillDigest,
 	});
 	if (!ephemeral) await idleContainers.activate(profile);
-	if (!piKeepAlive) await discardWarmPiProcess(profile);
+	const cachedBinding = piKeepAlive ? warmPiProcesses.get(profile)?.binding : undefined;
+	if (!piKeepAlive || (cachedBinding && !piProcessBindingMatches(cachedBinding, binding))) {
+		await discardWarmPiProcess(profile);
+	}
 	let abortStop;
 	let bootstrapAttempted = false;
 	let child;
@@ -2282,6 +2566,24 @@ async function runPrompt({
 	try {
 		const runtime = await ensureRuntime(profile, { ephemeral });
 		resources = runtime.resources;
+		if (nativeSkillBootstrap) {
+			const nativeSkillStageStartedAt = Date.now();
+			const stage = await stageNativeSkillBootstrap(
+				resources.skillsVolume,
+				nativeSkillBootstrap,
+				nativeSkillScope,
+				{ force: runtime.created },
+			);
+			console.error(`[Pi] ${JSON.stringify(nativeSkillLifecycleEvent({
+				bootstrap: nativeSkillBootstrap,
+				digest: stage.digest,
+				staged: stage.staged,
+				fetchMs: nativeSkillFetchMs,
+				stageMs: Date.now() - nativeSkillStageStartedAt,
+				ephemeral,
+				sessionScope: normalizedSessionScope,
+			}))}`);
+		}
 		for (const progress of runtimeStartupProgress(runtime)) {
 			emitRuntimeProgress(onProgress, progress);
 		}
@@ -2309,10 +2611,6 @@ async function runPrompt({
 		await writeBootstrap(resources.container, bootstrap);
 		let piProcessReused = false;
 		let piPrepareMs = 0;
-		const cached = piKeepAlive ? warmPiProcesses.get(profile) : undefined;
-		if (cached && !piProcessBindingMatches(cached.binding, binding)) {
-			await discardWarmPiProcess(profile);
-		}
 		const reusable = piKeepAlive ? warmPiProcesses.get(profile) : undefined;
 		if (reusable) {
 			const prepareStartedAt = Date.now();
@@ -2418,7 +2716,12 @@ export async function prompt(profileName, message, options = {}) {
 		companyId: metadata.companyId,
 		departmentId: metadata.departmentId,
 		trustedSession: trustedRuntimeSession(session),
-		answerRequest: createExtensionResponder(Boolean(options.approve)),
+		// The terminal responder blocks on this process's stdin, which only
+		// exists when a human ran the CLI. A server passes its own.
+		answerRequest: options.answerRequest ?? createExtensionResponder(Boolean(options.approve)),
+		// Without this, a disconnected caller could never end the run: the
+		// promise never settled, so the admission slot was never released.
+		signal: options.signal,
 	});
 }
 

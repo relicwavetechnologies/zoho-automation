@@ -2,9 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DIVO_SUBAGENT_FINAL_HANDOFF, DIVO_SUBAGENT_ROLES } from "./agents.ts";
 
-test("every bundled subagent role has read-only local tools and Divo gateway access", () => {
+test("every bundled subagent role has read-only local tools and governed Divo access", () => {
 	for (const role of DIVO_SUBAGENT_ROLES) {
-		assert.ok(role.tools.includes("divo_gateway"), `${role.name} should access divo_gateway`);
+		assert.ok(role.tools.includes("divo_connections"), `${role.name} should reach connected accounts`);
+		assert.ok(role.tools.includes("divo_zoho_books"), `${role.name} should reach a governed capability`);
 		assert.ok(role.tools.includes("divo_skill_resolve"), `${role.name} should access divo_skill_resolve`);
 		assert.ok(!role.tools.includes("write"), `${role.name} must not write files`);
 		assert.ok(!role.tools.includes("edit"), `${role.name} must not edit files`);

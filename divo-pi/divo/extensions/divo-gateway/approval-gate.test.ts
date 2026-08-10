@@ -22,24 +22,17 @@ function context(confirm: (title: string, message: string) => Promise<boolean>) 
 	};
 }
 
-function divoEvent(): ToolCallEvent {
+function divoEvent(toolName = "divo_google_gmail", input: Record<string, unknown> = { op: "send", to: ["maya@example.com"] }): ToolCallEvent {
 	return {
 		type: "tool_call",
-		toolName: "divo_gateway",
+		toolName,
 		toolCallId: "call-1",
-		input: {
-			op: "tools.invoke",
-			departmentId: "dept-1",
-			payload: {
-				toolId: "googleGmail",
-				args: { op: "send", to: ["maya@example.com"] },
-			},
-		},
+		input,
 	} as ToolCallEvent;
 }
 
 describe("Divo approval gate", () => {
-	it("allows a valid tools.invoke to reach the single-call execution path", async () => {
+	it("lets an ordinary governed tool call reach the execution path unprompted", async () => {
 		let confirmations = 0;
 		const event = divoEvent();
 		const result = await handleApprovalToolCall(
@@ -51,8 +44,7 @@ describe("Divo approval gate", () => {
 		);
 
 		assert.equal(result, undefined);
-		assert.equal(confirmations, 0);
-		assert.equal((event.input as Record<string, unknown>).op, "tools.invoke");
+		assert.equal(confirmations, 0, "the backend owns approval; the gate must not add a local prompt");
 	});
 
 	it("emits the versioned presentation and returns only the approved intent", async () => {
@@ -91,7 +83,7 @@ describe("Divo approval gate", () => {
 		});
 	});
 
-	it("rejects denied or malformed prepared intents and blocks direct commits", async () => {
+	it("rejects denied or malformed prepared intents", async () => {
 		await assert.rejects(
 			approvePreparedDivoIntent(
 				"call-1",
@@ -104,44 +96,15 @@ describe("Divo approval gate", () => {
 			approvePreparedDivoIntent("call-1", {}, context(async () => true)),
 			/complete approval intent/,
 		);
-		const directCommit = divoEvent();
-		(directCommit.input as Record<string, unknown>).op = "tools.commit";
-		assert.match(
-			(
-				await handleApprovalToolCall(
-					directCommit,
-					context(async () => true),
-				)
-			)?.reason ?? "",
-			/direct tools\.commit/i,
-		);
-	});
-
-	it("returns the exact missing tools.invoke path before calling the backend", async () => {
-		const event = divoEvent();
-		(event.input as Record<string, unknown>).payload = { toolId: "googleGmail" };
-
-		const result = await handleApprovalToolCall(
-			event,
-			context(async () => true),
-		);
-
-		assert.equal(result?.block, true);
-		assert.match(result?.reason ?? "", /payload\.args is required/);
-		assert.match(result?.reason ?? "", /"op": "tools\.invoke"/);
 	});
 
 	it("blocks raw personal publishing so only the dedicated memory command can write", async () => {
-		const event = divoEvent();
-		(event.input as Record<string, unknown>).payload = {
-			toolId: "knowledge",
-			args: {
-				operation: "propose",
-				scope: "personal",
-				kind: "memory",
-				facts: ["A fact"],
-			},
-		};
+		const event = divoEvent("divo_knowledge", {
+			operation: "propose",
+			scope: "personal",
+			kind: "memory",
+			facts: ["A fact"],
+		});
 		const result = await handleApprovalToolCall(
 			event,
 			context(async () => true),
@@ -153,12 +116,10 @@ describe("Divo approval gate", () => {
 	});
 
 	it("blocks generic memory recall before an alternate department can reach the gateway", async () => {
-		const event = divoEvent();
-		(event.input as Record<string, unknown>).departmentId = "dept-alternate";
-		(event.input as Record<string, unknown>).payload = {
-			toolId: "knowledge",
-			args: { operation: "recall", query: "quarterly planning conventions" },
-		};
+		const event = divoEvent("divo_knowledge", {
+			operation: "recall",
+			query: "quarterly planning conventions",
+		});
 		const result = await handleApprovalToolCall(
 			event,
 			context(async () => true),

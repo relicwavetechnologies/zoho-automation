@@ -24,7 +24,7 @@ import type {
 } from './gateway.types';
 import { gatewayFailure, gatewaySuccess } from './gateway.types';
 import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime-session';
-import { limitModelFacingResult } from './model-facing-result-limit';
+import { limitLocalFileResult, limitModelFacingResult } from './model-facing-result-limit';
 import {
   classifyShopifyProtectedResult,
   isProtectedShopifyToolId,
@@ -123,6 +123,12 @@ export interface RuntimeToolPreflightOutcome {
   readonly message?: string;
 }
 
+function limitGatewayResult(member: GatewayMemberContext, value: unknown): unknown {
+  return member.resultAudience === 'local_file'
+    ? limitLocalFileResult(value)
+    : limitModelFacingResult(value);
+}
+
 export interface PreparedToolInvocation {
   readonly toolId: string;
   readonly action: ToolActionGroup;
@@ -194,6 +200,7 @@ export class ToolExecutor {
 
     const rate = await this.preflightRateLimit({
       companyId: runContext.companyId,
+      toolFamily: tool.family,
       action,
       args,
     });
@@ -224,6 +231,7 @@ export class ToolExecutor {
 
     const ratePreflight = await this.preflightRateLimit({
       companyId: runContext.companyId,
+      toolFamily: tool.family,
       action,
       args: validatedArgs,
     });
@@ -339,7 +347,7 @@ export class ToolExecutor {
         return gatewaySuccess({
           toolId: tool.id,
           action,
-          result: limitModelFacingResult(replayed.value),
+          result: limitGatewayResult(member, replayed.value),
           ...(protectedData ? { protectedData } : {}),
           replayedApproval: {
             approvalId: decision.approvalId,
@@ -362,6 +370,7 @@ export class ToolExecutor {
 
     const rateConsume = await this.consumeRateLimit({
       companyId: runContext.companyId,
+      toolFamily: tool.family,
       action,
       args: validatedArgs,
     });
@@ -395,6 +404,7 @@ export class ToolExecutor {
     const execCtx: ToolExecutionContext = {
       runContext,
       perm,
+      ...(member.resultAudience ? { resultAudience: member.resultAudience } : {}),
       correlationId: input.requestId ?? input.execution?.actionId ?? randomUUID(),
       logger: this.deps.logger.child({ toolId: tool.id }),
       clock: this.deps.clock,
@@ -459,7 +469,7 @@ export class ToolExecutor {
       return gatewaySuccess({
         toolId: tool.id,
         action,
-        result: limitModelFacingResult(validatedResult.value),
+        result: limitGatewayResult(member, validatedResult.value),
         ...protectedResultField(tool.id, validatedArgs, validatedResult.value),
       });
     } catch (error) {
@@ -507,6 +517,7 @@ export class ToolExecutor {
 
     const ratePreflight = await this.preflightRateLimit({
       companyId: input.runContext.companyId,
+      toolFamily: tool.family,
       action,
       args,
     });
@@ -537,6 +548,7 @@ export class ToolExecutor {
 
     const ratePreflight = await this.preflightRateLimit({
       companyId: runContext.companyId,
+      toolFamily: tool.family,
       action,
       args: validatedArgs,
     });
@@ -633,6 +645,7 @@ export class ToolExecutor {
 
     const rateConsume = await this.consumeRateLimit({
       companyId: runContext.companyId,
+      toolFamily: tool.family,
       action,
       args: validatedArgs,
     });
@@ -1081,10 +1094,12 @@ export class ToolExecutor {
 
   private async preflightRateLimit(input: {
     readonly companyId: string;
+    readonly toolFamily: string;
     readonly action: ToolActionGroup;
     readonly args: Record<string, unknown>;
   }): Promise<GatewayResponse | null> {
     if (!this.deps.connectionRateLimits) return null;
+    if (isNativeSchemaDescribe(input.toolFamily, input.args)) return null;
     const connectionId = connectionIdFromArgs(input.args);
     const decision = await this.deps.connectionRateLimits.preflight({
       companyId: input.companyId,
@@ -1096,10 +1111,12 @@ export class ToolExecutor {
 
   private async consumeRateLimit(input: {
     readonly companyId: string;
+    readonly toolFamily: string;
     readonly action: ToolActionGroup;
     readonly args: Record<string, unknown>;
   }): Promise<GatewayResponse | null> {
     if (!this.deps.connectionRateLimits) return null;
+    if (isNativeSchemaDescribe(input.toolFamily, input.args)) return null;
     const connectionId = connectionIdFromArgs(input.args);
     const decision = await this.deps.connectionRateLimits.consume({
       companyId: input.companyId,
@@ -1302,10 +1319,19 @@ function connectionIdFromArgs(args: Record<string, unknown>): string | undefined
   return typeof candidate === 'string' && candidate.length > 0 ? candidate : undefined;
 }
 
+/** Native schema metadata is process-cached contract data, not a SaaS data operation. */
+function isNativeSchemaDescribe(toolFamily: string, args: Record<string, unknown>): boolean {
+  return (toolFamily === 'google' || toolFamily === 'airtable') && args['op'] === 'describe';
+}
+
 function rateLimitFailure(
   decision: Awaited<ReturnType<ConnectionRateLimitService['preflight']>>,
 ): GatewayResponse | null {
-  if (decision.kind === 'limited') return gatewayFailure('rate_limited', decision.message);
+  if (decision.kind === 'limited') {
+    return gatewayFailure('rate_limited', decision.message, {
+      retryAfterSeconds: decision.retryAfterSeconds,
+    });
+  }
   if (decision.kind === 'unavailable') return gatewayFailure('rate_limit_unavailable', decision.message);
   return null;
 }

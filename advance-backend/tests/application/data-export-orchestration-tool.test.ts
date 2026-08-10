@@ -6,7 +6,14 @@ import { createDataExportTool } from '../../src/application/tools/families/data-
 import { makeCtx } from '../tools/tool-test.helpers.ts';
 
 describe('dataExport candidate orchestration tool contract', () => {
-  it('routes candidate plans, samples, and sample confirmations through orchestration', async () => {
+  it('describes itself as compatibility-only and excludes terminal-pageable Zoho', () => {
+    const tool = createDataExportTool({ offers: {} as never });
+    assert.match(tool.description, /provider whose specialist explicitly lacks terminal-safe paging/i);
+    assert.match(tool.description, /Never use this compatibility tool for Zoho Books or CRM/i);
+    assert.match(tool.parameterDocs, /Never construct a direct zoho_books source/i);
+  });
+
+  it('routes an explicit candidate plan directly to the full export', async () => {
     const calls: unknown[] = [];
     const candidateId = '11111111-1111-4111-8111-111111111111';
     const planId = '22222222-2222-4222-8222-222222222222';
@@ -18,26 +25,7 @@ describe('dataExport candidate orchestration tool contract', () => {
         planForActor: async input => {
           calls.push({ kind: 'plan', input });
           return {
-            status: 'sample_required' as const,
-            planId,
-            sampleRows: 100,
-            reason: 'unknown_everything' as const,
-          };
-        },
-        queueSample: async input => {
-          calls.push({ kind: 'sample', input });
-          return {
-            status: 'sample_queued' as const,
-            planId,
-            sampleRunId: planId,
-            exportJobId: 'sample-job-1',
-            sampleRows: 100,
-          };
-        },
-        confirmSample: async input => {
-          calls.push({ kind: 'confirm_sample', input });
-          return {
-            status: 'full_queued' as const,
+            status: 'direct_queue' as const,
             planId,
             exportJobId: 'full-job-1',
           };
@@ -55,16 +43,9 @@ describe('dataExport candidate orchestration tool contract', () => {
       destination: { format: 'google_sheet', title: 'Semrush keywords' },
       userIntent: 'explicit_export',
     }, ctx);
-    const sample = await orchestrationTool.execute({ op: 'sample', planId }, ctx);
-    const confirm = await orchestrationTool.execute({ op: 'confirm_sample', sampleRunId: planId }, ctx);
-
     assert.equal(plan.ok, true);
-    assert.equal(plan.ok && plan.value.status, 'sample_required');
-    assert.equal(sample.ok, true);
-    assert.equal(sample.ok && sample.value.exportJobId, 'sample-job-1');
-    assert.equal(confirm.ok, true);
-    assert.equal(confirm.ok && confirm.value.exportJobId, 'full-job-1');
-    assert.match(confirm.ok ? confirm.value.message : '', /format caps still apply/i);
+    assert.equal(plan.ok && plan.value.status, 'direct_queue');
+    assert.equal(plan.ok && plan.value.exportJobId, 'full-job-1');
     assert.deepEqual(calls, [
       {
         kind: 'plan',
@@ -80,62 +61,20 @@ describe('dataExport candidate orchestration tool contract', () => {
           },
         },
       },
-      {
-        kind: 'sample',
-        input: {
-          planId,
-          companyId: 'co-test',
-          userId: 'user-test',
-          chatId: 'oc_chat',
-        },
-      },
-      {
-        kind: 'confirm_sample',
-        input: {
-          sampleRunId: planId,
-          companyId: 'co-test',
-          userId: 'user-test',
-          chatId: 'oc_chat',
-        },
-      },
     ]);
   });
 
-  it('keeps sample and sample-confirmation blocked results on the matching operation', async () => {
-    const planId = '22222222-2222-4222-8222-222222222222';
-    const orchestrationTool = createDataExportTool({
-      offers: {
-        submitAuthorized: async () => 'unused',
-      },
-      orchestration: {
-        planForActor: async () => ({
-          status: 'blocked' as const,
-          reason: 'unused',
-          message: 'unused',
-        }),
-        queueSample: async () => ({
-          status: 'blocked' as const,
-          reason: 'sample_not_ready',
-          message: 'Review the sample first.',
-        }),
-        confirmSample: async () => ({
-          status: 'blocked' as const,
-          reason: 'plan_not_found',
-          message: 'That sample is gone.',
-        }),
-      },
-    });
-    const ctx = makeCtx('dataExport', ['create'], { chatId: 'oc_chat' });
-
-    const sample = await orchestrationTool.execute({ op: 'sample', planId }, ctx);
-    const confirm = await orchestrationTool.execute({ op: 'confirm_sample', sampleRunId: planId }, ctx);
-
-    assert.equal(sample.ok, true);
-    assert.equal(sample.ok && sample.value.operation, 'sample');
-    assert.equal(sample.ok && sample.value.planId, planId);
-    assert.equal(confirm.ok, true);
-    assert.equal(confirm.ok && confirm.value.operation, 'confirm_sample');
-    assert.equal(confirm.ok && confirm.value.planId, planId);
+  it('does not expose the removed sample operations in its schema', () => {
+    const tool = createDataExportTool({ offers: {} as never });
+    assert.equal(tool.argsSchema.safeParse({ op: 'sample', planId: '22222222-2222-4222-8222-222222222222' }).success, false);
+    assert.equal(tool.argsSchema.safeParse({ op: 'confirm_sample', sampleRunId: '22222222-2222-4222-8222-222222222222' }).success, false);
+    assert.equal(tool.argsSchema.safeParse({
+      op: 'plan',
+      datasets: [{ candidateId: '11111111-1111-4111-8111-111111111111' }],
+      destination: { format: 'google_sheet', title: 'Old sample plan' },
+      userIntent: 'sample_then_confirm',
+    }).success, false);
+    assert.doesNotMatch(tool.parameterDocs, /confirm_sample|op=sample|sample_required/);
   });
 
   it('routes list_candidates through orchestration with run scope defaults', async () => {
@@ -146,16 +85,6 @@ describe('dataExport candidate orchestration tool contract', () => {
       },
       orchestration: {
         planForActor: async () => ({
-          status: 'blocked' as const,
-          reason: 'unused',
-          message: 'unused',
-        }),
-        queueSample: async () => ({
-          status: 'blocked' as const,
-          reason: 'unused',
-          message: 'unused',
-        }),
-        confirmSample: async () => ({
           status: 'blocked' as const,
           reason: 'unused',
           message: 'unused',

@@ -23,26 +23,36 @@ import {
 } from '../../data-export/google-drive-xlsx-resource-reference';
 import type { GoogleDriveXlsxResourceResolution } from '../../data-export/google-drive-xlsx-resource-resolver';
 
-const ArgsSchema = z.discriminatedUnion('op', [
-  z.object({
-    connectionId: z.string().uuid().optional(),
-    op: z.literal('describe'),
-    nativeTool: z.string().min(1),
-    input: z.record(z.unknown()).optional(),
-  }),
-  z.object({
-    connectionId: z.string().uuid(),
-    op: z.literal('call'),
-    nativeTool: z.string().min(1),
-    input: z.record(z.unknown()).optional(),
-  }),
-  z.object({
-    connectionId: z.string().uuid().optional(),
-    op: z.literal('resolve_reference'),
-    url: z.string().trim().min(1).max(2_048),
-  }),
-]);
+function createArgsSchema(nativeTool: z.ZodType<string>) {
+  return z.discriminatedUnion('op', [
+    z.object({
+      connectionId: z.string().uuid().optional(),
+      op: z.literal('describe'),
+      nativeTool,
+      input: z.record(z.unknown()).optional(),
+    }),
+    z.object({
+      connectionId: z.string().uuid(),
+      op: z.literal('call'),
+      nativeTool,
+      input: z.record(z.unknown()).optional(),
+    }),
+    z.object({
+      connectionId: z.string().uuid().optional(),
+      op: z.literal('resolve_reference'),
+      url: z.string().trim().min(1).max(2_048),
+    }),
+  ]);
+}
+
+const ArgsSchema = createArgsSchema(z.string().min(1));
 type Args = z.infer<typeof ArgsSchema>;
+
+function nativeToolEnum(values: readonly string[]): z.ZodEnum<[string, ...string[]]> {
+  const [first, ...rest] = values;
+  if (!first) throw new Error('Google Workspace product must publish at least one native tool');
+  return z.enum([first, ...rest]);
+}
 
 const ResultSchema = z.object({
   success: z.boolean(),
@@ -166,7 +176,7 @@ function createProductTool(
     id: asToolId(product.toolId),
     family: 'google',
     actionGroups: supportedActions,
-    argsSchema: ArgsSchema,
+    argsSchema: createArgsSchema(nativeToolEnum(product.tools)),
     resultSchema: ResultSchema,
     description: product.description,
     parameterDocs: [
@@ -449,7 +459,12 @@ function createProductTool(
           toolId: product.toolId,
           reason: 'upstream_failure',
           cause,
-          message: withRecoveryHint(cause instanceof Error ? cause.message : String(cause)),
+          message: await withNativeSchema({
+            message: withRecoveryHint(cause instanceof Error ? cause.message : String(cause)),
+            nativeTool: args.nativeTool,
+            describe: (name, signal) => connection.client.describeTool(name, signal),
+            ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
+          }),
         }));
       }
     },
@@ -532,6 +547,53 @@ const OFFICE_FILE_RECOVERY = ' This file is an Excel or CSV upload, not a native
 
 export function withRecoveryHint(message: string): string {
   return /must not be an Office file/i.test(message) ? `${message}${OFFICE_FILE_RECOVERY}` : message;
+}
+
+/** A pinned MCP operation rejecting its input, as opposed to Google refusing the work. */
+const NATIVE_SCHEMA_REJECTION = /validation errors? for |extra inputs are not permitted|field required/i;
+
+/** Enough for the largest pinned Workspace contract, short of flooding the trace. */
+const MAX_INLINED_SCHEMA_CHARS = 6_000;
+
+export function isNativeSchemaRejection(message: string): boolean {
+  return NATIVE_SCHEMA_REJECTION.test(message);
+}
+
+/**
+ * Answers "then what *are* the fields?" in the same breath as "that field is wrong".
+ *
+ * A rejected argument name used to cost three round trips: the call fails, the
+ * model calls `describe` to learn the contract, then repeats the call. The
+ * second trip is pure ceremony — this code has just validated the input against
+ * that very schema, so it already knows what the model is about to ask for.
+ * Thirteen of one production session's failures were this exact loop
+ * (`maxResults` for `page_size`, `title` for `sheet_name`, a nested `format`
+ * object for flat keys).
+ *
+ * Only schema rejections get this. A quota error or a missing document is not a
+ * contract problem, and pasting a schema under it would be noise.
+ */
+async function withNativeSchema(input: {
+  readonly message: string;
+  readonly nativeTool: string;
+  readonly describe: (name: string, signal?: AbortSignal) => Promise<unknown>;
+  readonly abortSignal?: AbortSignal;
+}): Promise<string> {
+  if (!isNativeSchemaRejection(input.message)) return input.message;
+  try {
+    const description = await input.describe(input.nativeTool, input.abortSignal);
+    const schema = (description as { inputSchema?: unknown } | null)?.inputSchema ?? description;
+    if (schema === undefined || schema === null) return input.message;
+    const serialized = JSON.stringify(schema);
+    if (serialized.length > MAX_INLINED_SCHEMA_CHARS) return input.message;
+    return `${input.message}\n\nThe exact ${input.nativeTool} input schema follows. `
+      + `Correct the arguments and retry; do not call describe for it.\n${serialized}`;
+  } catch {
+    // Best effort. The original rejection is still the useful part, and losing
+    // it because the schema lookup failed would be a worse error than the one
+    // being reported.
+    return input.message;
+  }
 }
 
 function badArgs(toolId: string, message: string): Result<never, ToolError> {

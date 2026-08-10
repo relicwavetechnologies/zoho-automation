@@ -59,11 +59,12 @@ describe('Zoho per-connection regional routing', () => {
         companyId: 'company-1', userId: 'user-1', connectionId: 'india', module: 'Deals', page: 1,
       });
       await client.listRecords({
-        companyId: 'company-1', userId: 'user-1', connectionId: 'global', module: 'Deals', page: 1,
+        companyId: 'company-1', userId: 'user-1', connectionId: 'global', module: 'Deals', pageToken: 'next-token',
       });
 
       assert.match(seen[0]!, /^https:\/\/www\.zohoapis\.in\/crm\/v6\/Deals/);
       assert.match(seen[1]!, /^https:\/\/www\.zohoapis\.com\/crm\/v6\/Deals/);
+      assert.match(seen[1]!, /page_token=next-token/);
     } finally {
       globalThis.fetch = originalFetch;
     }

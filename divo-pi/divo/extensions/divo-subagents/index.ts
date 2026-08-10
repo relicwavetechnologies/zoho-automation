@@ -554,7 +554,7 @@ export default function divoSubagentsExtension(pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Roles: scout for rapid source and system reconnaissance, planner for business workflows, reviewer for independent quality checks, and worker for detailed read-only analysis or preparation.",
 			"Each child starts in an isolated context and does not receive the parent conversation. Make every task self-contained with its objective, relevant context, scope, exclusions, sources, permitted actions, deliverable, acceptance criteria, required evidence, and the decision its result must support.",
-			"Child agents have divo_gateway and divo_skill_resolve plus read-only local tools. They may research, inspect, analyze, compare, plan, draft, or review; do not delegate approvals, external mutations, messages, schedule activation, Teach writes, or irreversible actions.",
+			"Child agents have the governed Divo tools and divo_skill_resolve plus read-only local tools. They may research, inspect, analyze, compare, plan, draft, or review; do not delegate approvals, external mutations, messages, schedule activation, or irreversible actions.",
 			"Use tasks for substantial independent work only, normally with two to four non-overlapping assignments. Do not delegate simple requests or duplicate work unless independent verification is intentional.",
 			"Every child returns the shared final handoff: verdict, key findings, evidence, gaps and confidence, and exactly one recommended next step. Do not ask a child for an open-ended essay or a user-facing final answer.",
 			"Use chain for dependent steps and {previous} only where the next role genuinely needs the prior final result.",

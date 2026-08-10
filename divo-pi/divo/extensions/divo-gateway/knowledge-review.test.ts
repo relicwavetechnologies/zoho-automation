@@ -34,7 +34,6 @@ function desktopContext(): void {
 function dependencies(calls: unknown[], options: { targets?: unknown[]; applyStatus?: "success" | "approval_required" } = {}): KnowledgeReviewDependencies {
 	return {
 		resolveConfig: () => ({ backendUrl: "http://localhost:4000", memberToken: "token" }),
-		resolveSkillId: () => "share-memory-skill",
 		callGateway: async (_config, call) => {
 			calls.push(call);
 			if (call.op === "knowledge.review.open") {
@@ -166,12 +165,12 @@ describe("shared knowledge review", () => {
 		assert.deepEqual(normalized, [
 			{
 				op: "tools.invoke",
-				payload: { skillId: "share-memory-skill", toolId: "knowledge", args: { operation: "check_targets" } },
+				payload: { toolId: "knowledge", args: { operation: "check_targets" } },
 			},
 			{
 				op: "tools.prepare",
 				departmentId: "dept-1",
-				payload: { skillId: "share-memory-skill", toolId: "knowledge", args: {
+				payload: { toolId: "knowledge", args: {
 					operation: "propose",
 					kind: "skill",
 					action: "publish",
@@ -197,7 +196,7 @@ describe("shared knowledge review", () => {
 			{
 				op: "tools.invoke",
 				departmentId: "dept-1",
-				payload: { skillId: "share-memory-skill", toolId: "knowledge", args: {
+				payload: { toolId: "knowledge", args: {
 					operation: "apply",
 					mutationId: "00000000-0000-4000-8000-000000000001",
 					contentHash: "b".repeat(64),

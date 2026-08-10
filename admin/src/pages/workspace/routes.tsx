@@ -29,6 +29,7 @@ const PATHS: Record<string, string> = {
   'team-home': '/team',
   'co-home': '/home',
   'co-aiops': '/ai-ops',
+  'co-agents': '/agents',
   'co-audit': '/activity',
 
   /* Configuration — the Settings takeover. */

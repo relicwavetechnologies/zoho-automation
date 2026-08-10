@@ -361,6 +361,7 @@ export class ShopifySnapshotDataExportSource implements DataExportSourceAdapter<
     if (source.toolId === 'shopifyOrders') {
       const args = source.args;
       yield* streamShopifyListForExport({
+        pageSize: args.first,
         fetchPage: after => this.service.orders(after ? { ...args, after } : args, ctx),
         flattenRows: data => flattenShopifyOrderRows(readShopifyListNodes(data)),
         ...(context.signal ? { signal: context.signal } : {}),
@@ -370,6 +371,7 @@ export class ShopifySnapshotDataExportSource implements DataExportSourceAdapter<
     if (source.toolId === 'shopifyCustomers') {
       const args = source.args;
       yield* streamShopifyListForExport({
+        pageSize: args.first,
         fetchPage: after => this.service.customers(after ? { ...args, after } : args, ctx),
         flattenRows: data => flattenShopifyCustomerRows(readShopifyListNodes(data)),
         ...(context.signal ? { signal: context.signal } : {}),
@@ -428,7 +430,7 @@ async function executeShopifyAnalyticsForExport(
   }
 }
 
-const SHOPIFY_EXPORT_PAGE_LIMIT = 500;
+const SHOPIFY_DEEP_PAGINATION_ROW_LIMIT = 25_000;
 
 /**
  * Walks a Shopify cursor list until the provider stops handing out pages. A
@@ -436,13 +438,15 @@ const SHOPIFY_EXPORT_PAGE_LIMIT = 500;
  * store that keeps replaying the same page cannot spin the export forever.
  */
 async function* streamShopifyListForExport(input: {
+  readonly pageSize: number;
   readonly fetchPage: (after: string | undefined) => Promise<ShopifyOperationResult>;
   readonly flattenRows: (data: unknown) => Record<string, unknown>[];
   readonly signal?: AbortSignal | undefined;
 }): AsyncIterable<DataExportPage> {
   const seenCursors = new Set<string>();
+  const pageLimit = Math.max(1, Math.floor(SHOPIFY_DEEP_PAGINATION_ROW_LIMIT / input.pageSize));
   let after: string | undefined;
-  for (let page = 0; page < SHOPIFY_EXPORT_PAGE_LIMIT; page += 1) {
+  for (let page = 0; page < pageLimit; page += 1) {
     input.signal?.throwIfAborted();
     let result: ShopifyOperationResult;
     try {
@@ -455,7 +459,7 @@ async function* streamShopifyListForExport(input: {
     const next = result.pageInfo?.hasNextPage && result.pageInfo.endCursor
       ? result.pageInfo.endCursor
       : undefined;
-    const providerLimited = Boolean(next && (seenCursors.has(next) || page === SHOPIFY_EXPORT_PAGE_LIMIT - 1));
+    const providerLimited = Boolean(next && (seenCursors.has(next) || page === pageLimit - 1));
     yield {
       rows,
       ...(next ? { hasMore: true } : {}),

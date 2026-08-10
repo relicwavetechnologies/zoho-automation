@@ -5,6 +5,7 @@ import {
 	MAX_RUNTIME_ATTACHMENTS,
 	MAX_RUNTIME_ATTACHMENT_BYTES,
 	MAX_RUNTIME_REQUEST_BYTES,
+	createHeadlessExtensionResponder,
 	decodeAttachmentFileName,
 	deleteProtectedRuntimeSession,
 	prompt,
@@ -30,6 +31,15 @@ const DEFAULT_MAX_ACTIVE_RUNS = 8;
 const DEFAULT_STREAM_HEARTBEAT_MS = 15_000;
 const MAX_BODY_BYTES = 64 * 1024;
 const RETRY_AFTER_SECONDS = 60;
+/**
+ * The longest any admitted run may hold its slot.
+ *
+ * A backstop, not a policy: callers already abort on disconnect and the Lark
+ * path carries the backend's own timeout. This exists so that a run which
+ * somehow stops making progress degrades into one failed request instead of
+ * permanently consuming one of `maxActiveRuns`.
+ */
+const RUN_SLOT_TIMEOUT_MS = 20 * 60_000;
 const UPLOAD_BUDGET_TTL_MS = 15 * 60_000;
 const MAX_PROTECTED_RUN_REFERENCES = 100;
 const SHOPIFY_RESOURCE_ID = /^gid:\/\/shopify\/(Customer|Order)\/[1-9][0-9]*$/;
@@ -78,8 +88,8 @@ export function validateProtectedRunReferences(value) {
 
 function isProtectedShopifyProgress(progress) {
 	return progress?.type === "tool_start"
-		&& progress.toolName === "divo_gateway"
-		&& ["shopifyOrders", "shopifyCustomers"].includes(progress.toolId);
+		&& (["divo_shopify_orders", "divo_shopify_customers"].includes(progress.toolName)
+			|| ["shopifyOrders", "shopifyCustomers"].includes(progress.toolId));
 }
 
 function positiveInteger(value, fallback, name) {
@@ -127,9 +137,24 @@ export function createAdmissionController({
 			);
 		}
 		activeProfiles.add(profile);
+		let expiry;
 		try {
-			return await task();
+			return await Promise.race([
+				task(),
+				new Promise((_resolve, reject) => {
+					expiry = setTimeout(
+						() => reject(admissionError(
+							504,
+							"run_timeout",
+							"Divo stopped making progress on this request and released it. Please try again.",
+						)),
+						RUN_SLOT_TIMEOUT_MS,
+					);
+					expiry.unref?.();
+				}),
+			]);
 		} finally {
+			clearTimeout(expiry);
 			activeProfiles.delete(profile);
 		}
 	};
@@ -151,11 +176,19 @@ export function createAdmissionController({
 		get activeProfileNames() {
 			return [...activeProfiles];
 		},
-		async run({ profile: profileName, message, thread, approve = false, signal }) {
+		async run({ profile: profileName, message, thread, signal }) {
 			const profile = validateProfileName(profileName);
 			const normalizedMessage = validateMessage(message);
 			if (thread !== undefined) validateThread(thread);
-			return admit(profile, () => execute(profile, normalizedMessage, { thread, approve, signal }));
+			// No `approve` flag here on purpose. It only ever meant "a human is
+			// watching this terminal", which is never true over HTTP. Workspace
+			// actions inside the sandbox are allowed by the same allowlist the
+			// Lark path uses; anything outside it is refused, not prompted.
+			return admit(profile, () => execute(profile, normalizedMessage, {
+				thread,
+				signal,
+				answerRequest: createHeadlessExtensionResponder(),
+			}));
 		},
 		async runRuntime({
 			backendUrl,

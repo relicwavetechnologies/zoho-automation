@@ -20,8 +20,6 @@ import type {
 } from './export-candidate';
 import {
   DATA_EXPORT_CANDIDATE_TTL_MS,
-  DATA_EXPORT_SAMPLE_ROW_LIMIT,
-  DATA_EXPORT_SAMPLE_THRESHOLD_ROWS,
 } from './export-candidate';
 import type { DataExportOfferPayload } from './export-offer';
 import type { DataExportOfferService } from './data-export-offer.service';
@@ -47,13 +45,6 @@ export type DataExportPlanResult =
       readonly destinationLabel?: string;
     }
   | {
-      readonly status: 'sample_required';
-      readonly planId: string;
-      readonly sampleRows: number;
-      readonly reason: 'estimated_rows_above_threshold' | 'unknown_everything' | 'multi_dataset' | 'explicit_sample';
-      readonly destinationLabel?: string;
-    }
-  | {
       readonly status: 'choose_destination';
       readonly planId: string;
       readonly connections: readonly DataExportDestinationChoice[];
@@ -73,24 +64,6 @@ export type DataExportPlanResult =
       readonly status: 'ambiguous';
       readonly message: string;
     };
-
-export type DataExportSampleResult =
-  | {
-      readonly status: 'sample_queued';
-      readonly planId: string;
-      readonly sampleRunId: string;
-      readonly exportJobId: string;
-      readonly sampleRows: number;
-    }
-  | Extract<DataExportPlanResult, { status: 'choose_destination' | 'connect_required' | 'blocked' | 'ambiguous' }>;
-
-export type DataExportConfirmSampleResult =
-  | {
-      readonly status: 'full_queued' | 'already_confirmed';
-      readonly planId: string;
-      readonly exportJobId: string;
-    }
-  | Extract<DataExportPlanResult, { status: 'choose_destination' | 'connect_required' | 'blocked' | 'ambiguous' }>;
 
 export class DataExportOrchestrationService {
   constructor(private readonly deps: {
@@ -174,16 +147,7 @@ export class DataExportOrchestrationService {
     if (destination.status === 'choose_destination') return { ...destination, planId: prepared.planRecord.id };
     if (destination.status === 'connect_required') return { ...destination, planId: prepared.planRecord.id };
     if (destination.status === 'blocked') return destination;
-    if (prepared.sampleRequired) {
-      return {
-        status: 'sample_required',
-        planId: prepared.planRecord.id,
-        sampleRows: DATA_EXPORT_SAMPLE_ROW_LIMIT,
-        reason: prepared.sampleReason,
-        ...(destination.label ? { destinationLabel: destination.label } : {}),
-      };
-    }
-    const payload = this.payloadForPlan(prepared, 'full');
+    const payload = this.payloadForPlan(prepared);
     const exportJobId = await this.deps.offers.submitAuthorized(
       payload,
       prepared.plan.destination.connectionId,
@@ -201,109 +165,6 @@ export class DataExportOrchestrationService {
       planId: prepared.planRecord.id,
       exportJobId,
       ...(destination.label ? { destinationLabel: destination.label } : {}),
-    };
-  }
-
-  async queueSample(input: {
-    readonly planId: string;
-    readonly companyId: string;
-    readonly userId: string;
-    readonly chatId: string;
-  }): Promise<DataExportSampleResult> {
-    const prepared = await this.prepareStoredPlan(input);
-    if (prepared.status !== 'prepared') return prepared;
-    if (
-      (prepared.planRecord.status === 'sample_queued' || prepared.planRecord.status === 'sample_ready')
-      && prepared.planRecord.sampleJobId
-    ) {
-      return {
-        status: 'sample_queued',
-        planId: prepared.planRecord.id,
-        sampleRunId: prepared.planRecord.id,
-        exportJobId: prepared.planRecord.sampleJobId,
-        sampleRows: DATA_EXPORT_SAMPLE_ROW_LIMIT,
-      };
-    }
-    const destination = await this.resolveDestination(prepared, prepared.plan.destination.connectionId);
-    if (destination.status === 'choose_destination') return { ...destination, planId: prepared.planRecord.id };
-    if (destination.status === 'connect_required') return { ...destination, planId: prepared.planRecord.id };
-    if (destination.status === 'blocked') return destination;
-    const payload = this.payloadForPlan(prepared, 'sample');
-    const exportJobId = await this.deps.offers.submitAuthorized(
-      payload,
-      prepared.plan.destination.connectionId,
-    );
-    const marked = await this.deps.candidates.markSampleQueued({
-      planId: prepared.planRecord.id,
-      companyId: input.companyId,
-      userId: input.userId,
-      sampleJobId: exportJobId,
-      ...(this.deps.now ? { now: this.deps.now() } : {}),
-    });
-    if (!marked.ok) throw marked.error;
-    if (!marked.value) {
-      return {
-        status: 'blocked',
-        reason: 'sample_not_appendable',
-        message: 'This sample request is no longer active. Ask Divo to prepare the data again.',
-      };
-    }
-    return {
-      status: 'sample_queued',
-      planId: prepared.planRecord.id,
-      sampleRunId: prepared.planRecord.id,
-      exportJobId,
-      sampleRows: DATA_EXPORT_SAMPLE_ROW_LIMIT,
-    };
-  }
-
-  async confirmSample(input: {
-    readonly sampleRunId: string;
-    readonly companyId: string;
-    readonly userId: string;
-    readonly chatId: string;
-  }): Promise<DataExportConfirmSampleResult> {
-    const prepared = await this.prepareStoredPlan({
-      planId: input.sampleRunId,
-      companyId: input.companyId,
-      userId: input.userId,
-      chatId: input.chatId,
-    });
-    if (prepared.status !== 'prepared') return prepared;
-    if (prepared.planRecord.status === 'full_queued' && prepared.planRecord.fullJobId) {
-      return {
-        status: 'already_confirmed',
-        planId: prepared.planRecord.id,
-        exportJobId: prepared.planRecord.fullJobId,
-      };
-    }
-    if (prepared.planRecord.status !== 'sample_ready') {
-      return {
-        status: 'blocked',
-        reason: 'sample_not_ready',
-        message: 'The sample is not ready yet. Wait for the sample file to arrive, review it, then confirm the full export.',
-      };
-    }
-    const destination = await this.resolveDestination(prepared, prepared.plan.destination.connectionId);
-    if (destination.status === 'choose_destination') return { ...destination, planId: prepared.planRecord.id };
-    if (destination.status === 'connect_required') return { ...destination, planId: prepared.planRecord.id };
-    if (destination.status === 'blocked') return destination;
-    const exportJobId = await this.deps.offers.submitAuthorized(
-      this.payloadForPlan(prepared, 'full'),
-      prepared.plan.destination.connectionId,
-    );
-    const marked = await this.deps.candidates.markFullQueued({
-      planId: prepared.planRecord.id,
-      companyId: input.companyId,
-      userId: input.userId,
-      fullJobId: exportJobId,
-      ...(this.deps.now ? { now: this.deps.now() } : {}),
-    });
-    if (!marked.ok) throw marked.error;
-    return {
-      status: 'full_queued',
-      planId: prepared.planRecord.id,
-      exportJobId,
     };
   }
 
@@ -334,7 +195,6 @@ export class DataExportOrchestrationService {
     const permission = await this.resolvePermission(loaded.value[0]!);
     const blocked = this.validateCandidates(loaded.value, input.plan, permission);
     if (blocked) return blocked;
-    const sample = sampleRequirement(loaded.value, input.plan);
     const planHash = sha256CanonicalJson({
       plan: input.plan,
       candidatePayloadHashes: loaded.value.map(candidate => candidate.payloadHash),
@@ -350,7 +210,6 @@ export class DataExportOrchestrationService {
       planHash,
       destinationFormat: input.plan.destination.format,
       ...(input.plan.destination.connectionId ? { destinationConnectionId: input.plan.destination.connectionId } : {}),
-      ...(sample.required ? { sampleRows: DATA_EXPORT_SAMPLE_ROW_LIMIT } : {}),
       now,
       expiresAt: new Date(now.getTime() + DATA_EXPORT_CANDIDATE_TTL_MS),
     });
@@ -360,59 +219,7 @@ export class DataExportOrchestrationService {
       candidates: loaded.value,
       plan: input.plan,
       planRecord: planRecord.value,
-      sampleRequired: sample.required,
-      sampleReason: sample.reason,
       ...(input.progressMessageId ? { progressMessageId: input.progressMessageId } : {}),
-    };
-  }
-
-  private async prepareStoredPlan(input: {
-    readonly planId: string;
-    readonly companyId: string;
-    readonly userId: string;
-    readonly chatId: string;
-  }): Promise<PreparedPlan | Extract<DataExportPlanResult, { status: 'blocked' | 'ambiguous' }>> {
-    const now = this.deps.now?.() ?? new Date();
-    const loadedPlan = await this.deps.candidates.loadPlanForActor({
-      planId: input.planId,
-      companyId: input.companyId,
-      userId: input.userId,
-      chatId: input.chatId,
-      now,
-    });
-    if (!loadedPlan.ok) throw loadedPlan.error;
-    if (!loadedPlan.value) {
-      return {
-        status: 'blocked',
-        reason: 'plan_not_found',
-        message: 'That export plan is no longer active. Ask Divo to prepare the data again.',
-      };
-    }
-    const candidates = await this.deps.candidates.loadCandidatesForPlan({
-      candidateIds: loadedPlan.value.candidateIds,
-      companyId: input.companyId,
-      userId: input.userId,
-      chatId: input.chatId,
-      now,
-    });
-    if (!candidates.ok) throw candidates.error;
-    if (candidates.value.length !== loadedPlan.value.candidateIds.length) {
-      return {
-        status: 'blocked',
-        reason: 'candidate_not_found',
-        message: 'The sample no longer matches an active source result. Ask Divo to prepare the data again.',
-      };
-    }
-    const permission = await this.resolvePermission(candidates.value[0]!);
-    const blocked = this.validateCandidates(candidates.value, loadedPlan.value.plan, permission);
-    if (blocked) return blocked;
-    return {
-      status: 'prepared',
-      candidates: candidates.value,
-      plan: loadedPlan.value.plan,
-      planRecord: loadedPlan.value,
-      sampleRequired: true,
-      sampleReason: 'explicit_sample',
     };
   }
 
@@ -543,12 +350,9 @@ export class DataExportOrchestrationService {
     };
   }
 
-  private payloadForPlan(prepared: PreparedPlan, kind: 'sample' | 'full'): DataExportOfferPayload {
+  private payloadForPlan(prepared: PreparedPlan): DataExportOfferPayload {
     const first = prepared.candidates[0]!;
     const destination = prepared.plan.destination;
-    const title = kind === 'sample'
-      ? `Sample - ${destination.title}`.slice(0, 120)
-      : destination.title;
     const workbookTabs = plannedWorkbookTabs(prepared);
     return {
       ...first.payload,
@@ -561,17 +365,11 @@ export class DataExportOrchestrationService {
       observedRowCount: prepared.candidates.reduce((total, candidate) => total + candidate.previewRowCount, 0),
       destination: {
         format: destination.format,
-        title,
+        title: destination.title,
         ...(destination.columns ? { columns: destination.columns } : {}),
       },
-      exportKind: kind,
-      ...(kind === 'sample'
-        ? {
-            rowLimitOverride: DATA_EXPORT_SAMPLE_ROW_LIMIT,
-            sampleOfPlanId: prepared.planRecord.id,
-          }
-        : {}),
-      requestId: `${prepared.planRecord.id}:${kind}`,
+      exportKind: 'full',
+      requestId: `${prepared.planRecord.id}:full`,
       ...(prepared.progressMessageId ? { progressMessageId: prepared.progressMessageId } : {}),
     };
   }
@@ -599,28 +397,8 @@ type PreparedPlan = {
     readonly sampleJobId?: string;
     readonly fullJobId?: string;
   };
-  readonly sampleRequired: boolean;
-  readonly sampleReason: 'estimated_rows_above_threshold' | 'unknown_everything' | 'multi_dataset' | 'explicit_sample';
   readonly progressMessageId?: string;
 };
-
-function sampleRequirement(
-  candidates: readonly DataExportCandidateRecord[],
-  plan: ExportPlanRequest,
-): {
-  readonly required: boolean;
-  readonly reason: PreparedPlan['sampleReason'];
-} {
-  if (plan.userIntent === 'sample_then_confirm') return { required: true, reason: 'explicit_sample' };
-  const estimatedRows = candidates.every(candidate => candidate.estimatedRows !== undefined)
-    ? candidates.reduce((total, candidate) => total + candidate.estimatedRows!, 0)
-    : undefined;
-  if (estimatedRows === undefined) return { required: true, reason: 'unknown_everything' };
-  if (estimatedRows > DATA_EXPORT_SAMPLE_THRESHOLD_ROWS) {
-    return { required: true, reason: 'estimated_rows_above_threshold' };
-  }
-  return { required: false, reason: 'explicit_sample' };
-}
 
 function validateMenhoodReplayCandidate(
   candidate: DataExportCandidateRecord,
@@ -634,7 +412,7 @@ function validateMenhoodReplayCandidate(
       return {
         status: 'blocked',
         reason: 'menhood_unordered_candidate',
-        message: 'This Menhood exportable result was prepared without a deterministic ORDER BY. Ask Divo to prepare the data again with a stable ORDER BY before creating a sample or full export; for order-line exports use o.order_date, o.order_number, o.id.',
+        message: 'This Menhood exportable result was prepared without a deterministic ORDER BY. Ask Divo to prepare the data again with a stable ORDER BY before creating the full export; for order-line exports use o.order_date, o.order_number, o.id.',
       };
     }
   }

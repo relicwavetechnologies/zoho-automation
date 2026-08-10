@@ -181,6 +181,12 @@ describe('airtableRecords permissionCheck', () => {
 describe('airtable args schema', () => {
   const tool = toolFor('airtableRecords');
 
+  it('publishes only this product\'s approved native operation names to Pi', () => {
+    assert.equal(tool.argsSchema.safeParse({ op: 'describe', nativeTool: 'list_records_for_table' }).success, true);
+    assert.equal(tool.argsSchema.safeParse({ op: 'describe', nativeTool: 'create_table' }).success, false);
+    assert.equal(tool.argsSchema.safeParse({ op: 'describe', nativeTool: 'get_values' }).success, false);
+  });
+
   it('requires connectionId for a call but not for describe', () => {
     assert.equal(
       tool.argsSchema.safeParse({ op: 'call', nativeTool: 'list_records_for_table' }).success,

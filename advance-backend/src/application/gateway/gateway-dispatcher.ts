@@ -318,6 +318,16 @@ export class GatewayDispatcher {
     }
 
     const discoveryPerm = withGatewayDiscoveryPermissions(perm);
+    if (parsed.data.toolIds) {
+      const bootstrap = await this.buildWorkBootstrap({
+        member,
+        permission: perm,
+        registryRevision: await this.skillRegistryRevision(member.companyId),
+        ...(parsed.data.query ? { query: parsed.data.query } : {}),
+        toolIds: parsed.data.toolIds,
+      });
+      return gatewaySuccess({ bootstrap });
+    }
     const permittedTools = this.deps.toolRegistry
       .forRuntime(discoveryPerm)
       .filter((tool) => tool.id !== 'runCommand');
@@ -340,7 +350,23 @@ export class GatewayDispatcher {
 
     if ((requestedToolId || requestedFamily) && selectedTools.length === 0) {
       const selector = requestedToolId ?? requestedFamily;
-      return gatewayFailure('unknown_tool', `Tool or family is unavailable or not permitted: ${selector}`);
+      // "You may not" and "it does not exist" are different answers, and
+      // collapsing them into unknown_tool taught the agent to conclude a
+      // capability had never been built and to invent a workaround around a
+      // governance rule. The registry is consulted unfiltered here, so the
+      // difference is decided by fact rather than by the caller's permissions.
+      const existsUnfiltered = this.deps.toolRegistry
+        .all()
+        .some((tool) => tool.id === selector || tool.family === selector);
+      if (existsUnfiltered) {
+        return gatewayFailure(
+          'permission_denied',
+          `${selector} exists but is not permitted for you in this department. `
+          + 'This is a permission decision, not a missing capability — a company admin can grant it. '
+          + 'Do not substitute another route to achieve the same effect.',
+        );
+      }
+      return gatewayFailure('unknown_tool', `No tool or family is registered under: ${selector}`);
     }
 
     const includeContract = exactTools.length > 0;
@@ -1565,7 +1591,6 @@ export class GatewayDispatcher {
         label: 'Memory',
         effectKind: 'memory_review_opened',
         requestId: memoryReview.requestId,
-        skillId: memoryReview.skillId,
         member,
         departmentId,
         execution,
@@ -1592,7 +1617,6 @@ export class GatewayDispatcher {
       label: 'Knowledge',
       effectKind: 'knowledge_review_opened',
       requestId: resourceReview.requestId,
-      skillId: resourceReview.skillId,
       member,
       departmentId,
       execution,
@@ -1618,7 +1642,6 @@ export class GatewayDispatcher {
     readonly label: 'Memory' | 'Knowledge';
     readonly effectKind: KnowledgeReviewEffectKind;
     readonly requestId: string;
-    readonly skillId: string;
     readonly member: GatewayMemberContext;
     readonly departmentId: string | undefined;
     readonly execution: GatewayExecutionContext | undefined;
@@ -1661,20 +1684,6 @@ export class GatewayDispatcher {
 
     const permission = await this.resolvePerm(member, input.departmentId);
     if (!permission) return this.permissionDenied('Permission resolution failed');
-    const grantedSkillIds = await this.grantedSkillIds(member);
-    const authorized = await this.deps.skillCatalog.authorizesTool({
-      companyId: member.companyId,
-      ...(input.departmentId ? { departmentId: input.departmentId } : {}),
-      permission: withGatewayDiscoveryPermissions(permission),
-      ...(grantedSkillIds ? { grantedSkillIds } : {}),
-      skillId: input.skillId,
-      toolId: 'knowledge',
-    });
-    if (!authorized) {
-      return this.permissionDenied(
-        `Skill "${input.skillId}" does not authorize ${input.label.toLowerCase()} review`,
-      );
-    }
 
     const runContext: RunContext = {
       companyId: asCompanyId(member.companyId),
@@ -1742,7 +1751,6 @@ export class GatewayDispatcher {
       return gatewayFailure('tool_error', opened.message);
     }
     this.deps.logger.info('gateway.knowledge.review.opened', {
-      skillId: input.skillId,
       userId: member.userId,
       companyId: member.companyId,
       departmentId: input.departmentId ?? null,

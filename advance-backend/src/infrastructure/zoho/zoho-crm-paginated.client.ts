@@ -28,7 +28,7 @@ const VALID_MODULES = new Set<string>(['Leads', 'Contacts', 'Accounts', 'Deals',
 export interface ZohoCrmListResult {
   readonly items:         Array<Record<string, unknown>>;
   readonly hasMore:       boolean;
-  readonly page:          number;
+  readonly page?:         number;
   readonly nextPageToken?: string;
   readonly totalCount?:   number;
 }
@@ -166,6 +166,7 @@ export class ZohoCrmPaginatedClient {
     sortOrder?:  'asc' | 'desc';
     fields?:     string[];
     page?:       number;
+    pageToken?:  string;
     perPage?:    number;
     maxPages?:   number;
   }): Promise<ZohoCrmListResult> {
@@ -173,14 +174,20 @@ export class ZohoCrmPaginatedClient {
     const perPage = Math.max(1, Math.min(200, input.perPage ?? 25));
     const maxPg   = input.maxPages ?? 10;
 
-    if (input.page !== undefined) {
+    if (input.page !== undefined || input.pageToken !== undefined) {
       const pg = await this.fetchPage(input.companyId, mod, {
-        page: input.page, perPage,
+        ...(input.pageToken !== undefined ? { pageToken: input.pageToken } : { page: input.page! }),
+        perPage,
         ...(input.sortBy ? { sortBy: input.sortBy } : {}),
         ...(input.sortOrder ? { sortOrder: input.sortOrder } : {}),
         ...(input.fields ? { fields: input.fields } : {}),
       }, input);
-      return { items: pg.items, hasMore: pg.moreRecords, page: input.page, ...(pg.nextPageToken ? { nextPageToken: pg.nextPageToken } : {}) };
+      return {
+        items: pg.items,
+        hasMore: pg.moreRecords,
+        ...(input.page !== undefined ? { page: input.page } : {}),
+        ...(pg.nextPageToken ? { nextPageToken: pg.nextPageToken } : {}),
+      };
     }
 
     const collected: Array<Record<string, unknown>> = [];

@@ -13,6 +13,8 @@ agent when Pi fails. A visible Pi failure is a valid test result.
      and gateway testing without cloud Pi.
    - [02-lark-dm-harness.md](./02-lark-dm-harness.md) for a fast local Pi run
      whose status and final answer are delivered to a Lark DM.
+   - [07-local-runtime-harness-framework.md](./07-local-runtime-harness-framework.md)
+     for the complete local stack, database boundary, evidence, and rerun loop.
    - [03-live-lark-webhook.md](./03-live-lark-webhook.md) for a real message
      sent by a user inside Lark.
 3. Use [04-acceptance-matrix.md](./04-acceptance-matrix.md) for the prompts and
