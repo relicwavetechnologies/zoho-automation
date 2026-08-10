@@ -221,6 +221,15 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
 
   return (
     <div className="ws-home">
+      {/*
+        The only page in the app with no heading of its own.
+        Every other screen gets one from `PageHeader`; this one opens straight
+        into the composer, which is right on screen and wrong underneath — a
+        document whose outline starts at h2 gives a screen reader nothing to
+        announce the page by, and leaves five sibling panels with no parent.
+        Named, not shown: the composer is a better greeting than a title bar.
+      */}
+      <h1 className="ws-a11y-title">Your workspace</h1>
       <Composer />
 
       {cards.length > 0 ? (
