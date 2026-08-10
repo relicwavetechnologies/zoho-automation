@@ -1,8 +1,8 @@
 # Google Workspace MCP runtime
 
 Divo runs `taylorwilsdon/google_workspace_mcp` as a private backend sidecar.
-The reviewed contract is pinned to release `1.22.0`, commit
-`6e1d1457746777f8512f52d40fb195b2a40bad36`. The authoritative product/tool
+The reviewed contract is pinned to release `1.22.2`, commit
+`59b534201fd16f58b175fc564df6adf4f6b4de71`. The authoritative product/tool
 allowlist and scope matrix live in
 `application/google/google-workspace-mcp-manifest.ts`.
 
@@ -20,7 +20,7 @@ allowlist and scope matrix live in
 
 ## Runtime
 
-Compose starts `ghcr.io/taylorwilsdon/google_workspace_mcp:1.22.0` with OAuth
+Compose starts `ghcr.io/taylorwilsdon/google_workspace_mcp:1.22.2` with OAuth
 2.1 external-provider mode and stateless mode. In Docker, the backend uses
 `GOOGLE_WORKSPACE_MCP_URL=http://google-workspace-mcp:8000/mcp`. A backend
 running directly on the host uses the loopback-only published endpoint at

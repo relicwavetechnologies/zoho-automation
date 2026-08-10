@@ -252,7 +252,32 @@ describe('normalizeGoogleWorkspaceResult', () => {
     }]);
   });
 
-  it('makes the MCP 50-row display limit explicit instead of presenting a partial read as complete', () => {
+  it('preserves every row returned by MCP reads larger than the former 50-row display limit', () => {
+    const visibleRows = Array.from(
+      { length: 120 },
+      (_, index) => `Row ${String(index + 1).padStart(2, ' ')}: ['row-${index + 1}']`,
+    );
+    const result = normalizeGoogleWorkspaceResult(
+      'read_sheet_values',
+      { text: [
+        "Successfully read 120 rows from range 'Data!A1:A120' in spreadsheet sheet-456 for user@example.com:",
+        ...visibleRows,
+      ].join('\n') },
+      { spreadsheet_id: 'sheet-456', range_name: 'Data!A1:A120' },
+    ) as Record<string, unknown>;
+
+    assert.equal((result.values as unknown[]).length, 120);
+    assert.deepEqual((result.values as unknown[][])[119], ['row-120']);
+    assert.equal(result.rowCount, 120);
+    assert.equal(result.returnedRowCount, 120);
+    assert.equal(result.omittedRowCount, 0);
+    assert.equal(result.complete, true);
+    assert.deepEqual((result.advisories as Array<Record<string, unknown>>).map(({ code }) => code), [
+      'verify_destination_write',
+    ]);
+  });
+
+  it('marks any provider-partial Sheet read as incomplete', () => {
     const visibleRows = Array.from(
       { length: 50 },
       (_, index) => `Row ${String(index + 1).padStart(2, ' ')}: ['row-${index + 1}']`,

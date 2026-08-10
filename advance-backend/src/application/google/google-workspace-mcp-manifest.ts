@@ -4,8 +4,8 @@ import { GOOGLE_SCOPE } from '../../domain/google/google-workspace-scope';
 
 export const GOOGLE_WORKSPACE_MCP_SOURCE = Object.freeze({
   repository: 'https://github.com/taylorwilsdon/google_workspace_mcp',
-  version: '1.22.0',
-  commit: '6e1d1457746777f8512f52d40fb195b2a40bad36',
+  version: '1.22.2',
+  commit: '59b534201fd16f58b175fc564df6adf4f6b4de71',
 });
 
 /**
