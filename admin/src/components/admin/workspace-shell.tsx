@@ -25,6 +25,7 @@ import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useManagedDepartments } from '@/pages/workspace/data/use-team'
 import { useOnboarding, useRecentRuns } from '@/pages/workspace/data/use-onboarding'
 import { runTitle } from '@/pages/workspace/data/use-my-activity'
+import { Avatar } from '@/pages/workspace/ui'
 import { RAIL } from '@/components/admin/settings-shell'
 import { RoleProvider } from '@/cursor/role-context'
 import { useTheme } from '@/lib/use-theme'
@@ -165,9 +166,27 @@ export function WorkspaceShell() {
               data-static={scopes.length === 1}
               onClick={scopes.length === 1 ? undefined : () => setScopeOpen((v) => !v)}
             >
-              <span className="ws-scope-ic" data-tone="brand">
-                <Diamond size={12} fill="currentColor" strokeWidth={0} />
-              </span>
+              {/*
+                Your own face on your own workspace.
+
+                Only on the `you` scope: this row reads "<name>'s workspace"
+                there, so the picture and the words say the same thing. On team
+                and company it would be wrong — those are not yours, and a
+                personal photo beside "RelicWave" claims something about who
+                owns it. Those keep the mark.
+
+                `Avatar` already falls back to initials when Lark gave us no
+                picture, and again if the URL 404s — Lark's avatar links expire,
+                and a broken image where a face should be reads as a fault in
+                Divo rather than a link that aged out.
+              */}
+              {active?.kind === 'you' && session?.avatarUrl ? (
+                <Avatar name={session.name} email={session.email} src={session.avatarUrl} size={22} />
+              ) : (
+                <span className="ws-scope-ic" data-tone="brand">
+                  <Diamond size={12} fill="currentColor" strokeWidth={0} />
+                </span>
+              )}
               <span className="ws-scope-txt">
                 <b>{active.label}</b>
               </span>
