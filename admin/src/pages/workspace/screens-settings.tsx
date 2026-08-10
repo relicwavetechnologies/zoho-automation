@@ -14,7 +14,7 @@ import { Check, CircleAlert } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useTheme } from '@/lib/use-theme'
 import { useMyModelOptions } from './data/use-my-activity'
-import { Empty, Seg, SkelRows } from './ui'
+import { Avatar, Empty, Seg, SkelRows } from './ui'
 
 export const COMPANY_ROLE_LABEL: Record<string, string> = {
   MEMBER: 'Member',
@@ -85,6 +85,13 @@ export function SettingsProfile() {
     <>
       <SettingsHead title="Profile" description="How you appear across the web app, Lark and the desktop." />
 
+      {/* First row, because the page is called Profile and this is the part of
+          it people look for. It was absent entirely — so somebody who signed in
+          through Lark, which is when Divo stores their picture, had nowhere on
+          this screen that could show it. Falls back to initials on its own. */}
+      <SettingsRow label="Profile picture" description="How you are shown around Divo">
+        <Avatar name={session?.name} email={session?.email} src={session?.avatarUrl} size={34} />
+      </SettingsRow>
       <SettingsRow label="Full name" description="Your display name">
         {/* Read-only, and that is not an oversight. No route updates a member's
             own name — it comes from the directory — so an editable field here

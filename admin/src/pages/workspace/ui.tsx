@@ -651,6 +651,28 @@ const PROVIDER_META: Record<Provider, {
 }
 
 /**
+ * An app icon for something outside the `Provider` union.
+ *
+ * Shopify is company-owned and reaches the UI through its own status hook, so
+ * it is not a `Provider` and could not use the mark below — it drew a bare grey
+ * `ws-ic` with an "S" instead, and sat in a list where every other app had its
+ * own colour. One app looking unlike the rest reads as unfinished, not as a
+ * different kind of connection.
+ */
+export const AppMark = ({ short, tint, ink, size = 20 }: {
+  short: string
+  tint: string
+  ink: string
+  size?: number
+}) => (
+  <span className="ws-app" aria-hidden>
+    <span className="ws-app-l" style={{ color: ink, background: tint, fontSize: Math.round(size * 0.52) }}>
+      {short}
+    </span>
+  </span>
+)
+
+/**
  * An app icon, at the size the row asks for.
  *
  * A tile rather than a bare glyph, so a drawn logo, a PNG and a lettered

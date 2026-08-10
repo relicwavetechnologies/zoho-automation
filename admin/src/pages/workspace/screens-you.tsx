@@ -37,14 +37,11 @@ import {
   changePct, durationLabel, useMyModelOptions, useMyRuns, useMyTools, useMyUsage, type MyRun,
 } from './data/use-my-activity'
 import {
-  Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
+  AppMark, Avatar, Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
   Heatmap, Prompt, ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
   providerName, useStaged,
 } from './ui'
 import type { Toast } from './ui'
-
-const initialsOf = (name: string | null, email: string) =>
-  (name ?? email).split(/[\s@.]+/).filter(Boolean).slice(0, 2).map((p) => p[0]!.toUpperCase()).join('')
 
 const COMPANY_ROLE_LABEL: Record<string, string> = {
   SUPER_ADMIN: 'Super admin', COMPANY_ADMIN: 'Company admin', MEMBER: 'Member',
@@ -535,9 +532,10 @@ function ShopifyConnectionGroup({ status, onOpen }: {
   return (
     <div className="ws-conn-group">
       <div className="ws-conn-h">
-        <span className="ws-ic" aria-hidden>
-          <span style={{ fontSize: 12, fontWeight: 600 }}>S</span>
-        </span>
+        {/* Shopify's own green. It was the one app in this list without a
+            colour, which read as an unfinished row rather than as a different
+            kind of connection. */}
+        <AppMark short="S" tint="#008060" ink="#FFFFFF" />
         <div className="ws-conn-h-main">
           <b>Shopify</b>
           <p>
@@ -1804,7 +1802,11 @@ export function YouSettings({ persona, replay }: ScreenProps) {
               {!r1 ? <Skel w="100%" h={120} /> : (
                 <Fade>
                   <div className="profile" style={{ marginBottom: 18 }}>
-                    <div className="pic">{initialsOf(session?.name ?? null, session?.email ?? '')}</div>
+                    {/* The shared component, so a Lark picture appears here the
+                        moment Divo has one — this drew its own initials and
+                        ignored `avatarUrl` entirely, which is why the sign-in
+                        that stores the picture changed nothing on this screen. */}
+                    <Avatar name={session?.name} email={session?.email} src={session?.avatarUrl} size={56} />
                     <div>
                       <h1 style={{ fontSize: 20 }}>{session?.name ?? session?.email ?? '—'}</h1>
                       <div className="sub">{session?.email}</div>
