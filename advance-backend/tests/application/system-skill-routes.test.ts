@@ -11,7 +11,9 @@ import { MENHOOD_DATA_SYSTEM_SKILL } from '../../src/application/skills/menhood-
 import { zohoBooksReadAnalysisSkill } from '../../src/application/skills/zoho.skill.ts';
 import { DIVO_LOCAL_PYTHON_SYSTEM_SKILL } from '../../src/application/skills/divo-local-python-system-skill.ts';
 import { GOOGLE_WORKSPACE_SYSTEM_SKILLS } from '../../src/application/skills/google-workspace-system-skills.ts';
+import { DIVO_PRESENTATIONS_SYSTEM_SKILL } from '../../src/application/skills/divo-presentations-system-skill.ts';
 import {
+  ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS,
   ROUTING_SYSTEM_SKILLS,
   SYSTEM_SKILL_ROUTE_SEEDS,
   unroutedSeededSystemSkillSlugs,
@@ -103,6 +105,21 @@ describe('system skill routes', () => {
     ]) {
       assert.ok(data.markdown.includes(phrase), `missing routing example: ${phrase}`);
     }
+  });
+
+  /*
+   * `divo-presentations` provisioned for every company, appeared in the
+   * registry, and no router pointed at it — while `unroutedSeededSystemSkillSlugs`
+   * returned []. The guard was not passing; it could not see the skill, because
+   * ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS never listed it. A definition missing
+   * from that list is exempt from the only check that would notice.
+   */
+  it('sees every seeded skill it claims to check', () => {
+    assert.ok(ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS.includes(DIVO_PRESENTATIONS_SYSTEM_SKILL.slug));
+    const files = SYSTEM_SKILL_ROUTE_SEEDS.find(seed => seed.routerSlug === 'files-router')!;
+    assert.ok(files.targetSlugs.includes(DIVO_PRESENTATIONS_SYSTEM_SKILL.slug));
+    const router = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'files-router')!;
+    assert.match(router.markdown, /slide deck or presentation/);
   });
 
   it('keeps each router target list non-empty, unique, and free of self-links', () => {

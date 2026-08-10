@@ -325,13 +325,13 @@ truthful interpretation and the cheapest proven operation selection.
 
 ### Wave 4 — files and delivery
 
-- [ ] `files-router`
-- [ ] `read-understand-files`
+- [x] `files-router`
+- [x] `read-understand-files`
 
 Then:
 
-- [ ] `create-edit-files`
-- [ ] `divo-presentations`
+- [x] `create-edit-files`
+- [x] `divo-presentations`
 
 Goal: local paths are intermediate; final delivery is a governed artifact or
 connected destination. Keep export ownership in the export boundary.
@@ -721,6 +721,35 @@ This track is complete only when:
 - DB revisions / registry revision: not reconciled.
 - Decision: content complete; **gates §9.3 and §9.4 still open, and §12's cold
   review is owed.**
+
+### Pair: files-router + divo-presentations — 2026-08-11
+
+- Commit / environment: local worktree on `dev`. Not reconciled to any DB.
+- **This pair fixed a defect rather than removing text; byte delta is +190.**
+  `divo-presentations` provisioned for every company, appeared in the registry,
+  and no router pointed at it, so it was reachable only by a member who already
+  knew the slug. It is now a `files-router` target — a deck is a file Divo was
+  asked to author — and the router names it.
+- **The guard that should have caught this was blind, not passing.**
+  `unroutedSeededSystemSkillSlugs()` returned `[]` because
+  `ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS` never listed the skill, and a definition
+  missing from that list is exempt from the only check that would notice. Both
+  fixed, and proved: with the new route edge removed the function now reports
+  `["divo-presentations"]`, where before it reported `[]` either way.
+- **`read-understand-files` and `create-edit-files` were examined and left
+  unchanged.** Their shared "Dependencies install on demand" block already comes
+  from one `DEPENDENCY_TIERS` constant in `bundled-file-scripts.ts`, whose own
+  comment explains the drift risk; both skills rendering it is correct, since
+  each `SKILL.md` must stand alone. There is no typed tool behind these — the
+  helpers are bundled scripts — so nothing defers to a contract. The remaining
+  content is tier choice, `--render` versus `--images`, and the
+  untrusted-extracted-content rule, all of which change what Divo does.
+- Also corrected: the module comment still described the capability chain as
+  `files-router` → `divo_skill_view` → markdown. That tool was removed with the
+  process-local skill ledger.
+- Tests: 3,371 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
+- Cold review: deferred to a single review covering Waves 3-5.
+- Decision: content complete; **gates §9.3 and §9.4 still open.**
 
 Append one block per pair:
 

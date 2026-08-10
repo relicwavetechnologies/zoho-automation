@@ -15,6 +15,7 @@ import { MAIL_OPS_SYSTEM_SKILLS } from './mail-ops-system-skills';
 import { MENHOOD_DATA_SYSTEM_SKILL } from './menhood-data-system-skill';
 import { DIVO_OMS_SITE_DATA_SYSTEM_SKILL } from './oms-site-data-system-skill';
 import { DIVO_LOCAL_PYTHON_SKILL_SLUG } from './divo-local-python-system-skill';
+import { DIVO_PRESENTATIONS_SYSTEM_SKILL } from './divo-presentations-system-skill';
 import { SCHEDULE_DIVO_WORK_SKILL_SLUG } from './scheduled-work-system-skill';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from './semrush-system-skill';
 import { KNOWLEDGE_MANAGEMENT_SKILL_SLUG } from './knowledge-system-skill';
@@ -160,6 +161,7 @@ Choose the exact approved specialist returned by this router.
 
 - Read, extract from, summarise, or answer questions about a file → \`${READ_FILES_SKILL_SLUG}\`.
 - Produce or edit a spreadsheet, document, or export → \`${CREATE_FILES_SKILL_SLUG}\`.
+- Build a slide deck or presentation → \`${DIVO_PRESENTATIONS_SYSTEM_SKILL.slug}\`.
 
 A file sent in this conversation is already saved in the workspace and listed
 under [ATTACHED_FILES]. Loading this router is not permission to answer from a
@@ -300,7 +302,16 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
   },
   {
     routerSlug: 'files-router',
-    targetSlugs: FILES_AND_DOCUMENTS_SYSTEM_SKILLS.map(skill => skill.slug),
+    targetSlugs: [
+      ...FILES_AND_DOCUMENTS_SYSTEM_SKILLS.map(skill => skill.slug),
+      /*
+       * Provisioned for every company since it was written, listed in the
+       * registry, and reachable by no router — a deck is a file the member
+       * asked Divo to author, so it belongs behind the same router as every
+       * other authored artifact.
+       */
+      DIVO_PRESENTATIONS_SYSTEM_SKILL.slug,
+    ],
   },
   {
     routerSlug: 'research-router',
@@ -331,6 +342,13 @@ export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = [
   ...ZOHO_FINANCE_SYSTEM_SKILLS,
   ...MAIL_OPS_SYSTEM_SKILLS,
   ...FILES_AND_DOCUMENTS_SYSTEM_SKILLS,
+  /*
+   * Absent from this list, `unroutedSeededSystemSkillSlugs` returned [] while
+   * `divo-presentations` sat unrouted — the guard was not passing, it could
+   * not see the skill. A definition that provisions but never appears here is
+   * exempt from the only check that would notice.
+   */
+  DIVO_PRESENTATIONS_SYSTEM_SKILL,
   DIVO_SEMRUSH_SYSTEM_SKILL,
   DIVO_OMS_SITE_DATA_SYSTEM_SKILL,
   MENHOOD_DATA_SYSTEM_SKILL,
