@@ -92,13 +92,13 @@ provider adapters, container lifecycle, or policy code.
 - [x] Prove Airtable, Zoho Books, and Zoho CRM local-file pagination; keep
       Semrush, OMS, Menhood, and protected Shopify explicitly bounded until
       they have truthful continuation contracts.
-- [ ] Commit the coherent removal/contract slice only after backend, Cloud-Pi,
+- [x] Commit the coherent removal/contract slice only after backend, Cloud-Pi,
       admin, and Jan verification.
-- [ ] Record the exact SHA, test commands, and rollout prerequisite: each
+- [x] Record the exact SHA, test commands, and rollout prerequisite: each
       environment must run the guarded one-time queue/table retirement before
       its normal schema sync. The command refuses runnable jobs and the deploy
       path creates a database backup first.
-- [ ] Verify the worktree is clean before either plan starts parallel work.
+- [x] Verify the worktree is clean before either plan starts parallel work.
 
 Exit gate: one reviewable commit, clean `dev`, no untracked build artifacts,
 and the skills agent can branch without overwriting active changes.
@@ -108,22 +108,25 @@ and the skills agent can branch without overwriting active changes.
 The implementation exists. This phase proves it and adds only missing
 observability/regressions.
 
-- [ ] Run a fresh private thread: cold stage and cold Pi start.
-- [ ] Run an unchanged second turn: bootstrap fetch, identical digest, staging
+- [x] Run a private thread from a freshly restarted controller: cold stage and
+      cold Pi start. Reuse the same durable thread for the next turn; do not use
+      the harness's per-run `--fresh-context` identifier for this proof.
+- [x] Run an unchanged second turn: bootstrap fetch, identical digest, staging
       skip, and actual process reuse.
-- [ ] Change one Development skill body/revision: new digest, atomic restage,
+- [x] Change one Development skill body/revision: new digest, atomic restage,
       cached process discard, and cold Pi restart.
 - [ ] Change department, model, backend/profile, and thread separately; each
       must break the binding for the documented reason.
 - [ ] Prove shared, run-scoped, protected-data, reset, and lifecycle runs never
       reuse a private warm process.
-- [ ] Restart the controller with an existing valid marker and prove safe
-      behavior; malformed/missing markers must restage.
+- [x] Restart the controller with an existing valid marker and prove the
+      persisted digest skips the physical rewrite.
+- [ ] Prove malformed and missing markers restage through a real container run.
 - [ ] Prove bootstrap 5xx/transient failure produces bundled-only startup and
       401/403 remains fail-closed.
-- [ ] Capture `fetchMs`, `stageMs`, ready/cold/warm timing, digest prefix,
-      replacement reason, RSS, and active context size without logging skill
-      content or slugs.
+- [x] Capture `fetchMs`, `stageMs`, ready/cold/warm timing, digest prefix, and
+      replacement reason without logging skill content or slugs.
+- [ ] Add and capture container RSS and active context size.
 
 Exit gate: the same real container demonstrates cold → warm → changed-restart,
 with unit tests and structured logs agreeing on every decision.
@@ -473,3 +476,34 @@ This non-skills program is complete only when:
 - Skills-plan dependency discovered:
 - Decision: complete / revise / blocked
 ```
+
+### Slice: native bootstrap cold/warm/change lifecycle — 2026-08-11
+
+- Commit / image / environment: local Development stack; freshly built
+  `divo-pi-local:phase0`; telemetry correction is included in this runtime
+  lifecycle proof commit.
+- Exact prompts: six no-tool exact-reply prompts, with the final four delivered
+  through the normal Divo Lark status/final path.
+- Cold: registry `1120`, 56 DB skills, digest `bcd95dc33847`, staged, 5,033 ms
+  ready time, `piProcessReused=false`.
+- Warm: identical digest, `staged=false`, 2,150 ms ready time,
+  `piProcessReused=true`, same durable Pi session.
+- Changed skill: one harmless temporary marker was provisioned only for the
+  selected Development company; registry `1121`, digest `4ce40c2e8111`,
+  `staged=true`, 2,494 ms ready time, and the cached Pi process was replaced.
+- Restoration: the marker was removed and the same one-skill provisioner
+  restored the source content at registry `1122`; no other dirty skill source
+  was reconciled.
+- Controller restart: identical restored digest `b11b9a25ba25` produced
+  `staged=false` from the persisted marker and a cold process. The following
+  turn emitted structured `mode=warm`, `replacementReason=none`, and reused the
+  Pi process in 2,014 ms.
+- Defect fixed: staging now reports whether the isolated helper physically
+  swapped files; `pi_runtime.ready` now records cold/warm/restarted mode and a
+  bounded replacement reason.
+- Verification: 87 controller/runtime tests passed; exact replies completed,
+  zero tools were called, and controller health returned to zero active runs.
+- Remaining Phase 1 proof: binding variations, non-reusable scopes, real
+  malformed-marker and bootstrap-failure runs, RSS, and active-context size.
+- Decision: core cold → warm → changed-restart lifecycle proven; broader Phase
+  1 matrix remains open.

@@ -27,6 +27,7 @@ import {
 	nativeSkillBootstrapDigest,
 	nativeSkillLifecycleEvent,
 	nativeDbSkillsEnabled,
+	piProcessBindingMismatchReason,
 	piProcessBindingMatches,
 	RUNTIME_IDLE_TIMEOUT_MS,
 	RUNTIME_STOP_RETRY_MS,
@@ -34,6 +35,7 @@ import {
 	renderNativeSkillFiles,
 	runtimeIdentityNames,
 	runtimeContainerNeedsReplacement,
+	runtimeReadyLifecycleEvent,
 	runtimeStartupProgress,
 	settleAll,
 	stageNativeSkillBootstrap,
@@ -455,6 +457,19 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 		...binding,
 		nativeSkillDigest: "b".repeat(64),
 	}), false);
+	assert.equal(piProcessBindingMismatchReason(undefined, binding), "no_cached_process");
+	assert.equal(piProcessBindingMismatchReason(binding, { ...binding }), "none");
+	assert.equal(
+		piProcessBindingMismatchReason(binding, { ...binding, thread: "lark-2" }),
+		"thread_changed",
+	);
+	assert.equal(
+		piProcessBindingMismatchReason(binding, {
+			...binding,
+			nativeSkillDigest: "b".repeat(64),
+		}),
+		"native_skill_digest_changed",
+	);
 });
 
 test("native DB skills are on by default with an explicit rollback switch", () => {
@@ -619,6 +634,7 @@ test("native DB skill staging swaps atomically and preserves current on failure"
 
 	const succeeded = run([{ slug: "new-skill", content: "new" }]);
 	assert.equal(succeeded.status, 0, succeeded.stderr);
+	assert.equal(succeeded.stdout.trim(), "staged");
 	const staged = path.join(root, "current", "new-skill", "SKILL.md");
 	assert.equal(fs.readFileSync(staged, "utf8"), "new");
 	assert.equal(fs.statSync(staged).mode & 0o777, 0o444);
@@ -628,6 +644,10 @@ test("native DB skill staging swaps atomically and preserves current on failure"
 		JSON.parse(fs.readFileSync(path.join(root, "current", ".bootstrap.json"), "utf8")),
 		{ digest: "a".repeat(64) },
 	);
+	const unchanged = run([{ slug: "new-skill", content: "must-not-replace" }]);
+	assert.equal(unchanged.status, 0, unchanged.stderr);
+	assert.equal(unchanged.stdout.trim(), "unchanged");
+	assert.equal(fs.readFileSync(staged, "utf8"), "new");
 	fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -650,7 +670,10 @@ test("native DB skill staging skips only an identical scoped catalogue", async (
 		channel: "lark",
 	};
 	const calls = [];
-	const runStaging = async (...args) => { calls.push(args); };
+	const runStaging = async (...args) => {
+		calls.push(args);
+		return { stdout: "staged\n", stderr: "" };
+	};
 	const volume = `test-skills-${Date.now()}`;
 
 	const first = await stageNativeSkillBootstrap(volume, bootstrap, scope, { runStaging });
@@ -670,12 +693,25 @@ test("native DB skill staging skips only an identical scoped catalogue", async (
 		scope,
 		{ runStaging },
 	);
+	const persistedUnchanged = await stageNativeSkillBootstrap(
+		volume,
+		bootstrap,
+		scope,
+		{
+			force: true,
+			runStaging: async (...args) => {
+				calls.push(args);
+				return { stdout: "unchanged\n", stderr: "" };
+			},
+		},
+	);
 
 	assert.equal(first.staged, true);
 	assert.equal(unchanged.staged, false);
 	assert.equal(changedScope.staged, true);
 	assert.equal(changedCatalogue.staged, true);
-	assert.equal(calls.length, 3);
+	assert.equal(persistedUnchanged.staged, false);
+	assert.equal(calls.length, 4);
 	assert.notEqual(first.digest, changedScope.digest);
 	assert.equal(first.digest, nativeSkillBootstrapDigest(bootstrap, scope));
 });
@@ -702,6 +738,28 @@ test("native skill lifecycle telemetry contains counts and timing, never skill c
 		sessionScope: "run",
 	});
 	assert.doesNotMatch(JSON.stringify(event), /private recipe/);
+});
+
+test("runtime ready telemetry explains cold, warm, and replacement decisions", () => {
+	const event = runtimeReadyLifecycleEvent({
+		mode: "restarted",
+		replacementReason: "native_skill_digest_changed",
+		readyMs: 2494,
+		prepareMs: 0,
+		nativeSkillDigest: "b".repeat(64),
+		ephemeral: false,
+		sessionScope: "thread",
+	});
+	assert.deepEqual(event, {
+		event: "pi_runtime.ready",
+		mode: "restarted",
+		replacementReason: "native_skill_digest_changed",
+		readyMs: 2494,
+		prepareMs: 0,
+		nativeSkillDigest: "b".repeat(12),
+		audience: "private",
+		sessionScope: "thread",
+	});
 });
 
 test("a shared container mounts only its run-specific disposable volumes", () => {

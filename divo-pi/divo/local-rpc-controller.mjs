@@ -497,6 +497,27 @@ export function nativeSkillLifecycleEvent({
 	};
 }
 
+export function runtimeReadyLifecycleEvent({
+	mode,
+	replacementReason,
+	readyMs,
+	prepareMs,
+	nativeSkillDigest,
+	ephemeral,
+	sessionScope,
+}) {
+	return {
+		event: "pi_runtime.ready",
+		mode,
+		replacementReason,
+		readyMs,
+		prepareMs,
+		nativeSkillDigest: nativeSkillDigest.slice(0, 12),
+		audience: ephemeral ? "shared" : "private",
+		sessionScope,
+	};
+}
+
 export async function fetchNativeSkillBootstrap({
 	backendUrl,
 	token,
@@ -554,7 +575,10 @@ function removeTree(directory) {
 }
 try {
 	const marker = JSON.parse(fs.readFileSync(path.join(current, ".bootstrap.json"), "utf8"));
-	if (marker.digest === payload.digest) process.exit(0);
+	if (marker.digest === payload.digest) {
+		process.stdout.write("unchanged\n");
+		process.exit(0);
+	}
 } catch {}
 removeTree(next);
 removeTree(previous);
@@ -573,6 +597,7 @@ fs.writeFileSync(
 if (fs.existsSync(current)) fs.renameSync(current, previous);
 fs.renameSync(next, current);
 removeTree(previous);
+process.stdout.write("staged\n");
 `;
 
 export function buildNativeSkillStagingArgs(volume, image = IMAGE) {
@@ -609,13 +634,17 @@ export async function stageNativeSkillBootstrap(
 	if (!force && stagedNativeSkillDigests.get(volume) === digest) {
 		return { digest, staged: false };
 	}
-	await runStaging(
+	const result = await runStaging(
 		"docker",
 		buildNativeSkillStagingArgs(volume),
 		JSON.stringify({ digest, files: renderNativeSkillFiles(bootstrap) }),
 	);
+	const status = result?.stdout?.trim();
+	if (status !== "staged" && status !== "unchanged") {
+		throw new Error("Native skill staging helper returned an invalid status");
+	}
 	stagedNativeSkillDigests.set(volume, digest);
-	return { digest, staged: true };
+	return { digest, staged: status === "staged" };
 }
 
 export function runtimeContainerNeedsReplacement(container, image = IMAGE, imageId) {
@@ -2150,6 +2179,19 @@ export function piProcessBindingMatches(current, next) {
 		&& current.nativeSkillDigest === next.nativeSkillDigest;
 }
 
+export function piProcessBindingMismatchReason(current, next) {
+	if (!current) return "no_cached_process";
+	if (!next) return "invalid_next_binding";
+	if (current.profile !== next.profile) return "profile_changed";
+	if (current.thread !== next.thread) return "thread_changed";
+	if (current.backendUrl !== next.backendUrl) return "backend_changed";
+	if (current.departmentId !== next.departmentId) return "department_changed";
+	if (current.provider !== next.provider) return "provider_changed";
+	if (current.model !== next.model) return "model_changed";
+	if (current.nativeSkillDigest !== next.nativeSkillDigest) return "native_skill_digest_changed";
+	return "none";
+}
+
 function runtimeExitPromise(child) {
 	return new Promise((resolve) => {
 		child.once("error", (error) => resolve({ error }));
@@ -2537,8 +2579,19 @@ async function runPrompt({
 		nativeSkillDigest,
 	});
 	if (!ephemeral) await idleContainers.activate(profile);
-	const cachedBinding = piKeepAlive ? warmPiProcesses.get(profile)?.binding : undefined;
-	if (!piKeepAlive || (cachedBinding && !piProcessBindingMatches(cachedBinding, binding))) {
+	const cachedRuntime = warmPiProcesses.get(profile);
+	const cachedBinding = cachedRuntime?.binding;
+	let processMode = cachedRuntime ? "warm" : "cold";
+	let replacementReason = cachedRuntime ? "none" : "no_cached_process";
+	if (!piKeepAlive) {
+		if (cachedRuntime) {
+			processMode = "restarted";
+			replacementReason = "reuse_disabled";
+		}
+		await discardWarmPiProcess(profile);
+	} else if (cachedRuntime && !piProcessBindingMatches(cachedBinding, binding)) {
+		processMode = "restarted";
+		replacementReason = piProcessBindingMismatchReason(cachedBinding, binding);
 		await discardWarmPiProcess(profile);
 	}
 	let abortStop;
@@ -2623,6 +2676,10 @@ async function runPrompt({
 			rpc = reusable.rpc;
 			piProcessReused = true;
 		} else {
+			if (processMode === "warm") {
+				processMode = "restarted";
+				replacementReason = "cached_process_exited";
+			}
 			({ child, exited, rpc } = spawnRuntimeRpc(
 				resources.container,
 				answerRequest,
@@ -2639,9 +2696,19 @@ async function runPrompt({
 				rpc,
 			});
 		}
+		const readyMs = Date.now() - startedAt;
 		console.error(
-			`Ready ${profile}/${thread} in ${Date.now() - startedAt}ms (session ${state.sessionId}; piProcessReused=${piProcessReused}; prepareMs=${piPrepareMs})`,
+			`Ready ${profile}/${thread} in ${readyMs}ms (session ${state.sessionId}; piProcessReused=${piProcessReused}; prepareMs=${piPrepareMs})`,
 		);
+		console.error(`[Pi] ${JSON.stringify(runtimeReadyLifecycleEvent({
+			mode: piProcessReused ? "warm" : processMode,
+			replacementReason: piProcessReused ? "none" : replacementReason,
+			readyMs,
+			prepareMs: piPrepareMs,
+			nativeSkillDigest,
+			ephemeral,
+			sessionScope: normalizedSessionScope,
+		}))}`);
 		emitRuntimeProgress(onProgress, { type: "ready" });
 		if (lifecycle !== undefined) {
 			await waitForClosedRuntime(child, exited);
