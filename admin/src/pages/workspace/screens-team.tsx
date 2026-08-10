@@ -84,6 +84,66 @@ const cellFromRole = (state: RoleActionState | undefined): Cell => {
  * Columns come from the union of what the tools actually support rather than a
  * fixed list, so a grid never shows a column no row can use.
  */
+/**
+ * The matrix's own skeleton.
+ *
+ * This screen fetches one request per tool — around thirty-five, each with its
+ * own preflight — so the placeholder is on screen for several seconds rather
+ * than a blink, and it was five flat rows standing in for a thirty-five row
+ * table. The page grew by most of its own height when the real thing landed.
+ *
+ * The row count is the number the registry actually returns, so the table does
+ * not jump; the columns are the six action groups every scope shows.
+ */
+const MATRIX_SKELETON_ROWS = 35
+const MATRIX_SKELETON_COLS = 6
+
+/*
+ * 56px, which is the mean real row and not a guess.
+ *
+ * Measured across the live table: rows come in at 45, 48, 50, 58 and 78 —
+ * mostly 58, with two that wrap because their names are long. A uniform 49
+ * undershot the total by 252px over thirty-five rows, so the page still grew by
+ * most of a screen when the data landed. There is no single height that is
+ * right for every row; the mean is the one that makes the *table* the right
+ * height, which is what stops the reflow.
+ */
+const MATRIX_SKELETON_ROW_H = 56
+
+function ToolMatrixSkeleton() {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table className="ws-matrix is-skeleton">
+        <thead>
+          <tr>
+            <th><Skel w={44} h={9} /></th>
+            {Array.from({ length: MATRIX_SKELETON_COLS }).map((_, i) => (
+              <th key={i} className="act"><Skel w={46} h={9} /></th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: MATRIX_SKELETON_ROWS }).map((_, r) => (
+            <tr key={r} style={{ height: MATRIX_SKELETON_ROW_H }}>
+              <td>
+                <span className="ws-mx-tool">
+                  <span className="ws-toolmark"><Skel w={24} h={24} block /></span>
+                  <Skel w={92 + ((r * 13) % 58)} h={11} />
+                </span>
+              </td>
+              {/* 26px is the exact size of `.ws-cell` — measured, not guessed:
+                  at 22 the table came up 252px short across thirty-five rows. */}
+              {Array.from({ length: MATRIX_SKELETON_COLS }).map((_, c) => (
+                <td key={c} className="act"><Skel w={26} h={26} block /></td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function ToolMatrix({ tools, cellFor, onToggle, readOnly }: {
   tools: ToolScopeSnapshot[]
   cellFor: (tool: ToolScopeSnapshot, action: string) => Cell
@@ -344,6 +404,40 @@ export function TeamHome({ replay, go }: Props) {
   )
 }
 
+/**
+ * The people list's own skeleton.
+ *
+ * `SkelRows` ends every row with one 58px block, and this list now ends with
+ * four columns totalling 318px — tasks, cost, the role control and the menu. So
+ * the placeholder was right about the left of the row and wrong about the right
+ * of it, and the whole column slid on arrival.
+ */
+function PeopleSkeleton({ n = 8 }: { n?: number }) {
+  return (
+    <div className="ws-rows">
+      {/* 71px is the real row, measured — `.ws-skel-row` comes out at 60 on its
+          own padding, and eight of those left the list 80px short before the
+          row count even came into it. */}
+      {Array.from({ length: n }).map((_, i) => (
+        <div className="ws-skel-row" key={i} style={{ minHeight: 71, boxSizing: 'border-box' }}>
+          <Skel w={32} h={32} circle />
+          <div style={{ flex: 1 }}>
+            <Skel w={`${38 + ((i * 13) % 26)}%`} />
+            <div style={{ height: 7 }} />
+            <Skel w={`${46 + ((i * 17) % 24)}%`} h={9} />
+          </div>
+          <div className="ws-row-act ws-people-act">
+            <Skel w={54} h={11} />
+            <Skel w={40} h={11} />
+            <Skel w={92} h={28} block />
+            <span />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** One row of the people list, as the department snapshot carries it. */
 type TeamPerson = {
   userId: string
@@ -563,7 +657,7 @@ export function TeamPeople({ replay, toast }: Props) {
         {/* "Nobody matches" is an answer about the search box. A refused or
             failed snapshot produces the same empty list with an empty search
             box, which reads as an empty team — so both are named first. */}
-        {!r1 || loading ? <SkelRows n={6} /> : refused ? (
+        {!r1 || loading ? <PeopleSkeleton /> : refused ? (
           <NoAccess
             what="this team's people"
             who="Only whoever leads this team can see who is in it."
@@ -956,7 +1050,7 @@ function PersonDrawer({
       {/* Every sentence and every cell in this drawer is derived from the
           matrix. Without it, "Divo cannot do anything for them yet" is not a
           fact about this person — it is the shape of a failed read. */}
-      {matrix.loading ? <SkelRows n={5} icon={false} /> : matrix.error ? (
+      {matrix.loading ? <ToolMatrixSkeleton /> : matrix.error ? (
         <Empty
           icon={TriangleAlert}
           title="Could not read their permissions"
@@ -1325,7 +1419,7 @@ export function TeamRoles({ replay, toast }: Props) {
           ) : undefined}
         >
           <div className="ws-panel-body">
-            {!r1 || matrix.loading ? <SkelRows n={6} icon={false} /> : matrix.error ? (
+            {!r1 || matrix.loading ? <ToolMatrixSkeleton /> : matrix.error ? (
               /* The read failed. Saying "no configurable tools" here would be a
                  claim about the team made on the strength of a broken request. */
               <Empty

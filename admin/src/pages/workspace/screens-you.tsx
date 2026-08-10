@@ -488,7 +488,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
           </div>
         ) : null}
 
-        {!ready ? <Panel title="Your connections"><SkelRows n={4} /></Panel> : (
+        {!ready ? <AppGridSkeleton /> : (
           <Fade>
             {/*
               Grouped by what you can do about it, not by a fixed order.
@@ -675,6 +675,71 @@ function AppCard({ mark, name, blurb, accounts, action, tone }: {
           rather than from filler reserved above the button. */}
       <div className="ws-appcard-act">{action}</div>
     </article>
+  )
+}
+
+/**
+ * The card grid's own skeleton.
+ *
+ * It used to be four `SkelRows` inside a Panel — a completely different element
+ * to what arrives, so the page swapped a 4-row list for three sections of cards
+ * and jumped by several hundred pixels. This mirrors the real geometry: section
+ * headings, a grid at the same `auto-fill` track size, and cards with the mark,
+ * title, blurb and action in the places they will land.
+ */
+/*
+ * Three sections, and the first one's cards are taller.
+ *
+ * The shape is not a guess about this particular workspace — it is the shape
+ * the page always takes: some apps connected, some the member may connect, some
+ * their admin owns. A connected card carries its accounts and runs about a
+ * hundred pixels taller than an empty one, so a skeleton of uniformly short
+ * cards left the page to grow by 705px when the real thing arrived, which is
+ * the jump this exists to prevent.
+ */
+const GRID_SKELETON = [
+  { cards: 2, accounts: 2 },
+  { cards: 2, accounts: 0 },
+  { cards: 3, accounts: 0 },
+]
+
+function AppGridSkeleton() {
+  return (
+    <>
+      {GRID_SKELETON.map((section, s) => (
+        <section className="ws-appsec" key={s}>
+          <div className="ws-appsec-h"><Skel w={110} h={13} /></div>
+          <div className="ws-appgrid">
+            {Array.from({ length: section.cards }).map((_, i) => (
+              <article className="ws-appcard" key={i}>
+                <div className="ws-appcard-h"><Skel w={30} h={30} block /></div>
+                <Skel w={`${52 + ((i * 11) % 24)}%`} h={13} />
+                {section.accounts === 0 ? (
+                  <>
+                    <div style={{ height: 8 }} />
+                    <Skel w="94%" h={11} />
+                    <div style={{ height: 5 }} />
+                    <Skel w={`${58 + ((i * 7) % 20)}%`} h={11} />
+                  </>
+                ) : (
+                  <ul className="ws-appcard-accs">
+                    {Array.from({ length: section.accounts }).map((__, a) => (
+                      <li key={a}>
+                        <div>
+                          <Skel w={`${62 + ((a * 9) % 22)}%`} h={11} />
+                          <Skel w="46%" h={9} />
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="ws-appcard-act"><Skel w="100%" h={38} block /></div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ))}
+    </>
   )
 }
 
