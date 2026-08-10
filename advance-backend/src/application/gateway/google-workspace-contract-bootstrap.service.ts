@@ -165,8 +165,27 @@ function suggestedProductOperations(
     ) {
       operations.push('modify_sheet_values');
     }
-    if (containsAny(query, ['format', 'bold', 'center', 'align', 'style', 'tidy', 'beautif', 'header'])) {
+    const formatsSheet = containsAny(query, [
+      'format',
+      'bold',
+      'center',
+      'align',
+      'style',
+      'tidy',
+      'beautif',
+      'header',
+    ]);
+    if (formatsSheet) {
       operations.push('format_sheet_range');
+    }
+    if (
+      formatsSheet
+      || containsAny(query, ['resize', 'width', 'height', 'freeze', 'frozen', 'hide column', 'hide row'])
+    ) {
+      operations.push('resize_sheet_dimensions');
+    }
+    if (containsAny(query, ['conditional format', 'alternat', 'banded', 'shade'])) {
+      operations.push('manage_conditional_formatting');
     }
     if (containsAny(query, ['verify', 'read back', 'reconcile', 'check'])) {
       operations.push('read_sheet_values');

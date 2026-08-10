@@ -268,8 +268,14 @@ describe('ToolExecutor', () => {
 
   it('keeps a large result intact only for the trusted local-file audience', async () => {
     const large = 'x'.repeat(MODEL_FACING_RESULT_MAX_BYTES * 3);
+    let seenAudience: string | undefined;
     const registry = new ToolRegistry();
-    registry.register(makeFakeTool({ execute: async () => ok({ result: large }) }));
+    registry.register(makeFakeTool({
+      execute: async (_args, ctx) => {
+        seenAudience = ctx.resultAudience;
+        return ok({ result: large });
+      },
+    }));
     const executor = new ToolExecutor({
       toolRegistry: registry,
       permissions: makePermissionService(),
@@ -284,6 +290,7 @@ describe('ToolExecutor', () => {
     });
 
     assert.equal(response.ok, true);
+    assert.equal(seenAudience, 'local_file');
     assert.equal((response.data as { result: { result: string } }).result.result, large);
   });
 
@@ -680,6 +687,7 @@ describe('ToolExecutor', () => {
         policySource: 'manager_policy',
         check: { allowed: false, windows: [] },
         message: 'Connection budget reached.',
+        retryAfterSeconds: 17,
       },
       status: 'rate_limited',
     },
@@ -732,6 +740,9 @@ describe('ToolExecutor', () => {
       });
 
       assert.equal(result.status, blocked.status);
+      if (blocked.status === 'rate_limited') {
+        assert.equal(result.error?.retryAfterSeconds, 17);
+      }
       assert.equal(executions, 0);
       assert.equal(releases, 1);
     });

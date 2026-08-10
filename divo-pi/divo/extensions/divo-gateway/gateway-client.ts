@@ -30,6 +30,7 @@ export interface GatewayRequestBody {
 export interface GatewayErrorBody {
 	code?: string;
 	message?: string;
+	retryAfterSeconds?: number;
 }
 
 export interface GatewayApprovalBody {

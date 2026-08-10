@@ -328,6 +328,20 @@ calls because URL resolution required an account choice and two exact mutation
 schemas; those metadata descriptions no longer consume connection data budgets.
 Real Google create/update/read calls remain rate-limited and governed.
 
+The 2026-08-10 rate-budget replay isolated the remaining delay. The selected
+Development Google connection has an explicit two-read-per-minute manager
+policy; this is stored governance, not a Google quota or a code default. The
+first run made two provider probes before its script, then repeatedly reran
+because `get_spreadsheet_info` exposed prose while `read_sheet_values` exposed
+machine fields. After normalizing spreadsheet metadata and moving short budget
+retry ownership into `divo-local`, the identical fresh-context replay used one
+persistent script, exactly three successful Sheet reads, zero script sleeps,
+and no rerun. The script completed in 56.3 seconds: 4.2s + 3.4s + a 48.7s
+client-owned wait/retry at the configured minute boundary. Total Cloud-Pi time
+was 164.3 seconds including skill/model setup and Lark progress/final delivery.
+One bounded `list_spreadsheets` call resolved the title to an ID before the
+script; it exposed no Sheet rows and is not duplicate data fetching.
+
 The full April–July Zoho expense replay now passes the primary multi-page
 scenario. Cloud Pi read the native Zoho Books, Python automation, and Google
 Sheets skills, wrote one persistent script, and used three Bash executions

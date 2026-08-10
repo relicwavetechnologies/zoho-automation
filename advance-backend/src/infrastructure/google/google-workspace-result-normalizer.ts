@@ -25,6 +25,10 @@ export function normalizeGoogleWorkspaceResult(
     };
   }
 
+  if (nativeTool === 'get_spreadsheet_info') {
+    return normalizeSpreadsheetInfo(result, text);
+  }
+
   if (nativeTool === 'search_gmail_messages') {
     const messages = parseSearchMessages(text);
     const providerReturnedMessages = parseGmailReportedCount(text) ?? messages.length;
@@ -86,6 +90,41 @@ export function normalizeGoogleWorkspaceResult(
   }
 
   return result;
+}
+
+function normalizeSpreadsheetInfo(result: JsonRecord, text: string): JsonRecord {
+  const header = text.match(/^Spreadsheet:\s+"(.*)"\s+\(ID:\s*([A-Za-z0-9_-]+)\)\s*\|\s*Locale:\s*(\S+)\s*$/m);
+  if (!header) return result;
+
+  const sheets = [...text.matchAll(
+    /^\s*-\s+"(.*)"\s+\(ID:\s*(\d+)\)\s*\|\s*Size:\s*(\d+)x(\d+)\s*\|\s*Conditional formats:\s*(\d+)\s*$/gm,
+  )].map(match => ({
+    title: match[1],
+    sheetId: Number(match[2]),
+    rowCount: Number(match[3]),
+    columnCount: Number(match[4]),
+    conditionalFormatCount: Number(match[5]),
+  }));
+  const reportedSheetCount = Number(text.match(/^Sheets\s+\((\d+)\):\s*$/m)?.[1] ?? sheets.length);
+  const complete = sheets.length === reportedSheetCount;
+
+  return {
+    ...result,
+    spreadsheetId: header[2],
+    spreadsheetTitle: header[1],
+    locale: header[3],
+    sheets,
+    sheetCount: reportedSheetCount,
+    structuredSheetCount: sheets.length,
+    complete,
+    ...(!complete ? {
+      advisories: mergeAdvisories(result['advisories'], [{
+        code: 'sheet_metadata_unstructured',
+        level: 'required',
+        instruction: `${reportedSheetCount - sheets.length} spreadsheet tabs could not be normalized. Do not claim complete workbook metadata.`,
+      }]),
+    } : {}),
+  };
 }
 
 function normalizeSheetRead(

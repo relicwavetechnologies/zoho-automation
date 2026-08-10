@@ -111,6 +111,7 @@ import {
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
 const MAX_TERMINAL_PAGE = 100;
+const TERMINAL_FILE_PAGE_LIMIT = 100;
 
 const Schema = z.object({
   connectionId: z.string().uuid(),
@@ -232,7 +233,7 @@ const ResultSchema = z.object({
   sourceTruncated: z.boolean().optional(),
   preview: z.object({
     columns: z.array(z.string()),
-    rows: z.array(z.record(z.unknown())).max(DATASET_PREVIEW_ROW_LIMIT),
+    rows: z.array(z.record(z.unknown())).max(TERMINAL_FILE_PAGE_LIMIT),
     coverage: z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('complete'), totalRows: z.number().int().nonnegative() }),
       z.object({
@@ -1516,7 +1517,9 @@ export const createZohoBooksTool = (deps: {
         columns: readonly ZohoListCsvColumn<Record<string, unknown>>[];
       },
     ) => {
-      const canPublishExportCandidate = args.limit === undefined
+      const isLocalFileResult = ctx.resultAudience === 'local_file';
+      const canPublishExportCandidate = !isLocalFileResult
+        && args.limit === undefined
         && args.page === undefined
         && !personalizedScope
         && deps.exportCandidates !== undefined
@@ -1533,10 +1536,12 @@ export const createZohoBooksTool = (deps: {
         ...(options.query ? { query: options.query } : {}),
         ...(args.page !== undefined ? { page: args.page } : {}),
         suggestExportOnOverflow: canPublishExportCandidate,
-        inlineThreshold: Math.min(
-          args.limit ?? deps.inlineThreshold ?? DATASET_PREVIEW_ROW_LIMIT,
-          DATASET_PREVIEW_ROW_LIMIT,
-        ),
+        inlineThreshold: isLocalFileResult
+          ? Math.min(args.limit ?? TERMINAL_FILE_PAGE_LIMIT, TERMINAL_FILE_PAGE_LIMIT)
+          : Math.min(
+              args.limit ?? deps.inlineThreshold ?? DATASET_PREVIEW_ROW_LIMIT,
+              DATASET_PREVIEW_ROW_LIMIT,
+            ),
         ...(personalizedScope
           ? { postFilter: (items: readonly Record<string, unknown>[]) =>
               filterZohoRecordsByEmail(items, requesterEmail!) }
@@ -1568,10 +1573,16 @@ export const createZohoBooksTool = (deps: {
         scope: 'zoho_books',
         correlationId: ctx.correlationId,
       });
-      const preview = createDatasetPreview({
-        rows: formattedItems,
-        coverage: result.coverage,
-      });
+      const preview = isLocalFileResult
+        ? {
+            columns: Array.from(new Set(formattedItems.flatMap(row => Object.keys(row)))),
+            rows: formattedItems,
+            coverage: result.coverage,
+          }
+        : createDatasetPreview({
+            rows: formattedItems,
+            coverage: result.coverage,
+          });
 
       return {
         success: true,
@@ -2287,7 +2298,13 @@ export const createZohoBooksTool = (deps: {
               commonColumns.date,
               { key: 'account_name', header: 'Account' },
               { key: 'vendor_name', header: 'Vendor' },
-              { key: 'amount', header: 'Amount' },
+              {
+                key: 'amount',
+                header: 'Amount',
+                // Zoho's expense-list response normally calls this `total`;
+                // older responses and fixtures may use `amount`.
+                value: item => amountValue(item, 'total', 'amount'),
+              },
               commonColumns.currency,
               commonColumns.status,
             ],

@@ -245,6 +245,8 @@ export const toolsListPayloadSchema = z.object({
 export interface GatewayErrorBody {
   readonly code: GatewayStatus;
   readonly message: string;
+  /** Present only when the exact rejected call is safe to retry after this delay. */
+  readonly retryAfterSeconds?: number;
 }
 
 export interface GatewayApprovalBody {
@@ -300,12 +302,18 @@ export function gatewaySuccess<T>(data: T): GatewayResponse<T> {
 export function gatewayFailure(
   status: GatewayStatus,
   message: string,
-  extra?: { approval?: GatewayApprovalBody },
+  extra?: { approval?: GatewayApprovalBody; retryAfterSeconds?: number },
 ): GatewayResponse {
   return {
     ok: false,
     status,
-    error: { code: status, message },
+    error: {
+      code: status,
+      message,
+      ...(extra?.retryAfterSeconds !== undefined
+        ? { retryAfterSeconds: extra.retryAfterSeconds }
+        : {}),
+    },
     ...(extra?.approval ? { approval: extra.approval } : {}),
   };
 }

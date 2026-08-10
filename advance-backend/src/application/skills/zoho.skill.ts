@@ -75,10 +75,13 @@ export const zohoBooksReadAnalysisSkill: Skill = {
   instructions: `${ZOHO_CONNECTION_METHOD}
 
 READ ROUTING:
+- For complete paginated Zoho Books reads, set \`limit=100\` on every page (the validated maximum) unless the tool rejects that exact value. Do not copy a small chat-preview limit such as 10 or 25 into the terminal workflow; follow \`nextPage\` until \`hasMore=false\`.
+- Zoho Books terminal arguments are top-level: for example \`{"op":"list_expenses","connectionId":"<exact bootstrap UUID>","dateFrom":"2026-04-01","dateTo":"2026-07-31","page":1,"limit":100}\`. Never wrap them in Google-style \`input\`, and do not probe an unsupported \`describe\` op.
 - Bounded lookup or preview, with no requested artifact or destination -> use the matching zohoBooks read operation with narrow filters.
 - For an ordinary list request, keep the direct model preview bounded. Do not fetch additional pages unless the member asked for a complete artifact, a whole-account calculation, or another workflow that genuinely needs them.
 - For a complete artifact or multi-page calculation, ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, load \`divo-python-automation\`; fetch pages through \`divo-local\` into one local JSONL/Parquet file, transform there, write through the destination skill, and verify source/written/read-back counts.
 - A request such as “export all expenses for this date range from this account into a new Google Sheet” is already a clear complete-artifact instruction. Do not call the registered zohoBooks tool for a preview first and do not ask whether to proceed. Begin the local workflow, load the destination skill, and let backend RBAC or approval stop it if required.
+- When the member gives a bounded date range, pass its exact ISO boundaries as \`dateFrom\` and \`dateTo\` on the first call and every paginated call. Never fetch the whole Zoho account and filter it locally when the provider operation accepts those filters.
 - For that artifact workflow, do not use the Zoho \`script\` parameter and do not return or stringify source rows from a provider-side script. \`script\` is for bounded server-side analysis, not paging or transfer. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use \`page\`, \`hasMore\`, and \`nextPage\` through \`divo-local\` so each saved response keeps the documented structured page envelope.
 - Latest/recent bounded invoices -> use zohoBooks op="list_invoices" with the requested limit; it is already sorted by invoice date newest-first. Do not scan or sort thousands of rows.
 - Human invoice number -> use zohoBooks op="get_invoice" with that exact number, or list_invoices with searchQuery and accept only an exact normalized invoice_number match before using its invoice_id. Never substitute a fuzzy result.

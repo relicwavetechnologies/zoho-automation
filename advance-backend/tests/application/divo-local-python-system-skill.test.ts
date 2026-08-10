@@ -25,6 +25,13 @@ describe('Divo local Python system skill', () => {
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Never guess, copy an old\s+ID/is);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /returned == parsed \+ skipped/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /every skip needs a reason/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /divo-local.*owns the.*safe exact retry/is);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Never add.*sleeps or retry `rate_limited` yourself/is);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /if the client still returns it.*report the incomplete step/is);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Persist the validated\s+rows to JSONL\/Parquet/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /rerun from that saved source instead of refetching/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /write `status: completed` only afterward/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /earlier write acknowledgement or read from a failed attempt is not proof/i);
     assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /def run\(input_data, divo\)/i);
   });
 

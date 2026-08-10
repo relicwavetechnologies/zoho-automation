@@ -180,16 +180,30 @@ skill; do not duplicate or guess them here.
 
 ## Stop and completion rules
 
-- Validate all source pages before the first mutation. Reconcile
-  \`returned == parsed + skipped\`; every skip needs a reason.
+- Validate all source pages before the first mutation. Persist the validated
+  rows to JSONL/Parquet plus a checkpoint containing the source count and last
+  continuation. If a later write, format, or verification step fails, patch and
+  rerun from that saved source instead of refetching unchanged provider pages.
+  Reconcile \`returned == parsed + skipped\`; every skip needs a reason.
 - Validate destination scalars, write in bounded batches, checkpoint every
   successful mutation ID, then read back important ranges.
-- Stop on permission, approval, invalid arguments, or rate limits. Retry only a
-  clearly transient upstream failure once.
+- Stop on permission, approval, or invalid arguments. \`divo-local\` owns the
+  one safe exact retry for a short connection-budget rejection. Never add
+  sleeps or retry \`rate_limited\` yourself; if the client still returns it,
+  preserve the checkpoint and report the incomplete step.
+- Minimize governed destination calls: combine values into bounded writes and
+  apply each distinct format or dimension change once. Do not repeat reads or
+  formatting calls merely to pace the connection.
+- Use the largest page size explicitly allowed by the loaded source skill for
+  complete file-backed paging. Small chat-preview defaults do not belong in a
+  terminal workflow.
 - Write \`result.json\` with status, source/transformation/write/verified counts,
   destination IDs/URLs, issues, and the safe resume step.
-- Claim completed only when counts reconcile and read-back succeeds. Otherwise
-  report partial or failed; process exit zero alone proves nothing.`;
+- Claim completed only when counts reconcile and read-back succeeds in the same
+  workflow. Make the script raise on a mismatched, incomplete, rate-limited, or
+  missing verification response, and write \`status: completed\` only afterward.
+  An earlier write acknowledgement or read from a failed attempt is not proof.
+  Otherwise report partial or failed; process exit zero alone proves nothing.`;
 
 export const DIVO_LOCAL_PYTHON_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   slug: DIVO_LOCAL_PYTHON_SKILL_SLUG,

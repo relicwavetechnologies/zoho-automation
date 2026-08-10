@@ -119,6 +119,8 @@ describe('governed local-workflow instruction contract', () => {
 
   it('routes complete Zoho Books work through cloud-capable governed Python', () => {
     assert.match(zohoBooksReadAnalysisSkill.instructions, /load `divo-python-automation`/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /pass its exact ISO boundaries as `dateFrom` and `dateTo`/);
+    assert.match(zohoBooksReadAnalysisSkill.instructions, /Never fetch the whole Zoho account and filter it locally/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /each returned `nextPage`/);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /export all expenses.*new Google Sheet/i);
     assert.match(zohoBooksReadAnalysisSkill.instructions, /Do not call the registered zohoBooks tool for a preview first/i);

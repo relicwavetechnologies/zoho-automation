@@ -117,7 +117,23 @@ describe('Google Workspace work-contract bootstrap', () => {
       ),
       [
         { toolId: 'googleSheets', nativeTool: 'format_sheet_range' },
+        { toolId: 'googleSheets', nativeTool: 'resize_sheet_dimensions' },
         { toolId: 'googleSheets', nativeTool: 'read_sheet_values' },
+      ],
+    );
+  });
+
+  it('preloads conditional formatting only when the requested styling needs it', () => {
+    assert.deepEqual(
+      suggestedGoogleWorkspaceNativeTools(
+        'Beautify this spreadsheet with alternating row shading',
+        ['googleSheets'],
+      ),
+      [
+        { toolId: 'googleSheets', nativeTool: 'modify_sheet_values' },
+        { toolId: 'googleSheets', nativeTool: 'format_sheet_range' },
+        { toolId: 'googleSheets', nativeTool: 'resize_sheet_dimensions' },
+        { toolId: 'googleSheets', nativeTool: 'manage_conditional_formatting' },
       ],
     );
   });

@@ -73,6 +73,8 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /acknowledgement under `data\.result`, not `updatedRows`/);
     assert.match(sheets.markdown, /claim that count as written only after the exact read-back matches/);
     assert.match(sheets.markdown, /Never turn a missing `updatedRows` field into a zero-row claim/);
+    assert.match(sheets.markdown, /`get_spreadsheet_info` returns machine-readable `spreadsheetId`/);
+    assert.match(sheets.markdown, /Never parse or inspect its compatibility prose in\s+`data\.result`/);
     assert(sheets.aliases.includes('dropdown'));
     assert(sheets.aliases.includes('google sheet url'));
     assert(sheets.aliases.includes('drive.google.com/file'));
@@ -91,6 +93,8 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /In a Lark runtime/);
     assert.match(sheets.markdown, /In Desktop.*data\.resource\.resourceId.*data\.resource\.connectionId/s);
     assert.match(sheets.markdown, /one eligible account.*retry immediately/s);
+    assert.match(sheets.markdown, /bootstrap already supplies one exact selected Google/);
+    assert.match(sheets.markdown, /Never spend a resolver call rediscovering a bootstrap account/);
     assert.match(sheets.markdown, /returns several, ask\s+once/s);
     assert.match(sheets.markdown, /URL-only request resolves metadata and access only/);
     assert.match(sheets.markdown, /RECENT DIVO EXPORTS/);
@@ -104,6 +108,15 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /Read-only.*google-drive/s);
     assert.match(sheets.markdown, /xlsx[\s\S]*csv[\s\S]*get_drive_file_content/);
     assert.match(sheets.markdown, /Never answer from an earlier provider query when the member references a recent\s+export/);
+    assert.match(sheets.markdown, /inspect the header plus the final populated row once/);
+    assert.match(sheets.markdown, /clear any stale tail beyond the new final row/i);
+    assert.match(sheets.markdown, /persist them before the first Sheet mutation/);
+    assert.match(sheets.markdown, /reuse that saved source file rather than refetching/);
+    assert.match(sheets.markdown, /"nativeTool":"format_sheet_range"/);
+    assert.match(sheets.markdown, /"column_sizes":\{"A":220,"B":120\}/);
+    assert.match(sheets.markdown, /do not nest formatting\s+under `cell_format`/i);
+    assert.match(sheets.markdown, /report that feature as\s+partial instead of claiming it was applied/);
+    assert.match(sheets.markdown, /failed, rate-limited, incomplete, or missing read-back cannot be replaced/);
   });
 
   it('gives the six upgraded products complete Divo-native workflows', () => {

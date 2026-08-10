@@ -13,6 +13,7 @@ import { normalizeStatus, parseDateFilter } from '../../src/application/zoho/zoh
 import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
 import { arrayToCsv } from '../../src/application/tools/shared/sandbox-runner.ts';
 import { asToolId } from '../../src/shared/ids.ts';
+import { assertLosslessPagingFixture } from './lossless-paging.fixture.ts';
 
 /** What Zoho answers a write with, keyed by the module path being written to. */
 const writtenRecords: Record<string, Record<string, unknown>> = {
@@ -197,7 +198,106 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(result.ok, true);
     assert.equal(captures.listInput.page, 20);
     assert.equal(result.ok && result.value.nextPage, 21);
+    assert.equal(result.ok && result.value.preview?.rows[0]?.amount, 10);
+    assert.equal(result.ok && result.value.preview?.rows[0]?.amountFormatted, '₹10.00');
     assert.match(tool.parameterDocs, /page \(1-100\)/);
+  });
+
+  it('returns 100-row pages only to the trusted local-file audience', async () => {
+    const captures: { listInput?: any } = {};
+    const booksClient = {
+      ...makeBooksClient(captures),
+      listRecords: async (input: any) => {
+        captures.listInput = input;
+        return {
+          organizationId: 'org-1',
+          items: Array.from({ length: 100 }, (_, index) => ({
+            expense_id: `exp-${index + 1}`,
+            total: String(index + 1),
+            currency_code: 'INR',
+            date: '2026-07-01',
+          })),
+          hasMore: true,
+          page: input.page,
+        };
+      },
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ booksClient });
+
+    const localResult = await tool.execute(
+      { op: 'list_expenses', page: 1, limit: 100 },
+      { ...ctx, resultAudience: 'local_file' },
+    );
+    assert.equal(localResult.ok, true);
+    assert.equal(captures.listInput.perPage, 100);
+    assert.equal(localResult.ok && localResult.value.preview?.rows.length, 100);
+
+    const chatResult = await tool.execute(
+      { op: 'list_expenses', page: 1, limit: 100 },
+      ctx,
+    );
+    assert.equal(chatResult.ok, true);
+    assert.equal(captures.listInput.perPage, 25);
+    assert.equal(chatResult.ok && chatResult.value.preview?.rows.length, 25);
+  });
+
+  it('preserves 0, 1, 10, 100, and multi-page terminal fixtures without gaps', async () => {
+    for (const totalRows of [0, 1, 10, 100, 210]) {
+      const source = Array.from({ length: totalRows }, (_, index) => ({
+        expense_id: `exp-${String(index + 1).padStart(3, '0')}`,
+        total: String(index + 1),
+        currency_code: 'INR',
+        date: '2026-07-01',
+      }));
+      const calls: Array<{ page?: number; perPage?: number; filters?: Record<string, unknown> }> = [];
+      const booksClient = {
+        ...makeBooksClient(),
+        listRecords: async (input: any) => {
+          calls.push(input);
+          const page = input.page ?? 1;
+          const perPage = input.perPage ?? 25;
+          const start = (page - 1) * perPage;
+          const items = source.slice(start, start + perPage);
+          return {
+            organizationId: 'org-1',
+            items,
+            hasMore: start + items.length < source.length,
+            page,
+          };
+        },
+      } as unknown as ZohoBooksPaginatedClient;
+      const tool = makeTool({ booksClient });
+
+      const proof = await assertLosslessPagingFixture({
+        expectedIds: source.map(row => row.expense_id),
+        initialCursor: 1,
+        readPage: async page => {
+          const result = await tool.execute({
+            op: 'list_expenses',
+            dateFrom: '2026-04-01',
+            dateTo: '2026-07-31',
+            page,
+            limit: 100,
+          }, { ...ctx, resultAudience: 'local_file' });
+          assert.equal(result.ok, true);
+          if (!result.ok) throw result.error;
+          return {
+            rows: result.value.preview?.rows ?? [],
+            hasMore: result.value.hasMore ?? false,
+            ...(result.value.nextPage === undefined
+              ? {}
+              : { nextCursor: result.value.nextPage }),
+          };
+        },
+        rowId: row => String(row['id']),
+      });
+
+      assert.equal(proof.rows.length, totalRows);
+      assert.deepEqual(calls.map(call => call.perPage), Array(calls.length).fill(100));
+      assert.deepEqual(calls.map(call => call.filters?.['date_start']), Array(calls.length).fill('2026-04-01'));
+      assert.deepEqual(calls.map(call => call.filters?.['date_end']), Array(calls.length).fill('2026-07-31'));
+      if (totalRows === 210) assert.deepEqual(proof.pageSizes, [100, 100, 10]);
+    }
   });
 
   it('surfaces contact payable/receivable totals in list_contacts preview', async () => {

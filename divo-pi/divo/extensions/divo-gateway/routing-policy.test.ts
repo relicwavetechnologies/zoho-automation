@@ -130,6 +130,8 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /rerun the same Bash command/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local client/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Gmail\/CRM → Sheets is always this path/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /explicit request for Python, terminal, a script, or a file-backed workflow selects this path before the first connected call/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /do not probe a registered provider tool first/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Keep all connected reads, writes, and verification.*inside the file through divo-local/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /automatically saves.*DIVO_RUN_DIR.*never print or cat rows/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /read the exact source recipe and the native divo-python-automation skill in this turn/i);
@@ -141,12 +143,17 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never print preview or row values/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /provider schema describe also runs once inside this same file through divo-local/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never call the registered provider tool first and then rediscover the same schema/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local owns one safe exact retry/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never add sleeps or retry rate_limited yourself/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /retired divo_python_automation tool is unavailable/i);
 		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /use one divo_python_automation call/i);
 		assert.match(ROUTER_SKILL, /Create one descriptive `.py` file/i);
 		assert.match(ROUTER_SKILL, /patch the same `.py` file with `edit`/i);
 		assert.match(ROUTER_SKILL, /Gmail\/CRM → Sheets is always this local-workflow path/i);
+		assert.match(ROUTER_SKILL, /explicit request for Python, terminal, a script, or a file-backed workflow selects this path before the first connected call/i);
 		assert.match(ROUTER_SKILL, /all connected reads, writes, and verification inside the same file through `divo-local`/i);
+		assert.match(ROUTER_SKILL, /divo-local.*owns one safe exact retry/is);
+		assert.match(ROUTER_SKILL, /never add sleeps or retry `rate_limited` yourself/i);
 		assert.match(ROUTER_SKILL, /retired `divo_python_automation` tool is unavailable/i);
 	});
 

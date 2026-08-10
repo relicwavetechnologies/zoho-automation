@@ -404,6 +404,7 @@ export class ToolExecutor {
     const execCtx: ToolExecutionContext = {
       runContext,
       perm,
+      ...(member.resultAudience ? { resultAudience: member.resultAudience } : {}),
       correlationId: input.requestId ?? input.execution?.actionId ?? randomUUID(),
       logger: this.deps.logger.child({ toolId: tool.id }),
       clock: this.deps.clock,
@@ -1326,7 +1327,11 @@ function isNativeSchemaDescribe(toolFamily: string, args: Record<string, unknown
 function rateLimitFailure(
   decision: Awaited<ReturnType<ConnectionRateLimitService['preflight']>>,
 ): GatewayResponse | null {
-  if (decision.kind === 'limited') return gatewayFailure('rate_limited', decision.message);
+  if (decision.kind === 'limited') {
+    return gatewayFailure('rate_limited', decision.message, {
+      retryAfterSeconds: decision.retryAfterSeconds,
+    });
+  }
   if (decision.kind === 'unavailable') return gatewayFailure('rate_limit_unavailable', decision.message);
   return null;
 }

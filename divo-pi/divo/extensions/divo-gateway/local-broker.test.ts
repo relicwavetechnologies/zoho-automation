@@ -233,6 +233,7 @@ describe("Divo local broker protocol", () => {
 
 	it("preserves backend RBAC and rate-limit failures without inventing success", async () => {
 		for (const status of ["permission_denied", "rate_limited"]) {
+			const retryAfterSeconds = status === "rate_limited" ? 17 : undefined;
 			const result = await executeLocalBrokerRequest({
 				version: 1,
 				request: { op: "tools.invoke", payload: { toolId: "googleSheets", args: { operation: "read" } } },
@@ -240,12 +241,17 @@ describe("Divo local broker protocol", () => {
 				resolveConfig: () => config,
 				readCorrelation: async () => correlation,
 				executeGateway: async () => ({
-					body: { ok: false, status, error: { code: status, message: `Backend ${status}` } },
+					body: {
+						ok: false,
+						status,
+						error: { code: status, message: `Backend ${status}`, retryAfterSeconds },
+					},
 					httpStatus: status === "rate_limited" ? 429 : 403,
 				}),
 			});
 			assert.equal(result.ok, false);
 			assert.equal(result.status, status);
+			assert.equal(result.error?.retryAfterSeconds, retryAfterSeconds);
 			assert.equal(result.error?.code, status);
 		}
 	});
@@ -333,6 +339,7 @@ describe("Divo local broker protocol", () => {
 		delete process.env.DIVO_MEMBER_TOKEN;
 		const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
 		const resultModes: unknown[] = [];
+		let rateAttempts = 0;
 		registerLocalDivoBroker({
 			on(name: string, handler: (event: any, ctx: any) => unknown) {
 				const existing = handlers.get(name) ?? [];
@@ -344,8 +351,21 @@ describe("Divo local broker protocol", () => {
 			readCorrelation: async () => correlation,
 			executeGateway: async (_resolved, request, _actionId, ctx) => {
 				if (request.op === "tools.invoke") resultModes.push(ctx.resultMode);
+				const toolId = request.op === "tools.invoke"
+					? (request.payload as { toolId?: string })?.toolId
+					: undefined;
+				if (toolId === "rateTool" && rateAttempts++ === 0) {
+					return {
+						body: {
+							ok: false,
+							status: "rate_limited",
+							error: { code: "rate_limited", message: "Wait once", retryAfterSeconds: 1 },
+						},
+						httpStatus: 429,
+					};
+				}
 				return {
-					body: request.op === "tools.invoke" && (request.payload as { toolId?: string })?.toolId === "badTool"
+					body: toolId === "badTool"
 						? { ok: false, status: "invalid_args", error: { code: "invalid_args", message: "Bad test args" } }
 						: { ok: true, status: "success", data: request.op === "tools.invoke"
 						? { toolId: "zohoBooks", action: "read", result: { rows: [{ id: "row-1", secret: "file-only" }] } }
@@ -404,7 +424,13 @@ describe("Divo local broker protocol", () => {
 				"invoke", "--tool", "zohoBooks", "--args-json", "{}", "--output", "page.json",
 			], { env: process.env });
 			assert.equal(JSON.parse(explicitResult.stdout).output, join(runDir, "page.json"));
-			assert.deepEqual(resultModes, ["local-file", "local-file", "local-file"]);
+			const retriedResult = await execFileAsync("divo-local", [
+				"invoke", "--tool", "rateTool", "--args-json", "{}", "--output", "retried.json",
+			], { env: process.env });
+			assert.equal(JSON.parse(retriedResult.stdout).output, join(runDir, "retried.json"));
+			assert.match(retriedResult.stderr, /retrying this exact call once in 1s/i);
+			assert.equal(rateAttempts, 2);
+			assert.deepEqual(resultModes, ["local-file", "local-file", "local-file", "local-file", "local-file"]);
 			await handlers.get("tool_execution_end")?.[0]?.({
 				toolName: "bash",
 				toolCallId: "bash-cli",
