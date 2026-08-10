@@ -205,7 +205,9 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
         // The app's own mark, not the first letter of its name. A row of cards
         // reading C / A / A asked somebody to tell Canva from Airtable from
         // AITable by initial, which is the one thing an icon is for.
-        mark: <ProviderMark provider={provider} size={22} />,
+        // 22 used to mean a 22px logo in a tile CSS pinned at 34. `size` is the
+        // tile now, and the onboarding card wants the same one the lists use.
+        mark: <ProviderMark provider={provider} size={34} />,
         markPlain: true,
         title: `Connect ${providerName(provider)}`,
         body: PITCH[provider],

@@ -532,10 +532,11 @@ function ShopifyConnectionGroup({ status, onOpen }: {
   return (
     <div className="ws-conn-group">
       <div className="ws-conn-h">
-        {/* Shopify's own green. It was the one app in this list without a
-            colour, which read as an unfinished row rather than as a different
-            kind of connection. */}
-        <AppMark short="S" tint="#008060" ink="#FFFFFF" />
+        {/* Shopify's published app icon — a finished mark with its own
+            background, so it fills the tile. It was the one app in this list
+            without a colour, which read as an unfinished row rather than as a
+            different kind of connection. */}
+        <AppMark short="S" asset="/brand/shopify.png" fill tint="#008060" ink="#FFFFFF" />
         <div className="ws-conn-h-main">
           <b>Shopify</b>
           <p>

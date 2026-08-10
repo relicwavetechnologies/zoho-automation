@@ -638,16 +638,23 @@ const PROVIDER_META: Record<Provider, {
   mark?: (size: number) => JSX.Element
   /** A real file under `public/brand`. */
   asset?: string
+  /**
+   * True when the file is a finished app icon rather than a glyph.
+   *
+   * Canva, Shopify and AITable publish a mark that already carries its own
+   * background and corner radius; Airtable, Zoho and Lark publish a shape on
+   * transparency. Drawn the same way, the first three get a tile around a tile
+   * and the second three float in a box too big for them — which is what
+   * "the icons are not placed well" looks like.
+   */
+  fill?: boolean
 }> = {
   google_workspace: { short: 'G', name: 'Google Workspace', mark: (s) => <GoogleMark size={s} /> },
   lark: { short: 'L', name: 'Lark', asset: '/brand/lark.png' },
-  // Dark ink rather than white, like Airtable's amber. White on Canva's teal is
-  // 3.01:1 however the teal is nudged, and darkening it far enough to carry
-  // white stops looking like Canva.
-  canva: { short: 'C', name: 'Canva', tint: '#00C4CC', ink: '#00312F' },
-  airtable: { short: 'A', name: 'Airtable', tint: '#FCB400', ink: '#3A2600' },
-  aitable: { short: 'Ai', name: 'AITable', tint: '#5B44CC', ink: '#FFFFFF' },
-  zoho: { short: 'Z', name: 'Zoho', tint: '#D32124', ink: '#FFFFFF' },
+  canva: { short: 'C', name: 'Canva', asset: '/brand/canva.png', fill: true },
+  airtable: { short: 'A', name: 'Airtable', asset: '/brand/airtable.png' },
+  aitable: { short: 'Ai', name: 'AITable', asset: '/brand/aitable.png', fill: true },
+  zoho: { short: 'Z', name: 'Zoho', asset: '/brand/zoho.png' },
 }
 
 /**
@@ -659,42 +666,90 @@ const PROVIDER_META: Record<Provider, {
  * own colour. One app looking unlike the rest reads as unfinished, not as a
  * different kind of connection.
  */
-export const AppMark = ({ short, tint, ink, size = 20 }: {
+/** How much of the tile a glyph-on-transparency takes. Full-bleed icons ignore it. */
+const GLYPH_SHARE = 0.62
+
+export const AppMark = ({ asset, fill, short, tint, ink, size = 34 }: {
+  /** A real file under `public/brand`, when there is one. */
+  asset?: string
+  /** True when the file is a finished app icon rather than a glyph. */
+  fill?: boolean
   short: string
-  tint: string
-  ink: string
+  tint?: string
+  ink?: string
   size?: number
 }) => (
-  <span className="ws-app" aria-hidden>
-    <span className="ws-app-l" style={{ color: ink, background: tint, fontSize: Math.round(size * 0.52) }}>
-      {short}
-    </span>
+  <span
+    className="ws-app"
+    aria-hidden
+    data-plain={asset ? 'true' : undefined}
+    data-fill={fill ? 'true' : undefined}
+    style={{ ['--ws-app' as string]: `${size}px` }}
+  >
+    {asset
+      ? (
+        <img
+          src={asset}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          style={fill
+            ? { width: '100%', height: '100%', display: 'block' }
+            : { width: Math.round(size * GLYPH_SHARE), height: Math.round(size * GLYPH_SHARE), display: 'block' }}
+        />
+      )
+      : (
+        <span className="ws-app-l" style={{ color: ink, background: tint, fontSize: Math.round(size * 0.44) }}>
+          {short}
+        </span>
+      )}
   </span>
 )
 
 /**
  * An app icon, at the size the row asks for.
  *
- * A tile rather than a bare glyph, so a drawn logo, a PNG and a lettered
- * fallback all occupy the same square and a list of them lines up whatever mix
- * it happens to contain.
+ * `size` is the **tile**, not the glyph inside it. It used to be the glyph, so
+ * the tile stayed 34px from CSS while the thing in it moved — a caller asking
+ * for 22 got a 22px logo floating in a 34px box, and every screen had to know
+ * that to line anything up.
+ *
+ * A finished app icon fills the tile edge to edge and is clipped to its corner
+ * radius; a glyph on transparency sits inset with room to breathe. That
+ * distinction is the whole difference between a list of icons that looks placed
+ * and one that looks pasted.
  */
-export const ProviderMark = ({ provider, size = 20 }: { provider: Provider; size?: number }) => {
+export const ProviderMark = ({ provider, size = 34 }: { provider: Provider; size?: number }) => {
   const meta = PROVIDER_META[provider]
+  const glyph = Math.round(size * GLYPH_SHARE)
   return (
-    <span className="ws-app" aria-hidden data-plain={meta.mark || meta.asset ? 'true' : undefined}>
+    <span
+      className="ws-app"
+      aria-hidden
+      data-plain={meta.mark || meta.asset ? 'true' : undefined}
+      data-fill={meta.fill ? 'true' : undefined}
+      style={{ ['--ws-app' as string]: `${size}px` }}
+    >
       {meta.mark
-        ? meta.mark(size)
+        ? meta.mark(glyph)
         : meta.asset
-          ? <img src={meta.asset} width={size} height={size} alt="" loading="lazy" decoding="async"
-              style={{ width: size, height: size, display: 'block' }} />
+          ? (
+            <img
+              src={meta.asset}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              style={meta.fill
+                ? { width: '100%', height: '100%', display: 'block' }
+                : { width: glyph, height: glyph, display: 'block' }}
+            />
+          )
           : (
-            /* The letter kept its grey box before, so Canva and Zoho were the
-               same object. A filled tile in the brand's colour reads as that
-               app at a glance without claiming to be its logo. */
+            /* Only reached by a provider with no artwork. Kept so adding one to
+               `Provider` cannot render an empty square while its file is found. */
             <span
               className="ws-app-l"
-              style={{ color: meta.ink, background: meta.tint, fontSize: Math.round(size * 0.52) }}
+              style={{ color: meta.ink, background: meta.tint, fontSize: Math.round(size * 0.44) }}
             >
               {meta.short}
             </span>

@@ -1157,6 +1157,11 @@
 .cur .ws-app[data-plain="true"] {
   background: var(--cur-surface); border-color: var(--cur-hairline-soft);
 }
+/* Canva, Shopify and AITable publish a finished app icon: its own background,
+   its own corner radius. Left on the tile it became a rounded square inside a
+   rounded square with a hairline between them. The tile's `overflow: hidden`
+   does the clipping instead, so the icon keeps its shape and loses the frame. */
+.cur .ws-app[data-fill="true"] { background: transparent; border-color: transparent; }
 .cur .ws-app-l {
   width: 100%; height: 100%; display: grid; place-items: center;
   font-weight: 600; letter-spacing: -0.01em;
