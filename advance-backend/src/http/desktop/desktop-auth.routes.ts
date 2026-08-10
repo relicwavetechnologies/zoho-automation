@@ -347,6 +347,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
   const callbackAllowlist = parseCallbackOriginAllowlist(deps.env?.BACKEND_PUBLIC_URL_ALLOWLIST);
 
+  /** Origin of a configured URL, or the raw value when it does not parse. */
+  const safeOriginOf = (value: string): string => {
+    try { return new URL(value).origin; } catch { return value.trim().replace(/\/+$/, ''); }
+  };
+
   /**
    * Build a callback URL on the backend origin the Desktop actually signed in
    * against. Falling back is legal but almost always a misconfiguration — the
@@ -372,6 +377,49 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
   };
 
   /**
+   * The web app's origin for *this* request, rather than for the deployment.
+   *
+   * A deployment can answer to more than one hostname — a real domain and the
+   * bare-IP name it was stood up on, say — and a browser's session lives in
+   * `localStorage`, which is partitioned per origin. Sending somebody who
+   * signed in on one hostname back to the other therefore stores their token
+   * somewhere the hostname they were using cannot read, and the app they return
+   * to shows them the login page holding a session that exists. It reads as
+   * being logged out at random, and no amount of signing in again fixes it.
+   *
+   * So the answer is the origin they arrived on, provided the deployment claims
+   * it. `BACKEND_PUBLIC_URL_ALLOWLIST` is that claim, and an unrecognised Host
+   * header falls back to `APP_BASE_URL` exactly as before — a Host header is
+   * client-controlled, and following an unvetted one would let a link of
+   * somebody else's choosing decide where a fresh session gets written.
+   *
+   * Falls back for a split deployment too, where the app and the API are on
+   * different hosts: there the request's own origin serves no web app, and the
+   * configured one is the only correct answer.
+   */
+  const appOriginFor = (req: Request): string => {
+    const host = requestHost(req.headers);
+    const configured = resolveCallbackOrigin({
+      host: undefined,
+      protocol: req.protocol,
+      allowlist: callbackAllowlist,
+      fallbackUrl: deps.appBaseUrl,
+    }).origin;
+    if (!host) return configured;
+
+    const backend = resolveCallbackOrigin({
+      host,
+      protocol: req.protocol,
+      allowlist: callbackAllowlist,
+      fallbackUrl: deps.backendPublicUrl,
+    });
+    // Only when this deployment serves the app and the API together. When they
+    // share an origin, the host that answered this request also serves the app.
+    const together = safeOriginOf(deps.appBaseUrl) === safeOriginOf(deps.backendPublicUrl);
+    return backend.source !== 'fallback' && together ? backend.origin : configured;
+  };
+
+  /**
    * The page a connection OAuth popup lands on.
    *
    * It tells the opener directly rather than leaving it to guess. The web app
@@ -389,10 +437,18 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
    * the desktop app, which has no opener to notify and where the human closes
    * the window themselves.
    */
-  const connectionCallbackPage = (provider: string, headline: string, detail: string): string => {
-    const appOrigin = (() => {
-      try { return new URL(deps.appBaseUrl).origin; } catch { return ''; }
-    })();
+  const connectionCallbackPage = (
+    req: Request,
+    provider: string,
+    headline: string,
+    detail: string,
+  ): string => {
+    // This request's origin, not the deployment's canonical one. A deployment
+    // answering to two hostnames would otherwise aim the message at the other
+    // one, where `postMessage` drops it silently and the connection list never
+    // refreshes — the same popup-hangs-forever symptom this page exists to
+    // cure, returning by a different route.
+    const appOrigin = appOriginFor(req);
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${headline}</title></head>
 <body style="background:#111217;color:#f4f4f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:grid;place-items:center;min-height:100vh;margin:0">
   <main style="width:min(420px,calc(100vw - 48px));text-align:center">
@@ -922,7 +978,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
     const statePayload = verifyJwt(String(state), deps.memberJwtSecret);
     if (statePayload?.kind === 'desktop_lark_login' && statePayload.nonce && statePayload.returnTo) {
-      const loginUrl = new URL('/login', deps.appBaseUrl);
+      // The origin they started on, not the deployment's canonical one. A
+      // browser sent to the other hostname stores its new token in a
+      // `localStorage` the hostname it was using cannot read, and lands back on
+      // the login page holding a session that exists.
+      const loginUrl = new URL('/login', appOriginFor(req));
       loginUrl.searchParams.set('next', statePayload.returnTo);
       loginUrl.searchParams.set('lark_code', String(code));
       loginUrl.searchParams.set('lark_state', String(state));
@@ -2332,6 +2392,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       log.info('google.callback.success', { userId: payload.userId, ownerType });
 
       res.send(connectionCallbackPage(
+        req,
         'google_workspace',
         'Google connected',
         'You can close this window and return to Divo.',
@@ -2646,6 +2707,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         connectionId: connection.value.id,
       });
       res.send(connectionCallbackPage(
+        req,
         'canva',
         'Canva connected',
         'You can close this window and return to Divo.',
@@ -2917,6 +2979,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         connectionId: connection.value.id,
       });
       res.send(connectionCallbackPage(
+        req,
         'airtable',
         'Airtable connected',
         'You can close this window and return to Divo.',
@@ -3561,6 +3624,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         connectionId: integrationResult.value.id,
       });
       res.send(connectionCallbackPage(
+        req,
         'zoho',
         'Zoho connected',
         'You can close this window and return to Divo.',

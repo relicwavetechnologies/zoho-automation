@@ -189,7 +189,7 @@ job, not this one.`,
 Choose the exact approved specialist returned by this router.
 
 - Current public facts and external verification → \`web-search\`.
-- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`. Prefer one main Semrush call and one main table (for example one \`backlinks_comparison\` for multi-domain ranking). Treat bounded results as bounded; for a requested artifact, use the local Python workflow only when the operation exposes complete data or truthful continuation.
+- Official Semrush domain, keyword, ranking, or backlink data → \`divo-semrush-seo-research\`, which owns how many calls that takes and how bounded the answer is.
 - Approved OMS publisher/site inventory → \`divo-oms-site-inventory\`.
 
 Never substitute web search results for configured Semrush or OMS data.

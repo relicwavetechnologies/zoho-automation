@@ -13,59 +13,102 @@ export const DIVO_SEMRUSH_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = 
   summary: 'Run Semrush domain and organic-search research through backend-configured Semrush web operations.',
   markdown: `# Divo Semrush SEO Research
 
-Use this skill for read-only Semrush SEO research available through Divo's backend-configured capability. The backend uses a backend-owned Semrush web session (\`www.semrush.com\` only — never \`api.semrush.com\`); the model never receives endpoint credentials, cookies, API keys, or raw provider headers.
+Read-only Semrush research through Divo's backend-configured capability. The
+backend holds the Semrush web session; you never receive endpoint credentials,
+cookies, or provider headers, so there is nothing to call directly. Never reach
+for browser automation, curl, or a local API key instead.
 
-## Backend environment (ops only — never expose to members)
+## Choosing the call
 
-- \`SEMRUSH_WEB_API_KEY\` — the only credential the wired operations use
-- \`SEMRUSH_WEB_COOKIE\` — optional; read by no wired operation
-- \`SEMRUSH_TIMEOUT_MS\` (default 15000 ms)
+- Multi-domain ranking, authority, or backlink comparison → **one**
+  \`backlinks_comparison\` carrying every domain the member named. Do not also
+  run \`domain_overview\` per domain unless they asked for overview fields such
+  as organic keywords, traffic, or a rank snapshot.
+- Where a domain stands overall → \`domain_overview\`.
+- Where a keyword ranked and how it moved → \`keyword_position_trend\`.
 
-## Senior curl mapping
+Preflight the exact proposed call first. Preflight verifies configuration and
+operation support; it retrieves no data.
 
-| # | Senior curl | Divo operation | Status |
-| --- | --- | --- | --- |
-| 1 | \`POST /backlinks/webapi2/\` · \`type=backlinks_comparison\` | \`backlinks_comparison\` | Callable |
-| 2 | \`GET /analytics/backlinks/webapi2\` · \`action=export\` · \`type=backlinks\` | — | **Excluded** — live probe \`403 ERROR 130 API DISABLED\`; do not call or implement |
-| 3 | \`POST /dpa/rpc\` · \`ranks.Ranks\` · \`organic.overview\` | \`domain_overview\` | Callable |
-| 4 | \`POST /dpa/rpc\` · \`organic.KeywordPositionTrend\` · \`organic.positions\` | \`keyword_position_trend\` | Callable |
+Show one main table in chat. You may offer one follow-up, such as "Want domain
+overview detail for any of these?" Add further Semrush calls only after the
+member asks in the same thread.
 
-Only the three **Callable** operations below may be invoked through the \`semrush\` tool.
+## What each operation actually returns
 
-## Operating rules
+- \`domain_overview\` takes one bare domain and answers with **one row per
+  country database** Semrush holds it in, so a single call already covers
+  "global and country-wise traffic". \`database\` chooses which country leads
+  the table; the rest follow by organic traffic. For a one-country question,
+  read the first row — do not call again per country.
+- \`backlinks_comparison\` returns authority score, total backlinks, and
+  referring domains for 1–10 targets in **one web request**. Compare the domains
+  the member actually named; do not pad the list to look thorough.
+- \`keyword_position_trend\` takes one domain and one keyword and returns a
+  **dated series** of positions around the date you pass, not a single row. It
+  is not a keyword list.
+- \`database\` is a two-letter country code and defaults to \`in\`. There is no
+  fixed list to choose from: the databases a domain actually has are the
+  \`Database\` column of its own \`domain_overview\`, so run that first when the
+  member names a country you have not seen for this domain. If Semrush does not
+  recognise a code it says so, and that answer is reported rather than guessed
+  around.
 
-1. Resolve this skill before any Semrush research. Use the returned Semrush tool recipe exactly; do not call Semrush, browser automation, curl, or a local API key directly.
-2. Use only documented operation arguments. Never invent endpoint paths, report names, headers, cookies, credentials, export columns, or raw provider filters.
-3. Preflight the exact proposed call before invoking it. Preflight verifies backend configuration and operation support; it does not retrieve data.
-4. Treat result states precisely:
-   - \`complete\`: the returned Semrush data covered this request.
-   - \`empty\`: the request was valid but Semrush had no matching coverage.
-   - \`partial\`: Semrush has another available page. State that limitation for the chat preview.
-   - \`blocked\` or an invocation error: explain whether configuration, permission, unsupported capability, or provider availability prevented the lookup. Never invent the missing data.
-5. Summarize useful evidence in chat; the structured preview contains at most 25 rows. Present **one main table** when one operation is enough. Treat a continuation as incomplete coverage and never pull bulk rows through model context.
+## The returned rows are the entire world this answer knows about
 
-## Shy answering (default)
+A country missing from \`domain_overview\` is one Semrush has **no record for**.
+It is not a measured zero and not evidence of no presence. Never write that an
+unreturned country is unindexed, has zero traffic, or has no visibility, and
+never count how many markets a domain is missing from. If you name one as an
+example, the same sentence must say this is Semrush having no record. Report the
+countries that came back, say how many there were, and say plainly that Semrush
+returned nothing for anywhere else — a member cannot tell an inference apart
+from a finding.
 
-- Multi-domain ranking, authority comparison, or backlinks comparison → **one** \`backlinks_comparison\` with all domains the member named (up to the operation limit). Do not also call \`domain_overview\` per domain unless the member asked for overview-specific fields such as organic keywords, traffic, or rank snapshot.
-- Show one main table in chat. You may offer one follow-up: "Want domain overview detail for any of these?"
-- Add extra Semrush calls only after explicit member follow-up in the same thread.
+A returned row with \`Organic Traffic\` 0 is the opposite case: that is measured,
+and can be described as ranking without earning clicks.
 
-## Supported backend operations (3 callable)
+The same distinction applies to backlinks. When \`coverage.missingTargets\` names
+a target, that is no provider data, not zero.
 
-- \`domain_overview\`: one bare domain. Semrush answers with **one row per country database** it holds that domain in, so a single call already covers "global and country-wise traffic". \`database\` chooses which country leads the table; the rest follow by organic traffic. For a one-country question, read the first row and say so — do not call the operation again per country.
-  **The returned rows are the entire world this answer knows about.** Prefer not to name a country Semrush did not return; if you do name one as an example, the same sentence must say that this is Semrush having no record, **not** the domain having no presence. Never write that an unreturned country is unindexed, has zero traffic, or has no visibility — Semrush did not measure it, and a member cannot tell an inference apart from a finding.
-  A \`domain_overview\` result also carries \`insights\`: counts and shares Divo calculated from those same rows, at no extra provider cost. Read the answer to "how many countries", "how much traffic", "how concentrated", or "which are the biggest markets" straight out of it.
-- \`backlinks_comparison\`: authority score, total backlinks and referring domains per target (1–10 domains in one request). More than ten named domains means more than one call: split them, then present a single merged ranking. The result carries \`insights.ranking\` — every target numbered 1..N, strongest authority first. Walk that list when you write the answer. **Report every position.** A comparison that quietly describes ten of eleven targets looks correct, because each number in it is correct.
-- \`keyword_position_trend\`: one domain and one keyword, returned as a **dated series** of positions around the date you pass — not one row. Use it for "where did this keyword rank" and for how that rank moved over the returned window. Not for full keyword lists.
-- \`database\` is a two-letter Semrush country code and defaults to \`in\`. There is no fixed list to choose from: the databases a domain actually has are the \`Database\` column of a \`domain_overview\` for that domain, so run that first when the member names a country you have not seen for this domain. If Semrush does not recognise a code it says so, and that answer is reported rather than guessed around.
+## Counts come from \`insights\`
 
-## Cost and honesty rules for these operations
+Never from memory, and never by tallying the table. Every result carries
+\`insights\`, counted by the backend from the same rows the run returned.
 
-1. \`backlinks_comparison\` is **one web request** for all listed targets (1–10). Compare the domains the user actually named; do not pad the list or fan out \`domain_overview\` per target to be thorough.
-2. If Semrush has no backlink overview for a requested target, \`coverage.missingTargets\`, \`insights.targetsWithoutProviderData\` and the export name it as no provider data rather than zero. Those targets rank last with null metrics; never present a missing report as an authority score of 0 or as the weakest site.
-3. \`domain_overview\` returns a row per country Semrush holds the domain in, and nothing at all about the countries it does not. A country missing from that list is one Semrush has no record for — **not** a measured zero, and not evidence of no presence. Never write that an absent country is unindexed, has zero traffic, or has no visibility, and never count how many markets the domain is missing from. If you name one as an example, say in the same sentence that Semrush has no record of it. Report the countries that came back, say how many there were, and say plainly that Semrush returned no data for anywhere else. A row present with \`Organic Traffic\` 0 is different: that is measured, and can be described as ranking without earning clicks.
-4. Counts come from \`insights\`, not from counting. A \`domain_overview\` result carries \`insights\` with \`countriesReturned\`, \`countriesWithTraffic\`, \`countriesWithZeroTraffic\`, \`totalOrganicTraffic\`, \`countriesForEightyPercentOfTraffic\`, \`tiers\` and \`topCountries\`. Every "how many" and "how much" answer quotes a field from there. Never tally the preview instead: it stops at 25 rows, so counting it undercounts a longer run. If a number you want is not in \`insights\`, say what you can support rather than deriving it by eye.
-5. Never substitute one report for another. If the user asked for something outside these three operations (including senior curl #2 backlink export), say it is not available through Divo Semrush yet.`,
+A \`domain_overview\` result answers "how many countries", "how much traffic",
+"how concentrated" and "which are the biggest markets" from
+\`countriesReturned\`, \`countriesWithTraffic\`, \`countriesWithZeroTraffic\`,
+\`totalOrganicTraffic\`, \`countriesForEightyPercentOfTraffic\`, \`tiers\` and
+\`topCountries\`. Quote those fields.
+
+A \`backlinks_comparison\` result carries \`insights.ranking\`: every target
+numbered 1..N, strongest authority first, with
+\`insights.targetsWithoutProviderData\` naming the ones Semrush had no report
+for. Walk that list when you write the answer and **report every position** —
+eleven sites were once described as ten, and every number in that answer was
+correct, which is why nobody caught it. Targets with no report rank last with
+null metrics; never present one as an authority score of 0 or as the weakest
+site.
+
+Counting the preview by eye is what these fields replaced: the same run was
+reported as 22 zero-traffic countries and then 23, and the preview stops at 25
+rows, so tallying it undercounts a longer run. If a number you want is not in
+\`insights\`, say what you can support rather than deriving it.
+
+## Reporting
+
+The structured preview holds at most 25 rows. Summarize the useful evidence and
+never pull bulk rows through model context. Treat a continuation as incomplete
+coverage: \`partial\` means Semrush has another page, so say that rather than
+presenting the preview as the whole picture. \`empty\` means the request was
+valid and Semrush had no matching coverage. On \`blocked\` or an invocation
+error, say whether configuration, permission, unsupported capability, or
+provider availability stopped the lookup, and never invent the missing data.
+
+If the member asks for something outside these three operations — a backlink
+export, for instance — say it is not available through Divo Semrush yet. Never
+substitute one report for another.`,
   toolIds: ['semrush'],
   tags: ['divo', 'seo', 'semrush', 'organic', 'rankings', 'domain'],
   aliases: ['semrush', 'seo research', 'organic rankings', 'domain overview'],

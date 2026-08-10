@@ -289,10 +289,16 @@ not rewrite more than two skill definitions.
 ### Wave 1 — central data decision
 
 - [x] `data-router`
-- [x] `secure-data-export`
+- [x] ~~`secure-data-export`~~ — **superseded, not shipped.**
 
-Rewritten 2026-08-10; see §15. Static, unit, and graph gates pass. The Agent
-Seat and native Cloud-Pi gates are still open, so this pair is not reconciled.
+Rewritten 2026-08-10 in `0dda5a26e`; see §15. The runtime track then removed the
+whole export pipeline in `e90de44f2` and `4596fc00a`, deleting the
+`secure-data-export` skill and the `dataExport` tool outright and rewriting
+`data-router` to route complete data movement through the source specialist,
+`divo-python-automation`, and the destination specialist. The compression of
+that skill therefore never reached a runtime. What survived the retirement is
+the method, not the text: the tool-owns-its-own-contract rule, the ask/stop
+lesson in §15, and the test-fossilization fix.
 
 Goal: one unambiguous distinction between bounded chat work, replayable
 provider export, bespoke local transformation, and reading/editing an existing
@@ -301,8 +307,8 @@ evidence permits removal.
 
 ### Wave 2 — local transformation and Sheet destination
 
-- [ ] `divo-python-automation`
-- [ ] `google-sheets`
+- [x] `google-sheets`
+- [x] `divo-python-automation` — **examined and deliberately left unchanged.**
 
 Goal: one persistent script, governed calls, local source/checkpoint files,
 chunked write, exact read-back, and source/written/verified reconciliation.
@@ -311,8 +317,8 @@ the runtime does not provide.
 
 ### Wave 3 — research routing
 
-- [ ] `research-router`
-- [ ] `divo-semrush-seo-research`
+- [x] `research-router`
+- [x] `divo-semrush-seo-research`
 
 Goal: choose Semrush versus web/OMS once; retain only Semrush facts needed for
 truthful interpretation and the cheapest proven operation selection.
@@ -608,6 +614,113 @@ This track is complete only when:
   (`data-export.types.ts:105-113`). Same wording before the rewrite, so not a
   regression; worth settling in Wave 7.
 - Decision: content complete; **gates §9.3 and §9.4 still open.**
+
+### Pair: google-sheets + divo-python-automation — 2026-08-11
+
+- Commit / environment: local worktree on `dev`, clean baseline after the export
+  retirement landed. Not reconciled to any DB.
+- Before → after bytes: `google-sheets` 13,350 → 10,314 (3,338 → 2,579 tok),
+  −3,036 bytes. `divo-python-automation` unchanged at 8,791. Catalogue
+  240,704 → 237,668 bytes.
+- **`divo-python-automation` was examined and deliberately not compressed.**
+  `divo-local` is a CLI, not a registered tool, so no typed contract exists to
+  defer to and the dedup thesis finds nothing. Its bulk is the `divo_invoke`
+  helper, whose exact error handling and `DIVO_RUN_DIR` containment check are
+  the mechanics §4.6 says to keep as a support fixture, plus the
+  checkpoint/reconcile rules. The only available cut was ~300 bytes of generic
+  "the backend enforces RBAC" prose. §3 says shorter is not automatically
+  better; this is the skill that proves it.
+- Two defects fixed, not merely bloat: three JSON examples taught
+  `{"toolId": "googleSheets", "args": {…}}`, the `divo_gateway` envelope deleted
+  when contracts became typed tools — and which this skill's own preamble
+  already says is rejected. And the entire "must not be an Office file"
+  paragraph was a second copy of `OFFICE_FILE_RECOVERY`, which
+  `withRecoveryHint` appends to Google's own refusal. The error-attached copy is
+  strictly stronger: skill prose reaches the model only if the skill was read.
+  Its test moved to `tests/tools/google-workspace-office-file.test.ts`, which
+  already asserted every claim the skill made.
+- Also removed: the `resolve_reference`/`call_resolved_sheet` mechanics, the
+  `connectionId` reuse rules, and the format/resize argument shapes — all stated
+  by the `googleSheets` `parameterDocs` or bound before inference through
+  `bootstrap.nativeContracts`.
+- Kept against first instinct, after review: `frozen_row_count`, the
+  machine-readable `read_sheet_values` fields, the partial-task definition, both
+  pasted-URL forms, and the `manage_sheet_data_validation` shape — the last
+  because `suggestedProductOperations` has no branch that ever binds it and no
+  keyword for "dropdown", while `dropdown` is a registered alias of this skill.
+  The rule cuts both ways: the same reasoning that deletes a bound schema
+  requires writing out an unbound one.
+- Cold review: found my Lark/Desktop guard was decorative — with the `s` flag it
+  passed on channel-inverted prose, and a Lark run never receives
+  `data.resource` at all because the dispatcher replaces that response with
+  `{status, destinationReferenceId}`. Replaced with a tempered pattern that
+  cannot cross the sentence boundary, and proved it by mutating the body and
+  confirming the assertion fails. The reviewer's own suggested regex had the
+  same defect it was diagnosing.
+- Tests: backend suite 3,370 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
+  Verified the diff is a single hunk inside `case 'sheets'`; the other ten
+  Google skills are byte-identical.
+- Agent Seat result: not run.
+- Cloud-Pi Development result: not run.
+- DB revisions / registry revision: not reconciled.
+- Cross-plan dependency discovered: the shared Google preamble — "Governed
+  execution", "Canonical governed call shape", "Reliability and safety" — is
+  4,795 bytes carried by all 11 Google skills, **52,745 bytes (~13,200 tokens),
+  about 22% of the catalogue**, from one template. It is the largest remaining
+  lever and one edit to `buildProductSkillMarkdown`. Left untouched here because
+  it changes 11 skills inside a commit claiming two; it belongs to Wave 8.
+- Decision: content complete; **gates §9.3 and §9.4 still open.**
+
+### Pair: research-router + divo-semrush-seo-research — 2026-08-11
+
+- Commit / environment: local worktree on `dev`. Not reconciled to any DB.
+- Before → after bytes: `divo-semrush-seo-research` 6,180 → 4,031
+  (1,545 → 1,008 tok), −35%. `research-router` 771 → 562, −27%. Catalogue
+  237,668 → 235,310 bytes.
+- **Two sections were policy violations, not merely bloat.**
+  `## Backend environment (ops only — never expose to members)` named
+  `SEMRUSH_WEB_API_KEY`, `SEMRUSH_WEB_COOKIE`, and `SEMRUSH_TIMEOUT_MS` under a
+  heading declaring they must not be exposed, inside a document the model reads
+  and can quote — against §5 and the §8 Wave 11 audit item. `## Senior curl
+  mapping` was a provenance table pairing each operation with the senior's
+  original curl calls, including an Excluded row for a probe that answered
+  `403 ERROR 130 API DISABLED`: history, and §5 names historical provider notes
+  and failure narratives for removal. The tool's `operation` enum decides
+  callability and its `parameterDocs` already name the three operations.
+- **A test was pinning the env-var section in place.** `documents web-only env
+  vars without legacy api.semrush.com keys` asserted all three names appear in
+  the skill body. Its intent — the wired path is the web session, not the
+  retired `api.semrush.com` key — is real, so it moved to `EnvSchema`, which
+  declares the variables, plus a guard that no `SEMRUSH_*` name returns to the
+  markdown. Note `SEMRUSH_API_KEY_WEBHOOK_URL` exists and is separate, so the
+  assertion matches exact keys rather than a prefix.
+- **The flagship honesty rule was stated twice.** "A country Semrush did not
+  return is unknown, not a measured zero" appeared at length in both the
+  operation list and the cost/honesty rules, having already drifted in wording
+  between the two. Now stated once, with a test asserting it appears exactly
+  once — the duplication is what let them diverge.
+- Router/specialist boundary: "prefer one main Semrush call and one main table"
+  and the local-Python artifact condition were execution decisions living in the
+  router. The router now selects and says the specialist owns call count and
+  boundedness; the specialist states both. Guarded from both sides.
+- Also removed as tool-owned: "never invent endpoint paths, report names,
+  headers, cookies, credentials, export columns, or raw provider filters"
+  (`parameterDocs` states Divo rejects exactly these), and the bare listing of
+  the four result states (`resultSchema` types the enum) — the honesty
+  consequence of each state was kept.
+- Kept: the shy-answering call prior, one-row-per-country-database semantics,
+  `keyword_position_trend` returning a dated series, `database` discovery from
+  the `Database` column, the 1–10 targets in one web request cost prior,
+  `coverage.missingTargets` meaning no provider data, counts-from-rows, and the
+  25-row preview cap.
+- Tests: backend suite 3,370 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
+- Cold review: **not run before commit** — this pair was committed on an
+  explicit request to move quickly. Run it before reconciling.
+- Agent Seat result: not run.
+- Cloud-Pi Development result: not run.
+- DB revisions / registry revision: not reconciled.
+- Decision: content complete; **gates §9.3 and §9.4 still open, and §12's cold
+  review is owed.**
 
 Append one block per pair:
 
