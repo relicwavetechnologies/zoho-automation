@@ -21,7 +21,7 @@ import {
 } from 'lucide-react'
 import {
   Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, Heatmap, NoAccess, PageHeader, Panel, Prompt,
-  Seg, Skel, SkelRows, Switch, listPhrase, money, useStaged,
+  RowMenu, Seg, Skel, SkelRows, Switch, listPhrase, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
 import { notify } from '@/lib/notify'
@@ -337,6 +337,67 @@ export function TeamHome({ replay, go }: Props) {
   )
 }
 
+/** One row of the people list, as the department snapshot carries it. */
+type TeamPerson = {
+  userId: string
+  name: string | null
+  email: string
+  roleId?: string
+  roleSlug?: string
+  roleName?: string
+}
+
+/**
+ * Somebody's role, changeable where you read it.
+ *
+ * A select rather than a menu, because the choice is one of a short known list
+ * and a select says so without being opened. It stops propagation: the row
+ * behind it opens the person, and picking a role is not that.
+ *
+ * A manager's is rendered as text, not a disabled select. A disabled control
+ * invites a click that will never work, and this scope genuinely cannot change
+ * it — the backend's `ordinaryMember` refuses, so offering the shape of a
+ * control would be a promise the product does not keep.
+ */
+function RoleSelect({ person, roles, busy, onPick }: {
+  person: TeamPerson
+  roles: DeptRole[]
+  busy: boolean
+  onPick: (roleId: string, roleName: string) => void
+}) {
+  if (person.roleSlug === 'MANAGER') {
+    return (
+      <span className="ws-sub" title="Only a company admin can change who leads this team">
+        {person.roleName ?? 'Manager'}
+      </span>
+    )
+  }
+  // Managers are governed at company level, so the Manager role is not on offer
+  // here — the same rule the drawer and the roles page already apply.
+  const assignable = roles.filter((r) => r.slug !== 'MANAGER')
+  return (
+    <select
+      className="select ws-role-pick"
+      value={person.roleId ?? ''}
+      disabled={busy || assignable.length === 0}
+      aria-label={`Role for ${displayName(person.name, person.email)}`}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => {
+        e.stopPropagation()
+        const picked = assignable.find((r) => r.id === e.target.value)
+        if (picked && picked.id !== person.roleId) onPick(picked.id, picked.name)
+      }}
+    >
+      {/* A role the snapshot knows but this scope may not assign still has to
+          be selectable-as-current, or the box would show somebody else's role. */}
+      {person.roleId && !assignable.some((r) => r.id === person.roleId) ? (
+        <option value={person.roleId}>{person.roleName ?? 'Current role'}</option>
+      ) : null}
+      {assignable.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+    </select>
+  )
+}
+
 /* ══ People — person-first permissions ═════════════════ */
 export function TeamPeople({ replay, toast }: Props) {
   const dept = useMyManagedDepartment()
@@ -349,6 +410,9 @@ export function TeamPeople({ replay, toast }: Props) {
   const { usage } = useTeamUsage(dept?.id)
   const matrix = useDepartmentMatrix(dept?.id)
   const [adding, setAdding] = useState(false)
+  /** Whose row is mid-write, so its two controls cannot be pressed twice. */
+  const [busyUser, setBusyUser] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<TeamPerson | null>(null)
 
   const people = snapshot?.memberships ?? []
   const list = useMemo(
@@ -362,6 +426,41 @@ export function TeamPeople({ replay, toast }: Props) {
   const exceptionsFor = (userId: string) => matrix.tools.reduce(
     (n, tool) => n + tool.memberActionStates.filter((s) => s.userId === userId && s.provenance === 'override').length, 0,
   )
+
+  /*
+   * The server's sentence, not a generic one.
+   *
+   * `setMemberRole` refuses a manager with "Only a company administrator can
+   * change a department manager", and refuses a role this scope may not assign
+   * — each is a different thing to do next, and a flat "Could not change their
+   * role" would throw away the only part anybody can act on.
+   */
+  const changeRole = async (person: TeamPerson, roleId: string, roleName: string) => {
+    const who = firstName(person.name, person.email)
+    setBusyUser(person.userId)
+    try {
+      await setMemberRole(person.userId, roleId)
+      toast(`${who} is now ${roleName}`)
+    } catch (e) {
+      notify.failed(`${who}'s role was not changed`, e instanceof Error ? e.message : null)
+    } finally {
+      setBusyUser(null)
+    }
+  }
+
+  const confirmRemove = async (person: TeamPerson) => {
+    const who = firstName(person.name, person.email)
+    setBusyUser(person.userId)
+    try {
+      await removeMember(person.userId)
+      toast(`${who} removed from ${dept.name}`)
+    } catch (e) {
+      notify.failed(`${who} was not removed`, e instanceof Error ? e.message : null)
+    } finally {
+      setBusyUser(null)
+      setRemoving(null)
+    }
+  }
 
   return (
     <>
@@ -420,11 +519,41 @@ export function TeamPeople({ replay, toast }: Props) {
                         {p.roleSlug === 'MANAGER' ? <span className="ws-tag">Leads this team</span> : null}
                         {count > 0 ? <span className="ws-prov" data-src="department_user_override">{count} personal exception{count > 1 ? 's' : ''}</span> : null}
                       </b>
-                      <p>{p.email} · {p.roleName ?? 'Member'}{spend && spend.runs === 0 ? ' · never used Divo' : ''}</p>
+                      {/* The role has moved to the control on the right, so it
+                          is not printed twice on one line. */}
+                      <p>{p.email}{spend && spend.runs === 0 ? ' · never used Divo' : ''}</p>
                     </div>
                     <div className="ws-row-act">
                       <span className="ws-sub">{spend?.runs ?? 0} tasks</span>
                       <span className="ws-sub">{money(spend?.spendUsd ?? 0)}</span>
+                      {/*
+                        The role, in the row.
+                        Changing somebody's role is the commonest thing done on
+                        this page and it was three clicks deep — open the person,
+                        find Membership, change it, close. It is one click here,
+                        and the row still opens for everything else.
+                      */}
+                      <RoleSelect
+                        person={p}
+                        roles={snapshot?.roles ?? []}
+                        busy={busyUser === p.userId}
+                        onPick={(roleId, roleName) => void changeRole(p, roleId, roleName)}
+                      />
+                      <RowMenu
+                        busy={busyUser === p.userId}
+                        label={`Actions for ${displayName(p.name, p.email)}`}
+                        items={p.roleSlug === 'MANAGER'
+                          // A manager's membership is the backend's to change —
+                          // `ordinaryMember` refuses it — so the menu is empty
+                          // rather than offering something that will be refused.
+                          ? []
+                          : [{
+                              label: 'Remove from team',
+                              icon: Trash2,
+                              danger: true,
+                              onSelect: () => setRemoving(p),
+                            }]}
+                      />
                     </div>
                   </ClickRow>
                 )
@@ -433,6 +562,19 @@ export function TeamPeople({ replay, toast }: Props) {
           </Fade>
         )}
       </Panel>
+
+      {/* Asked before it happens, because it is not undoable from here: the
+          membership goes and anything granted to them personally in this team
+          goes with it. Same words the drawer's own Remove uses. */}
+      {removing ? (
+        <Confirm
+          title={`Remove ${firstName(removing.name, removing.email)} from ${dept.name}?`}
+          body="Divo stops doing anything for them through this team, and anything granted to them personally here goes with the membership. Their Divo account, and any other team they are in, are untouched."
+          confirm="Remove"
+          onConfirm={() => { void confirmRemove(removing) }}
+          onClose={() => setRemoving(null)}
+        />
+      ) : null}
 
       {adding ? (
         <AddPersonDrawer

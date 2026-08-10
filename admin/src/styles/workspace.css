@@ -1839,8 +1839,26 @@
 .cur .ws-row.ws-rule-row[data-off="true"] { opacity: 0.62; }
 .cur .ws-rule-when { font-size: 11.5px; color: var(--cur-muted); white-space: nowrap; }
 
+/* The role, inline in a people row. Shorter than a form select and quiet until
+   hovered — it sits among figures, not in a form, and a full-height bordered
+   box on every row would make the list read as ten inputs. */
+.cur .ws-role-pick {
+  height: 28px; padding: 0 26px 0 9px; font-size: 12.5px;
+  background-color: transparent; border-color: transparent; color: var(--cur-body);
+  max-width: 140px;
+}
+.cur .ws-row:hover .ws-role-pick,
+.cur .ws-role-pick:focus-visible {
+  background-color: var(--cur-surface); border-color: var(--cur-hairline-strong);
+}
+.cur .ws-role-pick:disabled { opacity: 0.55; cursor: default; }
+
 .cur .ws-menu-wrap { position: relative; display: inline-flex; }
 .cur .ws-menu-btn { opacity: 0; transition: opacity 0.12s ease; }
+/* A pointer that cannot hover never reveals it, so on touch the row's actions
+   would not exist at all. Shown outright there rather than on a gesture the
+   device does not have. */
+@media (hover: none) { .cur .ws-menu-btn { opacity: 1; } }
 .cur .ws-row:hover .ws-menu-btn,
 .cur .ws-row:focus-within .ws-menu-btn,
 .cur .ws-menu-btn[aria-expanded="true"] { opacity: 1; }

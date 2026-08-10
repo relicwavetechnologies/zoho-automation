@@ -49,7 +49,7 @@ import { useConnections } from './data/use-connections'
 import { ago } from './data/use-approvals'
 import { GmailMark, LarkMark } from './brand'
 import { DetailPage, RailChip, RailEmpty, RailRow, RailSection } from './detail'
-import { Confirm, DataNote, Empty, Fade, PageHeader, Panel, Seg, SkelRows, useStaged } from './ui'
+import { Confirm, DataNote, Empty, Fade, PageHeader, Panel, RowMenu, Seg, SkelRows, useStaged } from './ui'
 import type { Persona } from './fixtures'
 import type { Toast } from './ui'
 
@@ -396,66 +396,6 @@ function RuleRow({
         />
       ) : null}
     </>
-  )
-}
-
-/**
- * The row's own actions, behind one affordance.
- *
- * Closed on any outside click and on Escape, and it stops propagation on the
- * way out — without that, every menu click also opened the rule underneath it.
- */
-function RowMenu({
-  items, busy,
-}: {
-  busy?: boolean
-  items: Array<{ label: string; icon: typeof Pencil; onSelect: () => void; danger?: boolean }>
-}) {
-  const [open, setOpen] = useState(false)
-  const wrap = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
-  return (
-    <div className="ws-menu-wrap" ref={wrap} onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        className="icon-btn ws-menu-btn"
-        aria-label="More"
-        aria-expanded={open}
-        disabled={busy}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <MoreHorizontal size={15} />
-      </button>
-      {open ? (
-        <div className="ws-menu" role="menu">
-          {items.map((item) => (
-            <button
-              type="button"
-              role="menuitem"
-              key={item.label}
-              data-danger={item.danger ? 'true' : undefined}
-              onClick={() => { setOpen(false); item.onSelect() }}
-            >
-              <item.icon size={13} /> {item.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
   )
 }
 

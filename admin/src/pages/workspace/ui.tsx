@@ -8,7 +8,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  AlertTriangle, Check, ChevronRight, Inbox, Lock, X,
+  AlertTriangle, Check, ChevronRight, Inbox, Lock, MoreHorizontal, X,
   type LucideIcon,
 } from 'lucide-react'
 import {
@@ -170,6 +170,71 @@ export function DataNote({ source }: { source: keyof typeof DATA_SOURCES }) {
  * same shape the skills tree settled on — announce the role, take focus, and
  * answer both Enter and Space the way a real button does.
  */
+/**
+ * The row's own actions, behind one affordance.
+ *
+ * Closed on any outside click and on Escape, and it stops propagation on the
+ * way out — without that, every menu click also opened the row underneath it.
+ *
+ * Shared rather than per-screen: it was written for the mail rules list and the
+ * team's people list needs exactly the same thing, and a second copy is a
+ * second set of listeners to get wrong.
+ */
+export function RowMenu({ items, busy, label = 'More' }: {
+  busy?: boolean
+  label?: string
+  items: Array<{ label: string; icon: LucideIcon; onSelect: () => void; danger?: boolean }>
+}) {
+  const [open, setOpen] = useState(false)
+  const wrap = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  if (items.length === 0) return null
+
+  return (
+    <div className="ws-menu-wrap" ref={wrap} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="icon-btn ws-menu-btn"
+        aria-label={label}
+        aria-expanded={open}
+        disabled={busy}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {open ? (
+        <div className="ws-menu" role="menu">
+          {items.map((item) => (
+            <button
+              type="button"
+              role="menuitem"
+              key={item.label}
+              data-danger={item.danger ? 'true' : undefined}
+              onClick={() => { setOpen(false); item.onSelect() }}
+            >
+              <item.icon size={13} /> {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function ClickRow({ onOpen, children, ...rest }: {
   onOpen: () => void
   children: ReactNode
