@@ -955,6 +955,91 @@ describe('desktop auth routes', () => {
     assert.equal(location.searchParams.get('lark_state'), state);
   });
 
+  /*
+   * A deployment can answer to more than one hostname — a real domain and the
+   * bare-IP name it was stood up on. A session lives in `localStorage`, which
+   * is partitioned per origin, so finishing sign-in on the other hostname
+   * writes the token somewhere the hostname the person was using cannot read.
+   * They land back on the login page holding a session that exists, and signing
+   * in again does not fix it because it lands in the same place.
+   */
+  it('finishes sign-in on the hostname it was started on', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      // One origin serves both, which is what makes the request's own host the
+      // right answer: whatever answered this request also serves the app.
+      appBaseUrl: 'https://app.103.example.io',
+      backendPublicUrl: 'https://app.103.example.io',
+      env: {
+        BACKEND_PUBLIC_URL_ALLOWLIST: 'https://app.103.example.io,https://divo.example.com',
+      } as any,
+    }));
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', {
+      headers: { host: 'divo.example.com' },
+      query: { returnTo: '/me/mail' },
+    });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state')!;
+
+    const callback = await callRoute(router, 'GET', '/lark/callback', {
+      headers: { host: 'divo.example.com' },
+      query: { code: 'lark-code', state },
+    });
+
+    assert.equal(callback.status, 303);
+    assert.equal(new URL(callback.body).origin, 'https://divo.example.com');
+  });
+
+  /*
+   * A Host header is client-controlled. Following an unvetted one would let a
+   * link of somebody else's choosing decide where a fresh session gets written,
+   * so an unrecognised host falls back to the configured origin.
+   */
+  it('refuses to finish sign-in on a hostname the deployment never claimed', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      appBaseUrl: 'https://app.103.example.io',
+      backendPublicUrl: 'https://app.103.example.io',
+      env: { BACKEND_PUBLIC_URL_ALLOWLIST: 'https://app.103.example.io' } as any,
+    }));
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', {
+      headers: { host: 'app.103.example.io' },
+      query: { returnTo: '/me/mail' },
+    });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state')!;
+
+    const callback = await callRoute(router, 'GET', '/lark/callback', {
+      headers: { host: 'evil.example' },
+      query: { code: 'lark-code', state },
+    });
+
+    assert.equal(callback.status, 303);
+    assert.equal(new URL(callback.body).origin, 'https://app.103.example.io');
+  });
+
+  /*
+   * Where the app and the API are on different hosts, the host that answered
+   * this request serves no web app at all — the configured origin is the only
+   * correct answer, and the request's own is exactly wrong.
+   */
+  it('keeps using the configured app origin when the app and API are split', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      env: {
+        BACKEND_PUBLIC_URL_ALLOWLIST: 'https://backend.example.com,https://api2.example.com',
+      } as any,
+    }));
+    const authorize = await callRoute(router, 'GET', '/lark/authorize-url', {
+      headers: { host: 'api2.example.com' },
+      query: { returnTo: '/me/mail' },
+    });
+    const state = new URL(authorize.body.data.authorizeUrl).searchParams.get('state')!;
+
+    const callback = await callRoute(router, 'GET', '/lark/callback', {
+      headers: { host: 'api2.example.com' },
+      query: { code: 'lark-code', state },
+    });
+
+    assert.equal(callback.status, 303);
+    assert.equal(new URL(callback.body).origin, 'https://app.example.com');
+  });
+
   it('does not carry an external return target through Lark login', async () => {
     const router = createDesktopAuthRoutes(makeDeps());
     const authorize = await callRoute(router, 'GET', '/lark/authorize-url', {
