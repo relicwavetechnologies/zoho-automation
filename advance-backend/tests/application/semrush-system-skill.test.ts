@@ -2,6 +2,16 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from '../../src/application/skills/semrush-system-skill.ts';
 import { SEMRUSH_OPERATIONS } from '../../src/application/semrush/semrush.types.ts';
+import { EnvSchema } from '../../src/config/env.ts';
+
+/*
+ * EnvSchema cross-validates fields, so it is a ZodEffects and the declared
+ * field list lives on the object it wraps. Exact keys, not a SEMRUSH_ prefix:
+ * SEMRUSH_API_KEY_WEBHOOK_URL is a real and separate variable.
+ */
+const envFields = (EnvSchema as unknown as {
+  _def: { schema: { shape: Record<string, unknown> } };
+})._def.schema.shape;
 
 describe('Semrush system skill', () => {
   it('forbids treating a country Semrush omitted as a measured zero', () => {
@@ -11,9 +21,12 @@ describe('Semrush system skill', () => {
     // about any of them — the list came from the model's own world knowledge
     // and read as a finding. Absent is unknown, exactly as for a backlinks
     // target with no provider report.
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /A country missing from that list is one Semrush has no record for/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never write that an absent country is unindexed, has zero traffic, or has no visibility/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /say in the same sentence that Semrush has no record of it/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /missing from `domain_overview` is one Semrush has \*\*no record for\*\*/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /unreturned country is unindexed, has zero traffic, or has no\s+visibility/s);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /same sentence must say this is Semrush having no record/);
+    // Stated once now. It was written out twice at length, in the operation
+    // list and again in the honesty rules, which is how it drifted apart.
+    assert.equal(DIVO_SEMRUSH_SYSTEM_SKILL.markdown.match(/never count how many markets/gi)?.length, 1);
     // A returned row showing 0 is a real measurement and stays reportable.
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /ranking without earning clicks/);
   });
@@ -21,16 +34,17 @@ describe('Semrush system skill', () => {
   it('requires counts to be taken from the rows', () => {
     // The same answer said 22 zero-traffic countries and listed 22, dropping
     // Taiwan; the rows held 23. Another turn on the same data said 23.
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Counts must come from the rows, not from memory/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /check it against the rows before writing it/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Counts come from the rows, never from memory/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /count the returned rows whose `Organic Traffic` is 0/);
   });
 
   it('is discoverable by SEO terms and constrained to the canonical Semrush tool', () => {
     assert.deepEqual(DIVO_SEMRUSH_SYSTEM_SKILL.toolIds, ['semrush']);
     assert.ok(DIVO_SEMRUSH_SYSTEM_SKILL.aliases.includes('semrush'));
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Do not call Semrush.*directly/i);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /there is nothing to call directly/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never reach\s+for browser automation, curl, or a local API key/s);
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /partial/i);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /continuation as incomplete coverage/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /continuation as incomplete\s+coverage/s);
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /never pull bulk rows through model context/);
     assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /exportCandidate|dataExport/);
     // Naming a store the tool can no longer reach only tells the model it exists.
@@ -38,25 +52,38 @@ describe('Semrush system skill', () => {
     assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /legacy rollback/i);
   });
 
-  it('documents all three callable operations and the excluded senior backlink export curl', () => {
+  it('teaches every callable operation and blocks the ones that are not', () => {
     for (const operation of SEMRUSH_OPERATIONS) {
       assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, new RegExp(`\`${operation}\``));
     }
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Senior curl mapping/i);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /backlinks_comparison/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /domain_overview/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /keyword_position_trend/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /analytics\/backlinks\/webapi2/i);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /403 ERROR 130 API DISABLED/i);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Excluded/i);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Supported backend operations \(3 callable\)/i);
+    /*
+     * The provenance table mapping each operation back to the senior's curl
+     * calls — including an Excluded row for a probe that answered
+     * 403 ERROR 130 API DISABLED — recorded how these operations came to
+     * exist. That is history: the tool's `operation` enum is what decides
+     * callability, and its parameterDocs already name the three. What the
+     * skill still owes the member is the honest refusal.
+     */
+    assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Senior curl|webapi2|ERROR 130|Excluded/i);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /not available through Divo Semrush yet/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never\s+substitute one report for another/s);
   });
 
-  it('documents web-only env vars without legacy api.semrush.com keys', () => {
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /SEMRUSH_WEB_API_KEY/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /SEMRUSH_WEB_COOKIE/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /SEMRUSH_TIMEOUT_MS/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /never `api\.semrush\.com`/i);
-    assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /SEMRUSH_API_KEY/);
+  /*
+   * This used to assert that the skill body names SEMRUSH_WEB_API_KEY,
+   * SEMRUSH_WEB_COOKIE and SEMRUSH_TIMEOUT_MS, under a heading that read
+   * "ops only — never expose to members" while sitting in a document the model
+   * reads and can quote. The intent — the wired path is the web session, not
+   * the retired api.semrush.com key — is real, so it moves to the schema that
+   * actually declares the variables. Nothing about which env vars exist
+   * changes what Divo should do in a run.
+   */
+  it('wires only the web-session Semrush variables', () => {
+    assert.equal('SEMRUSH_WEB_API_KEY' in envFields, true);
+    assert.equal('SEMRUSH_WEB_COOKIE' in envFields, true);
+    assert.equal('SEMRUSH_TIMEOUT_MS' in envFields, true);
+    assert.equal('SEMRUSH_API_KEY' in envFields, false);
+    assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /SEMRUSH_[A-Z_]+/);
+    assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /api\.semrush\.com/);
   });
 });

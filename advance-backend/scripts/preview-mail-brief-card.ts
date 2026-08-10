@@ -103,10 +103,26 @@ async function main() {
       : {}),
   });
 
+  /*
+   * `APP_BASE_URL` verbatim, with no fallback domain.
+   *
+   * The first version of this script fell back to a hostname typed in by hand.
+   * That host resolves and serves the app, so the preview looked right — but a
+   * session lives in `localStorage`, which is partitioned per origin, and the
+   * deployment signs people in on a different origin entirely. The button
+   * opened a page that had never seen a token and bounced to /login, and the
+   * preview had manufactured a bug the real card does not have.
+   *
+   * Unset means no button, which is the honest preview of a deployment that has
+   * not configured one.
+   */
+  const appBaseUrl = process.env['APP_BASE_URL']?.trim();
+  console.log(`app base url: ${appBaseUrl || '(unset — the card will carry no button)'}`);
+
   for (const state of STATES) {
     const compose = createMailBriefComposer({
       model: modelReturning(state.modelText) as never,
-      appBaseUrl: process.env['APP_BASE_URL'] ?? 'https://divo.outreachdeal.com',
+      ...(appBaseUrl ? { appBaseUrl } : {}),
     });
     const brief = await compose(state.window);
     const sent = await client.sendCardToChat(chatId, brief.card);

@@ -27,8 +27,15 @@ describe('system skill routes', () => {
     const router = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'research-router');
     assert.ok(route?.targetSlugs.includes(DIVO_SEMRUSH_SYSTEM_SKILL.slug));
     assert.ok(router);
-    assert.match(router.markdown, /one main Semrush call/);
-    assert.match(router.markdown, /local Python workflow only when the operation exposes complete data or truthful continuation/);
+    /*
+     * How many Semrush calls a question takes, and how bounded the answer is,
+     * are execution decisions. They sat in the router, which only has to pick
+     * a specialist, and are now stated once by the specialist that makes them.
+     */
+    assert.match(router.markdown, /which owns how many calls that takes/);
+    assert.doesNotMatch(router.markdown, /one main Semrush call|backlinks_comparison/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /\*\*one\*\*\n?\s*`backlinks_comparison`/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Show one main table in chat/);
     assert.doesNotMatch(`${router.markdown}\n${DIVO_SEMRUSH_SYSTEM_SKILL.markdown}`, /exportCandidate|dataExport/);
   });
 
@@ -82,7 +89,7 @@ describe('system skill routes', () => {
     for (const skill of [DIVO_SEMRUSH_SYSTEM_SKILL, DIVO_OMS_SITE_DATA_SYSTEM_SKILL]) {
       assert.doesNotMatch(skill.markdown, /exportCandidate|dataExport|cloudinary/i);
     }
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /continuation as incomplete coverage/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /continuation as incomplete\s+coverage/s);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /never paginates and never returns a total count/i);
   });
 

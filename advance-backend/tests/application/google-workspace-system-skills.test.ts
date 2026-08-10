@@ -16,24 +16,21 @@ const sheetsSkill = () => {
   return skill!.markdown;
 };
 
+/*
+ * The Office-file recovery from the live 2026-08-08 incident is owned by
+ * `withRecoveryHint`, which appends it to Google's own refusal, and is asserted
+ * in tests/tools/google-workspace-office-file.test.ts — every claim the skill
+ * used to make about it, plus that the provider's wording survives.
+ *
+ * It was stated in both places. The error-attached copy is strictly stronger:
+ * skill prose is advisory and reaches the model only if the skill was read,
+ * while the hint arrives fastened to the thing that went wrong. So the skill
+ * copy is gone, and this guards it from drifting back and diverging from the
+ * message members actually see.
+ */
 describe('google-sheets Office-file recovery', () => {
-  it('tells the model what "must not be an Office file" actually means', () => {
-    // Live 2026-08-08: editing an exported .xlsx returned Google's own
-    // HttpError 400 "The document must not be an Office file". The model read
-    // that and told the member their Google account was missing Sheets write
-    // scope — the grant contained auth/spreadsheets the whole time, so
-    // reconnecting would have failed the same way.
-    const markdown = sheetsSkill();
-    assert.match(markdown, /must not be an Office file/);
-    assert.match(markdown, /This is \*\*not\*\* a permission problem/);
-    assert.match(markdown, /never tell the member their scopes are\s+missing/);
-    assert.match(markdown, /reconnecting changes\s+nothing/);
-  });
-
-  it('routes the recovery through the governed resolver, not a hand-rolled conversion', () => {
-    const markdown = sheetsSkill();
-    assert.match(markdown, /Recover by running\s+`resolve_reference` on the same URL/);
-    assert.match(markdown, /editable Google Sheet\s+copy/);
+  it('leaves the recovery to the failure that triggers it', () => {
+    assert.doesNotMatch(sheetsSkill(), /must not be an Office file/);
   });
 });
 
@@ -70,9 +67,11 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /manage_sheet_data_validation/);
     assert.match(sheets.markdown, /frozen_row_count/);
     assert.match(sheets.markdown, /Keep `connectionId` inside that argument object/);
-    assert.match(sheets.markdown, /acknowledgement under `data\.result`, not `updatedRows`/);
-    assert.match(sheets.markdown, /claim that count as written only after the exact read-back matches/);
-    assert.match(sheets.markdown, /Never turn a missing `updatedRows` field into a zero-row claim/);
+    // A write that acknowledges without `updatedRows` must not become a
+    // zero-row claim. Matched on the concept, not the sentence.
+    assert.match(sheets.markdown, /acknowledgement under `data\.result`/);
+    assert.match(sheets.markdown, /the exact read-back matches/);
+    assert.match(sheets.markdown, /missing `updatedRows` field into a zero-row claim/i);
     assert.match(sheets.markdown, /`get_spreadsheet_info` returns machine-readable `spreadsheetId`/);
     assert.match(sheets.markdown, /Never parse or inspect its compatibility prose in\s+`data\.result`/);
     assert(sheets.aliases.includes('dropdown'));
@@ -84,33 +83,65 @@ describe('Google Workspace system skills', () => {
   it('resolves pasted Sheet URLs into an opaque governed read/write handle', () => {
     const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((skill) => skill.slug === 'google-sheets')!;
 
-    assert.match(sheets.markdown, /Before generic web search or a native Sheets operation/);
-    assert.match(sheets.markdown, /"op": "resolve_reference"/);
-    assert.match(sheets.markdown, /"url": "<exact pasted Google Sheet or Drive workbook URL>"/);
-    assert.match(sheets.markdown, /data\.destinationReferenceId/);
-    assert.match(sheets.markdown, /"op": "call_resolved_sheet"/);
-    assert.match(sheets.markdown, /without\s+extracting a spreadsheet ID from the URL/s);
-    assert.match(sheets.markdown, /In a Lark runtime/);
-    assert.match(sheets.markdown, /In Desktop.*data\.resource\.resourceId.*data\.resource\.connectionId/s);
-    assert.match(sheets.markdown, /one eligible account.*retry immediately/s);
-    assert.match(sheets.markdown, /bootstrap already supplies one exact selected Google/);
-    assert.match(sheets.markdown, /Never spend a resolver call rediscovering a bootstrap account/);
-    assert.match(sheets.markdown, /returns several, ask\s+once/s);
-    assert.match(sheets.markdown, /URL-only request resolves metadata and access only/);
-    assert.match(sheets.markdown, /perform one exact verification read/);
+    // What the skill must decide: resolve before searching the web, and never
+    // reach past the resolver to the URL's own ID. The `op` values, the
+    // `destinationReferenceId` handoff, and which run may use it are stated by
+    // the googleSheets tool's parameterDocs.
+    assert.match(sheets.markdown, /Before generic web search or any native Sheets\s+operation/s);
+    assert.match(sheets.markdown, /`resolve_reference`/);
+    assert.match(sheets.markdown, /never derive an ID\s+from the URL yourself/s);
+    assert.match(sheets.markdown, /import_to_google_sheets` directly/);
+    /*
+     * These JSON blocks were `{"toolId": "googleSheets", "args": {...}}` — the
+     * divo_gateway envelope, deleted when contracts became typed tools. The
+     * skill was still teaching it, and this test was holding it in place.
+     */
+    assert.doesNotMatch(sheets.markdown, /"toolId":\s*"googleSheets"/);
+    /*
+     * Anchored to the sentence that carries the claim, not to both channel
+     * names in any order. On Lark the dispatcher replaces the resolver
+     * response with `{status, destinationReferenceId}` and `data.resource`
+     * never exists, so prose crediting Lark with those handles would send the
+     * model hunting for an absent field and then back to deriving the
+     * spreadsheet ID from the URL — the exact failure this paragraph prevents.
+     * The negative guard is the real test: a channel inversion passes the
+     * positive one.
+     */
+    assert.match(sheets.markdown, /On Desktop, keep the governed\s+`data\.resource\.resourceId`/s);
+    assert.doesNotMatch(
+      sheets.markdown,
+      /In Lark(?:(?!On Desktop)[\s\S])*?keep the governed `data\.resource/,
+    );
+    // How the backend picks between eligible accounts is stated by the tool's
+    // own connectionId parameterDoc. What stays here is the wasted-call rule
+    // and the one-question ceiling, which no contract expresses.
+    assert.match(sheets.markdown, /Never spend a resolver call rediscovering an account/);
+    assert.match(sheets.markdown, /ask once, then retry the\s+same URL/s);
+    assert.match(sheets.markdown, /resolves metadata and access only/);
     assert.match(sheets.markdown, /drive\.google\.com\/file\/d/);
     assert.match(sheets.markdown, /request a download URL/);
     assert.match(sheets.markdown, /import_to_google_sheets` directly/);
-    assert.match(sheets.markdown, /backend delivers the\s+confirmation card and owns conversion/s);
+    assert.match(sheets.markdown, /backend\s+delivers the confirmation card and owns the conversion/s);
+    // Replacing an existing tab: bound the inspection, persist before mutating,
+    // and reuse that file on a retry instead of refetching the provider.
     assert.match(sheets.markdown, /inspect the header plus the final populated row once/);
-    assert.match(sheets.markdown, /clear any stale tail beyond the new final row/i);
-    assert.match(sheets.markdown, /persist them before the first Sheet mutation/);
-    assert.match(sheets.markdown, /reuse that saved source file rather than refetching/);
-    assert.match(sheets.markdown, /"nativeTool":"format_sheet_range"/);
-    assert.match(sheets.markdown, /"column_sizes":\{"A":220,"B":120\}/);
-    assert.match(sheets.markdown, /do not nest formatting\s+under `cell_format`/i);
-    assert.match(sheets.markdown, /report that feature as\s+partial instead of claiming it was applied/);
-    assert.match(sheets.markdown, /failed, rate-limited, incomplete, or missing read-back cannot be replaced/);
+    assert.match(sheets.markdown, /[Cc]lear any stale tail beyond the\s+new final row/s);
+    assert.match(sheets.markdown, /persist\s+it before the first mutation/s);
+    assert.match(sheets.markdown, /reuses that\s+saved file instead of refetching/s);
+    /*
+     * `suggestedProductOperations` binds format_sheet_range and
+     * resize_sheet_dimensions as native contracts before inference, so their
+     * argument shapes are not restated. It has no branch that ever emits
+     * manage_sheet_data_validation and no keyword for "dropdown" — yet
+     * "dropdown" is a registered alias of this skill, so that one shape is
+     * written out rather than costing a describe round trip on a request the
+     * aliases actively invite.
+     */
+    assert.doesNotMatch(sheets.markdown, /"column_sizes":|"nativeTool":"format_sheet_range"/);
+    assert.match(sheets.markdown, /"action":"set","ranges":\["Sheet1!D2:D100"\]/);
+    assert.match(sheets.markdown, /never nest formatting under `cell_format`/i);
+    assert.match(sheets.markdown, /report that feature\s+partial instead of claiming it was applied/s);
+    assert.match(sheets.markdown, /failed,\s+rate-limited, incomplete, or missing read-back cannot be replaced/s);
   });
 
   it('gives the six upgraded products complete Divo-native workflows', () => {
