@@ -1,7 +1,7 @@
 import type { Skill } from './skill.types';
 
 const SHOPIFY_CONNECTION_METHOD = `DIVO-GOVERNED SHOPIFY CONNECTION:
-- Invoke Shopify only through the Divo tool surface loaded for this run (server channels: call_tool; desktop/Lark Pi: divo_gateway). Never call Shopify directly, never use Shopify CLI, and never import or follow external Shopify agent skills (shopify-admin, ucp, Storefront MCP, etc.).
+- Invoke Shopify only through Divo's registered Shopify tools. Never call Shopify directly, never use Shopify CLI, and never import or follow external Shopify agent skills (shopify-admin, ucp, Storefront MCP, etc.).
 - Every call requires an exact connectionId supplied by the current run. Describe may omit it only to inspect an approved operation schema.
 - If the current run supplies multiple Shopify connections, ask one short store-choice question using those labels, then use the selected exact ID. Do not guess a store from a brand name or URL fragment.
 - If no Shopify connection is accessible, tell the member to connect a store or request access to an existing connection.
@@ -49,7 +49,7 @@ const SHOPIFY_ANALYTICS_CRAFT = `ANALYTICS (shopifyAnalytics):
 - If status is empty, report that plainly for the chosen store and period. If the result includes a current-period or partial-window caveat, repeat it in the answer.`;
 
 const SHOPIFY_ORDERS_CRAFT = `ORDERS (shopifyOrders):
-- Call shopifyOrders only as a direct divo_gateway tool invocation. Never invoke it from divo-local, Bash, or a generated script. Protected record results must stay on the runtime path that deletes the session and suppresses learning.
+- Call \`shopifyOrders\` only as a direct tool invocation. Never reach it from \`divo-local\`, Bash, or a generated script: protected record results must stay on the runtime path that deletes the session and suppresses learning, and a script path does neither.
 - list_orders returns at most 100 records plus an endCursor on each page. Treat a remaining cursor as incomplete coverage.
 - Unless the connection has Shopify-approved read_all_orders, list_orders enforces a created_at floor of the last 60 days. Older windows require that approval and an explicit older createdAtMin.
 - get_order, get_order_by_identifier, get_order_attribution, and list_order_line_items omit orders older than the same 60-day floor when includeHistorical=false even if read_all_orders is present. Set includeHistorical=true only when the member explicitly needs an older order and the connection is approved.
@@ -58,7 +58,7 @@ const SHOPIFY_ORDERS_CRAFT = `ORDERS (shopifyOrders):
 - Order filters accept createdAtMin/Max, updatedAtMin/Max, financialStatus, fulfillmentStatus, and tag. Use them to keep lists bounded.`;
 
 const SHOPIFY_CUSTOMERS_CRAFT = `CUSTOMERS (shopifyCustomers):
-- Call shopifyCustomers only as a direct divo_gateway tool invocation, under the same protected-runtime rules as shopifyOrders.
+- Call \`shopifyCustomers\` only as a direct tool invocation, under the same protected-runtime rules as \`shopifyOrders\`.
 - Use this tool only when customer-level metadata is necessary. Prefer shopifyAnalytics customer_acquisition for aggregate acquisition trends.
 - search_customers accepts exactly one structured field: email, phone, or name. Arbitrary Shopify search syntax is not accepted. includeContact is rejected; names, email, and phone are never returned.
 - Treat every result—including IDs, tags, account state, dates, and spend—as protected customer data. Minimize repetition of identifiers in the final answer.

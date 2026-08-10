@@ -8,7 +8,7 @@ import type { Skill } from './skill.types';
  */
 
 const AITABLE_CONNECTION_METHOD = `DIVO-GOVERNED AITABLE CONNECTION:
-- Invoke AITable only through the Divo tool surface available in the current runtime: server channels use call_tool; desktop uses divo_gateway. Never call AITable directly and never handle an API key.
+- Invoke AITable only through Divo's registered AITable tools. Never call AITable directly and never handle an API key.
 - AITable authenticates with an API key held by the backend. It is never part of tool input, and you must never ask a member to paste one into chat — connecting happens in Divo's own settings.
 - Reuse an exact connectionId already supplied by the current run. Only list_spaces may be called without one.
 - If Divo returns aitable_connection_selection_required, ask one short account-choice question using the returned labels, then retry with the selected exact ID. Do not guess.

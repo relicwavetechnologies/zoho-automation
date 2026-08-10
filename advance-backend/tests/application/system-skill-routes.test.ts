@@ -8,6 +8,8 @@ import {
   airtableSchemaOpsSkill,
 } from '../../src/application/skills/airtable.skill.ts';
 import { MENHOOD_DATA_SYSTEM_SKILL } from '../../src/application/skills/menhood-data-system-skill.ts';
+import { shopifySkills } from '../../src/application/skills/shopify.skill.ts';
+import { aitableSkills } from '../../src/application/skills/aitable.skill.ts';
 import { zohoBooksReadAnalysisSkill } from '../../src/application/skills/zoho.skill.ts';
 import { DIVO_LOCAL_PYTHON_SYSTEM_SKILL } from '../../src/application/skills/divo-local-python-system-skill.ts';
 import { GOOGLE_WORKSPACE_SYSTEM_SKILLS } from '../../src/application/skills/google-workspace-system-skills.ts';
@@ -142,6 +144,33 @@ describe('system skill routes', () => {
     assert.ok(files.targetSlugs.includes(DIVO_PRESENTATIONS_SYSTEM_SKILL.slug));
     const router = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'files-router')!;
     assert.match(router.markdown, /slide deck or presentation/);
+  });
+
+  /*
+   * divo_gateway was the mega-tool every provider skill was written against:
+   * root `op: "tools.invoke"` wrapping `payload: { toolId, args }`, with
+   * `call_tool` as the server-channel variant. It is deleted, and each family
+   * is a registered typed tool, so that envelope is now rejected rather than
+   * merely redundant — a skill still teaching it describes a call that cannot
+   * succeed. Airtable, Shopify and AITable each carried it well past the
+   * migration because nothing failed when a skill went stale.
+   */
+  it('never teaches a call surface the runtime removed', () => {
+    const bodies = [
+      ...ROUTING_SYSTEM_SKILLS.map(skill => skill.markdown),
+      ...shopifySkills.map(skill => skill.instructions),
+      ...aitableSkills.map(skill => skill.instructions),
+      airtableCoreSkill.instructions,
+      airtableSchemaOpsSkill.instructions,
+      airtableAutomationOpsSkill.instructions,
+      DIVO_SEMRUSH_SYSTEM_SKILL.markdown,
+      MENHOOD_DATA_SYSTEM_SKILL.markdown,
+      DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown,
+      ...GOOGLE_WORKSPACE_SYSTEM_SKILLS.map(skill => skill.markdown),
+    ];
+    for (const body of bodies) {
+      assert.doesNotMatch(body, /divo_gateway|call_tool|tools\.invoke|payload\.args/);
+    }
   });
 
   it('keeps each router target list non-empty, unique, and free of self-links', () => {
