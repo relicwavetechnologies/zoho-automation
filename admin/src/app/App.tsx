@@ -1,4 +1,4 @@
-import { Suspense, lazy } from "react"
+import { Suspense, lazy, useEffect, useState } from "react"
 import { Link, Navigate, Route, Routes, useParams } from "react-router-dom"
 import { Toaster } from "@/components/ui/sonner"
 import { WorkspaceShell } from "@/components/admin/workspace-shell"
@@ -59,6 +59,70 @@ type ProtectedProps = {
   children: JSX.Element
 }
 
+/**
+ * Divo is unreachable, and you are not.
+ *
+ * The screen this replaces was right about the important thing — a backend
+ * blip is not a sign-out, and binning a good token over one would be the app
+ * blaming you for its own outage. What it got wrong was leaving you there.
+ * "Try again" was the only control, so an outage that lasted longer than your
+ * patience was a room with no door: you could not sign out, could not reach
+ * /login, could not switch accounts. A dev database tunnel dropping is enough
+ * to produce it, and so is any real API outage in production.
+ *
+ * Two changes. It now retries on its own, backing off, so a connection that
+ * comes back lets you in without a click. And there is a way out, because the
+ * one thing a person stuck here always has is the ability to start over.
+ */
+function Unreachable({ retry }: { retry: () => Promise<void> }) {
+  const { logout } = useAdminAuth()
+  const [attempt, setAttempt] = useState(0)
+  const [busy, setBusy] = useState(false)
+
+  // 2s, 4s, 8s, 16s, then every 30s. Frequent while an outage is most likely
+  // to be a blip, then slow enough not to hammer a backend that is genuinely
+  // down — and never stopping, because the whole point is to recover unattended.
+  const waitMs = Math.min(2000 * 2 ** attempt, 30_000)
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setBusy(true)
+      void retry().finally(() => {
+        setBusy(false)
+        setAttempt((n) => n + 1)
+      })
+    }, waitMs)
+    return () => clearTimeout(timer)
+  }, [retry, waitMs, attempt])
+
+  return (
+    <div className="cur">
+      <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--cur-canvas)" }}>
+        <div style={{ textAlign: "center", maxWidth: 380 }}>
+          <div className="ws-auth-wait">Cannot reach Divo right now.</div>
+          <p className="ws-sub" style={{ marginTop: 10, lineHeight: 1.5 }}>
+            You are still signed in — this is the connection, not your account.
+            {attempt > 0 ? ' Divo keeps trying on its own.' : ''}
+          </p>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 16 }}>
+            <button type="button" className="btn primary" disabled={busy} onClick={() => { setAttempt(0); setBusy(true); void retry().finally(() => setBusy(false)) }}>
+              {busy ? 'Trying…' : 'Try again'}
+            </button>
+            {/*
+              The door. `logout` drops the token locally whether or not the
+              server can be told, so this works in exactly the situation that
+              makes it necessary.
+            */}
+            <button type="button" className="btn" onClick={() => void logout()}>
+              Sign out
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const Protected = ({ children }: ProtectedProps) => {
   const { session, loading, unreachable, refresh } = useAdminAuth()
 
@@ -84,21 +148,7 @@ const Protected = ({ children }: ProtectedProps) => {
    * app blaming them for its own outage.
    */
   if (!session && unreachable) {
-    return (
-      <div className="cur">
-        <div style={{ minHeight: "100vh", display: "grid", placeItems: "center", background: "var(--cur-canvas)" }}>
-          <div style={{ textAlign: "center", maxWidth: 380 }}>
-            <div className="ws-auth-wait">Cannot reach Divo right now.</div>
-            <p className="ws-sub" style={{ marginTop: 10, lineHeight: 1.5 }}>
-              You are still signed in — this is the connection, not your account.
-            </p>
-            <button type="button" className="btn" style={{ marginTop: 16 }} onClick={() => void refresh()}>
-              Try again
-            </button>
-          </div>
-        </div>
-      </div>
-    )
+    return <Unreachable retry={refresh} />
   }
 
   if (!session) {
