@@ -371,6 +371,31 @@ jobs:
             echo "- Build cache and timing details are attached in the Docker build summary."
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Verify backend image source digest
+        if: matrix.component == 'backend'
+        env:
+          IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.build.outputs.digest }}
+        run: |
+          expected="$(
+            cd advance-backend
+            find src scripts prisma package.json pnpm-lock.yaml -type f -print0 \
+              | sort -z \
+              | xargs -0 sha256sum \
+              | sha256sum \
+              | awk '{print $1}'
+          )"
+          docker pull "${IMAGE}"
+          actual="$(
+            docker run --rm --network none --entrypoint sh "${IMAGE}" -lc \
+              "find src scripts prisma package.json pnpm-lock.yaml -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print \$1}'"
+          )"
+          if [[ "${actual}" != "${expected}" ]]; then
+            echo "Backend image source digest mismatch." >&2
+            echo "expected=${expected}" >&2
+            echo "actual=${actual}" >&2
+            exit 1
+          fi
+
       - name: Smoke published Pi image
         if: matrix.component == 'pi' || matrix.component == 'pi-controller'
         env:
@@ -541,6 +566,51 @@ jobs:
             docker-compose.dev.yml \
             "${DIVO_DEV_USER}@${DIVO_DEV_HOST}:${DEPLOY_DIR}/docker-compose.yml"
 
+      - name: Persist development release image pins
+        run: |
+          ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
+            "DEPLOY_DIR='${DEPLOY_DIR}' BACKEND_IMAGE='${BACKEND_IMAGE}' ADMIN_IMAGE='${ADMIN_IMAGE}' PI_IMAGE='${PI_IMAGE}' PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd "${DEPLOY_DIR}"
+
+          require_digest() {
+            local name="$1" value="$2"
+            case "${value}" in
+              *@sha256:*) ;;
+              *) echo "${name} must be pinned by digest, got ${value}" >&2; exit 1 ;;
+            esac
+          }
+
+          upsert_env() {
+            local file="$1" key="$2" value="$3" tmp
+            tmp="$(mktemp)"
+            awk -v key="${key}" -v value="${value}" '
+              BEGIN { written = 0 }
+              $0 ~ "^(export[[:space:]]+)?" key "=" {
+                print key "=" value
+                written = 1
+                next
+              }
+              { print }
+              END {
+                if (!written) print key "=" value
+              }
+            ' "${file}" > "${tmp}"
+            cat "${tmp}" > "${file}"
+            rm -f "${tmp}"
+          }
+
+          require_digest DIVO_DEV_BACKEND_IMAGE "${BACKEND_IMAGE}"
+          require_digest DIVO_DEV_ADMIN_IMAGE "${ADMIN_IMAGE}"
+          require_digest DIVO_DEV_PI_IMAGE "${PI_IMAGE}"
+          require_digest DIVO_DEV_PI_CONTROLLER_IMAGE "${PI_CONTROLLER_IMAGE}"
+          upsert_env .env.development.local DIVO_DEV_BACKEND_IMAGE "${BACKEND_IMAGE}"
+          upsert_env .env.development.local DIVO_DEV_ADMIN_IMAGE "${ADMIN_IMAGE}"
+          upsert_env .env.development.local DIVO_DEV_PI_IMAGE "${PI_IMAGE}"
+          upsert_env .env.development.local DIVO_DEV_PI_CONTROLLER_IMAGE "${PI_CONTROLLER_IMAGE}"
+          chmod 600 .env.development.local
+          REMOTE
+
       - name: Retire removed Development dataExport storage when present
         run: |
           ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
@@ -556,11 +626,10 @@ jobs:
           docker compose --env-file .env.development.local pull divo-dev-backend
           docker compose --env-file .env.development.local up -d --wait \
             divo-dev-postgres divo-dev-redis-queue
-          set +e
+          needs_retirement=0
           docker compose --env-file .env.development.local run --rm --no-deps \
-            divo-dev-backend pnpm retire:data-export -- --needs-apply >/dev/null
-          needs_retirement=$?
-          set -e
+            divo-dev-backend pnpm retire:data-export -- --needs-apply >/dev/null \
+            || needs_retirement=$?
           if [[ "${needs_retirement}" == "0" ]]; then
             docker compose --env-file .env.development.local stop divo-dev-backend >/dev/null 2>&1 || true
             install -d -m 700 backups
@@ -589,6 +658,7 @@ jobs:
 
           ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
             "cd '${DEPLOY_DIR}' && \
+             case '${BACKEND_IMAGE} ${ADMIN_IMAGE} ${PI_IMAGE} ${PI_CONTROLLER_IMAGE}' in *:main-latest*|*:latest*|*:dev-latest*) echo 'Mutable image tag refused in development deploy.' >&2; exit 1 ;; esac && \
              DIVO_DEV_ENV_FILE=.env.development.local \
              DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
@@ -639,6 +709,10 @@ jobs:
             "DIVO_DEV_DOMAIN='${DIVO_DEV_DOMAIN}' DEPLOY_DIR='${DEPLOY_DIR}' DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' DIVO_DEV_PI_IMAGE='${PI_IMAGE}' DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' bash -s" <<'REMOTE'
           set -euo pipefail
 
+          case "${DIVO_DEV_BACKEND_IMAGE} ${DIVO_DEV_ADMIN_IMAGE} ${DIVO_DEV_PI_IMAGE} ${DIVO_DEV_PI_CONTROLLER_IMAGE}" in
+            *:main-latest*|*:latest*|*:dev-latest*) echo "Mutable image tag refused in development smoke test." >&2; exit 1 ;;
+          esac
+
           for attempt in $(seq 1 30); do
             if curl -fsS --max-time 10 http://127.0.0.1:13001/health >/dev/null \
               && curl -fsS --max-time 10 http://127.0.0.1:18081/ >/dev/null \
@@ -649,7 +723,14 @@ jobs:
                  DIVO_DEV_PI_IMAGE="${DIVO_DEV_PI_IMAGE}" \
                  DIVO_DEV_PI_CONTROLLER_IMAGE="${DIVO_DEV_PI_CONTROLLER_IMAGE}" \
                  docker compose --env-file .env.development.local exec -T divo-dev-backend \
-                 node -e "fetch('http://divo-dev-pi-controller:4317/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+                 node -e "fetch('http://divo-dev-pi-controller:4317/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" \
+              && test "$(
+                 docker exec divo-development-divo-dev-postgres-1 sh -lc 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At' <<'SQL'
+          select coalesce(bool_or(markdown like '%Do not require `Order Sub Status` = Regular Order by default%'), false)
+          from "Skill"
+          where slug = 'airtable-core';
+          SQL
+              )" = "t"; then
               cd "${DEPLOY_DIR}"
               DIVO_DEV_BACKEND_IMAGE="${DIVO_DEV_BACKEND_IMAGE}" \
               DIVO_DEV_ADMIN_IMAGE="${DIVO_DEV_ADMIN_IMAGE}" \
