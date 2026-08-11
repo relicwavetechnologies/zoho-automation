@@ -21,11 +21,11 @@
  */
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  Archive, Boxes, Building2, Check, ChevronRight, FolderClosed, FolderOpen, FolderPlus,
-  History, Layers, Lock, Pencil, Search, ShieldCheck, Sparkles, Trash2, User, Wrench,
+  Archive, Boxes, Building2, Check, ChevronRight, CircleAlert, FolderClosed, FolderOpen, FolderPlus,
+  History, Layers, Lock, Pencil, Search, ShieldCheck, Sparkles, Trash2, User, Wrench, X,
 } from 'lucide-react'
 import {
-  Confirm, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, SkelRows,
+  Confirm, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
   isRefusal,
 } from './ui'
 import type { Toast } from './ui'
@@ -89,6 +89,48 @@ const buildTree = (tree: SkillRegistryTree, companyName: string): UiFolder => ({
     })),
   ],
 })
+
+/**
+ * A way of looking at the library, rather than a place in it.
+ *
+ * The tree answers "where is this skill". It cannot answer "which of these
+ * hundred skills is broken", and that is the question somebody opens this page
+ * with — a skill shared with nobody sits in the library looking exactly like a
+ * working one, and the only way to tell used to be opening each in turn.
+ *
+ * Both lenses are faults, not tidiness: `unshared` cannot run at all, and a
+ * skill with no summary is one Divo has nothing to choose it by. `archived` is
+ * the exception — a state, offered because the alternative is a checkbox that
+ * does the same thing somewhere else on the page.
+ */
+type Lens = 'all' | 'unshared' | 'nosummary' | 'archived'
+
+/**
+ * Zero grants means nobody can run it.
+ *
+ * Guarded on `undefined` rather than falsy: a backend that has not shipped the
+ * count yet sends nothing, and treating that as zero would mark every skill in
+ * the library dead.
+ */
+const runnableByNobody = (s: UiSkill): boolean =>
+  s.grantCount !== undefined && s.grantCount === 0 && s.status !== 'archived'
+
+const hasNoSummary = (s: UiSkill): boolean =>
+  !s.summary.trim() && s.status !== 'archived'
+
+const matchesLens = (s: UiSkill, lens: Lens): boolean => {
+  if (lens === 'unshared') return runnableByNobody(s)
+  if (lens === 'nosummary') return hasNoSummary(s)
+  if (lens === 'archived') return s.status === 'archived'
+  return true
+}
+
+const matchesQuery = (s: UiSkill, q: string, toolLabel: (id: string) => string): boolean =>
+  !q
+  || s.name.toLowerCase().includes(q)
+  || s.slug.includes(q)
+  || s.tags.some((t) => t.includes(q))
+  || s.toolIds.some((t) => toolLabel(t).toLowerCase().includes(q))
 
 const collectSkills = (node: UiNode, acc: UiSkill[] = []): UiSkill[] => {
   if (node.kind === 'skill') acc.push(node)
@@ -200,35 +242,55 @@ function MoveTo({ options, onMove }: {
 }
 
 /* ── Explorer ─────────────────────────────────────────*/
-function TreeRow({ node, depth, selectedId, expanded, onToggle, onSelect, query, toolLabel }: {
+/**
+ * Which nodes survive the current search and lens.
+ *
+ * Computed once for the whole tree rather than asked per row. Each `TreeRow`
+ * used to run its own recursive `matches` over everything beneath it, so a
+ * skill six levels deep was walked six times — the work grew with the square of
+ * the depth on exactly the libraries big enough to need searching.
+ *
+ * A folder survives if anything inside it does, otherwise a search would empty
+ * the tree and hide the very thing it found.
+ */
+function visibleNodes(root: UiFolder, q: string, lens: Lens, toolLabel: (id: string) => string): Set<string> {
+  const keep = new Set<string>()
+  const walk = (n: UiNode): boolean => {
+    if (n.kind === 'skill') {
+      const hit = matchesQuery(n, q, toolLabel) && matchesLens(n, lens)
+      if (hit) keep.add(n.id)
+      return hit
+    }
+    // Every child walked before the `some` short-circuits it away: the set has
+    // to hold all of them, not just enough to prove the folder stays.
+    const anyChild = n.children.map(walk).some(Boolean)
+    if (anyChild) keep.add(n.id)
+    return anyChild
+  }
+  walk(root)
+  // The root always renders; an empty library still needs its own row to hang
+  // the "nothing here" state on.
+  keep.add(root.id)
+  return keep
+}
+
+function TreeRow({ node, depth, selectedId, expanded, onToggle, onSelect, forceOpen, visible }: {
   node: UiNode
   depth: number
   selectedId: string
   expanded: Set<string>
   onToggle: (id: string) => void
   onSelect: (id: string) => void
-  query: string
-  toolLabel: (id: string) => string
+  /** A filter is running, so folders open to show what it found. */
+  forceOpen: boolean
+  visible: Set<string>
 }) {
-  const q = query.trim().toLowerCase()
-
-  // A folder survives the filter if anything inside it does — otherwise
-  // searching would empty the tree and hide the very thing it found.
-  const matches = (n: UiNode): boolean => {
-    if (n.kind === 'skill') {
-      return !q
-        || n.name.toLowerCase().includes(q)
-        || n.slug.includes(q)
-        || n.tags.some((t) => t.includes(q))
-        || n.toolIds.some((t) => toolLabel(t).toLowerCase().includes(q))
-    }
-    return n.children.some(matches)
-  }
-  if (!matches(node)) return null
+  if (!visible.has(node.id)) return null
 
   const isSkill = node.kind === 'skill'
-  const open = expanded.has(node.id) || q.length > 0
+  const open = expanded.has(node.id) || forceOpen
   const Icon = nodeIcon(node, open)
+  const dead = isSkill && runnableByNobody(node)
 
   return (
     <>
@@ -245,13 +307,17 @@ function TreeRow({ node, depth, selectedId, expanded, onToggle, onSelect, query,
           : <ChevronRight size={12} className="cv" />}
         <Icon size={14} className="ws-node-ic" data-skill={isSkill} />
         <span className="nm">{node.name}</span>
+        {/* The one fault visible without opening anything. A skill that nobody
+            can run is indistinguishable from a working one in a plain list,
+            and it is the thing an admin is usually here to find. */}
+        {dead ? <Lock size={11} className="ws-node-dead" aria-label="Nobody can run this" /> : null}
         {isSkill && node.status === 'archived' ? <Archive size={11} className="cv" /> : null}
         {!isSkill && node.kind !== 'company' ? <span className="ct">{collectSkills(node).length}</span> : null}
       </button>
       {!isSkill && open
         ? (node as UiFolder).children.map((c) => (
           <TreeRow key={c.id} node={c} depth={depth + 1} selectedId={selectedId} expanded={expanded}
-            onToggle={onToggle} onSelect={onSelect} query={query} toolLabel={toolLabel} />
+            onToggle={onToggle} onSelect={onSelect} forceOpen={forceOpen} visible={visible} />
         ))
         : null}
     </>
@@ -334,6 +400,12 @@ function FolderView({ node, root, data, toolLabel, onOpen }: {
                   <b>
                     {c.name}
                     {c.kind === 'skill' && c.status === 'archived' ? <Archived /> : null}
+                    {/* Same marker as the tree carries. Browsing a folder is
+                        the other way people arrive at a skill, and a dead one
+                        looked exactly like a working one here too. */}
+                    {c.kind === 'skill' && runnableByNobody(c)
+                      ? <span className="ws-tag" data-tone="warn"><Lock size={10} /> Nobody can run it</span>
+                      : null}
                   </b>
                   <p>
                     {c.kind === 'skill'
@@ -707,6 +779,7 @@ export function CompanySkills(_: Props) {
   const [selectedId, setSelectedId] = useState(ROOT_ID)
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([ROOT_ID]))
   const [query, setQuery] = useState('')
+  const [lens, setLens] = useState<Lens>('all')
   const [newRoot, setNewRoot] = useState(false)
   const [backfill, setBackfill] = useState(false)
 
@@ -728,7 +801,38 @@ export function CompanySkills(_: Props) {
   }, [root])
 
   const selected = useMemo(() => (root ? findById(root, selectedId) : null), [root, selectedId])
-  const total = useMemo(() => (root ? collectSkills(root).length : 0), [root])
+  const all = useMemo(() => (root ? collectSkills(root) : []), [root])
+  const total = all.length
+
+  const q = query.trim().toLowerCase()
+  const filtering = q.length > 0 || lens !== 'all'
+
+  const counts = useMemo(() => ({
+    unshared: all.filter(runnableByNobody).length,
+    nosummary: all.filter(hasNoSummary).length,
+    archived: all.filter((s) => s.status === 'archived').length,
+  }), [all])
+
+  const visible = useMemo(
+    () => (root ? visibleNodes(root, q, lens, toolLabel) : new Set<string>()),
+    [root, q, lens, toolLabel],
+  )
+
+  /*
+   * What a search actually found, flat.
+   *
+   * Filtering the tree keeps the hierarchy, so a match four folders deep is
+   * still four folders deep and you read scaffolding to reach one row. When a
+   * filter is running the question has changed from "where does this live" to
+   * "which ones are these", and a list answers that; the tree is still there
+   * the moment you clear it.
+   */
+  const results = useMemo(() => {
+    if (!root || !filtering) return []
+    return all
+      .filter((s) => matchesQuery(s, q, toolLabel) && matchesLens(s, lens))
+      .map((s) => ({ skill: s, path: pathTo(root, s.id)?.slice(1, -1).join(' / ') ?? '' }))
+  }, [root, all, q, lens, filtering, toolLabel])
 
   const toggle = (id: string) => setExpanded((prev) => {
     const next = new Set(prev)
@@ -820,16 +924,88 @@ export function CompanySkills(_: Props) {
               />
               Show archived
             </label>
+
+            {/*
+              The library's faults, as the way in to them.
+
+              Counts alone would be a scoreboard — you would read "7 nobody can
+              run" and still have to go and find the seven. Each one is the
+              filter for the thing it counts, so the number and the way to it
+              are the same control. Hidden at zero: a lens that finds nothing is
+              a button that does nothing.
+            */}
+            {root && (counts.unshared || counts.nosummary || counts.archived) ? (
+              <div className="ws-lens">
+                {lens !== 'all' ? (
+                  <button type="button" className="ws-lens-b" data-on onClick={() => setLens('all')}>
+                    <X size={11} /> Clear
+                  </button>
+                ) : null}
+                {counts.unshared ? (
+                  <button type="button" className="ws-lens-b" data-tone="warn" data-on={lens === 'unshared'}
+                    onClick={() => setLens(lens === 'unshared' ? 'all' : 'unshared')}
+                    title="In the library, but shared with nobody — so nobody can run them">
+                    <Lock size={11} /> Nobody can run <span>{counts.unshared}</span>
+                  </button>
+                ) : null}
+                {counts.nosummary ? (
+                  <button type="button" className="ws-lens-b" data-on={lens === 'nosummary'}
+                    onClick={() => setLens(lens === 'nosummary' ? 'all' : 'nosummary')}
+                    title="No summary, so Divo has little to choose them by">
+                    <CircleAlert size={11} /> No summary <span>{counts.nosummary}</span>
+                  </button>
+                ) : null}
+                {counts.archived ? (
+                  <button type="button" className="ws-lens-b" data-on={lens === 'archived'}
+                    onClick={() => setLens(lens === 'archived' ? 'all' : 'archived')}>
+                    <Archive size={11} /> Archived <span>{counts.archived}</span>
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </div>
 
           {data.loading ? <SkelRows n={5} icon={false} /> : null}
           {!data.loading && data.error ? (
             <div className="ws-panel-body ws-sub">{data.error}</div>
           ) : null}
-          {!data.loading && root ? (
+
+          {/* Results while filtering, the tree otherwise. Same panel, because
+              they are two answers to the same question and swapping the panel
+              would make it feel like a different screen. */}
+          {!data.loading && root && filtering ? (
+            results.length === 0 ? (
+              <div className="ws-panel-body ws-sub">Nothing matches.</div>
+            ) : (
+              <div className="ws-tree ws-hits">
+                {results.map(({ skill, path }) => (
+                  <button
+                    key={skill.id}
+                    type="button"
+                    className="ws-hit"
+                    data-on={selectedId === skill.id}
+                    onClick={() => setSelectedId(skill.id)}
+                  >
+                    <span className="t">
+                      <Sparkles size={13} className="ws-node-ic" data-skill="true" />
+                      <span className="nm">{skill.name}</span>
+                      {runnableByNobody(skill)
+                        ? <Lock size={11} className="ws-node-dead" aria-label="Nobody can run this" /> : null}
+                      {skill.status === 'archived' ? <Archive size={11} className="cv" /> : null}
+                    </span>
+                    {/* Where it lives — the one thing a flat list loses, so it
+                        is the one thing carried back into it. */}
+                    <span className="p">{path || 'Top level'}</span>
+                  </button>
+                ))}
+              </div>
+            )
+          ) : null}
+
+          {!data.loading && root && !filtering ? (
             <div className="ws-tree">
               <TreeRow node={root} depth={0} selectedId={selectedId} expanded={expanded}
-                onToggle={toggle} onSelect={setSelectedId} query={query} toolLabel={toolLabel} />
+                onToggle={toggle} onSelect={setSelectedId} forceOpen={false} visible={visible} />
             </div>
           ) : null}
         </Panel>
@@ -844,12 +1020,28 @@ export function CompanySkills(_: Props) {
                 ? <SkillView node={selected} root={root} data={data} toolLabel={toolLabel} />
                 : <FolderView node={selected} root={root} data={data} toolLabel={toolLabel} onOpen={open} />}
             </Fragment>
+          ) : data.loading ? (
+            /* The detail panel's own shape, not an empty state wearing a
+               different sentence. Nothing has been picked yet, but this side of
+               the screen is about to hold a title, a row of tags, four tabs and
+               a list — so it stands where those land. */
+            <Panel>
+              <div className="ws-panel-body">
+                <Skel w={190} h={16} />
+                <div style={{ height: 9 }} />
+                <Skel w="70%" h={11} />
+                <div style={{ display: 'flex', gap: 8, marginTop: 15 }}>
+                  <Skel w={92} h={18} /><Skel w={70} h={18} /><Skel w={84} h={18} />
+                </div>
+              </div>
+              <SkelRows n={4} icon={false} />
+            </Panel>
           ) : (
             <Panel>
               <Empty
                 icon={Sparkles}
-                title={data.loading ? 'Loading the library' : 'Pick something on the left'}
-                body={data.loading ? undefined : 'Choose a folder to see what is in it, or a skill to see who can run it.'}
+                title="Pick something on the left"
+                body="Choose a folder to see what is in it, or a skill to see who can run it."
               />
             </Panel>
           )}

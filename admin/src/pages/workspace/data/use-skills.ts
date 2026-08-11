@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
-import { toast } from "sonner"
+import { notify } from "@/lib/notify"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { useCompanyScope } from "@/cursor/use-spend"
 import {
@@ -13,6 +13,9 @@ import {
   type SkillRegistryTree,
 } from "@/lib/api"
 import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
+
+/** "1 skill" / "3 skills" — so a count never reads as `1 skill(s)`. */
+const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 type ToolRegistryEntry = { toolId: string; name: string }
 
@@ -64,9 +67,11 @@ export function useSkillRegistry() {
     async (input: { name: string; parentId?: string | null; departmentId?: string | null }) => {
       try {
         await skillRegistryApi.createFolder(input, companyId, token ?? undefined)
-        toast.success("Folder created")
+        // Named, because the tree can be long enough that a new folder lands
+        // below the fold and "Folder created" is then a claim you cannot check.
+        notify.done('Folder created', input.name)
         await invalidateTree()
-      } catch { /* toast handled in api layer */ }
+      } catch { /* the api layer already said why */ }
     },
     [companyId, token, invalidateTree],
   )
@@ -75,9 +80,9 @@ export function useSkillRegistry() {
     async (folderId: string, name: string) => {
       try {
         await skillRegistryApi.renameFolder(folderId, name, companyId, token ?? undefined)
-        toast.success("Folder renamed")
+        notify.done('Folder renamed', `It is called ${name} now.`)
         await invalidateTree()
-      } catch {}
+      } catch { /* the api layer already said why */ }
     },
     [companyId, token, invalidateTree],
   )
@@ -86,9 +91,9 @@ export function useSkillRegistry() {
     async (folderId: string, parentId: string | null) => {
       try {
         await skillRegistryApi.moveFolder(folderId, parentId, companyId, token ?? undefined)
-        toast.success("Folder moved")
+        notify.done('Folder moved', parentId ? null : 'It sits at the top level now.')
         await invalidateTree()
-      } catch {}
+      } catch { /* the api layer already said why */ }
     },
     [companyId, token, invalidateTree],
   )
@@ -97,9 +102,21 @@ export function useSkillRegistry() {
     async (folderId: string) => {
       try {
         const res = await skillRegistryApi.archiveFolder(folderId, companyId, token ?? undefined)
-        toast.success(`Folder archived · ${res.detachedSkills} skill(s) detached to root`)
+        /*
+         * What happened to the skills inside is the part worth saying. They are
+         * not archived with the folder — they are moved to the top level, and
+         * somebody who reads only "Folder archived" will go looking for them
+         * where they used to be. Said in words rather than as
+         * "3 skill(s) detached to root", which is the database's account of it.
+         */
+        notify.done(
+          'Folder archived',
+          res.detachedSkills > 0
+            ? `${plural(res.detachedSkills, 'skill')} moved to the top level. Nothing was deleted.`
+            : 'It was empty, so nothing moved.',
+        )
         await invalidateTree()
-      } catch {}
+      } catch { /* the api layer already said why */ }
     },
     [companyId, token, invalidateTree],
   )
@@ -108,10 +125,13 @@ export function useSkillRegistry() {
     async (skillId: string, folderId: string | null) => {
       try {
         await skillRegistryApi.moveSkill(skillId, folderId, companyId, token ?? undefined)
-        toast.success(folderId ? "Skill moved" : "Skill moved to root")
+        // Worth a toast either way: the skill leaves the folder you were
+        // looking at, so the screen you are on stops showing the thing you
+        // just acted on.
+        notify.done('Skill moved', folderId ? null : 'It sits at the top level now.')
         await invalidateTree()
         await queryClient.invalidateQueries({ queryKey: adminQueryKeys.skillDetail(scope, skillId) })
-      } catch {}
+      } catch { /* the api layer already said why */ }
     },
     [companyId, token, invalidateTree, queryClient, scope],
   )
@@ -119,9 +139,22 @@ export function useSkillRegistry() {
   const backfill = useCallback(async () => {
     try {
       const res = await skillRegistryApi.backfill(companyId, token ?? undefined)
-      toast.success(`Backfill complete · ${res.foldersCreated} folder(s), ${res.skillsPlaced} skill(s) placed`)
+      /*
+       * A bulk change across the whole library, and almost none of it is on
+       * screen — so this is the one toast on this page that is carrying the
+       * entire result. It also has a real "nothing happened" case, which the
+       * old wording reported as "0 folder(s), 0 skill(s) placed" and left
+       * looking like a failure.
+       */
+      const madeNothing = res.foldersCreated === 0 && res.skillsPlaced === 0
+      notify.done(
+        madeNothing ? 'Everything was already tidy' : 'Tidied the library',
+        madeNothing
+          ? 'No loose skills and no missing folders — nothing needed moving.'
+          : `Made ${plural(res.foldersCreated, 'folder')} and filed ${plural(res.skillsPlaced, 'skill')} into them.`,
+      )
       await invalidateTree()
-    } catch {}
+    } catch { /* the api layer already said why */ }
   }, [companyId, token, invalidateTree])
 
   return {
@@ -179,9 +212,11 @@ export function useSkillAccess(skillId: string | null) {
       if (!skillId) return
       try {
         await skillRegistryApi.grantAccess(skillId, granteeType, granteeId, companyId, token ?? undefined)
-        toast.success("Access granted")
+        // Sharing is an authority change, so it says what it did rather than
+        // reporting that a write succeeded.
+        notify.done('Shared', 'They can run this skill now.')
         await queryClient.invalidateQueries({ queryKey: key })
-      } catch {}
+      } catch { /* the api layer already said why */ }
     },
     [skillId, companyId, token, queryClient, key],
   )
@@ -191,9 +226,9 @@ export function useSkillAccess(skillId: string | null) {
       if (!skillId) return
       try {
         await skillRegistryApi.revokeAccess(skillId, granteeType, granteeId, companyId, token ?? undefined)
-        toast.success("Access revoked")
+        notify.done('Stopped sharing', 'They can no longer run this skill.')
         await queryClient.invalidateQueries({ queryKey: key })
-      } catch {}
+      } catch { /* the api layer already said why */ }
     },
     [skillId, companyId, token, queryClient, key],
   )

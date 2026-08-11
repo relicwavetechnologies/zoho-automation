@@ -1,9 +1,10 @@
 import { useState } from "react"
-import { Brain, Building2, ChevronRight, Globe, Loader2, Users } from "lucide-react"
+import { Brain, Building2, ChevronRight, Globe, Users } from "lucide-react"
 import { MetricCard, MetricStrip } from "@/components/admin/metric-card"
 import { PageHeader } from "@/components/admin/page-header"
 import { SectionCard } from "@/components/admin/section-card"
 import { EmptyState } from "@/components/admin/empty-state"
+import { SkelRows } from "@/pages/workspace/ui"
 import { useMemoryData, type MemoryEntry } from "./memory/use-memory-data"
 
 function formatDate(iso?: string): string {
@@ -22,12 +23,32 @@ export function MemoriesPage() {
   const { memories, stats, loading, error, filters, setFilters } = useMemoryData()
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
+  /*
+   * The page's own shape while it loads, rather than a spinner where the page
+   * is not.
+   *
+   * The header and the three counters are the frame this screen always has, so
+   * they stay put and only their numbers arrive — which is what stops the
+   * layout jumping the moment the read lands. Everything below is a list of
+   * unknown length, so it gets rows.
+   */
   if (loading) {
     return (
       <div className="page">
-        <div className="ws-auth-wait" style={{ maxWidth: 260 }}>
-          <Loader2 size={14} className="ws-spin" />
-          Loading memories…
+        <PageHeader
+          eyebrow="AI Memory"
+          title="Governed knowledge"
+          description="Canonical department and company memory. Shared changes always follow review, live RBAC, and approval policy. Personal content stays private."
+        />
+        <div className="ws-stack">
+          <MetricStrip columns={3}>
+            <MetricCard label="Personal" value="—" detail="Private content hidden from admins" icon={Users} />
+            <MetricCard label="Department" value="—" detail="Shared inside one team" icon={Building2} />
+            <MetricCard label="Company" value="—" detail="Applies to everyone" icon={Globe} />
+          </MetricStrip>
+          <SectionCard title="Stored memories" description="Newest first. Open one to inspect its human-readable provenance." flush>
+            <SkelRows n={5} />
+          </SectionCard>
         </div>
       </div>
     )

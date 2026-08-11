@@ -14,10 +14,20 @@ import { LARK_SYSTEM_SKILLS } from './lark-system-skills';
 import { MAIL_OPS_SYSTEM_SKILLS } from './mail-ops-system-skills';
 import { MENHOOD_DATA_SYSTEM_SKILL } from './menhood-data-system-skill';
 import { DIVO_OMS_SITE_DATA_SYSTEM_SKILL } from './oms-site-data-system-skill';
-import { DIVO_LOCAL_PYTHON_SKILL_SLUG } from './divo-local-python-system-skill';
-import { SCHEDULE_DIVO_WORK_SKILL_SLUG } from './scheduled-work-system-skill';
+import {
+  DIVO_LOCAL_PYTHON_SKILL_SLUG,
+  DIVO_LOCAL_PYTHON_SYSTEM_SKILL,
+} from './divo-local-python-system-skill';
+import { DIVO_PRESENTATIONS_SYSTEM_SKILL } from './divo-presentations-system-skill';
+import {
+  SCHEDULE_DIVO_WORK_SKILL_MARKDOWN,
+  SCHEDULE_DIVO_WORK_SKILL_SLUG,
+} from './scheduled-work-system-skill';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from './semrush-system-skill';
-import { KNOWLEDGE_MANAGEMENT_SKILL_SLUG } from './knowledge-system-skill';
+import {
+  KNOWLEDGE_MANAGEMENT_SKILL_MARKDOWN,
+  KNOWLEDGE_MANAGEMENT_SKILL_SLUG,
+} from './knowledge-system-skill';
 import { ZOHO_FINANCE_SYSTEM_SKILLS } from './zoho-finance-system-skills';
 
 export const ROUTING_SYSTEM_SKILLS = [
@@ -27,21 +37,19 @@ export const ROUTING_SYSTEM_SKILLS = [
     summary: 'Routes Airtable and synced Menhood data work to the exact specialist.',
     markdown: `# Airtable Router
 
-Choose the exact approved specialist returned by this router.
+Choose the smallest specialist set that proves the requested result.
 
-- Settled Menhood order, customer, product, RTO, COD, campaign, or pincode analysis that needs joins, aggregates, cohorts, broad filtering, or bulk analysis → \`menhood-data\`. This company-managed reporting source needs no Airtable connection ID and does not use local Python.
-- Current/latest Menhood order counts, the current or previous month before reporting maturity, or questions that depend on Airtable-only view fields such as \`Order Status (Team)\`, \`Order Sub Status\`, Duplicate/TEST/Testing cleanup, or Regular Order filtering → \`airtable-core\` against the live Airtable Orders table. Route there immediately; do not first sample the reporting DB and do not ask whether to check Airtable. Use this for exact live reconciliation, not broad historical analysis.
+- Settled Menhood order, customer, product, RTO, COD, campaign, or pincode analysis that needs SQL joins, aggregates, or cohorts → \`menhood-data\`.
+- Current/latest Menhood facts or Airtable-only operational semantics → \`airtable-core\` against the live Orders table. A named product may also need \`menhood-data\` once to resolve its canonical SKU before filtering Airtable.
+- A complete current/live calculation or artifact → the filtered \`airtable-core\` source plus \`divo-python-automation\` and the destination specialist. Keep pages in protected files; never scan the full Orders table before trying server-side filters.
 - Ordinary Airtable records, comments, and CRUD → \`airtable-core\`.
 - Bases, tables, fields, schemas, and views → \`airtable-schema-ops\`.
 - Interfaces, forms, and automations → \`airtable-automation-ops\`.
 
-Airtable MCP is for ordinary record work, schema work, discovery, and bounded
-preview. Do not route broad historical analytics or full exports through
-Airtable MCP pagination; use the company-managed Menhood data source when the
-request is about settled synced Menhood data. Use live Airtable only for narrow
-current/recent Menhood counts or Airtable-view semantics, and say plainly when a
-bounded preview is not enough to prove a total. Otherwise ask for a bounded
-preview or a backend replayable export source.
+Airtable MCP is the one live record contract for previews and protected
+file-backed pages. Prefer server-side filters and selected fields. Use the
+company-managed reporting source for settled SQL analysis, not as a fallback
+after an avoidable full-table Airtable scan.
 
 Airtable and AITable are different products. Never route an AITable request here.
 This router is instruction-only: loading it successfully means to load one specialist above next.`,
@@ -160,6 +168,7 @@ Choose the exact approved specialist returned by this router.
 
 - Read, extract from, summarise, or answer questions about a file → \`${READ_FILES_SKILL_SLUG}\`.
 - Produce or edit a spreadsheet, document, or export → \`${CREATE_FILES_SKILL_SLUG}\`.
+- Build a slide deck or presentation → \`${DIVO_PRESENTATIONS_SYSTEM_SKILL.slug}\`.
 
 A file sent in this conversation is already saved in the workspace and listed
 under [ATTACHED_FILES]. Loading this router is not permission to answer from a
@@ -272,6 +281,7 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
     routerSlug: 'airtable-router',
     targetSlugs: [
       MENHOOD_DATA_SYSTEM_SKILL.slug,
+      DIVO_LOCAL_PYTHON_SKILL_SLUG,
       ...CONNECTED_PROVIDER_SYSTEM_SKILLS
         .filter(skill => skill.slug.startsWith('airtable-'))
         .map(skill => skill.slug),
@@ -300,7 +310,16 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
   },
   {
     routerSlug: 'files-router',
-    targetSlugs: FILES_AND_DOCUMENTS_SYSTEM_SKILLS.map(skill => skill.slug),
+    targetSlugs: [
+      ...FILES_AND_DOCUMENTS_SYSTEM_SKILLS.map(skill => skill.slug),
+      /*
+       * Provisioned for every company since it was written, listed in the
+       * registry, and reachable by no router — a deck is a file the member
+       * asked Divo to author, so it belongs behind the same router as every
+       * other authored artifact.
+       */
+      DIVO_PRESENTATIONS_SYSTEM_SKILL.slug,
+    ],
   },
   {
     routerSlug: 'research-router',
@@ -321,27 +340,42 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
 ] as const;
 
 /**
- * Every seeded skill a router could reach, tools or not. `unroutedSeededSystemSkillSlugs`
- * checks against this rather than the tool-bearing subset.
+ * Every seeded skill a router could reach, tools or not, as slug plus the exact
+ * body that ships to the model.
+ *
+ * One list, because two lists drift. `unroutedSeededSystemSkillSlugs` reads it,
+ * and so does the guard that no skill teaches a removed call surface — which
+ * was a separate hand-written array until four families turned out to be
+ * missing from it, including the scheduler that kept a dead gateway protocol
+ * through an entire sweep. A definition absent from here is exempt from both
+ * checks at once, which is the only way it should ever be exempt from either.
  */
-export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = [
+export const SEEDED_SYSTEM_SKILLS: readonly { slug: string; markdown: string }[] = [
   ...LARK_SYSTEM_SKILLS,
   ...GOOGLE_WORKSPACE_SYSTEM_SKILLS,
   ...CONNECTED_PROVIDER_SYSTEM_SKILLS,
   ...ZOHO_FINANCE_SYSTEM_SKILLS,
   ...MAIL_OPS_SYSTEM_SKILLS,
   ...FILES_AND_DOCUMENTS_SYSTEM_SKILLS,
+  /*
+   * Absent from this list, `unroutedSeededSystemSkillSlugs` returned [] while
+   * `divo-presentations` sat unrouted — the guard was not passing, it could
+   * not see the skill.
+   */
+  DIVO_PRESENTATIONS_SYSTEM_SKILL,
   DIVO_SEMRUSH_SYSTEM_SKILL,
   DIVO_OMS_SITE_DATA_SYSTEM_SKILL,
   MENHOOD_DATA_SYSTEM_SKILL,
   ...ROUTING_SYSTEM_SKILLS,
 ]
-  .map(skill => skill.slug)
+  .map(skill => ({ slug: skill.slug, markdown: skill.markdown }))
   .concat(
-    SCHEDULE_DIVO_WORK_SKILL_SLUG,
-    KNOWLEDGE_MANAGEMENT_SKILL_SLUG,
-    DIVO_LOCAL_PYTHON_SKILL_SLUG,
+    { slug: SCHEDULE_DIVO_WORK_SKILL_SLUG, markdown: SCHEDULE_DIVO_WORK_SKILL_MARKDOWN },
+    { slug: KNOWLEDGE_MANAGEMENT_SKILL_SLUG, markdown: KNOWLEDGE_MANAGEMENT_SKILL_MARKDOWN },
+    { slug: DIVO_LOCAL_PYTHON_SKILL_SLUG, markdown: DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown },
   );
+
+export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = SEEDED_SYSTEM_SKILLS.map(skill => skill.slug);
 
 type SystemSkillRouteStore = Pick<
   Prisma.TransactionClient,

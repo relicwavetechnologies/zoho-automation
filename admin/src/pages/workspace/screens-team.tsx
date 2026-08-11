@@ -14,21 +14,23 @@
  * those disagree — which company rule is holding it down. So a locked cell here
  * names the real reason rather than guessing at a ceiling.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ArrowRight, Check, Clock, Copy, Lock, Plus, Search, ShieldCheck,
+  ArrowRight, Check, ChevronDown, Clock, Copy, Lock, Plus, Search, ShieldCheck,
   Trash2, TriangleAlert, UserPlus, Users,
 } from 'lucide-react'
 import {
-  Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, Seg, Skel, SkelRows,
-  Switch, listPhrase, money, useStaged,
+  Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, NoAccess, PageHeader, Panel, Prompt,
+  RowMenu, Seg, Skel, SkelRows, Switch, ToolMark, TrendChart, listPhrase, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
+import { notify } from '@/lib/notify'
 import {
   candidateBlock, candidateLabel,
   useApprovalPolicy, useDepartment, useDepartmentMatrix, useManagedDepartments, useTeamUsage,
   type Candidate, type DeptRole, type MemberActionState, type RoleActionState, type ToolScopeSnapshot,
 } from './data/use-team'
+import { dayLabel, summarizeSpend, USAGE_DAYS, USAGE_WEEKS } from './data/use-my-activity'
 import { useApprovals, expiryLabel } from './data/use-approvals'
 
 type Props = { replay: number; toast: Toast; go: (screen: string) => void }
@@ -82,6 +84,66 @@ const cellFromRole = (state: RoleActionState | undefined): Cell => {
  * Columns come from the union of what the tools actually support rather than a
  * fixed list, so a grid never shows a column no row can use.
  */
+/**
+ * The matrix's own skeleton.
+ *
+ * This screen fetches one request per tool — around thirty-five, each with its
+ * own preflight — so the placeholder is on screen for several seconds rather
+ * than a blink, and it was five flat rows standing in for a thirty-five row
+ * table. The page grew by most of its own height when the real thing landed.
+ *
+ * The row count is the number the registry actually returns, so the table does
+ * not jump; the columns are the six action groups every scope shows.
+ */
+const MATRIX_SKELETON_ROWS = 35
+const MATRIX_SKELETON_COLS = 6
+
+/*
+ * 56px, which is the mean real row and not a guess.
+ *
+ * Measured across the live table: rows come in at 45, 48, 50, 58 and 78 —
+ * mostly 58, with two that wrap because their names are long. A uniform 49
+ * undershot the total by 252px over thirty-five rows, so the page still grew by
+ * most of a screen when the data landed. There is no single height that is
+ * right for every row; the mean is the one that makes the *table* the right
+ * height, which is what stops the reflow.
+ */
+const MATRIX_SKELETON_ROW_H = 56
+
+function ToolMatrixSkeleton() {
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table className="ws-matrix is-skeleton">
+        <thead>
+          <tr>
+            <th><Skel w={44} h={9} /></th>
+            {Array.from({ length: MATRIX_SKELETON_COLS }).map((_, i) => (
+              <th key={i} className="act"><Skel w={46} h={9} /></th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from({ length: MATRIX_SKELETON_ROWS }).map((_, r) => (
+            <tr key={r} style={{ height: MATRIX_SKELETON_ROW_H }}>
+              <td>
+                <span className="ws-mx-tool">
+                  <span className="ws-toolmark"><Skel w={24} h={24} block /></span>
+                  <Skel w={92 + ((r * 13) % 58)} h={11} />
+                </span>
+              </td>
+              {/* 26px is the exact size of `.ws-cell` — measured, not guessed:
+                  at 22 the table came up 252px short across thirty-five rows. */}
+              {Array.from({ length: MATRIX_SKELETON_COLS }).map((_, c) => (
+                <td key={c} className="act"><Skel w={26} h={26} block /></td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function ToolMatrix({ tools, cellFor, onToggle, readOnly }: {
   tools: ToolScopeSnapshot[]
   cellFor: (tool: ToolScopeSnapshot, action: string) => Cell
@@ -108,7 +170,14 @@ function ToolMatrix({ tools, cellFor, onToggle, readOnly }: {
         <tbody>
           {tools.map((tool) => (
             <tr key={tool.tool.toolId}>
-              <td><span style={{ fontWeight: 500 }}>{tool.tool.name}</span></td>
+              <td>
+                {/* The app's mark beside its name, so "the Google ones" is a
+                    glance rather than fifteen lines of reading. */}
+                <span className="ws-mx-tool">
+                  <ToolMark toolName={tool.tool.name} />
+                  <span style={{ fontWeight: 500 }}>{tool.tool.name}</span>
+                </span>
+              </td>
               {columns.map((action) => {
                 if (!tool.supportedActions.includes(action)) {
                   return <td key={action} className="act"><span className="ws-cell-na">·</span></td>
@@ -206,7 +275,11 @@ export function TeamHome({ replay, go }: Props) {
   const dept = useMyManagedDepartment()
   const [r1, r2] = useStaged([260, 560], replay)
   const { snapshot, loading, refused } = useDepartment(dept?.id)
-  const { usage } = useTeamUsage(dept?.id)
+  // `loading` was dropped on the floor and the panel gated on the staged timer
+  // instead, so "Team cost $0.00 · 0 tasks" appeared at 560ms whether or not
+  // the figure had arrived — a zero that means "not yet" reads exactly like a
+  // zero that means "nobody spent anything".
+  const { usage, loading: usageLoading } = useTeamUsage(dept?.id)
   const { coverage } = useDepartmentMatrix(dept?.id)
   const { awaitingMe } = useApprovals()
 
@@ -258,7 +331,18 @@ export function TeamHome({ replay, go }: Props) {
       <PageHeader
         eyebrow={dept.name}
         title="Your team"
-        description={`${people.length} ${people.length === 1 ? 'person' : 'people'}. You decide what Divo may do for each of them, and what it must ask you first.`}
+        /*
+         * The count waits for the count.
+         *
+         * `people` is an empty array until the snapshot lands, and rendering
+         * its length regardless put "0 people" at the top of the page while the
+         * panel below it was still honestly showing skeletons — the header
+         * asserting a number the page did not have yet, and the worst possible
+         * one for a manager to read about their own team.
+         */
+        description={loading
+          ? 'You decide what Divo may do for each of them, and what it must ask you first.'
+          : `${people.length} ${people.length === 1 ? 'person' : 'people'}. You decide what Divo may do for each of them, and what it must ask you first.`}
       />
       <TeamSwitch />
       <div className="ws-stack">
@@ -309,7 +393,7 @@ export function TeamHome({ replay, go }: Props) {
 
           <Panel title="Team cost" source="teamUsage">
             <div className="ws-panel-body">
-              {!r2 ? <Skel w="100%" h={90} /> : (
+              {!r2 || usageLoading ? <Skel w="100%" h={90} /> : (
                 <Fade>
                   <div className="ws-num" style={{ color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
                   <div className="ws-sub" style={{ marginTop: 6 }}>last {usage.days} days · {usage.runs} tasks</div>
@@ -335,6 +419,171 @@ export function TeamHome({ replay, go }: Props) {
   )
 }
 
+/**
+ * The people list's own skeleton.
+ *
+ * `SkelRows` ends every row with one 58px block, and this list now ends with
+ * four columns totalling 318px — tasks, cost, the role control and the menu. So
+ * the placeholder was right about the left of the row and wrong about the right
+ * of it, and the whole column slid on arrival.
+ */
+function PeopleSkeleton({ n = 8 }: { n?: number }) {
+  return (
+    <div className="ws-rows">
+      {/* 71px is the real row, measured — `.ws-skel-row` comes out at 60 on its
+          own padding, and eight of those left the list 80px short before the
+          row count even came into it. */}
+      {Array.from({ length: n }).map((_, i) => (
+        <div className="ws-skel-row" key={i} style={{ minHeight: 71, boxSizing: 'border-box' }}>
+          <Skel w={32} h={32} circle />
+          <div style={{ flex: 1 }}>
+            <Skel w={`${38 + ((i * 13) % 26)}%`} />
+            <div style={{ height: 7 }} />
+            <Skel w={`${46 + ((i * 17) % 24)}%`} h={9} />
+          </div>
+          <div className="ws-row-act ws-people-act">
+            <Skel w={54} h={11} />
+            <Skel w={40} h={11} />
+            <Skel w={92} h={28} block />
+            <span />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** One row of the people list, as the department snapshot carries it. */
+type TeamPerson = {
+  userId: string
+  name: string | null
+  email: string
+  roleId?: string
+  roleSlug?: string
+  roleName?: string
+}
+
+/**
+ * Somebody's role, changeable where you read it.
+ *
+ * A select rather than a menu, because the choice is one of a short known list
+ * and a select says so without being opened. It stops propagation: the row
+ * behind it opens the person, and picking a role is not that.
+ *
+ * A manager's is rendered as text, not a disabled select. A disabled control
+ * invites a click that will never work, and this scope genuinely cannot change
+ * it — the backend's `ordinaryMember` refuses, so offering the shape of a
+ * control would be a promise the product does not keep.
+ */
+function RoleSelect({ person, roles, busy, onPick }: {
+  person: TeamPerson
+  roles: DeptRole[]
+  busy: boolean
+  onPick: (roleId: string, roleName: string) => void
+}) {
+  if (person.roleSlug === 'MANAGER') {
+    return (
+      // Padded to sit on the same left edge as the pickers below it — the text
+      // and the control occupy one column, so the list has one right margin.
+      <span className="ws-role-fixed" title="Only a company admin can change who leads this team">
+        {person.roleName ?? 'Manager'}
+      </span>
+    )
+  }
+  // Managers are governed at company level, so the Manager role is not on offer
+  // here — the same rule the drawer and the roles page already apply.
+  const assignable = roles.filter((r) => r.slug !== 'MANAGER')
+  if (assignable.length === 0) {
+    return <span className="ws-role-fixed">{person.roleName ?? 'Member'}</span>
+  }
+  return (
+    <RolePicker
+      current={person.roleName ?? 'Member'}
+      currentId={person.roleId}
+      options={assignable}
+      busy={busy}
+      label={`Role for ${displayName(person.name, person.email)}`}
+      onPick={onPick}
+    />
+  )
+}
+
+/**
+ * A role picker Divo can actually style.
+ *
+ * This was a native `<select>`, and a native select's *popup* is drawn by the
+ * operating system — on macOS that is a blue-highlighted list that owes nothing
+ * to the app's palette, sitting on a dark page. The closed control matched and
+ * the open one did not, which is the one moment somebody is looking straight at
+ * it.
+ *
+ * Same behaviour as the row menu beside it, and the same dismissal rules, so
+ * two adjacent controls on one row do not open in two different ways.
+ */
+function RolePicker({ current, currentId, options, busy, label, onPick }: {
+  current: string
+  currentId?: string
+  options: DeptRole[]
+  busy: boolean
+  label: string
+  onPick: (roleId: string, roleName: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const wrap = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  return (
+    <div className="ws-menu-wrap" ref={wrap} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="ws-role-pick"
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        disabled={busy}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {busy ? 'Saving…' : current}
+        <ChevronDown size={13} />
+      </button>
+      {open ? (
+        <div className="ws-menu" role="menu">
+          {options.map((r) => (
+            <button
+              type="button"
+              role="menuitemradio"
+              aria-checked={r.id === currentId}
+              key={r.id}
+              onClick={() => {
+                setOpen(false)
+                if (r.id !== currentId) onPick(r.id, r.name)
+              }}
+            >
+              {/* The tick holds its column whether or not it is drawn, so the
+                  labels do not shift by 19px as the selection moves. */}
+              <Check size={13} style={{ opacity: r.id === currentId ? 1 : 0 }} />
+              {r.name}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 /* ══ People — person-first permissions ═════════════════ */
 export function TeamPeople({ replay, toast }: Props) {
   const dept = useMyManagedDepartment()
@@ -347,6 +596,9 @@ export function TeamPeople({ replay, toast }: Props) {
   const { usage } = useTeamUsage(dept?.id)
   const matrix = useDepartmentMatrix(dept?.id)
   const [adding, setAdding] = useState(false)
+  /** Whose row is mid-write, so its two controls cannot be pressed twice. */
+  const [busyUser, setBusyUser] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<TeamPerson | null>(null)
 
   const people = snapshot?.memberships ?? []
   const list = useMemo(
@@ -360,6 +612,41 @@ export function TeamPeople({ replay, toast }: Props) {
   const exceptionsFor = (userId: string) => matrix.tools.reduce(
     (n, tool) => n + tool.memberActionStates.filter((s) => s.userId === userId && s.provenance === 'override').length, 0,
   )
+
+  /*
+   * The server's sentence, not a generic one.
+   *
+   * `setMemberRole` refuses a manager with "Only a company administrator can
+   * change a department manager", and refuses a role this scope may not assign
+   * — each is a different thing to do next, and a flat "Could not change their
+   * role" would throw away the only part anybody can act on.
+   */
+  const changeRole = async (person: TeamPerson, roleId: string, roleName: string) => {
+    const who = firstName(person.name, person.email)
+    setBusyUser(person.userId)
+    try {
+      await setMemberRole(person.userId, roleId)
+      toast(`${who} is now ${roleName}`)
+    } catch (e) {
+      notify.failed(`${who}'s role was not changed`, e instanceof Error ? e.message : null)
+    } finally {
+      setBusyUser(null)
+    }
+  }
+
+  const confirmRemove = async (person: TeamPerson) => {
+    const who = firstName(person.name, person.email)
+    setBusyUser(person.userId)
+    try {
+      await removeMember(person.userId)
+      toast(`${who} removed from ${dept.name}`)
+    } catch (e) {
+      notify.failed(`${who} was not removed`, e instanceof Error ? e.message : null)
+    } finally {
+      setBusyUser(null)
+      setRemoving(null)
+    }
+  }
 
   return (
     <>
@@ -385,7 +672,7 @@ export function TeamPeople({ replay, toast }: Props) {
         {/* "Nobody matches" is an answer about the search box. A refused or
             failed snapshot produces the same empty list with an empty search
             box, which reads as an empty team — so both are named first. */}
-        {!r1 || loading ? <SkelRows n={6} /> : refused ? (
+        {!r1 || loading ? <PeopleSkeleton /> : refused ? (
           <NoAccess
             what="this team's people"
             who="Only whoever leads this team can see who is in it."
@@ -418,11 +705,51 @@ export function TeamPeople({ replay, toast }: Props) {
                         {p.roleSlug === 'MANAGER' ? <span className="ws-tag">Leads this team</span> : null}
                         {count > 0 ? <span className="ws-prov" data-src="department_user_override">{count} personal exception{count > 1 ? 's' : ''}</span> : null}
                       </b>
-                      <p>{p.email} · {p.roleName ?? 'Member'}{spend && spend.runs === 0 ? ' · never used Divo' : ''}</p>
+                      {/* The role has moved to the control on the right, so it
+                          is not printed twice on one line. */}
+                      <p>{p.email}{spend && spend.runs === 0 ? ' · never used Divo' : ''}</p>
                     </div>
-                    <div className="ws-row-act">
+                    {/*
+                      A fixed grid, not a flex row.
+                      Flexed, a manager's row had no menu and a plain-text role
+                      while a member's had a 104px control and a button — so the
+                      two kinds of row ended their columns 100px apart and the
+                      right-hand edge of the list zig-zagged. Every row now
+                      reserves the same four columns whether or not it fills
+                      them.
+                    */}
+                    <div className="ws-row-act ws-people-act">
                       <span className="ws-sub">{spend?.runs ?? 0} tasks</span>
                       <span className="ws-sub">{money(spend?.spendUsd ?? 0)}</span>
+                      {/*
+                        The role, in the row.
+                        Changing somebody's role is the commonest thing done on
+                        this page and it was three clicks deep — open the person,
+                        find Membership, change it, close. It is one click here,
+                        and the row still opens for everything else.
+                      */}
+                      <RoleSelect
+                        person={p}
+                        roles={snapshot?.roles ?? []}
+                        busy={busyUser === p.userId}
+                        onPick={(roleId, roleName) => void changeRole(p, roleId, roleName)}
+                      />
+                      {/* A manager's membership is the backend's to change —
+                          `ordinaryMember` refuses it — so there is no menu, and
+                          an empty span holds the column so the rows above and
+                          below it still line up. */}
+                      {p.roleSlug === 'MANAGER' ? <span /> : (
+                        <RowMenu
+                          busy={busyUser === p.userId}
+                          label={`Actions for ${displayName(p.name, p.email)}`}
+                          items={[{
+                            label: 'Remove from team',
+                            icon: Trash2,
+                            danger: true,
+                            onSelect: () => setRemoving(p),
+                          }]}
+                        />
+                      )}
                     </div>
                   </ClickRow>
                 )
@@ -432,13 +759,28 @@ export function TeamPeople({ replay, toast }: Props) {
         )}
       </Panel>
 
+      {/* Asked before it happens, because it is not undoable from here: the
+          membership goes and anything granted to them personally in this team
+          goes with it. Same words the drawer's own Remove uses. */}
+      {removing ? (
+        <Confirm
+          title={`Remove ${firstName(removing.name, removing.email)} from ${dept.name}?`}
+          body="Divo stops doing anything for them through this team, and anything granted to them personally here goes with the membership. Their Divo account, and any other team they are in, are untouched."
+          confirm="Remove"
+          onConfirm={() => { void confirmRemove(removing) }}
+          onClose={() => setRemoving(null)}
+        />
+      ) : null}
+
       {adding ? (
         <AddPersonDrawer
           roles={snapshot?.roles ?? []}
           search={findCandidates}
           onAdd={async (userId, roleId, name) => {
             try { await addMember(userId, roleId); toast(`${name} added`) }
-            catch { toast('Could not add them', 'error') }
+            // The server's own sentence: it refuses somebody already in the
+            // team, and somebody with no Divo account, for different reasons.
+            catch (e) { notify.failed('They were not added', e instanceof Error ? e.message : null) }
           }}
           onClose={() => setAdding(false)}
         />
@@ -455,7 +797,7 @@ export function TeamPeople({ replay, toast }: Props) {
           roles={snapshot?.roles ?? []}
           onSetRole={async (userId, roleId, roleName, who) => {
             try { await setMemberRole(userId, roleId); toast(`${who} is now ${roleName}`) }
-            catch { toast('Could not change their role', 'error') }
+            catch (e) { notify.failed(`${who}'s role was not changed`, e instanceof Error ? e.message : null) }
           }}
           onRemove={async (userId, who) => {
             try { await removeMember(userId); toast(`${who} removed from ${dept.name}`); setOpen(null) }
@@ -624,7 +966,21 @@ function PersonDrawer({
   }
 
   const toggle = (tool: ToolScopeSnapshot, action: string, cell: Cell) => {
-    if (cell.blocked) return
+    /*
+     * A press that does nothing at all is indistinguishable from a broken one.
+     *
+     * This returned in silence, so somebody clicking a locked cell got no
+     * movement, no message, and no reason — the explanation lived in a hover
+     * title and a banner at the top of the tab. Pressing is how a person asks
+     * why, and `blockNote` is already the exact answer.
+     */
+    if (cell.blocked) {
+      notify.refused(
+        'Company policy holds this one down',
+        `${cell.blockNote ?? 'This action is switched off above your level'}. Turning it on here would change nothing.`,
+      )
+      return
+    }
     const configured = Boolean(stateOf(tool, action)?.effectiveAllowed)
     setPending((prev) => {
       const without = prev.filter((c) => !(c.toolId === tool.tool.toolId && c.action === action))
@@ -678,8 +1034,8 @@ function PersonDrawer({
     try {
       await matrix.clearMemberAction(toolId, userId, action)
       toast('Exception removed — they follow the role again')
-    } catch {
-      toast('Could not remove that exception', 'error')
+    } catch (e) {
+      notify.failed('That exception was not removed', e instanceof Error ? e.message : null)
     }
   }
 
@@ -709,7 +1065,7 @@ function PersonDrawer({
       {/* Every sentence and every cell in this drawer is derived from the
           matrix. Without it, "Divo cannot do anything for them yet" is not a
           fact about this person — it is the shape of a failed read. */}
-      {matrix.loading ? <SkelRows n={5} icon={false} /> : matrix.error ? (
+      {matrix.loading ? <ToolMatrixSkeleton /> : matrix.error ? (
         <Empty
           icon={TriangleAlert}
           title="Could not read their permissions"
@@ -848,11 +1204,28 @@ function PersonDrawer({
         </>
       ) : (
         <>
+          {/*
+            Two different reasons, and this said the first one for both.
+
+            On a fellow manager every cell is locked because they are a manager
+            — `readOnly` below — and the banner still blamed company policy. The
+            per-cell tooltip falls through to the plain action name in that case,
+            so the wrong sentence here was the only sentence there was.
+          */}
           <div className="ws-ceiling" style={{ marginBottom: 16 }}>
             <TriangleAlert size={14} />
             <div>
-              Locked cells are held down by <b>company policy</b>, above your level. The backend clamps a team grant to
-              the company ceiling, so turning one on here would change nothing.
+              {isManager ? (
+                <>
+                  Nothing here is editable because {firstName(person.name, person.email)} leads this team.
+                  A manager&rsquo;s access is set at company level — this is what they currently hold.
+                </>
+              ) : (
+                <>
+                  Locked cells are held down by <b>company policy</b>, above your level. The backend clamps a team grant to
+                  the company ceiling, so turning one on here would change nothing.
+                </>
+              )}
             </div>
           </div>
           <ToolMatrix tools={matrix.tools} cellFor={cellFor} onToggle={isManager ? undefined : toggle} readOnly={isManager} />
@@ -954,7 +1327,15 @@ export function TeamRoles({ replay, toast }: Props) {
   }
 
   const toggle = (tool: ToolScopeSnapshot, action: string, cell: Cell) => {
-    if (cell.blocked) return
+    // Same silence as the person drawer's, and the same answer — see the note
+    // there. A locked cell here reports on everybody currently in the role.
+    if (cell.blocked) {
+      notify.refused(
+        'Company policy holds this one down',
+        `${cell.blockNote ?? 'This action is switched off above your level'}. Turning it on here would change nothing.`,
+      )
+      return
+    }
     const configured = Boolean(roleState(tool, action)?.configuredAllowed)
     setPending((prev) => {
       const without = prev.filter((c) => !(c.toolId === tool.tool.toolId && c.action === action))
@@ -1053,7 +1434,7 @@ export function TeamRoles({ replay, toast }: Props) {
           ) : undefined}
         >
           <div className="ws-panel-body">
-            {!r1 || matrix.loading ? <SkelRows n={6} icon={false} /> : matrix.error ? (
+            {!r1 || matrix.loading ? <ToolMatrixSkeleton /> : matrix.error ? (
               /* The read failed. Saying "no configurable tools" here would be a
                  claim about the team made on the strength of a broken request. */
               <Empty
@@ -1087,7 +1468,9 @@ export function TeamRoles({ replay, toast }: Props) {
           onClose={() => setRenaming(false)}
           onConfirm={async (name) => {
             try { await renameRole(selected.id, name); toast(`Renamed to ${name}`) }
-            catch { toast('Could not rename that role', 'error') }
+            // "Built-in department roles cannot be managed here" is the whole
+            // answer, and it was being replaced with a shrug.
+            catch (e) { notify.failed('That role was not renamed', e instanceof Error ? e.message : null) }
           }}
         />
       ) : null}
@@ -1125,7 +1508,7 @@ export function TeamRoles({ replay, toast }: Props) {
           onClose={() => setCreatingRole(false)}
           onConfirm={async (name) => {
             try { await createRole(name); toast(`${name} created`) }
-            catch { toast('Could not create that role', 'error') }
+            catch (e) { notify.failed('That role was not created', e instanceof Error ? e.message : null) }
           }}
         />
       ) : null}
@@ -1164,16 +1547,45 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
     try {
       await save({ enabled, requiredActions: [...byTool].map(([toolId, actions]) => ({ toolId, actions })) })
       toast('Approval policy updated')
-    } catch {
-      toast('Could not update the approval policy', 'error')
+    } catch (e) {
+      notify.failed('The approval policy was not saved', e instanceof Error ? e.message : null)
     }
   }
 
+  /*
+   * Enabled follows the list, because the backend already decides it that way.
+   *
+   * It stores `enabled && requiredActions.length > 0`, so a policy that is on
+   * with nothing ticked cannot exist. Sending `enabled` independently let the
+   * UI ask for a state the server would silently rewrite — the save succeeded,
+   * the toast said so, and the switch flipped back on the next render.
+   */
   const toggle = (key: string) => {
     const next = new Set(gated)
     if (next.has(key)) next.delete(key)
     else next.add(key)
-    void commit(next, policy?.enabled ?? true)
+    void commit(next, next.size > 0)
+  }
+
+  /**
+   * The master switch, which could previously only ever be turned off.
+   *
+   * Turning it on saved `enabled: true` with an empty list, the server rewrote
+   * that to false, and the gated-action list was hidden behind `enabled` — so
+   * there was no way to tick the first action and no way to reach the state the
+   * switch was offering. Now the list is always readable and this refuses with
+   * the reason instead of appearing to work.
+   */
+  const toggleAll = () => {
+    if (!policy) { toast('The approval policy has not loaded yet'); return }
+    if (!policy.enabled && gated.size === 0) {
+      notify.refused(
+        'Choose what needs asking first',
+        'An approval policy with nothing in it is the same as no policy, so Divo will not store one. Tick an action below and this switches on by itself.',
+      )
+      return
+    }
+    void commit(gated, !policy.enabled)
   }
 
   return (
@@ -1199,11 +1611,7 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
             {loading ? <Skel w={38} h={22} /> : policy === null ? (
               <span className="ws-sub">Could not read the policy</span>
             ) : (
-              <Switch
-                on={policy.enabled}
-                onToggle={() => void commit(gated, !policy.enabled)}
-                label="Approvals"
-              />
+              <Switch on={policy.enabled} onToggle={toggleAll} label="Approvals" />
             )}
           </div>
         </Panel>
@@ -1216,8 +1624,21 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
           <Panel><div className="ws-panel-body">{loading ? <SkelRows n={3} icon={false} /> : (
             <span className="ws-sub">Whether anything needs your approval could not be read, so it is not stated here.</span>
           )}</div></Panel>
-        ) : policy.enabled ? (
-          <Panel title="Gated actions" description={`${gated.size} of ${gateable.length} actions need you`} source="permissions">
+        ) : (
+          /*
+            Shown whether or not the policy is on, which is what makes the
+            switch above reachable. Hidden behind `enabled`, there was no way to
+            tick the first action and the server refuses to store a policy with
+            none — so "Ask me before risky actions" could be turned off and
+            never back on.
+          */
+          <Panel
+            title="Gated actions"
+            description={policy.enabled
+              ? `${gated.size} of ${gateable.length} actions need you`
+              : `Nothing is being asked. Tick one and this switches on.`}
+            source="permissions"
+          >
             {!r1 || loading || matrix.loading ? <SkelRows n={5} icon={false} /> : (
               <Fade>
                 <div className="ws-rows">
@@ -1238,8 +1659,6 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
               Requests expire after an hour. If you miss one, Divo stops and does nothing.
             </div>
           </Panel>
-        ) : (
-          <Empty icon={ShieldCheck} title="Nothing is gated" body="Divo will act without asking, limited only by each person's role." />
         )}
       </div>
     </>
@@ -1247,63 +1666,177 @@ export function TeamApprovalPolicy({ replay, toast }: Props) {
 }
 
 /* ══ Team usage ════════════════════════════════════════ */
+/**
+ * The ranges the picker offers, all slices of one fetch.
+ *
+ * Sixteen weeks is the window the endpoint returns and the one the personal
+ * page uses, so it stays the default — the shorter ranges answer "what has it
+ * been doing lately" without another round trip.
+ */
+const RANGES = [
+  { days: 7, short: '7d' },
+  { days: 30, short: '30d' },
+  { days: USAGE_DAYS, short: '16w' },
+] as const
+
+const RANGE_LABEL: Record<number, string> = {
+  7: 'Daily spend, last 7 days',
+  30: 'Daily spend, last 30 days',
+  [USAGE_DAYS]: `Daily spend, last ${USAGE_WEEKS} weeks`,
+}
+
 export function TeamUsage({ replay }: Props) {
   const dept = useMyManagedDepartment()
   const [r1] = useStaged([320], replay)
-  const { usage, loading } = useTeamUsage(dept?.id)
+  // The same window as the personal page, so the two calendars are comparable
+  // and a manager is not reading their own sixteen weeks against a team thirty.
+  // The full window is fetched once; the picker slices it here. A range change
+  // is a different view of data already in hand, not a reason to ask again.
+  const { usage, loading } = useTeamUsage(dept?.id, USAGE_DAYS)
+  const [range, setRange] = useState<number>(USAGE_DAYS)
+  const shown = useMemo(() => usage.series.slice(-range), [usage.series, range])
+  // The figures follow the range, so "busiest day" is always the busiest day of
+  // the chart above it rather than of a window nobody is looking at.
+  const spend = useMemo(() => summarizeSpend(shown), [shown])
+  const shownTotal = useMemo(() => shown.reduce((sum, p) => sum + p.spendUsd, 0), [shown])
 
   if (!dept) return <NoTeam />
 
   const top = usage.people[0]
+  const ready = r1 && !loading
 
   return (
     <>
-      <PageHeader eyebrow={dept.name} title="Team usage" description="What Divo did for your team, and what it cost." />
+      <PageHeader
+        eyebrow={dept.name}
+        title="Team usage"
+        description={`What Divo did for your team over the last ${USAGE_WEEKS} weeks, and what it cost.`}
+      />
       <TeamSwitch />
       <div className="ws-stack">
-        <div className="ws-cols">
-          <Panel title="Cost by person" source="teamUsage">
-            {!r1 || loading ? <SkelRows n={5} icon={false} /> : usage.people.length === 0 ? (
-              <Empty title="Nobody in this team yet" body="Add someone and their usage will appear here." />
+        {/*
+          Nothing here is invented. The line is the team's own spend by day,
+          priced by the helpers the personal figure uses, and every figure around
+          it is read off the slice on screen — so changing the range changes the
+          numbers with it rather than leaving them describing a window nobody is
+          looking at.
+        */}
+        <Panel
+          title="Team usage"
+          description={RANGE_LABEL[range] ?? `Last ${range} days`}
+          source="teamUsage"
+          aside={ready ? (
+            <Seg
+              value={String(range)}
+              onChange={(v) => setRange(Number(v))}
+              options={RANGES.map((r) => ({ value: String(r.days), label: r.short }))}
+            />
+          ) : undefined}
+        >
+          <div className="ws-panel-body">
+            {!ready ? (
+              <>
+                <div className="ws-stat3">
+                  <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
+                  <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
+                  <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
+                </div>
+                <div style={{ height: 22 }} />
+                <Skel w="100%" h={130} block />
+              </>
             ) : (
               <Fade>
-                <div className="ws-panel-body">
-                  {usage.people.map((p) => (
-                    <div key={p.userId} style={{ marginBottom: 16 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 7, fontSize: 13 }}>
-                        <span>{displayName(p.name, p.email)}</span>
-                        <span className="ws-sub">{money(p.spendUsd)} · {p.runs} tasks</span>
-                      </div>
-                      <Bar
-                        pct={usage.spendUsd > 0 ? (p.spendUsd / usage.spendUsd) * 100 : 0}
-                        tone={top && p.userId === top.userId && p.spendUsd > 0 ? 'brand' : undefined}
-                      />
+                <div className="ws-stat3">
+                  <div>
+                    <div className="ws-lbl">Cost</div>
+                    {/* The slice on screen, not the whole window — a figure that
+                        disagreed with the chart under it would be the same fault
+                        the calendar's own total had. */}
+                    <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(shownTotal)}</div>
+                    <div className="ws-sub" style={{ marginTop: 5 }}>
+                      {range === USAGE_DAYS
+                        ? `${usage.runs} task${usage.runs === 1 ? '' : 's'}`
+                        : `of ${money(usage.spendUsd)} in ${USAGE_WEEKS} weeks`}
                     </div>
-                  ))}
+                  </div>
+                  <div>
+                    <div className="ws-lbl">Using Divo</div>
+                    <div className="ws-num" style={{ marginTop: 8 }}>{usage.activePeople}</div>
+                    {/* Adoption, not headcount — the number a manager acts on. */}
+                    <div className="ws-sub" style={{ marginTop: 5 }}>of {usage.totalPeople} in the team</div>
+                  </div>
+                  <div>
+                    <div className="ws-lbl">Busiest day</div>
+                    <div className="ws-num" style={{ marginTop: 8 }}>
+                      {spend.busiest ? money(spend.busiest.value) : '—'}
+                    </div>
+                    <div className="ws-sub" style={{ marginTop: 5 }}>
+                      {spend.busiest ? dayLabel(spend.busiest.date) : 'Nothing yet'}
+                    </div>
+                  </div>
+                </div>
+
+                {/*
+                  A trend, not a calendar. The calendar is on Home answering
+                  "which days"; repeating it here would be the same widget
+                  twice, and the question a manager brings to a team page is
+                  whether spend is climbing or one week carried the quarter —
+                  which a grid of squares makes you reconstruct square by
+                  square.
+                */}
+                <div style={{ marginTop: 18 }}>
+                  <TrendChart data={shown.map((p) => ({ date: p.date, value: p.spendUsd }))} />
+                </div>
+                <div className="ws-heat-facts">
+                  <div>
+                    <div className="ws-lbl">Days used</div>
+                    {/* Out of the days on screen, not the days fetched. On the
+                        7-day range this read "7 of 112", which is a true pair of
+                        numbers describing two different windows. */}
+                    <div style={{ marginTop: 5 }}>{spend.activeDays} of {shown.length}</div>
+                  </div>
+                  <div>
+                    <div className="ws-lbl">On a day they used it</div>
+                    <div style={{ marginTop: 5 }}>{spend.activeDays ? money(spend.perActiveDay) : '—'}</div>
+                  </div>
+                  <div>
+                    <div className="ws-lbl">Last run</div>
+                    <div style={{ marginTop: 5 }}>{spend.last ? dayLabel(spend.last) : '—'}</div>
+                  </div>
                 </div>
               </Fade>
             )}
-          </Panel>
+          </div>
+        </Panel>
 
-          <Panel title="Summary" source="teamUsage">
-            <div className="ws-panel-body">
-              {!r1 || loading ? <Skel w="100%" h={120} /> : (
-                <Fade>
-                  <div className="ws-lbl">{usage.days}-day cost</div>
-                  <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
-                  <div style={{ marginTop: 22 }}>
-                    <div className="kv"><span className="k">Tasks</span><span className="v">{usage.runs}</span></div>
-                    <div className="kv"><span className="k">Using Divo</span><span className="v">{usage.activePeople} of {usage.totalPeople}</span></div>
-                    <div className="kv">
-                      <span className="k">Highest</span>
-                      <span className="v">{top && top.spendUsd > 0 ? displayName(top.name, top.email) : '—'}</span>
+        <Panel
+          title="Cost by person"
+          description={top && top.spendUsd > 0
+            ? `${displayName(top.name, top.email)} is the heaviest`
+            : undefined}
+          source="teamUsage"
+        >
+          {!ready ? <SkelRows n={5} icon={false} /> : usage.people.length === 0 ? (
+            <Empty title="Nobody in this team yet" body="Add someone and their usage will appear here." />
+          ) : (
+            <Fade>
+              <div className="ws-panel-body">
+                {usage.people.map((p) => (
+                  <div key={p.userId} style={{ marginBottom: 16 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 7, fontSize: 13 }}>
+                      <span>{displayName(p.name, p.email)}</span>
+                      <span className="ws-sub">{money(p.spendUsd)} · {p.runs} tasks</span>
                     </div>
+                    <Bar
+                      pct={usage.spendUsd > 0 ? (p.spendUsd / usage.spendUsd) * 100 : 0}
+                      tone={top && p.userId === top.userId && p.spendUsd > 0 ? 'brand' : undefined}
+                    />
                   </div>
-                </Fade>
-              )}
-            </div>
-          </Panel>
-        </div>
+                ))}
+              </div>
+            </Fade>
+          )}
+        </Panel>
       </div>
     </>
   )

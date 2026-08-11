@@ -109,10 +109,38 @@
 }
 
 /* ── Page header ─────────────────────────────────────── */
-.cur .ws-ph { margin-bottom: 24px; display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
+.cur .ws-ph { margin-bottom: 24px; display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 20px 20px; }
 .cur .ws-ph h1 { font-size: 30px; letter-spacing: -0.025em; font-weight: 400; line-height: 1.12; }
 .cur .ws-ph p { font-size: 13px; color: var(--cur-body); margin-top: 8px; max-width: 620px; line-height: 1.55; }
 .cur .ws-ph-act { display: flex; gap: 8px; flex-shrink: 0; }
+/* Title and its status on one line. `baseline` rather than `center`: against a
+   30px heading, a centred pill sits visibly low, because a line box is taller
+   than the letters in it. */
+.cur .ws-ph-title { display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap; }
+
+/* A page that is not built yet, said beside its name.
+   Reads as a label, not a control: no pointer, no hover, nothing to press. The
+   accent carries it — this is the one thing on the page that should be noticed
+   before the content, since the content is a preview of something absent. */
+.cur .ws-soon {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 4px 11px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+  white-space: nowrap; position: relative; top: -3px;
+  color: var(--cur-accent);
+  background: color-mix(in srgb, var(--cur-accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cur-accent) 30%, transparent);
+}
+/* The dot is the eye-catch. It pulses slowly enough to register as alive and
+   not as an alarm, and holds still for anyone who asked motion to stop. */
+.cur .ws-soon::before {
+  content: ''; width: 5px; height: 5px; border-radius: 999px;
+  background: var(--cur-accent); animation: ws-soon-pulse 2.4s ease-in-out infinite;
+}
+@keyframes ws-soon-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.35 } }
+@media (prefers-reduced-motion: reduce) {
+  .cur .ws-soon::before { animation: none }
+}
 
 /* ── Panel ───────────────────────────────────────────── */
 .cur .ws-panel { background: var(--cur-surface); border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); }
@@ -320,6 +348,7 @@
 .cur .ws-skel { background: var(--cur-hairline-soft); border-radius: var(--cur-r-cta); animation: ws-pulse 1.6s ease-in-out infinite; }
 .dark .cur .ws-skel { background: var(--cur-surface-strong); }
 .cur .ws-skel.line { height: 11px; border-radius: 999px; }
+.cur .ws-skel.block { border-radius: 8px; }
 .cur .ws-skel.circle { border-radius: 50%; }
 .cur .ws-skel-row { display: flex; align-items: center; gap: 13px; padding: 14px 18px; border-top: 1px solid var(--cur-hairline-soft); }
 .cur .ws-skel-row:first-child { border-top: 0; }
@@ -420,6 +449,60 @@
 .cur .ws-spark { height: 46px; display: flex; align-items: flex-end; gap: 3px; }
 .cur .ws-spark i { flex: 1; border-radius: 2px 2px 0 0; background: var(--cur-surface-strong); min-height: 2px; }
 .cur .ws-spark i[data-hot="true"] { background: color-mix(in srgb, var(--cur-primary) 60%, transparent); }
+
+/* ── Activity heatmap ─────────────────────────────────
+   Seven rows, one week per column, exactly as every contribution grid draws
+   it. Column flow is what makes it wide and short: filled row-first a season
+   is sixteen rows tall, and a month is five columns.
+
+   Columns are fluid but capped. A fixed cell overflowed a narrow card and
+   clipped the last week off the right edge; an uncapped fraction drew tiles
+   when the window was short. `--ws-cols` comes from the data, so the same
+   component fits sixteen weeks into a half-panel and four into the same card
+   without either spilling or ballooning. */
+.cur .ws-heat {
+  --ws-cols: 16; --ws-cell-max: 30px; --ws-gap: 4px;
+  display: block; margin-inline: auto;
+  max-width: calc(var(--ws-cols) * var(--ws-cell-max) + (var(--ws-cols) - 1) * var(--ws-gap));
+}
+.cur .ws-heat-grid {
+  display: grid; gap: var(--ws-gap);
+  grid-template-columns: repeat(var(--ws-cols), minmax(0, 1fr));
+  grid-template-rows: repeat(7, auto);
+  grid-auto-flow: column;
+}
+/* Square from its own width, so the rows follow the columns rather than
+   needing a height the container cannot know. */
+.cur .ws-heat-grid i { aspect-ratio: 1; border-radius: 5px; background: var(--cur-surface-strong); }
+/* An unstarted week is absence, not a zero-cost day, so it holds the space
+   without drawing a tile that could be counted. */
+.cur .ws-heat-grid i[data-pad="true"] { background: none; }
+.cur .ws-heat-grid i[data-level="0"] { background: var(--cur-surface-strong); }
+.cur .ws-heat-grid i[data-level="1"] { background: color-mix(in srgb, var(--cur-primary) 24%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="2"] { background: color-mix(in srgb, var(--cur-primary) 48%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="3"] { background: color-mix(in srgb, var(--cur-primary) 72%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="4"] { background: var(--cur-primary); }
+/* Inside `.ws-heat`, so it ends where the last column ends rather than at the
+   card's edge — a legend floating past the grid reads as a stray control. */
+.cur .ws-heat-key {
+  display: flex; align-items: center; justify-content: flex-end; gap: 4px;
+  margin-top: 10px; font-size: 10.5px; color: var(--cur-muted-soft);
+}
+.cur .ws-heat-key i { width: 11px; height: 11px; border-radius: 3px; background: var(--cur-surface-strong); }
+.cur .ws-heat-key i[data-level="1"] { background: color-mix(in srgb, var(--cur-primary) 24%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="2"] { background: color-mix(in srgb, var(--cur-primary) 48%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="3"] { background: color-mix(in srgb, var(--cur-primary) 72%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="4"] { background: var(--cur-primary); }
+.cur .ws-heat-key span:first-child { margin-right: 2px; }
+.cur .ws-heat-key span:last-child { margin-left: 2px; }
+
+/* The read-off facts, in a row under the grid rather than a column beside it.
+   Beside a full-width calendar there is nowhere for them to stand; under it
+   they close the card instead of leaving a band of empty below the squares. */
+.cur .ws-heat-facts {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px; margin-top: 16px;
+}
 
 /* ── Lark → browser connect flow ──────────────────────
    Spec for the moment a member is blocked in Lark chat, taps Connect, and
@@ -840,6 +923,54 @@
 .cur .ws-node[data-open="true"] > .cv { transform: rotate(90deg); }
 .cur .ws-node-ic { color: var(--cur-muted); flex-shrink: 0; }
 .cur .ws-node-ic[data-skill="true"] { color: var(--cur-body); }
+/* A skill nobody can run. Amber rather than red: it is a gap in setup, not a
+   fault — the skill is fine, it has simply never been shared with anyone. */
+.cur .ws-node-dead { color: var(--ws-warning); flex-shrink: 0; }
+
+/* ── Library lenses ───────────────────────────────────
+   The faults in the library, each one the way in to itself. A count you cannot
+   click is a scoreboard: you read "7 nobody can run" and then still have to go
+   and find the seven. */
+.cur .ws-lens { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+.cur .ws-lens-b {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 999px; cursor: pointer;
+  font-family: inherit; font-size: 11.5px; line-height: 1.6;
+  color: var(--cur-muted); background: var(--cur-canvas-soft);
+  border: 1px solid var(--cur-hairline);
+  transition: color .12s ease, border-color .12s ease, background .12s ease;
+}
+.cur .ws-lens-b:hover { color: var(--cur-ink); }
+.cur .ws-lens-b span { color: var(--cur-muted-soft); font-variant-numeric: tabular-nums; }
+.cur .ws-lens-b[data-tone="warn"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 30%, transparent); }
+.cur .ws-lens-b[data-tone="warn"] span { color: color-mix(in srgb, var(--ws-warning) 70%, transparent); }
+/* Selected reads as pressed, not merely hovered — the tree beneath it is
+   filtered, and that has to be obviously a state you are in. */
+.cur .ws-lens-b[data-on="true"] {
+  color: var(--cur-on-accent); background: var(--cur-accent); border-color: var(--cur-accent);
+}
+.cur .ws-lens-b[data-on="true"] span { color: color-mix(in srgb, var(--cur-on-accent) 75%, transparent); }
+
+/* ── Search hits ──────────────────────────────────────
+   Flat, because while a filter runs the question is "which ones are these",
+   not "where do they live" — and the tree answered the second one by making
+   you read four folders to reach one row. The path rides along so the answer
+   to the first question is not lost. */
+.cur .ws-hits { padding-top: 2px; }
+.cur .ws-hit {
+  display: flex; flex-direction: column; gap: 2px; width: 100%;
+  padding: 7px 12px; border: 0; background: none; cursor: pointer;
+  font-family: inherit; text-align: left; color: var(--cur-body);
+}
+.cur .ws-hit:hover { background: var(--cur-canvas-soft); }
+.cur .ws-hit[data-on="true"] { background: var(--cur-canvas-soft); color: var(--cur-ink); }
+.cur .ws-hit .t { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; }
+.cur .ws-hit .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cur .ws-hit .cv { color: var(--cur-muted-soft); flex-shrink: 0; }
+.cur .ws-hit .p {
+  padding-left: 20px; font-size: 11px; color: var(--cur-muted-soft);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* Facts about one thing. Two columns so the labels line up and the eye can run
    down the values rather than hunting for them. */
@@ -875,6 +1006,73 @@
   font-family: inherit; font-size: 13px; color: var(--cur-ink);
 }
 .cur .search input::placeholder { color: var(--cur-muted-soft); }
+
+/* ── Missing-connection roster ────────────────────────
+   Who a provider has not reached, grouped by the team that has to chase them.
+
+   It borrowed `.ws-ba`, a before/after grid whose first column is a fixed
+   108px — so a three-word name wrapped onto two lines while the column beside
+   it sat half empty. Its own rule now: name and address each take the room
+   they need, and the list scrolls instead of growing the page by a hundred
+   rows. */
+.cur .ws-roster { margin-top: 12px; }
+.cur .ws-roster-top { display: flex; gap: 8px; align-items: center; margin-bottom: 9px; }
+.cur .ws-roster-top .search {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px;
+  padding: 6px 10px; border-radius: var(--cur-r-ctl);
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+  color: var(--cur-muted-soft);
+}
+.cur .ws-roster-top .search input { font-size: 12.5px; }
+/* Present to a screen reader, absent to everyone else. Clipped rather than
+   `display: none`, which would take it out of the accessibility tree too and
+   defeat the point. */
+.cur .ws-a11y-title {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+.cur .ws-roster-none { padding: 10px 2px; }
+/* The fallback when the clipboard is refused. Monospace and wrapped, because
+   what is in it is a hundred addresses somebody is about to select and paste
+   into a mail client. */
+.cur .ws-roster-manual {
+  width: 100%; margin-bottom: 9px; padding: 9px 11px; resize: vertical;
+  border-radius: var(--cur-r-ctl); border: 1px solid var(--cur-accent);
+  background: var(--cur-canvas-soft); color: var(--cur-body);
+  font-family: var(--cur-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px; line-height: 1.6; outline: none;
+}
+
+/* Capped rather than paged. A hundred rows is not too many to scroll when they
+   are grouped and searchable — it is too many to *print*, which is what the
+   old list did before giving up at twenty. */
+.cur .ws-roster-list {
+  max-height: 320px; overflow-y: auto;
+  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
+  background: var(--cur-canvas-soft);
+}
+.cur .ws-roster-grp + .ws-roster-grp { border-top: 1px solid var(--cur-hairline); }
+/* Sticky, so you always know whose people you are scrolling through. */
+.cur .ws-roster-head {
+  position: sticky; top: 0; z-index: 1;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  padding: 8px 12px;
+  background: var(--cur-surface); border-bottom: 1px solid var(--cur-hairline);
+}
+.cur .ws-roster-head b { font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--cur-muted); }
+.cur .ws-roster-head span { font-size: 11px; color: var(--cur-muted-soft); font-variant-numeric: tabular-nums; }
+.cur .ws-roster-row {
+  display: flex; align-items: baseline; gap: 12px; padding: 6px 12px; font-size: 12.5px;
+}
+.cur .ws-roster-row + .ws-roster-row { border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-roster-row .n { flex: 0 1 auto; min-width: 0; color: var(--cur-ink); }
+/* The address is the part you copy and the part you search, so it gets the
+   slack and the name keeps its own line unwrapped. */
+.cur .ws-roster-row .e {
+  margin-left: auto; text-align: right; color: var(--cur-muted);
+  overflow-wrap: anywhere;
+}
 
 /* ── Run trace ────────────────────────────────────────
    Replaces the `.turn`/`.step` cards this screen used to borrow from
@@ -940,28 +1138,6 @@
   font-size: 12px; color: var(--cur-muted);
 }
 
-/* ── Connected apps ───────────────────────────────────
-   A provider can hold several accounts, so the provider is a group and each
-   account is a row inside it. The first pass rendered a full-width "Add
-   another X account" row after every provider — five of them in one flat list,
-   drowning the accounts they belonged to. The add action lives in the group
-   header instead, once, where it reads as belonging to that provider. */
-.cur .ws-conns { display: flex; flex-direction: column; }
-.cur .ws-conn-group { border-top: 1px solid var(--cur-hairline-soft); }
-.cur .ws-conns > .ws-conn-group:first-child { border-top: 0; }
-.cur .ws-conn-h { display: flex; align-items: center; gap: 13px; padding: 14px 18px; }
-.cur .ws-conn-h-main { flex: 1; min-width: 0; }
-.cur .ws-conn-h-main b { font-size: 13px; font-weight: 500; }
-.cur .ws-conn-h-main p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; }
-/* Accounts are indented under their provider and sit on the canvas, so the
-   group reads as one object rather than as more sibling rows. */
-.cur .ws-conn-accounts {
-  background: var(--cur-canvas-soft);
-  border-top: 1px solid var(--cur-hairline-soft);
-  padding-left: 27px;
-}
-.cur .ws-conn-accounts .ws-row { border-top-color: var(--cur-hairline-soft); }
-.cur .ws-conn-accounts > .ws-row:first-child { border-top: 0; }
 
 /* A quiet inline action inside a panel — "Share with someone".
    Not `.btn`: it opens a form in place rather than committing anything, and a
@@ -1009,45 +1185,242 @@
    worse than one that says it is not ready. */
 .cur .ws-comp {
   background: var(--cur-surface); border: 1px solid var(--cur-hairline-strong);
-  border-radius: var(--cur-r-card); padding: 15px 16px 12px;
+  border-radius: 14px; padding: 14px 14px 10px;
   box-shadow: var(--cur-shadow-card);
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
-.cur .ws-comp:focus-within { border-color: var(--cur-muted-soft); }
+/* Focus is the one place the brand orange earns its keep on this screen, and a
+   ring rather than a fill keeps it to a hint. */
+.cur .ws-comp:focus-within {
+  border-color: var(--cur-primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cur-primary) 16%, transparent);
+}
+/* The preview state.
+   Squat and left-hugging before: two lines of prose and a row of dead chips in
+   a 940px box, so most of it was empty and the whole thing read as a
+   notification bar wedged where the product's main control should be. Now it is
+   one row — mark, two lines, state — on the same grid as every other card on
+   the page, and the chips are gone rather than sitting there un-pressable. */
+.cur .ws-comp[data-preview="true"] {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: 14px; padding: 16px 18px;
+  /* A whisper of the brand, top-left, so the panel is not a flat grey slab —
+     the same trick the featured onboarding card uses, at a quarter the volume. */
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--cur-primary) 5%, transparent), transparent 60%),
+    var(--cur-surface);
+}
+/* Nothing inside takes focus while this is a preview, so the orange ring would
+   never fire — and if it ever did it would promise an input that is not there. */
+.cur .ws-comp[data-preview="true"]:focus-within {
+  border-color: var(--cur-hairline-strong); box-shadow: var(--cur-shadow-card);
+}
+.cur .ws-comp-ic {
+  width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
+  display: grid; place-items: center;
+  background: var(--cur-surface-strong); border: 1px solid var(--cur-hairline);
+  color: var(--cur-muted);
+}
+.cur .ws-comp-say { min-width: 0; }
+.cur .ws-comp-say b {
+  display: block; font-size: 13.5px; font-weight: 500; color: var(--cur-ink);
+}
+.cur .ws-comp-say p {
+  margin: 2px 0 0; max-width: 72ch;
+  font-size: 12.5px; line-height: 1.5; color: var(--cur-muted);
+}
+
 .cur .ws-comp textarea {
   width: 100%; border: 0; background: none; resize: none; outline: none;
   font-family: inherit; font-size: 14px; line-height: 1.55; color: var(--cur-ink);
-  min-height: 56px;
+  /* Two rows, not four. The old box reserved height for a paragraph nobody
+     types, which left the primary control on the page reading as empty. */
+  min-height: 42px;
 }
 .cur .ws-comp textarea::placeholder { color: var(--cur-muted); }
-.cur .ws-comp-foot { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.cur .ws-comp-foot { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
 .cur .ws-comp-sp { flex: 1; }
-/* Chips read as settings that belong to the message, so they sit on the
-   composer's own surface rather than being outlined like buttons. */
+/* Outlined, because these are controls. Sitting flat on the composer's surface
+   made them read as caption text, so the two settings that travel with every
+   message looked like a footnote about the box rather than part of it. */
 .cur .ws-comp-chip {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
-  border-radius: var(--cur-r-cta); border: 1px solid transparent; background: transparent;
+  border-radius: 999px; border: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft);
   font-family: inherit; font-size: 12.5px; color: var(--cur-body); cursor: pointer;
+  transition: border-color .15s ease, color .15s ease, background .15s ease;
 }
-.cur .ws-comp-chip:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+.cur .ws-comp-chip svg { color: var(--cur-muted); }
+.cur .ws-comp-chip:hover { background: var(--cur-surface-strong); border-color: var(--cur-hairline-strong); color: var(--cur-ink); }
+/* These two are set elsewhere and only reported here, so they never light up
+   on hover — the outline says "control", the flat hover says "not this one". */
 .cur .ws-comp-chip:disabled { cursor: default; }
-.cur .ws-comp-chip:disabled:hover { background: transparent; color: var(--cur-body); }
+.cur .ws-comp-chip:disabled:hover { background: var(--cur-canvas-soft); border-color: var(--cur-hairline); color: var(--cur-body); }
 .cur .ws-comp-send {
-  width: 32px; height: 32px; border-radius: var(--cur-r-cta); border: 0; flex-shrink: 0;
+  width: 34px; height: 34px; border-radius: 999px; border: 0; flex-shrink: 0;
   background: var(--cur-cta); color: var(--cur-on-cta); display: grid; place-items: center; cursor: pointer;
+  transition: background .15s ease;
 }
 .cur .ws-comp-send:hover { background: var(--cur-cta-hover); }
-.cur .ws-comp-send:disabled { background: var(--cur-surface-strong); color: var(--cur-muted-soft); cursor: default; }
-/* Under the composer: what the disabled send button would have told you, said
-   out loud instead of only on hover. */
-.cur .ws-soon {
-  display: flex; align-items: center; gap: 10px; margin-top: 11px; padding: 10px 13px;
-  border: 1px solid var(--cur-featured-ring); border-radius: 10px;
-  background: linear-gradient(var(--cur-featured-from), var(--cur-featured-to));
-  color: var(--cur-body);
+/* Dimmed rather than greyed flat: the button is waiting on a feature, not
+   broken, and the notice underneath is what explains which. */
+.cur .ws-comp-send:disabled {
+  background: var(--cur-surface-strong); color: var(--cur-muted-soft);
+  cursor: default; opacity: .75;
 }
-.cur .ws-soon svg { flex-shrink: 0; color: var(--cur-muted); }
-.cur .ws-soon p { flex: 1; margin: 0; font-size: 12.5px; line-height: 1.55; }
-.cur .ws-soon b { color: var(--cur-ink); font-weight: 500; }
+/* ── Connected apps ───────────────────────────────────
+   A grid of cards rather than a list of rows. Seven full-width rows all the
+   same height read as a settings table, and the question this page is opened
+   with — which of these already works — took reading every one of them.
+
+   `auto-fill` with a 250px floor rather than a fixed column count, so the
+   section reflows instead of squeezing three cards into a rail width nobody
+   tested. */
+.cur .ws-appsec { margin-top: 26px; }
+.cur .ws-appsec:first-of-type { margin-top: 18px; }
+.cur .ws-appsec-h {
+  display: flex; align-items: baseline; gap: 9px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.cur .ws-appsec-h h2 {
+  font-size: 13px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink);
+}
+/* The count is a pill, not a parenthetical — it is scanned, not read. */
+.cur .ws-appsec-n {
+  display: inline-grid; place-items: center; min-width: 19px; height: 19px; padding: 0 6px;
+  border-radius: 999px; background: var(--cur-surface-strong);
+  font-size: 11px; font-variant-numeric: tabular-nums; color: var(--cur-muted);
+}
+.cur .ws-appsec-h p { margin: 0 0 0 2px; font-size: 12px; color: var(--cur-muted); }
+
+/* `auto-fill`, so a card keeps its proportions.
+   `auto-fit` collapses the tracks nothing sits in, which does remove the empty
+   column — but it does it by stretching two cards to 508px each, and a 40px
+   logo over one line of text in a 508px box is more air than the empty column
+   ever was. A card holds its ~330px and a short row simply ends. */
+/* `start`, not `stretch`.
+   Stretching made every card in a row as tall as the tallest, and the extra
+   height had to go somewhere — on Lark, 57px of nothing between its one account
+   and its button, because Google beside it has two. The reference's cards are
+   equal because their contents are, not because they were forced. Here the
+   contents genuinely differ, so a card takes the height it needs and a row ends
+   slightly ragged rather than holding a hole. */
+.cur .ws-appgrid {
+  display: grid; gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+  align-items: start;
+}
+
+.cur .ws-appcard {
+  display: flex; flex-direction: column; padding: 20px;
+  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
+  background: var(--cur-surface); box-shadow: var(--cur-shadow-card);
+}
+/* Only when something under this card needs attention — a revoked account. The
+   card is not toned for being unconnected, which is an ordinary state. */
+.cur .ws-appcard[data-tone="warn"] {
+  border-color: color-mix(in srgb, var(--ws-warning) 30%, var(--cur-hairline));
+}
+/* The mark sits on its own line with room under it, which is the proportion the
+   reference card gets its calm from — the logo is the first thing read, not a
+   bullet beside the title. Smaller than it was: at 40px it competed with the
+   name instead of introducing it. */
+.cur .ws-appcard-h { flex-shrink: 0; margin-bottom: 20px; }
+.cur .ws-appcard h3 {
+  font-size: 14px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink);
+}
+/* No `min-height`. It existed to line the buttons up, which the card now does by
+   stretching and pushing the action to its floor — so a one-line blurb takes one
+   line instead of reserving two and leaving the second empty. */
+.cur .ws-appcard p {
+  margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--cur-muted);
+}
+.cur .ws-appcard-act { margin-top: auto; padding-top: 20px; }
+
+/* The action reads as a bar, not an outline.
+   `.btn` is `--cur-surface` with a hairline, which is the card's own colour —
+   so on a card the fill vanished and only the border was left, where the
+   reference has a filled control you can see at a glance. A step up the surface
+   scale puts it back without spending the primary on it. */
+.cur .ws-appcard-act > .btn {
+  height: 38px;
+  background: var(--cur-surface-strong);
+  border-color: var(--cur-hairline);
+}
+.cur .ws-appcard-act > .btn:hover {
+  background: var(--cur-canvas-soft); border-color: var(--cur-hairline-strong);
+}
+.cur .ws-appcard-act .ws-tag {
+  width: 100%; justify-content: center; height: 38px; box-sizing: border-box;
+}
+
+/* The accounts under an app. Compact rows, because the card is about the app
+   and these are what it currently holds. */
+.cur .ws-appcard-accs { list-style: none; margin: 13px 0 0; padding: 0; }
+.cur .ws-appcard-accs li { border-top: 1px solid var(--cur-hairline-soft); }
+.cur .ws-appcard-accs li:first-child { border-top: 0; }
+.cur .ws-appcard-accs button,
+.cur .ws-appcard-accs > li > div {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  gap: 4px 8px; width: 100%; padding: 8px 0; text-align: left;
+  border: 0; background: none; font: inherit; color: inherit;
+}
+.cur .ws-appcard-accs button { cursor: pointer; }
+.cur .ws-appcard-accs button:hover .ws-appcard-acc-t { color: var(--cur-ink); }
+.cur .ws-appcard-acc-t {
+  font-size: 12.5px; color: var(--cur-body);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cur .ws-appcard-acc-s {
+  grid-column: 1 / -1; font-size: 11.5px; color: var(--cur-muted-soft);
+}
+/* Placed, not left to auto-flow. The subtitle spans both columns, so the
+   chevron after it in source order landed on a third row under the address
+   instead of beside it. */
+.cur .ws-appcard-accs svg {
+  grid-column: 2; grid-row: 1; color: var(--cur-muted-soft); flex-shrink: 0;
+}
+.cur .ws-appcard-accs li[data-dead="true"] .ws-appcard-acc-s { color: var(--cur-error); }
+
+/* ── App icons ────────────────────────────────────────
+   The tile every provider mark sits in, so a drawn logo, a PNG and a lettered
+   fallback occupy the same square and a mixed list still lines up.
+
+   Sized by the row, not fixed: `--ws-app` lets a 28px list row and a 44px
+   onboarding card share one component instead of two. */
+.cur .ws-app {
+  --ws-app: 34px;
+  width: var(--ws-app); height: var(--ws-app); flex-shrink: 0;
+  display: grid; place-items: center; border-radius: calc(var(--ws-app) * 0.26);
+  background: var(--cur-surface-strong); border: 1px solid var(--cur-hairline);
+  overflow: hidden;
+}
+/* A real logo brings its own colour and shape, so the tile gets out of its way
+   entirely — a bordered square around the Google G reads as a placeholder
+   holding a logo rather than as the app, which is precisely what the reference
+   does not do. */
+.cur .ws-app[data-plain="true"] { background: transparent; border-color: transparent; }
+/* Canva, Shopify and AITable publish a finished app icon: its own background,
+   its own corner radius. Left on the tile it became a rounded square inside a
+   rounded square with a hairline between them. The tile's `overflow: hidden`
+   does the clipping instead, so the icon keeps its shape and loses the frame. */
+.cur .ws-app[data-fill="true"] { background: transparent; border-color: transparent; }
+.cur .ws-app-l {
+  width: 100%; height: 100%; display: grid; place-items: center;
+  font-weight: 600; letter-spacing: -0.01em;
+}
+
+/* Where the send button will be. Quiet on purpose: it is a label, not a control
+   waiting to be pressed, so it takes the chips' height and none of their
+   outline — a bordered pill beside two bordered chips reads as a third button. */
+/* An outlined pill, not bare text. Floating at the right edge of a wide card it
+   read as a stray word; a border makes it a badge and gives the row an end.
+   `--cur-muted-soft` measured 3.22:1 — under the floor, and the wrong place to
+   save a shade when this is the only word saying the composer is not live. */
+.cur .ws-comp-pill {
+  display: inline-flex; align-items: center; height: 24px; padding: 0 10px; flex-shrink: 0;
+  border: 1px solid var(--cur-hairline); border-radius: 999px;
+  background: var(--cur-canvas-soft);
+  font-size: 11.5px; letter-spacing: 0.02em; color: var(--cur-muted);
+}
 
 /* ── Section header ───────────────────────────────────
    Title + subtitle left, controls right. Used by every band on Home. */
@@ -1084,10 +1457,13 @@
   border-color: var(--cur-featured-ring);
 }
 .cur .ws-gs-mark {
-  width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center;
+  width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
   background: var(--cur-surface-strong); color: var(--cur-body);
   font-size: 12.5px; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 12px;
 }
+/* The provider marks bring their own tile, so this one gets out of the way
+   rather than drawing a second box around the first. */
+.cur .ws-gs-mark[data-plain="true"] { background: transparent; width: auto; height: auto; }
 .cur .ws-gs-card[data-featured="true"] .ws-gs-mark { background: transparent; font-size: 20px; }
 .cur .ws-gs-card h3 { font-size: 13.5px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink); }
 .cur .ws-gs-card p {
@@ -1111,16 +1487,33 @@
    scrolls once the list outgrows it, which keeps Getting started and the foot
    pinned to the bottom where they belong. */
 .cur .ws-recent { padding: 0 2px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+/* A card rather than a bare line. Five flush-left rows under a heading read as
+   a list of links; a surface makes each one an object you can aim at, and gives
+   the status dot somewhere to sit that is not the page background. */
 .cur .ws-recent-item {
-  display: block; width: 100%; text-align: left; border: 0; background: none; cursor: pointer;
-  font-family: inherit; padding: 5px 10px; border-radius: var(--cur-r-cta); color: var(--cur-body);
+  display: block; width: 100%; text-align: left; border: 1px solid transparent; cursor: pointer;
+  font-family: inherit; padding: 8px 10px; margin-bottom: 4px;
+  border-radius: 10px; background: var(--cur-canvas-soft); color: var(--cur-body);
+  transition: background .12s ease, border-color .12s ease;
 }
-.cur .ws-recent-item:hover { background: var(--cur-surface-strong); }
+.cur .ws-recent-item:hover {
+  background: var(--cur-surface-strong); border-color: var(--cur-hairline);
+}
 .cur .ws-recent-item b {
   display: block; font-size: 13px; line-height: 1.35; font-weight: 400; color: var(--cur-ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.cur .ws-recent-item span { display: block; font-size: 11.5px; line-height: 1.25; color: var(--cur-muted); }
+.cur .ws-recent-item span {
+  display: flex; align-items: center; gap: 6px; margin-top: 3px;
+  font-size: 11.5px; line-height: 1.25; color: var(--cur-muted);
+}
+.cur .ws-recent-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: var(--cur-muted-soft);
+}
+.cur .ws-recent-item span[data-state="ok"] .ws-recent-dot { background: var(--cur-success); }
+.cur .ws-recent-item span[data-state="err"] .ws-recent-dot { background: var(--cur-error); }
+.cur .ws-recent-item span[data-state="run"] .ws-recent-dot { background: var(--cur-primary); }
 .cur .ws-recent-empty { padding: 4px 10px; font-size: 12px; color: var(--cur-muted-soft); line-height: 1.5; }
 
 .cur .ws-onb {
@@ -1239,7 +1632,12 @@
 */
 .cur .set-col { max-width: 1180px; margin: 0 auto; padding: 46px 34px 90px; }
 
-.cur .set-h, .cur .set-row, .cur .set-note { max-width: 720px; }
+/* Centred, not just capped.
+   The column centres itself at 1180px and the content inside it stops at 720,
+   so on any screen wider than that the whole page sat against the left edge
+   with 460px of nothing to its right — a reading column pushed off-centre
+   rather than a page with a margin. */
+.cur .set-h, .cur .set-row, .cur .set-note { max-width: 720px; margin-inline: auto; }
 .cur .set-h { margin-bottom: 30px; }
 .cur .set-h h1 { font-size: 26px; font-weight: 500; letter-spacing: -0.02em; color: var(--cur-ink); }
 .cur .set-h p { font-size: 13.5px; color: var(--cur-muted); margin-top: 7px; line-height: 1.5; }
@@ -1253,6 +1651,124 @@
 .cur .set-row-t span { display: block; font-size: 12.5px; color: var(--cur-muted); margin-top: 3px; line-height: 1.5; }
 .cur .set-row-c { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
 .cur .set-val { font-size: 13px; color: var(--cur-body); text-align: right; }
+
+/* ── Three figures across a card ──────────────────────
+   The labels reserve two lines whether or not they need them. "Messages
+   caught" wraps in a narrow column while "Passed on" does not, and without
+   the reservation that one figure drops half a line below its neighbours —
+   which reads as a mistake rather than as a longer label. */
+.cur .ws-stat3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+/* Two lines exactly: the label's line-height is 1.5, so 3em is 2 × 16.5px at
+   its 11px size. 2.5em looked right and left the first figure 5px low. */
+.cur .ws-stat3 .ws-lbl { min-height: 3em; }
+
+/* The brief, as the lines it was written as. Markdown from the composer, so
+   the newlines are the structure and collapsing them would run a summary into
+   one paragraph. */
+.cur .ws-brief-text {
+  margin: 0; white-space: pre-wrap; font-size: 13px; line-height: 1.65;
+  color: var(--cur-body); max-width: 68ch;
+}
+.cur .ws-brief-text strong, .cur .ws-brief-text b { color: var(--cur-ink); font-weight: 500; }
+
+/* ── Toasts ───────────────────────────────────────────
+   Divo's own surface, small, and one dot for the intent. `richColors` paints
+   the whole card by intent, which announced a refusal in the same red as an
+   outage — the words carry the meaning instead.
+
+   Every colour has a literal fallback. The tokens live on `.cur`, this renders
+   at the root of the app, and when the two came apart the toast had no
+   background at all and was legible only against whatever sat behind it. The
+   class is on the toaster now; the fallbacks are so it can never happen again.
+
+   Sized on the container so a message raised from a hook and one raised from a
+   route cannot look different.
+
+   This block was written twice. The older copy sat *after* this one and so won
+   every property they shared — including stripping the fallbacks back off, so
+   the safety net above has been inert since the day it was added. Merged: the
+   geometry is the one that has actually been rendering, the fallbacks are back,
+   and there is one block to change. */
+.cur-toast[data-sonner-toaster] { --width: 348px; }
+[data-sonner-toast] {
+  background: var(--cur-surface, #1a1a1a) !important;
+  border: 1px solid var(--cur-hairline-strong, #333333) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.45) !important;
+  padding: 12px 14px !important;
+  gap: 10px !important;
+  align-items: flex-start !important;
+}
+[data-sonner-toast] [data-content] { gap: 3px !important; }
+[data-sonner-toast] [data-title] {
+  font-size: 13px !important; font-weight: 500 !important;
+  line-height: 1.45 !important; color: var(--cur-ink, #e8e8e8) !important;
+}
+[data-sonner-toast] [data-description] {
+  font-size: 12px !important; line-height: 1.5 !important;
+  color: var(--cur-muted, #8f8f8f) !important; margin-top: 3px !important;
+}
+/* One dot, coloured by intent. An icon box and a tinted card were two signals
+   for one fact, and neither of them was the sentence. */
+[data-sonner-toast] [data-icon] {
+  width: 8px !important; height: 8px !important; border-radius: 50%;
+  margin: 6px 0 0 0 !important; align-self: flex-start; flex-shrink: 0;
+  background: var(--cur-muted, #8f8f8f);
+}
+[data-sonner-toast] [data-icon] svg { display: none; }
+[data-sonner-toast][data-type="error"] [data-icon] { background: var(--cur-error, #e35a7d); }
+[data-sonner-toast][data-type="warning"] [data-icon] { background: var(--cur-primary, #fb5613); }
+[data-sonner-toast][data-type="success"] [data-icon] { background: var(--cur-success, #35b083); }
+[data-sonner-toast][data-type="info"] [data-icon] { background: var(--cur-accent, #3b82f6); }
+/* The way out of a message whose remedy is elsewhere. Reads as a control
+   rather than as a third line of prose. */
+[data-sonner-toast] [data-button] {
+  height: 26px !important; padding: 0 11px !important; margin-left: 4px !important;
+  border-radius: 999px !important; font-size: 12px !important; font-weight: 500 !important;
+  background: var(--cur-cta, #3a3a3a) !important; color: var(--cur-on-cta, #e8e8e8) !important;
+  border: 1px solid var(--cur-hairline-strong, #333333) !important;
+}
+/* ── Avatar ───────────────────────────────────────────
+   Accent rather than brand orange: orange is scarce here and marks the one
+   thing being asked for, and an avatar is identity rather than an action. */
+.cur .ws-avatar {
+  display: inline-grid; place-items: center; flex-shrink: 0;
+  border-radius: 50%; background: var(--cur-accent); color: var(--cur-on-accent);
+  font-weight: 500; letter-spacing: 0.02em; line-height: 1; user-select: none;
+}
+/* A photograph fills the same circle. `cover` rather than `contain`, so a
+   non-square source is cropped instead of letterboxed inside the ring. */
+.cur img.ws-avatar { object-fit: cover; background: var(--cur-surface-strong); }
+
+/* ── Grouped settings ─────────────────────────────────
+   A quiet label over a bordered card, the way the reference groups a settings
+   page. The heading carries the grouping and the card carries the rows, so a
+   row belongs to a section by containment rather than by being the next thing
+   after a heading. */
+.cur .set-section {
+  /* `margin-inline: auto` after the shorthand, which would otherwise zero it
+     and leave the labels hanging left of the cards they belong to. */
+  max-width: 720px; margin: 32px 0 10px; margin-inline: auto;
+  font-size: 12.5px; font-weight: 500; color: var(--cur-muted);
+  letter-spacing: 0.01em;
+}
+.cur .set-section:first-of-type { margin-top: 0; }
+.cur .set-group {
+  max-width: 720px; margin-inline: auto; background: var(--cur-surface);
+  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
+  overflow: hidden;
+}
+/* Inside a card the rows carry their own padding and a divider between them,
+   rather than a rule above each that also draws one at the very top. */
+.cur .set-group .set-row {
+  max-width: none; padding: 14px 16px;
+  border-top: 1px solid var(--cur-hairline-soft);
+}
+.cur .set-group .set-row:first-child { border-top: 0; }
+.cur .set-group .set-note {
+  max-width: none; margin: 0; padding: 12px 16px;
+  border-top: 1px solid var(--cur-hairline-soft); background: var(--cur-canvas-soft);
+}
 
 /* Separates groups of rows. The next row draws its own top rule, so this is
    space rather than a second line. */
@@ -1481,8 +1997,54 @@
 .cur .ws-row.ws-rule-row[data-off="true"] { opacity: 0.62; }
 .cur .ws-rule-when { font-size: 11.5px; color: var(--cur-muted); white-space: nowrap; }
 
+/* The role, inline in a people row. Quiet until the row is hovered — it sits
+   among figures, not in a form, and a bordered box on every row would make the
+   list read as ten inputs.
+
+   A button rather than a `<select>`, because a select's popup is drawn by the
+   operating system and ignores every token here. */
+/* Four fixed columns, so a manager's row and a member's end on the same edge.
+   Flexed, one had no menu and a text role while the other had a control and a
+   button, and the list's right margin zig-zagged by 100px between them. */
+.cur .ws-people-act {
+  display: grid; grid-template-columns: 76px 62px 116px 28px;
+  align-items: center; gap: 12px;
+}
+.cur .ws-people-act > .ws-sub { text-align: right; white-space: nowrap; }
+/* The role column, whether it holds a control or a word. */
+.cur .ws-role-fixed {
+  font-size: 12.5px; color: var(--cur-muted); white-space: nowrap;
+  padding-left: 9px;
+}
+
+.cur .ws-role-pick {
+  display: inline-flex; align-items: center; gap: 5px; justify-content: space-between;
+  /* Never wraps. "Member" and its chevron broke onto two lines at a narrow
+     window, which doubled that row's height against its neighbours. */
+  white-space: nowrap; width: 100%;
+  height: 28px; padding: 0 8px 0 9px;
+  border: 1px solid transparent; border-radius: var(--cur-r-cta);
+  background: transparent; color: var(--cur-body);
+  font: inherit; font-size: 12.5px; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.cur .ws-role-pick svg { color: var(--cur-muted-soft); flex-shrink: 0; }
+.cur .ws-row:hover .ws-role-pick,
+.cur .ws-role-pick:focus-visible,
+.cur .ws-role-pick[aria-expanded="true"] {
+  background: var(--cur-surface); border-color: var(--cur-hairline-strong);
+}
+.cur .ws-role-pick:disabled { opacity: 0.55; cursor: default; }
+/* Right-aligned under its trigger. The row's menu opens the same way, so two
+   adjacent controls do not fly out in two directions. */
+.cur .ws-menu-wrap .ws-menu [role="menuitemradio"] { gap: 8px; }
+
 .cur .ws-menu-wrap { position: relative; display: inline-flex; }
 .cur .ws-menu-btn { opacity: 0; transition: opacity 0.12s ease; }
+/* A pointer that cannot hover never reveals it, so on touch the row's actions
+   would not exist at all. Shown outright there rather than on a gesture the
+   device does not have. */
+@media (hover: none) { .cur .ws-menu-btn { opacity: 1; } }
 .cur .ws-row:hover .ws-menu-btn,
 .cur .ws-row:focus-within .ws-menu-btn,
 .cur .ws-menu-btn[aria-expanded="true"] { opacity: 1; }
@@ -1595,10 +2157,9 @@
    spends the alarm colour on the ordinary state of a form somebody is still
    filling in — which leaves nothing louder for a forward that leaves the
    company. */
-.cur .ws-mk-blocked {
-  align-self: center; max-width: 34ch; margin: 0 4px 0 0;
-  font-size: 12px; line-height: 1.5; color: var(--cur-muted); text-align: right;
-}
+/* The reason a button refuses is a toast now, raised when it is pressed. A
+   line beside the button was read by nobody who had already decided to press
+   it, and a disabled button answers nothing at all. */
 
 /* ── The rule sheet ────────────────────────────────────
    This was a three-step wizard: catch → do → check. Three screens for six
@@ -1749,8 +2310,38 @@
    collapse to one. */
 .cur [aria-label="Gmail"], .cur [aria-label="Lark"] { color: initial; flex-shrink: 0; }
 
+/* What the replay found, as a thing rather than as more instructions.
+   `Read 11 · none matched` was the same size, colour and spacing as the sentence
+   explaining the button above it — so the one line anybody pressed the button
+   for was indistinguishable from the note telling them what the button does. */
+.cur .ws-proof {
+  margin-top: 12px; padding: 11px 12px;
+  border: 1px solid var(--cur-hairline); border-radius: 10px;
+  background: var(--cur-canvas-soft);
+}
+.cur .ws-proof-n {
+  display: block; font-size: 13.5px; font-weight: 500;
+  color: var(--cur-ink); font-variant-numeric: tabular-nums;
+}
+/* Dimmed rather than dropped. Watching an answer vanish while you edit the
+   thing it was about reads as a fault; saying it is out of date does not.
+   The *count* recedes and the reason does not — fading the whole box took the
+   one line that has to be read down to about 3.5:1 along with it. */
+.cur .ws-proof[data-stale="true"] { border-style: dashed; }
+.cur .ws-proof[data-stale="true"] .ws-proof-n { opacity: 0.45; }
+
 .cur .ws-proof-line { margin: 14px 0 0; font-size: 12.5px; line-height: 1.6; color: var(--cur-muted); }
 .cur .ws-proof-line b { color: var(--cur-ink); font-weight: 500; }
+.cur .ws-proof .ws-proof-line { margin-top: 5px; font-size: 11.5px; line-height: 1.55; }
+
+/* The two lines that say this proof does not cover the whole rule. Toned,
+   because a partial proof read as a total one is the failure this screen is
+   most likely to cause. */
+.cur .ws-proof-warn {
+  display: flex; align-items: flex-start; gap: 6px;
+  color: color-mix(in srgb, var(--ws-warning) 60%, var(--cur-body));
+}
+.cur .ws-proof-warn svg { flex-shrink: 0; margin-top: 2px; color: var(--ws-warning); }
 
 /* One line per matched message. These were full rows with a bordered icon
    square, which made three hits look like the content of the step rather than
@@ -1846,11 +2437,84 @@
 }
 .cur .ws-mk-tog input { accent-color: var(--cur-primary); cursor: pointer; }
 .cur .ws-mk-q { width: 100%; resize: vertical; min-height: 58px; line-height: 1.5; }
+
+/* An option with the reason for it attached, instead of a bare box whose
+   justification lived in a paragraph somewhere else. Both AI-step choices use
+   it, so the harmless one and the one whose wrong answer is invisible are
+   visibly the same kind of decision — and the second can be toned when it is on
+   without inventing a control shape for it. */
+.cur .ws-opt {
+  display: grid; grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px; align-items: start; padding: 11px 13px; cursor: pointer;
+  border: 1px solid var(--cur-hairline); border-radius: 10px;
+  background: var(--cur-canvas-soft);
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.cur .ws-opt:hover { border-color: var(--cur-hairline-strong); }
+.cur .ws-opt[data-on="true"] {
+  border-color: var(--cur-muted-soft); background: var(--cur-surface-strong);
+}
+.cur .ws-opt > input {
+  margin: 2px 0 0; accent-color: var(--cur-primary); cursor: pointer;
+}
+.cur .ws-opt b { display: block; font-size: 12.5px; font-weight: 500; color: var(--cur-ink); }
+/* Capped, like every other explanatory line in this sheet. The card is around
+   960px on a wide screen and prose set across all of it at 11.5px runs to about
+   150 characters a line, which is roughly twice what anybody tracks. */
+.cur .ws-opt p {
+  margin: 3px 0 0; max-width: 64ch;
+  font-size: 11.5px; line-height: 1.55; color: var(--cur-muted);
+}
+.cur .ws-opt[data-warn="true"] {
+  border-color: color-mix(in srgb, var(--ws-warning) 34%, var(--cur-hairline));
+  background: color-mix(in srgb, var(--ws-warning) 7%, var(--cur-canvas-soft));
+}
+.cur .ws-opt[data-warn="true"] p { color: color-mix(in srgb, var(--ws-warning) 58%, var(--cur-body)); }
 .cur .ws-mk-hint {
-  margin: 9px 0 0; font-size: 12px; line-height: 1.6; color: var(--cur-muted);
+  margin: 9px 0 0; max-width: 64ch;
+  font-size: 12px; line-height: 1.6; color: var(--cur-muted);
 }
 .cur .ws-mk-hint b { color: var(--cur-body); font-weight: 500; }
 .cur .ws-blk-body .ws-mk-tog { margin-top: 14px; }
+
+/* A tool's app mark beside its name in the permission matrix. The blank keeps
+   its width when Divo has no mark for that app, so the names stay in one
+   column instead of stepping left on every unknown row. */
+.cur .ws-mx-tool { display: inline-flex; align-items: center; gap: 9px; }
+.cur .ws-toolmark { width: 24px; height: 24px; flex-shrink: 0; display: inline-flex; }
+
+/* Divo's own capabilities in the tool matrix. A neutral tile with a glyph from
+   our own set — it says what the tool does without borrowing a brand, and it
+   stops the column reading as rows that failed to load. */
+.cur .ws-app.ws-app-own {
+  background: var(--cur-surface-strong); border-color: var(--cur-hairline);
+  color: var(--cur-muted);
+}
+
+/* ── Trend chart ──────────────────────────────────────
+   The team page's answer to "is spend climbing", where the calendar on Home
+   answers "which days". Drawn in real pixels off a ResizeObserver, so the
+   stroke stays 1.5px whatever the card's width. */
+.cur .ws-trend { width: 100%; }
+.cur .ws-trend svg { display: block; width: 100%; }
+.cur .ws-trend-grid {
+  stroke: var(--cur-hairline-soft); stroke-width: 1; stroke-dasharray: 3 5;
+}
+.cur .ws-trend-line {
+  stroke: var(--cur-primary); stroke-width: 1.5;
+  stroke-linejoin: round; stroke-linecap: round;
+}
+.cur .ws-trend-guide { stroke: var(--cur-hairline-strong); stroke-width: 1; }
+.cur .ws-trend-dot { fill: var(--cur-primary); stroke: var(--cur-surface); stroke-width: 2; }
+.cur .ws-trend-foot {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin-top: 2px; font-size: 11.5px; color: var(--cur-muted-soft);
+  /* Holds its line whether it shows two dates or one reading, so the card does
+     not twitch as the pointer crosses the plot. */
+  min-height: 17px;
+}
+.cur .ws-trend-read { color: var(--cur-muted); }
+.cur .ws-trend-read b { color: var(--cur-ink); font-weight: 500; }
 
 /* ── Agent map ────────────────────────────────────────
    A graph, not a matrix. The same permission truth the Team screens render as
@@ -1872,6 +2536,21 @@
 
 .cur .agm-canvas { height: 560px; position: relative; background: var(--cur-canvas-soft); }
 .cur .agm-loading { height: 100%; display: grid; place-items: center; }
+/* Divo in the middle, agents around it — the layout the real map uses, so the
+   placeholder is the same picture unfilled rather than a bar in a void. */
+.cur .agm-skel-ring { position: relative; width: 460px; height: 340px; }
+.cur .agm-skel-hub {
+  position: absolute; left: 50%; top: 50%; width: 178px; height: 42px;
+  transform: translate(-50%, -50%); border-radius: 10px;
+}
+.cur .agm-skel-node {
+  position: absolute; left: 50%; top: 50%; width: 178px; height: 42px; border-radius: 10px;
+  /* Six seats on the ring, same as the layout's first orbit. */
+  transform:
+    translate(-50%, -50%)
+    rotate(calc(var(--i) * 60deg)) translate(196px) rotate(calc(var(--i) * -60deg));
+  opacity: .55;
+}
 .cur .agm-bg { color: var(--cur-hairline); }
 
 /* React Flow ships its own chrome. Only the surfaces we actually show are

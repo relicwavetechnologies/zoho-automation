@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { interruptedWorkPolicy } from "../../runtime.mjs";
 
 const COMPANY_PERSONA_TAG = "<divo_company_persona>";
 const DEPARTMENT_PERSONA_OPEN_TAG = "<divo_department_persona>";
@@ -11,6 +12,7 @@ const RESPONSE_LANGUAGE_OPEN_TAG = "<divo_response_language_policy>";
 const RESPONSE_LANGUAGE_CLOSE_TAG = "</divo_response_language_policy>";
 const PERSONAL_MEMORY_OPEN_TAG = "<divo_personal_memory>";
 const PERSONAL_MEMORY_CLOSE_TAG = "</divo_personal_memory>";
+const interruptedWorkPolicyBlock = /\n?<divo_interrupted_work_policy>[\s\S]*?<\/divo_interrupted_work_policy>\n?/g;
 const departmentPersonaBlock = /\n?<divo_department_persona>[\s\S]*?<\/divo_department_persona>\n?/g;
 const memberDepartmentsBlock = /\n?<divo_member_departments>[\s\S]*?<\/divo_member_departments>\n?/g;
 const capabilityBootstrapBlock = /\n?<divo_capability_bootstrap>[\s\S]*?<\/divo_capability_bootstrap>\n?/g;
@@ -36,6 +38,10 @@ export interface DivoDepartmentPersonaContext {
 	version?: string | null;
 	departments?: string[] | null;
 	personalMemory?: string[] | null;
+	interruptedWork?: {
+		task: string;
+		clarificationShown: boolean;
+	} | null;
 	capabilityBootstrap?: DivoCapabilityBootstrap | null;
 }
 
@@ -85,12 +91,12 @@ export interface DivoCapabilityBootstrap {
 		actions: string[];
 	}>;
 	routingHints: string[];
-	zohoConnection?: {
-		accessibleCount: number;
-		connectionId?: string;
-		label?: string;
-		access?: string;
-	};
+	zohoConnections?: Array<{
+		connectionId: string;
+		label: string;
+		access: string;
+		services: string[];
+	}>;
 }
 
 export async function readDepartmentPersonaContext(
@@ -104,11 +110,13 @@ export async function readDepartmentPersonaContext(
 		const data = parsed as Record<string, unknown>;
 		const departments = parseMemberDepartmentNames(data.departments);
 		const personalMemory = parsePersonalMemory(data.personalMemory);
+		const interruptedWork = parseInterruptedWork(data.interruptedWork);
 		const capabilityBootstrap = parseCapabilityBootstrap(data.capabilityBootstrap);
 		if (
 			typeof data.personaPrompt !== "string"
 			&& departments.length === 0
 			&& personalMemory.length === 0
+			&& !interruptedWork
 			&& !capabilityBootstrap
 		) return null;
 		return {
@@ -118,6 +126,7 @@ export async function readDepartmentPersonaContext(
 			version: typeof data.version === "string" ? data.version : null,
 			departments,
 			...(personalMemory.length > 0 ? { personalMemory } : {}),
+			...(interruptedWork ? { interruptedWork } : {}),
 			...(capabilityBootstrap ? { capabilityBootstrap } : {}),
 		};
 	} catch {
@@ -137,6 +146,7 @@ export function composeDivoSystemPrompt(
 		.replace(capabilityBootstrapBlock, "")
 		.replace(responseLanguageBlock, "")
 		.replace(personalMemoryBlock, "")
+		.replace(interruptedWorkPolicyBlock, "")
 		.trim();
 	const withCompanyPersona = withoutDivoContext.includes(COMPANY_PERSONA_TAG)
 		? withoutDivoContext
@@ -155,10 +165,23 @@ export function composeDivoSystemPrompt(
 		capabilityBootstrap,
 		memberDepartments,
 		personalMemory,
+		interruptedWorkPolicy(departmentContext?.interruptedWork),
 		DIVO_ENGLISH_RESPONSE_POLICY,
 	]
 		.filter(Boolean)
 		.join("\n\n");
+}
+
+function parseInterruptedWork(value: unknown): DivoDepartmentPersonaContext["interruptedWork"] {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+	const data = value as Record<string, unknown>;
+	if (typeof data.task !== "string") return null;
+	const task = data.task.normalize("NFKC").trim().replace(/\s+/g, " ").slice(0, 600);
+	if (!task) return null;
+	return {
+		task,
+		clarificationShown: data.clarificationShown === true,
+	};
 }
 
 function parsePersonalMemory(value: unknown): string[] {
@@ -226,7 +249,7 @@ function formatCapabilityBootstrap(
 	// generation against. Repeating them here spent tokens on a second, weaker
 	// copy of the same three facts. What survives is what a tool definition
 	// cannot express: which connection provider a family needs, whether it
-	// requires a skill binding, and the finance routing prior.
+	// benefits from specialist guidance, and the finance routing prior.
 	if (bootstrap.families?.length) {
 		lines.push("", "Governed capability families (connection and skill requirements):");
 		for (const family of bootstrap.families) {
@@ -257,22 +280,27 @@ function formatCapabilityBootstrap(
 		}
 	}
 
-	if (bootstrap.zohoConnection) {
-		const connection = bootstrap.zohoConnection;
-		if (connection.accessibleCount === 1 && connection.connectionId) {
+	if (bootstrap.zohoConnections) {
+		const connections = bootstrap.zohoConnections;
+		if (connections.length === 1) {
+			const connection = connections[0]!;
 			lines.push(
 				"",
-				`Zoho account fast path: exactly one accessible account, ${safeInline(connection.label ?? "Zoho account")} [connectionId=${safeInline(connection.connectionId)}, access=${safeInline(connection.access ?? "unknown")}]. Use this cached connectionId directly; backend validation remains authoritative.`,
+				`Zoho account fast path: exactly one accessible account, ${safeInline(connection.label)} [connectionId=${safeInline(connection.connectionId)}, access=${safeInline(connection.access)}, services=${connection.services.map(safeInline).join(", ") || "none"}]. Use this cached connectionId directly only for a listed service; backend validation remains authoritative.`,
 			);
+		} else if (connections.length > 1) {
+			lines.push("", "Zoho account catalogue. For a Zoho task, first keep only accounts listing the requested service (CRM or Books). If exactly one remains, omit connectionId or use its exact ID and proceed; backend validation remains authoritative. Ask the member only when multiple accounts list that service:");
+			for (const connection of connections) {
+				lines.push(`- ${safeInline(connection.label)} [connectionId=${safeInline(connection.connectionId)}, access=${safeInline(connection.access)}, services=${connection.services.map(safeInline).join(", ") || "none"}]`);
+			}
 		} else {
-			lines.push("", `Accessible Zoho accounts: ${connection.accessibleCount}. Use connections.list when account choice is required.`);
+			lines.push("", "No accessible Zoho account is available. Ask the member to connect or request access to one.");
 		}
 	}
 
 	// Native Pi skills already provide the exact slug and readable SKILL.md
-	// location. The legacy hints contain DB skill IDs and divo_skill_view
-	// instructions; exposing both makes the model turn UUIDs into fake local
-	// paths after that compatibility tool has been removed.
+	// location. Older bootstrap hints may contain retired DB-ID-based routing;
+	// exposing both makes the model turn UUIDs into fake local paths.
 	if (!nativeSkills && bootstrap.routingHints.length > 0) {
 		lines.push("", "Fast routing:");
 		for (const hint of bootstrap.routingHints) lines.push(`- ${safeInline(hint)}`);
@@ -480,18 +508,19 @@ function parseCapabilityBootstrap(candidate: unknown): DivoCapabilityBootstrap |
 		? raw.routingHints.slice(0, 12).flatMap(hint => boundedString(hint, 500) ?? [])
 		: [];
 
-	let zohoConnection: DivoCapabilityBootstrap["zohoConnection"];
-	if (raw.zohoConnection && typeof raw.zohoConnection === "object" && !Array.isArray(raw.zohoConnection)) {
-		const connection = raw.zohoConnection as Record<string, unknown>;
-		if (Number.isInteger(connection.accessibleCount) && Number(connection.accessibleCount) >= 0) {
-			zohoConnection = {
-				accessibleCount: Math.min(Number(connection.accessibleCount), 1000),
-				...(boundedString(connection.connectionId, 200) ? { connectionId: boundedString(connection.connectionId, 200)! } : {}),
-				...(boundedString(connection.label, 200) ? { label: boundedString(connection.label, 200)! } : {}),
-				...(boundedString(connection.access, 80) ? { access: boundedString(connection.access, 80)! } : {}),
-			};
-		}
-	}
+	const zohoConnections = Array.isArray(raw.zohoConnections)
+		? raw.zohoConnections.slice(0, 100).flatMap((value): NonNullable<DivoCapabilityBootstrap["zohoConnections"]> => {
+			if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+			const connection = value as Record<string, unknown>;
+			const connectionId = boundedString(connection.connectionId, 200);
+			const label = boundedString(connection.label, 200);
+			const access = boundedString(connection.access, 80);
+			const services = Array.isArray(connection.services)
+				? connection.services.slice(0, 4).flatMap(service => boundedString(service, 40) ?? [])
+				: [];
+			return connectionId && label && access ? [{ connectionId, label, access, services }] : [];
+		})
+		: undefined;
 
 	return {
 		version: raw.version,
@@ -507,7 +536,7 @@ function parseCapabilityBootstrap(candidate: unknown): DivoCapabilityBootstrap |
 		preferredSkills,
 		preferredTools,
 		routingHints,
-		...(zohoConnection ? { zohoConnection } : {}),
+		...(zohoConnections ? { zohoConnections } : {}),
 	};
 }
 

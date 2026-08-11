@@ -8,6 +8,17 @@ export type { ApprovalGrant } from '../../domain/orchestration/run-context';
 export type ApprovalAuthority = 'connection_owner' | 'company_admin' | 'department_manager';
 export type ApprovalRequestState = 'dispatching' | 'created' | 'reused' | 'replaced_expired';
 
+/**
+ * How the request reached the approver: a Lark card, or Divo's own approval
+ * inbox when Divo cannot card them.
+ *
+ * Carried out of the gate because the surface that tells the requester "we
+ * asked them" is the one surface that cannot see this. Saying "asked in Lark"
+ * when no card was sent is worse than saying nothing: the requester goes and
+ * checks Lark, finds nothing, and concludes the feature is broken.
+ */
+export type ApprovalDelivery = 'lark' | 'desktop';
+
 export type ApprovalDecision =
   | { readonly kind: 'allowed'; readonly executionGrant?: ApprovalExecutionGrant }
   | {
@@ -24,6 +35,8 @@ export type ApprovalDecision =
       readonly requestState: ApprovalRequestState;
       readonly nextAction: 'wait';
       readonly retry: 'retry_exact';
+      /** Where the approver will find it. Same value as the row's `channel`. */
+      readonly deliveredVia: ApprovalDelivery;
     }
   | {
       readonly kind: 'rejected';

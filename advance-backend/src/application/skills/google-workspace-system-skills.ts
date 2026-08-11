@@ -211,27 +211,14 @@ Use this skill for ${product.description.toLowerCase()}
 
 ## Governed execution
 
-1. Reuse the exact connected/shared Google account already returned by the current unified run bootstrap. Call \`divo_connections\` only when that bootstrap explicitly says Google account discovery is missing. Before any \`op: "call"\`, include the chosen UUID as \`connectionId\`; this is required for RBAC, owner policy, and connection rate limits.
-   If the bootstrap says no Google account is accessible, loading this skill has not sent a card. Invoke the registered Divo ${product.name} capability exactly once with \`{"op":"describe","nativeTool":"${product.tools[0]}"}\`; do not include \`connectionId\`. Only a returned \`google_workspace_authorization_pending\` proves the backend sent the Connect Google card. Then end the current run; OAuth completion starts a fresh run automatically. Never invent a Lark operation, claim a card was sent without that tool result, or send the user to a settings page.
-2. Never choose a model default or rotate through accounts after an error. A text reply is an exact choice only when it uniquely identifies one returned option by number or account email.
-3. Reuse the same exact \`connectionId\` for both \`op: "describe"\` and \`op: "call"\` when the bootstrap provides it. It may be omitted for \`describe\` only when there is no selected account and account resolution is unambiguous. Never use an email address or label itself as \`connectionId\`.
-4. Use only Divo's governed \`${product.toolId}\` route. For ${GOVERNED_DIRECT_ACTION_CRITERION}, call the runtime's governed wrapper directly. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use one persistent Python file and invoke this same tool through credential-free \`divo-local\` only when the work has ${GOVERNED_LOCAL_WORKFLOW_CRITERION}. Never call Google directly from Bash: no Google CLI, curl, browser automation, direct Google API call, local OAuth token, or credential-bearing SDK. \`divo-local\` is a governed Divo wrapper, not a Google client.
-5. If the current run bootstrap already contains the exact \`nativeTool\` input schema, use it and do not call \`describe\` again. Otherwise call \`op: "describe"\` once before that unfamiliar operation. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, perform that describe inside the same persistent Python file through \`divo-local\`; never describe through the registered tool first and then repeat it in the script. \`input\` may be omitted for describe; follow the returned MCP input schema exactly.
-6. Call \`op: "call"\` with the same \`nativeTool\` and its arguments under \`input\`.
-7. ${GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance}
-
-## Canonical governed call shape
-
-For a direct ${GOVERNED_DIRECT_ACTION_CRITERION}, call the registered Divo ${product.name} capability with this argument object: \`{ "op": "describe|call", "nativeTool": "<approved operation>", "connectionId": "<UUID required for call>", "input": {} }\`. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, when the local-workflow criterion above applies, put that same object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. The file holds the argument object alone — a wrapper envelope carrying \`toolId\`, \`args\`, or \`skillId\` is rejected. Keep \`connectionId\` inside that argument object.
-
-## Approved operations
-
-${product.tools.map((tool) => `- \`${tool}\``).join('\n')}
+1. Do not call \`divo_connections\` before ordinary Google work. Omit \`connectionId\` unless the member selected an account or the previous Google result returned eligible choices; Divo selects the sole account eligible for the exact action and scopes. If no account is eligible, invoke the registered Divo ${product.name} capability exactly once with \`{"op":"describe","nativeTool":"${product.tools[0]}"}\` and no \`connectionId\`. Only a returned \`google_workspace_authorization_pending\` proves the backend sent the Connect Google card. Then end the current run; OAuth completion starts a fresh run automatically. Never claim a card was sent without that result or send the user to a settings page.
+2. Never choose a model default or rotate through accounts after an error. A text reply is an exact choice only when it uniquely identifies one returned option by number or account email. Never use an email address or label itself as \`connectionId\`.
+3. Use only Divo's governed \`${product.toolId}\` route. For ${GOVERNED_DIRECT_ACTION_CRITERION}, call the runtime's governed wrapper directly. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use one persistent Python file and invoke this same tool through credential-free \`divo-local\` only when the work has ${GOVERNED_LOCAL_WORKFLOW_CRITERION}. Never call Google directly from Bash: no Google CLI, curl, browser automation, direct Google API call, local OAuth token, or credential-bearing SDK. \`divo-local\` is a governed Divo wrapper, not a Google client.
+4. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, and the local-workflow criterion above applies, put the same argument object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. The file holds the argument object alone — a wrapper envelope carrying \`toolId\`, \`args\`, or \`skillId\` is rejected. Include \`connectionId\` only after an explicit account choice. Never describe through the registered tool and then repeat the describe inside the script.
 ${productWorkflow}
 
 ## Reliability and safety
 
-- The operation contract is pinned to Workspace MCP ${GOOGLE_WORKSPACE_MCP_SOURCE.version}. Do not invent operations outside the list above.
 - Preserve Divo RBAC, sharing, approval, and audit results. Pending or denied is not completed.
 - Never guess Google resource IDs. Discover or read the target before an ambiguous mutation.
 - Verify important content changes with a read operation and return canonical Google URLs from successful responses.
@@ -274,7 +261,7 @@ When the user asks for the single latest or one deduplicated thread, this contra
 
 ### Newsletter cleanup
 
-1. Before scanning a large candidate set, decide every intended mutation and call \`tools.preflight\` once with one complete proposed \`googleGmail\` invocation per mutation. For Google calls, preflight validates RBAC/action, the exact pinned native schema, selected connection eligibility, and required OAuth scopes. It does not execute the mutation or create an approval intent. Never preflight placeholder or empty native input.
+1. Before scanning a large candidate set, decide every intended mutation and call \`divo_preflight\` once with one complete proposed \`googleGmail\` invocation per mutation.
 2. Map actions exactly: \`manage_gmail_label\` with a create action requires \`googleGmail:create\`; \`modify_gmail_message_labels\` and \`batch_modify_gmail_message_labels\` (apply or remove labels) require \`googleGmail:update\`; \`manage_gmail_label\` with a delete action requires \`googleGmail:delete\`.
 3. If required preflight entries are denied, say so before scanning the candidate set and offer only a read-only report when useful. Do not scan/classify a large batch in preparation for a mutation that cannot run.
 4. Keep counts distinct: report the number of search candidates separately from the number classified as newsletters. Do not describe every candidate as a newsletter.
@@ -326,7 +313,7 @@ Creation, import, copy, or sharing is complete only when the successful response
 1. Resolve relative dates against the current date and the user's timezone. Keep start/end times, all-day intent, recurrence, attendees, and timezone explicit; never silently assume a timezone for a cross-region meeting.
 2. Use \`list_calendars\` when the target calendar is unknown. Use \`get_events\` for a bounded time window and identify the exact event before update or deletion.
 3. Use \`query_freebusy\` before scheduling when attendee availability matters. Free/busy data shows availability, not permission to expose private event details.
-4. Use \`manage_event\` for event create, update, or delete exactly as its described action schema requires. Before claiming an event is ready to create, call \`describe\`, construct the complete proposed event including action, calendar, times, timezone and grounded attendees, and pass that exact invocation to \`tools.preflight\`. Empty or placeholder event input is not a preflight. Use \`manage_out_of_office\` and \`manage_focus_time\` only for those specialized event types.
+4. Use \`manage_event\` for event create, update, or delete exactly as its described action schema requires. Before claiming an event is ready to create, call \`describe\`, construct the complete proposed event including action, calendar, times, timezone and grounded attendees, and pass that exact invocation to \`divo_preflight\`. Use \`manage_out_of_office\` and \`manage_focus_time\` only for those specialized event types.
 5. Use \`create_calendar\` only when the user asks for a separate calendar, not for an ordinary event.
 
 ### Completion contract
@@ -412,12 +399,20 @@ Read \`read_sheet_values\` from its machine-readable \`values\`, \`rowCount\`,
 \`returnedRowCount\`, \`isEmpty\`, and \`complete\` fields rather than parsing
 prose.
 
-Four corrections the loaded schemas do not prevent: keep Sheet values scalar and
-string-safe before writing, never nest formatting under \`cell_format\`, never
-invent index-based resize fields, and give data validation a sheet-qualified
-range with either \`one_of_list\` values or a \`one_of_range\` source. If no
-loaded native operation can implement a requested feature, report that feature
-partial instead of claiming it was applied.
+For bulk writes, make the value grid rectangular and derive an explicit A1 range
+from the widest row, not the first row. Inspect \`rowCount\` and \`columnCount\`
+once and resize before writing when the header plus data will not fit. Pair a
+custom number-format pattern with its required number-format type. Read-back may
+return displayed numbers with grouping separators; verify numeric equality
+rather than raw string equality. The backend adapts ordinary scalar cells to the
+pinned provider's string wire format; objects and arrays still require deliberate
+serialization.
+
+Never nest formatting under \`cell_format\`, never invent index-based resize
+fields, and give data validation a sheet-qualified range with either
+\`one_of_list\` values or a \`one_of_range\` source. If no loaded native operation
+can implement a requested feature, report that feature partial instead of
+claiming it was applied.
 
 Dropdowns are the one shape the run bootstrap never binds, so it is written out
 here: \`manage_sheet_data_validation\` takes

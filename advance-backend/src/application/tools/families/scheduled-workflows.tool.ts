@@ -110,8 +110,6 @@ export const createScheduledWorkflowsTool = (deps: {
   description:
     'Create and manage durable one-time or recurring Divo work. Every result is delivered to the authenticated creator\'s own Lark DM.',
   parameterDocs: [
-    'Gateway discovery: call work.resolve for the user request, then tools.list with { "toolId": "scheduledWorkflows" } before the first invocation.',
-    'Gateway invocation: tools.invoke payload must be { "toolId": "scheduledWorkflows", "args": { ... } }. Keep operation and all schedule fields inside args.',
     'operation:',
     '- create: activate a one-time, hourly, daily, weekly, or monthly schedule.',
     '- list: list the current user\'s schedules; includeInactive=true also returns paused and archived schedules.',

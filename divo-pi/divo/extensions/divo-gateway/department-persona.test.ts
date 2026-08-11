@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -122,12 +122,12 @@ describe("department persona", () => {
 				}],
 				preferredTools: [{ toolId: "zohoBooks", actions: ["read", "create"] }],
 				routingHints: ["Unpaid invoices -> invoke zohoBooks with op build_overdue_report."],
-				zohoConnection: {
-					accessibleCount: 1,
+				zohoConnections: [{
 					connectionId: "connection-1",
 					label: "Finance Books",
 					access: "read_write",
-				},
+					services: ["books"],
+				}],
 			},
 		}));
 
@@ -197,6 +197,37 @@ describe("department persona", () => {
 		assert.doesNotMatch(nativePrompt, /Daily Report \[skillId=/);
 		assert.doesNotMatch(nativePrompt, /skill IDs are not authorization tokens/);
 		assert.doesNotMatch(nativePrompt, /skill-daily-report|divo_skill_view/);
+	});
+
+	it("shows service-labelled Zoho choices and asks only when that service remains ambiguous", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "divo-zoho-choices-"));
+		const path = join(directory, "runtime-context.json");
+		await writeFile(path, JSON.stringify({
+			departmentName: "Finance",
+			capabilityBootstrap: {
+				version: 3,
+				departmentFunction: "finance",
+				companyRole: "MEMBER",
+				departmentRole: "FINANCE_MANAGER",
+				availableSkills: [],
+				availableTools: [{ toolId: "zohoCrm", actions: ["read"] }],
+				preferredSkills: [],
+				preferredTools: [],
+				routingHints: [],
+				zohoConnections: [
+					{ connectionId: "zoho-1", label: "Emiac", access: "read_only", services: ["books"] },
+					{ connectionId: "zoho-2", label: "Macobs", access: "read_only", services: ["crm"] },
+				],
+			},
+		}));
+
+		const prompt = composeDivoSystemPrompt("Base prompt", COMPANY_PROMPT, await readDepartmentPersonaContext(path));
+		assert.match(prompt, /first keep only accounts listing the requested service/i);
+		assert.match(prompt, /If exactly one remains, omit connectionId or use its exact ID and proceed/i);
+		assert.match(prompt, /Ask the member only when multiple accounts list that service/i);
+		assert.match(prompt, /Emiac \[connectionId=zoho-1, access=read_only, services=books\]/);
+		assert.match(prompt, /Macobs \[connectionId=zoho-2, access=read_only, services=crm\]/);
+		assert.doesNotMatch(prompt, /Use connections\.list when account choice is required/i);
 	});
 
 	it("injects the v3 family hierarchy without treating family IDs as executable tools", async () => {
@@ -292,5 +323,26 @@ describe("department persona", () => {
 			personaPrompt: " ",
 		});
 		assert.equal(prompt, `Base prompt\n\n${COMPANY_PROMPT}\n\n${DIVO_ENGLISH_RESPONSE_POLICY}`);
+	});
+
+	it("refreshes interrupted-work policy inside a warm Pi process", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "divo-interrupted-persona-"));
+		const path = join(directory, "runtime-context.json");
+		await writeFile(path, JSON.stringify({
+			interruptedWork: {
+				task: "  Build   the monthly export  ",
+				clarificationShown: false,
+			},
+		}));
+
+		const context = await readDepartmentPersonaContext(path);
+		const interrupted = composeDivoSystemPrompt("Base prompt", COMPANY_PROMPT, context);
+		assert.match(interrupted, /Never resume, retry, or continue it/i);
+		assert.match(interrupted, /Build the monthly export/);
+
+		const refreshed = composeDivoSystemPrompt(interrupted, COMPANY_PROMPT, null);
+		assert.doesNotMatch(refreshed, /Build the monthly export/);
+		assert.doesNotMatch(refreshed, /divo_interrupted_work_policy/);
+		await rm(directory, { recursive: true, force: true });
 	});
 });

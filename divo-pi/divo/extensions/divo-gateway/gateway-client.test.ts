@@ -77,14 +77,15 @@ describe("formatGatewayResponse", () => {
 				parent: { instructions: "Compact parent guidance" },
 				connection: { message: "Choose a connection when the backend asks." },
 				phases: [
-					{ name: "Gmail source", skillId: "gmail-id", skill: { instructions: "inline only" } },
-					{ name: "Google Contacts", skillId: "contacts-id" },
+					{ name: "Gmail source", slug: "google-gmail", skillId: "gmail-id", skill: { instructions: "inline only" } },
+					{ name: "Google Contacts", slug: "google-contacts", skillId: "contacts-id" },
 				],
 			},
 		});
 		assert.equal(result.isError, false);
 		assert.match(result.text, /Gmail source/);
-		assert.match(result.text, /contacts-id/);
+		assert.match(result.text, /native skill google-contacts/);
+		assert.doesNotMatch(result.text, /contacts-id/);
 		assert.match(result.text, /Compact parent guidance/);
 		assert.match(result.text, /inline only/);
 		assert.match(result.text, /already loaded/i);

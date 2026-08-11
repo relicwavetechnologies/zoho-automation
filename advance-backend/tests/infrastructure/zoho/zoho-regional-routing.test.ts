@@ -69,4 +69,61 @@ describe('Zoho per-connection regional routing', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('uses Zoho native word search with caller-owned pagination', async () => {
+    const seen: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({
+        data: [{ id: 'deal-401', Deal_Name: 'North renewal' }],
+        info: { page: 3, per_page: 200, more_records: true },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+
+    try {
+      const client = new ZohoCrmPaginatedClient(regionalTokenService());
+      const result = await client.searchByText({
+        companyId: 'company-1',
+        userId: 'user-1',
+        connectionId: 'india',
+        module: 'Deals',
+        query: 'North renewal',
+        page: 3,
+        perPage: 200,
+      });
+
+      const url = new URL(seen[0]!);
+      assert.equal(url.origin, 'https://www.zohoapis.in');
+      assert.equal(url.pathname, '/crm/v6/Deals/search');
+      assert.equal(url.searchParams.get('word'), 'North renewal');
+      assert.equal(url.searchParams.get('page'), '3');
+      assert.equal(url.searchParams.get('per_page'), '200');
+      assert.equal(result.page, 3);
+      assert.equal(result.hasMore, true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('does not turn a Zoho search failure into an empty result', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response('expired', { status: 401 });
+
+    try {
+      const client = new ZohoCrmPaginatedClient(regionalTokenService());
+      await assert.rejects(
+        client.searchByText({
+          companyId: 'company-1',
+          userId: 'user-1',
+          connectionId: 'india',
+          module: 'Deals',
+          query: 'North renewal',
+        }),
+        /Zoho CRM 401/,
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

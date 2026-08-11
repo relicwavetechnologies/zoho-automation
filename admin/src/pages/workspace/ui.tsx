@@ -6,15 +6,19 @@
  * content lands — the thing that makes an app feel assembled rather than
  * thrown at the screen.
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  AlertTriangle, Check, ChevronRight, Inbox, Lock, X,
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode,
+} from 'react'
+import {
+  AlertTriangle, Boxes, CalendarClock, Check, ChevronRight, FileDown, Globe, Inbox, Library,
+  Lock, MoreHorizontal, X,
   type LucideIcon,
 } from 'lucide-react'
 import {
   ACTION_GROUPS, DATA_SOURCES, SOURCE_LABEL, ceilingAllows, resolveGrants, toolById,
   type ActionGroup, type GrantMap, type Person, type PermissionSource, type Provider,
 } from './fixtures'
+import { GoogleMark } from './brand'
 import { ApiError } from '@/lib/api'
 
 /* ── Staged loading ───────────────────────────────────
@@ -44,9 +48,21 @@ export function useStaged(steps: number[], replayKey: number) {
  */
 export type Toast = (message: string, tone?: 'ok' | 'error') => void
 
-export const Skel = ({ w, h = 11, circle }: { w?: number | string; h?: number; circle?: boolean }) => (
+export const Skel = ({ w, h = 11, circle, block }: {
+  w?: number | string
+  h?: number
+  circle?: boolean
+  /**
+   * A rounded rectangle rather than a pill.
+   *
+   * `line` carries a 999px radius, which reads as a pill at 11px and as an
+   * ellipse at two hundred — so a placeholder standing in for a block of
+   * content came out as a giant lozenge.
+   */
+  block?: boolean
+}) => (
   <div
-    className={`ws-skel${circle ? ' circle' : ' line'}`}
+    className={`ws-skel${circle ? ' circle' : block ? ' block' : ' line'}`}
     style={{ width: w ?? '100%', height: h, ...(circle ? { borderRadius: '50%' } : {}) }}
   />
 )
@@ -72,18 +88,41 @@ export const Fade = ({ children }: { children: ReactNode }) => <div className="w
 
 /* ── Page furniture ──────────────────────────────────── */
 export function PageHeader({
-  eyebrow, title, description, actions,
+  eyebrow, title, description, actions, badge,
   // `eyebrow` is a node rather than a string so a sub-page can put its way back
   // where the section name would otherwise sit — a wizard's breadcrumb belongs
   // above its own title, not in a rail the wizard has replaced.
-}: { eyebrow?: ReactNode; title: string; description?: string; actions?: ReactNode }) {
+}: {
+  eyebrow?: ReactNode
+  title: string
+  description?: string
+  actions?: ReactNode
+  /*
+   * A word about the page itself, set beside its name.
+   *
+   * Distinct from `actions`, which is where the controls live: a status is not
+   * a control, and putting it there had it read as a button nobody could
+   * press. Beside the title is where a reader looks to find out what a screen
+   * is, so a screen that is not finished says so there.
+   */
+  badge?: ReactNode
+}) {
   return (
     <div className="ws-ph">
       <div>
         {eyebrow ? <div className="eyebrow">{eyebrow}</div> : null}
-        <h1 style={{ marginTop: eyebrow ? 7 : 0 }}>{title}</h1>
+        <div className="ws-ph-title" style={{ marginTop: eyebrow ? 7 : 0 }}>
+          <h1>{title}</h1>
+          {badge}
+        </div>
         {description ? <p>{description}</p> : null}
       </div>
+      {/*
+        No third slot for a caveat. Two attempts lived here — beside the buttons,
+        where it wrapped, then above them, where it grew the bottom-aligned
+        column off the top of the page — and both were a sentence competing with
+        the controls it was about. It is a toast now, raised on the press.
+      */}
       {actions ? <div className="ws-ph-act">{actions}</div> : null}
     </div>
   )
@@ -146,6 +185,71 @@ export function DataNote({ source }: { source: keyof typeof DATA_SOURCES }) {
  * same shape the skills tree settled on — announce the role, take focus, and
  * answer both Enter and Space the way a real button does.
  */
+/**
+ * The row's own actions, behind one affordance.
+ *
+ * Closed on any outside click and on Escape, and it stops propagation on the
+ * way out — without that, every menu click also opened the row underneath it.
+ *
+ * Shared rather than per-screen: it was written for the mail rules list and the
+ * team's people list needs exactly the same thing, and a second copy is a
+ * second set of listeners to get wrong.
+ */
+export function RowMenu({ items, busy, label = 'More' }: {
+  busy?: boolean
+  label?: string
+  items: Array<{ label: string; icon: LucideIcon; onSelect: () => void; danger?: boolean }>
+}) {
+  const [open, setOpen] = useState(false)
+  const wrap = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (!wrap.current?.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  if (items.length === 0) return null
+
+  return (
+    <div className="ws-menu-wrap" ref={wrap} onClick={(e) => e.stopPropagation()}>
+      <button
+        type="button"
+        className="icon-btn ws-menu-btn"
+        aria-label={label}
+        aria-expanded={open}
+        disabled={busy}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <MoreHorizontal size={15} />
+      </button>
+      {open ? (
+        <div className="ws-menu" role="menu">
+          {items.map((item) => (
+            <button
+              type="button"
+              role="menuitem"
+              key={item.label}
+              data-danger={item.danger ? 'true' : undefined}
+              onClick={() => { setOpen(false); item.onSelect() }}
+            >
+              <item.icon size={13} /> {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function ClickRow({ onOpen, children, ...rest }: {
   onOpen: () => void
   children: ReactNode
@@ -386,14 +490,285 @@ export const Bar = ({ pct, tone }: { pct: number; tone?: 'brand' }) => (
   <div className="ws-bar"><i style={{ width: `${Math.min(100, Math.max(2, pct))}%` }} data-tone={tone} /></div>
 )
 
+/**
+ * Thirty days of spend, as bars.
+ *
+ * `data-hot` warms the last week, because recent spend is the part worth
+ * noticing. It used to warm the last week *whatever it was worth* — and since
+ * an empty bar still draws a 2px sliver, somebody with no activity at all got
+ * a row of orange marks under a card reading "$0.00" and "0 tasks". Every
+ * pixel of it was false: it said this person has been busy lately, on the one
+ * screen an admin opens to find out whether they have.
+ *
+ * A day with no spend is now never hot. It keeps its sliver, which is the
+ * baseline the other bars are read against, in the colour of nothing happening.
+ */
 export const Spark = ({ data }: { data: number[] }) => {
   const max = Math.max(...data, 1)
   return (
     <div className="ws-spark">
       {data.map((v, i) => (
-        <i key={i} style={{ height: `${(v / max) * 100}%` }} data-hot={i >= data.length - 7} />
+        <i key={i} style={{ height: `${(v / max) * 100}%` }} data-hot={v > 0 && i >= data.length - 7} />
       ))}
     </div>
+  )
+}
+
+/**
+ * Spend over time, as a line with the area under it filled.
+ *
+ * The calendar answers "which days" and lives on Home. Repeating it on the team
+ * page would be the same widget twice, and the question there is different —
+ * a manager wants the shape of the trend, whether spend is climbing or a single
+ * week carried the month, which a grid of squares makes you reconstruct square
+ * by square.
+ *
+ * Drawn in real pixels off a `ResizeObserver` rather than a scaled `viewBox`:
+ * `preserveAspectRatio="none"` stretches the stroke with the box, so a line
+ * that is 1.5px on a narrow card is 4px on a wide one and the grid goes with it.
+ */
+export function TrendChart({ data, format = money, height = 190 }: {
+  data: { date: string; value: number }[]
+  format?: (value: number) => string
+  height?: number
+}) {
+  const [box, setBox] = useState<HTMLDivElement | null>(null)
+  const [width, setWidth] = useState(0)
+  const [hover, setHover] = useState<number | null>(null)
+
+  /*
+   * Measured on layout first, then watched.
+   *
+   * Leaving the first width to `ResizeObserver` alone deadlocks whenever the
+   * element starts at zero — no width means no `<svg>`, no `<svg>` means no
+   * content, and a box with no content never resizes, so the observer has
+   * nothing to report and the chart never appears. Reading `clientWidth`
+   * synchronously breaks that circle; the observer then only has to handle
+   * genuine changes.
+   */
+  useLayoutEffect(() => {
+    if (!box) return
+    const measure = () => setWidth(box.clientWidth)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(box)
+    // A pane that opens at zero width — a hidden tab, a collapsed split — fires
+    // no resize on the element itself, so the window is watched too.
+    window.addEventListener('resize', measure)
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure) }
+  }, [box])
+
+  const PAD = { top: 10, right: 2, bottom: 22, left: 2 }
+  const plotW = Math.max(0, width - PAD.left - PAD.right)
+  const plotH = Math.max(0, height - PAD.top - PAD.bottom)
+  // A flat zero series still gets a baseline rather than dividing by nothing.
+  const max = Math.max(...data.map((d) => d.value), 0) || 1
+
+  const xOf = (i: number) => PAD.left + (data.length < 2 ? plotW / 2 : (i / (data.length - 1)) * plotW)
+  const yOf = (v: number) => PAD.top + plotH - (v / max) * plotH
+
+  const line = data.map((d, i) => `${i === 0 ? 'M' : 'L'}${xOf(i).toFixed(1)},${yOf(d.value).toFixed(1)}`).join(' ')
+  const area = data.length > 0
+    ? `${line} L${xOf(data.length - 1).toFixed(1)},${(PAD.top + plotH).toFixed(1)} L${xOf(0).toFixed(1)},${(PAD.top + plotH).toFixed(1)} Z`
+    : ''
+
+  const at = hover !== null ? data[hover] : undefined
+  const dayText = (iso: string) =>
+    new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+
+  return (
+    <div className="ws-trend" ref={setBox}>
+      {width > 0 && data.length > 0 ? (
+        <svg
+          width={width}
+          height={height}
+          role="img"
+          aria-label={`Daily spend, ${dayText(data[0]!.date)} to ${dayText(data[data.length - 1]!.date)}`}
+          onMouseLeave={() => setHover(null)}
+          onMouseMove={(e) => {
+            const x = e.clientX - e.currentTarget.getBoundingClientRect().left - PAD.left
+            const i = Math.round((x / Math.max(plotW, 1)) * (data.length - 1))
+            setHover(Math.min(data.length - 1, Math.max(0, i)))
+          }}
+        >
+          <defs>
+            <linearGradient id="ws-trend-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="var(--cur-primary)" stopOpacity="0.30" />
+              <stop offset="100%" stopColor="var(--cur-primary)" stopOpacity="0" />
+            </linearGradient>
+          </defs>
+
+          {/* Three rules, dashed and quiet. They give the eye a height to read
+              against; any more and the grid competes with the line. */}
+          {[0, 0.5, 1].map((t) => (
+            <line
+              key={t}
+              x1={PAD.left} x2={PAD.left + plotW}
+              y1={PAD.top + plotH * t} y2={PAD.top + plotH * t}
+              className="ws-trend-grid"
+            />
+          ))}
+
+          <path d={area} fill="url(#ws-trend-fill)" />
+          <path d={line} className="ws-trend-line" fill="none" />
+
+          {at ? (
+            <>
+              <line
+                x1={xOf(hover!)} x2={xOf(hover!)} y1={PAD.top} y2={PAD.top + plotH}
+                className="ws-trend-guide"
+              />
+              <circle cx={xOf(hover!)} cy={yOf(at.value)} r={3.5} className="ws-trend-dot" />
+            </>
+          ) : null}
+        </svg>
+      ) : null}
+
+      <div className="ws-trend-foot">
+        {/* The hovered day replaces the range while the pointer is on the plot,
+            so the number under the cursor is readable without a floating box
+            that would clip at the card's edge. */}
+        {at ? (
+          <span className="ws-trend-read">{dayText(at.date)} · <b>{format(at.value)}</b></span>
+        ) : data.length > 0 ? (
+          <>
+            <span>{dayText(data[0]!.date)}</span>
+            <span>{dayText(data[data.length - 1]!.date)}</span>
+          </>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Spend per day, as a calendar rather than a bar row.
+ *
+ * The sparkline drew 30 bars of which three were tall and the rest sat on the
+ * floor, which is what light usage actually looks like — so it read as an empty
+ * chart rather than as a pattern. A grid gives every quiet day the same square
+ * as a busy one, and puts weekdays under each other, so "nothing on weekends"
+ * and "one heavy Tuesday" are both visible without a single tall bar.
+ *
+ * Weeks run down the page and weekdays across, which matches the card's own
+ * "last 30 days" framing better than the year-long strip this borrows from.
+ */
+export const Heatmap = ({ data, format = money }: {
+  data: { date: string; value: number }[]
+  /** How a cell's value reads on hover. Dollars here, message counts in Mail. */
+  format?: (value: number) => string
+}) => {
+  if (data.length === 0) return null
+  const max = Math.max(...data.map((p) => p.value), 0)
+  // Parsed at local midnight. Letting the runtime read a bare date as UTC
+  // shifts every cell a day west of the timezone the numbers were billed in.
+  const dayOf = (iso: string) => new Date(`${iso}T00:00:00`)
+  // Monday-first, so the weekend sits together at the foot of a column.
+  const weekday = (d: Date) => (d.getDay() + 6) % 7
+  const cells: Array<{ key: string; label: string; level: number } | null> = []
+  // Pads the first column down to the weekday the window opens on, so every
+  // row is one weekday all the way across.
+  for (let i = 0; i < weekday(dayOf(data[0]!.date)); i += 1) cells.push(null)
+  for (const point of data) {
+    const date = dayOf(point.date)
+    cells.push({
+      key: point.date,
+      label: `${date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} · ${format(point.value)}`,
+      // Zero keeps its own step. A quiet day is a fact worth showing, and
+      // shading it like a busy one would erase the difference.
+      level: point.value <= 0 || max <= 0
+        ? 0
+        : Math.max(1, Math.ceil((point.value / max) * 4)),
+    })
+  }
+
+  // The grid has to know its own width to stay inside the card. A fixed cell
+  // size overflowed a narrow panel and clipped the last week; a fraction with
+  // no ceiling drew tiles when the window was short. Columns are fluid, capped
+  // per column, and the count comes from the data rather than a guess.
+  const columns = Math.ceil(cells.length / 7)
+
+  return (
+    <div className="ws-heat" style={{ ['--ws-cols' as string]: String(columns) }}>
+      {/*
+        Seven rows, one week per column — the shape every contribution grid
+        uses, and the reason it can be wide and short. Filled the other way a
+        season is sixteen rows tall and two hundred pixels wide, and a month is
+        five columns, which is a shape rather than a pattern.
+      */}
+      <div className="ws-heat-grid">
+        {cells.map((cell, i) => cell === null
+          ? <i key={`pad-${i}`} data-pad="true" />
+          : <i key={cell.key} data-level={cell.level} title={cell.label} />)}
+      </div>
+      <div className="ws-heat-key">
+        <span>Less</span>
+        {[0, 1, 2, 3, 4].map((l) => <i key={l} data-level={l} />)}
+        <span>More</span>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Somebody's initials, in a circle.
+ *
+ * Initials rather than a photograph because Divo holds no photograph. Nothing
+ * in the schema stores an avatar and no route fetches one from Lark, so a
+ * component that took a URL would be a slot permanently showing its fallback —
+ * and a broken image is a worse answer than a letter.
+ *
+ * The tint is the accent rather than the brand orange. Orange is scarce here by
+ * design and marks the one thing being asked for; an avatar is identity, not an
+ * action.
+ */
+export const Avatar = ({ name, email, src, size = 34 }: {
+  name?: string | null
+  email?: string | null
+  /** Lark's picture, when Divo has been given one. */
+  src?: string | null
+  size?: number
+}) => {
+  // Falls back on error as well as on absence. Lark's avatar URLs expire, and a
+  // broken image icon where somebody's face should be reads as a fault in Divo
+  // rather than as a link that aged out.
+  const [broken, setBroken] = useState(false)
+  const source = (name ?? '').trim() || (email ?? '').trim()
+  // First letter of the first two words, so "Anugra Gupta" reads AG and
+  // "anugra.gupta@…" still reads A rather than an empty circle.
+  const initials = source
+    .split(/[\s.@_-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? '')
+    .join('') || '—'
+
+  if (src && !broken) {
+    return (
+      <img
+        className="ws-avatar"
+        src={src}
+        alt=""
+        width={size}
+        height={size}
+        style={{ width: size, height: size }}
+        onError={() => setBroken(true)}
+        // Decorative: the name it belongs to is always beside it, and a second
+        // reading of it is noise to a screen reader.
+        aria-hidden="true"
+        referrerPolicy="no-referrer"
+      />
+    )
+  }
+
+  return (
+    <span
+      className="ws-avatar"
+      style={{ width: size, height: size, fontSize: Math.round(size * 0.4) }}
+      aria-hidden="true"
+    >
+      {initials}
+    </span>
   )
 }
 
@@ -505,22 +880,249 @@ export const listPhrase = (items: string[], max = 4) => {
 export type PendingChange = { toolId: string; action: ActionGroup; next: boolean; blocked?: boolean }
 
 /* ── Provider glyphs ─────────────────────────────────
-   Wordmark initials rather than logos — no brand assets to license, and it
-   keeps the palette to the two neutrals the design language allows. */
-const PROVIDER_META: Record<Provider, { short: string; name: string }> = {
-  google_workspace: { short: 'G', name: 'Google Workspace' },
-  lark: { short: 'L', name: 'Lark' },
-  canva: { short: 'C', name: 'Canva' },
-  airtable: { short: 'A', name: 'Airtable' },
-  aitable: { short: 'Ai', name: 'AITable' },
-  zoho: { short: 'Z', name: 'Zoho' },
+   Real marks where Divo has the real file, and a branded tile where it does
+   not. These were six identical grey squares carrying a letter, which read as
+   placeholders for logos rather than as a choice — an app list is scanned by
+   shape and colour, and initials give it neither.
+
+   `brand.tsx` sets the rule this follows: a mark is drawn only where the real
+   artwork is known exactly. Google publishes a fixed path and Lark's own PNG is
+   in `public/brand`. The rest get their brand colour rather than an invented
+   logo, because a mark redrawn from memory is recognisable enough to be trusted
+   and wrong enough to be somebody else's product. Drop `<provider>.png` into
+   `public/brand` and add it to `asset` below to promote one. */
+const PROVIDER_META: Record<Provider, {
+  short: string
+  name: string
+  /**
+   * The brand's colour as the tile's *fill*, with `ink` on top.
+   *
+   * Tinting the letter instead — brand colour as text on the card's own surface
+   * — measured 1.54:1 for Airtable's amber and 1.84:1 for Canva's teal in light
+   * mode. A brand colour is chosen to be seen against its own tile, not to be
+   * read as type on white, so the tile takes the colour and the letter takes a
+   * foreground picked to clear 4.5:1 against it.
+   */
+  tint?: string
+  ink?: string
+  /** A drawn mark, where the real artwork is known exactly. */
+  mark?: (size: number) => JSX.Element
+  /** A real file under `public/brand`. */
+  asset?: string
+  /**
+   * True when the file is a finished app icon rather than a glyph.
+   *
+   * Canva, Shopify and AITable publish a mark that already carries its own
+   * background and corner radius; Airtable, Zoho and Lark publish a shape on
+   * transparency. Drawn the same way, the first three get a tile around a tile
+   * and the second three float in a box too big for them — which is what
+   * "the icons are not placed well" looks like.
+   */
+  fill?: boolean
+}> = {
+  google_workspace: { short: 'G', name: 'Google Workspace', mark: (s) => <GoogleMark size={s} /> },
+  lark: { short: 'L', name: 'Lark', asset: '/brand/lark.png' },
+  canva: { short: 'C', name: 'Canva', asset: '/brand/canva.png', fill: true },
+  airtable: { short: 'A', name: 'Airtable', asset: '/brand/airtable.png' },
+  aitable: { short: 'Ai', name: 'AITable', asset: '/brand/aitable.png', fill: true },
+  zoho: { short: 'Z', name: 'Zoho', asset: '/brand/zoho.png' },
 }
 
-export const ProviderMark = ({ provider }: { provider: Provider }) => (
-  <span className="ws-ic" aria-hidden>
-    <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: '-0.01em' }}>{PROVIDER_META[provider].short}</span>
+/**
+ * An app icon for something outside the `Provider` union.
+ *
+ * Shopify is company-owned and reaches the UI through its own status hook, so
+ * it is not a `Provider` and could not use the mark below — it drew a bare grey
+ * `ws-ic` with an "S" instead, and sat in a list where every other app had its
+ * own colour. One app looking unlike the rest reads as unfinished, not as a
+ * different kind of connection.
+ */
+/** How much of the tile a glyph-on-transparency takes. Full-bleed icons ignore it. */
+const GLYPH_SHARE = 0.62
+
+export const AppMark = ({ asset, fill, short, tint, ink, size = 34 }: {
+  /** A real file under `public/brand`, when there is one. */
+  asset?: string
+  /** True when the file is a finished app icon rather than a glyph. */
+  fill?: boolean
+  short: string
+  tint?: string
+  ink?: string
+  size?: number
+}) => (
+  <span
+    className="ws-app"
+    aria-hidden
+    data-plain={asset ? 'true' : undefined}
+    data-fill={fill ? 'true' : undefined}
+    style={{ ['--ws-app' as string]: `${size}px` }}
+  >
+    {asset
+      ? (
+        <img
+          src={asset}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          style={fill
+            ? { width: '100%', height: '100%', display: 'block' }
+            : { width: Math.round(size * GLYPH_SHARE), height: Math.round(size * GLYPH_SHARE), display: 'block' }}
+        />
+      )
+      : (
+        <span className="ws-app-l" style={{ color: ink, background: tint, fontSize: Math.round(size * 0.44) }}>
+          {short}
+        </span>
+      )}
   </span>
 )
+
+/**
+ * An app icon, at the size the row asks for.
+ *
+ * `size` is the **tile**, not the glyph inside it. It used to be the glyph, so
+ * the tile stayed 34px from CSS while the thing in it moved — a caller asking
+ * for 22 got a 22px logo floating in a 34px box, and every screen had to know
+ * that to line anything up.
+ *
+ * A finished app icon fills the tile edge to edge and is clipped to its corner
+ * radius; a glyph on transparency sits inset with room to breathe. That
+ * distinction is the whole difference between a list of icons that looks placed
+ * and one that looks pasted.
+ */
+export const ProviderMark = ({ provider, size = 34 }: { provider: Provider; size?: number }) => {
+  const meta = PROVIDER_META[provider]
+  const glyph = Math.round(size * GLYPH_SHARE)
+  return (
+    <span
+      className="ws-app"
+      aria-hidden
+      data-plain={meta.mark || meta.asset ? 'true' : undefined}
+      data-fill={meta.fill ? 'true' : undefined}
+      style={{ ['--ws-app' as string]: `${size}px` }}
+    >
+      {meta.mark
+        ? meta.mark(glyph)
+        : meta.asset
+          ? (
+            <img
+              src={meta.asset}
+              alt=""
+              loading="lazy"
+              decoding="async"
+              style={meta.fill
+                ? { width: '100%', height: '100%', display: 'block' }
+                : { width: glyph, height: glyph, display: 'block' }}
+            />
+          )
+          : (
+            /* Only reached by a provider with no artwork. Kept so adding one to
+               `Provider` cannot render an empty square while its file is found. */
+            <span
+              className="ws-app-l"
+              style={{ color: meta.ink, background: meta.tint, fontSize: Math.round(size * 0.44) }}
+            >
+              {meta.short}
+            </span>
+          )}
+    </span>
+  )
+}
+
+/**
+ * Which app a tool belongs to, from the name the tool already carries.
+ *
+ * A permission matrix is fifteen rows of "Google Docs", "Google Sheets", "Lark
+ * Task", "Zoho CRM" — read as text it is a wall, and the thing somebody is
+ * actually looking for is "the Google ones". The snapshot has no provider
+ * field, so this reads the leading word, which is how every tool in the
+ * registry is named.
+ *
+ * Deliberately returns null rather than guessing: an unknown tool gets no mark
+ * instead of somebody else's logo, and the row still reads.
+ */
+const TOOL_PREFIX: Record<string, Provider> = {
+  google: 'google_workspace',
+  gmail: 'google_workspace',
+  lark: 'lark',
+  zoho: 'zoho',
+  canva: 'canva',
+  airtable: 'airtable',
+  aitable: 'aitable',
+}
+
+export const toolProvider = (toolName: string): Provider | null =>
+  TOOL_PREFIX[toolName.trim().split(/[\s_-]/)[0]?.toLowerCase() ?? ''] ?? null
+
+/**
+ * Third-party apps that carry real artwork but are not in `Provider`.
+ *
+ * Shopify is company-owned and reaches the app through its own hook; Semrush is
+ * a tool grant with no connection object at all. Both are somebody else's
+ * product with a published mark, so both get it.
+ */
+const TOOL_ASSET: Array<{ match: string; asset: string; short: string; tint: string; ink: string; fill?: boolean }> = [
+  { match: 'shopify', asset: '/brand/shopify.png', short: 'S', tint: '#008060', ink: '#FFFFFF', fill: true },
+  { match: 'semrush', asset: '/brand/semrush.png', short: 'Se', tint: '#FF642D', ink: '#FFFFFF' },
+]
+
+/**
+ * Divo's own capabilities, which belong to no third party.
+ *
+ * These were left blank on the grounds that inventing a logo would imply an
+ * integration that does not exist — true, but a blank in a column of marks
+ * reads as a row that failed to load rather than as one that has nothing to
+ * load. A glyph from Divo's own icon set says what the tool does without
+ * borrowing anybody's brand.
+ */
+const TOOL_GLYPH: Array<{ match: string; icon: LucideIcon }> = [
+  { match: 'web search', icon: Globe },
+  { match: 'scheduled workflows', icon: CalendarClock },
+  { match: 'oms site', icon: Boxes },
+  { match: 'secure data export', icon: FileDown },
+  { match: 'mail ops', icon: Inbox },
+  { match: 'divo knowledge', icon: Library },
+]
+
+/** A tool's app mark, at the size a table row can carry. */
+export const ToolMark = ({ toolName }: { toolName: string }) => {
+  const key = toolName.trim().toLowerCase()
+  const provider = toolProvider(toolName)
+  if (provider) {
+    return <span className="ws-toolmark"><ProviderMark provider={provider} size={24} /></span>
+  }
+
+  const asset = TOOL_ASSET.find((a) => key.startsWith(a.match))
+  if (asset) {
+    return (
+      <span className="ws-toolmark">
+        <AppMark
+          short={asset.short}
+          asset={asset.asset}
+          {...(asset.fill ? { fill: true } : {})}
+          tint={asset.tint}
+          ink={asset.ink}
+          size={24}
+        />
+      </span>
+    )
+  }
+
+  const own = TOOL_GLYPH.find((g) => key.startsWith(g.match))
+  if (own) {
+    return (
+      <span className="ws-toolmark">
+        <span className="ws-app ws-app-own" aria-hidden style={{ ['--ws-app' as string]: '24px' }}>
+          <own.icon size={14} />
+        </span>
+      </span>
+    )
+  }
+
+  // A tool nobody has claimed yet still holds the column, so a name added to the
+  // registry tomorrow does not shift every row left until somebody maps it.
+  return <span className="ws-toolmark" aria-hidden />
+}
 
 export const providerName = (p: Provider) => PROVIDER_META[p].name
 

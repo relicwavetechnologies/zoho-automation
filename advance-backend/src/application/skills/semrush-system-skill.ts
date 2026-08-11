@@ -27,9 +27,6 @@ for browser automation, curl, or a local API key instead.
 - Where a domain stands overall → \`domain_overview\`.
 - Where a keyword ranked and how it moved → \`keyword_position_trend\`.
 
-Preflight the exact proposed call first. Preflight verifies configuration and
-operation support; it retrieves no data.
-
 Show one main table in chat. You may offer one follow-up, such as "Want domain
 overview detail for any of these?" Add further Semrush calls only after the
 member asks in the same thread.
@@ -71,22 +68,46 @@ and can be described as ranking without earning clicks.
 The same distinction applies to backlinks. When \`coverage.missingTargets\` names
 a target, that is no provider data, not zero.
 
-Counts come from the rows, never from memory. Before writing how many countries
-had zero traffic, count the returned rows whose \`Organic Traffic\` is 0.
+## Counts come from \`insights\`
+
+Never from memory, and never by tallying the table. Every result carries
+\`insights\`, counted by the backend from the same rows the run returned.
+
+A \`domain_overview\` result answers "how many countries", "how much traffic",
+"how concentrated" and "which are the biggest markets" from
+\`countriesReturned\`, \`countriesWithTraffic\`, \`countriesWithZeroTraffic\`,
+\`totalOrganicTraffic\`, \`countriesForEightyPercentOfTraffic\`, \`tiers\` and
+\`topCountries\`. Quote those fields.
+
+A \`backlinks_comparison\` result carries \`insights.ranking\`: every target
+numbered 1..N, strongest authority first, with
+\`insights.targetsWithoutProviderData\` naming the ones Semrush had no report
+for. Walk that list when you write the answer and **report every position** —
+eleven sites were once described as ten, and every number in that answer was
+correct, which is why nobody caught it. Targets with no report rank last with
+null metrics; never present one as an authority score of 0 or as the weakest
+site.
+
+Counting the preview by eye is what these fields replaced: the same run was
+reported as 22 zero-traffic countries and then 23, and the preview stops at 25
+rows, so tallying it undercounts a longer run. If a number you want is not in
+\`insights\`, say what you can support rather than deriving it.
 
 ## Reporting
 
-The structured preview holds at most 25 rows. Summarize the useful evidence and
-never pull bulk rows through model context. Treat a continuation as incomplete
-coverage: \`partial\` means Semrush has another page, so say that rather than
-presenting the preview as the whole picture. \`empty\` means the request was
-valid and Semrush had no matching coverage. On \`blocked\` or an invocation
-error, say whether configuration, permission, unsupported capability, or
-provider availability stopped the lookup, and never invent the missing data.
+The structured direct preview holds at most 25 rows. For a complete artifact of
+a supported operation, use the native \`divo-python-automation\` workflow: its
+protected local-file call receives every row Semrush returned for that one
+bounded report. These three operations do not expose a cursor, so do not invent
+pagination or repeat the same report to chase more rows. \`empty\` means the
+request was valid and Semrush had no matching coverage. On \`blocked\` or an
+invocation error, say whether configuration, permission, unsupported
+capability, or provider availability stopped the lookup, and never invent the
+missing data.
 
-If the member asks for something outside these three operations — a backlink
-export, for instance — say it is not available through Divo Semrush yet. Never
-substitute one report for another.`,
+If the member asks for a report outside these three operations — individual
+backlink rows, for instance — say it is not available through Divo Semrush yet.
+Never substitute one report for another.`,
   toolIds: ['semrush'],
   tags: ['divo', 'seo', 'semrush', 'organic', 'rankings', 'domain'],
   aliases: ['semrush', 'seo research', 'organic rankings', 'domain overview'],

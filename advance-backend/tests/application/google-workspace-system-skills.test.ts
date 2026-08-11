@@ -4,7 +4,10 @@ import {
   GOOGLE_WORKSPACE_SYSTEM_SKILLS,
   provisionGoogleWorkspaceSystemSkills,
 } from '../../src/application/skills/google-workspace-system-skills';
-import { GOOGLE_WORKSPACE_TOOL_IDS } from '../../src/application/google/google-workspace-mcp-manifest';
+import {
+  GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT,
+  GOOGLE_WORKSPACE_TOOL_IDS,
+} from '../../src/application/google/google-workspace-mcp-manifest';
 import {
   GOVERNED_DIRECT_ACTION_CRITERION,
   GOVERNED_LOCAL_WORKFLOW_CRITERION,
@@ -43,6 +46,8 @@ describe('Google Workspace system skills', () => {
       GOOGLE_WORKSPACE_TOOL_IDS,
     );
     assert.equal(GOOGLE_WORKSPACE_SYSTEM_SKILLS.length, 11);
+    assert.match(GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance, /OAuth bearer token/);
+    assert.match(GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance, /never send identity fields such as user_google_email/);
     for (const skill of GOOGLE_WORKSPACE_SYSTEM_SKILLS) {
       assert.match(skill.markdown, /Never call Google directly from Bash/);
       assert.match(skill.markdown, /credential-free `divo-local`/);
@@ -50,23 +55,31 @@ describe('Google Workspace system skills', () => {
       assert.match(skill.markdown, new RegExp(GOVERNED_LOCAL_WORKFLOW_CRITERION));
       assert.match(skill.markdown, /governed Divo wrapper, not a Google client/);
       assert.doesNotMatch(skill.markdown, /start_google_auth/);
-      assert.match(skill.markdown, /OAuth bearer token/);
+      /*
+       * The auth contract — OAuth bearer token, never send user_google_email,
+       * no sidecar-local paths in native input — is one constant,
+       * GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance. Every product skill
+       * pasted it as a numbered step while the googleWorkspace tool already
+       * emits the same constant in its `input` parameterDoc, so eleven copies
+       * shipped alongside the original. Asserted below against the tool.
+       */
+      assert.doesNotMatch(skill.markdown, /OAuth bearer token|user_google_email/);
       assert.match(skill.markdown, /result advisory.*level: "required"/);
-      assert.match(skill.markdown, /no Google account is accessible/);
-      assert.match(skill.markdown, /loading this skill has not sent a card/);
-      assert.match(skill.markdown, /Invoke the registered Divo .* capability exactly once/);
-      assert.match(skill.markdown, /Call `divo_connections` only when/);
+      assert.match(skill.markdown, /If no account is eligible/);
+      assert.match(skill.markdown, /invoke the registered Divo .* capability exactly once/i);
+      assert.match(skill.markdown, /Do not call `divo_connections` before ordinary Google work/);
+      assert.match(skill.markdown, /Omit `connectionId` unless/);
       assert.doesNotMatch(skill.markdown, /`call_tool`|`divo_gateway`/);
-      assert.match(skill.markdown, /perform that describe inside the same persistent Python file through `divo-local`/);
-      assert.match(skill.markdown, /never describe through the registered tool first and then repeat it in the script/);
+      // One describe, on whichever path the work is running. Doing it through
+      // the registered tool and again inside the script pays for it twice.
+      assert.match(skill.markdown, /Never describe through the registered tool and then repeat the describe inside the script/);
       assert.match(skill.markdown, /google_workspace_authorization_pending/);
-      assert.match(skill.markdown, /Never invent a Lark operation/);
       assert.doesNotMatch(skill.markdown, /Divo (injects|derives) user_google_email/);
     }
     const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((skill) => skill.slug === 'google-sheets')!;
     assert.match(sheets.markdown, /manage_sheet_data_validation/);
     assert.match(sheets.markdown, /frozen_row_count/);
-    assert.match(sheets.markdown, /Keep `connectionId` inside that argument object/);
+    assert.match(sheets.markdown, /Include `connectionId` only after an explicit account choice/);
     // A write that acknowledges without `updatedRows` must not become a
     // zero-row claim. Matched on the concept, not the sentence.
     assert.match(sheets.markdown, /acknowledgement under `data\.result`/);
@@ -74,6 +87,10 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /missing `updatedRows` field into a zero-row claim/i);
     assert.match(sheets.markdown, /`get_spreadsheet_info` returns machine-readable `spreadsheetId`/);
     assert.match(sheets.markdown, /Never parse or inspect its compatibility prose in\s+`data\.result`/);
+    assert.match(sheets.markdown, /derive an explicit A1 range\s+from the widest row/s);
+    assert.match(sheets.markdown, /resize before writing when the header plus data will not fit/);
+    assert.match(sheets.markdown, /custom number-format pattern with its required number-format type/);
+    assert.match(sheets.markdown, /displayed numbers with grouping separators/);
     assert(sheets.aliases.includes('dropdown'));
     assert(sheets.aliases.includes('google sheet url'));
     assert(sheets.aliases.includes('drive.google.com/file'));
@@ -140,7 +157,7 @@ describe('Google Workspace system skills', () => {
     assert.doesNotMatch(sheets.markdown, /"column_sizes":|"nativeTool":"format_sheet_range"/);
     assert.match(sheets.markdown, /"action":"set","ranges":\["Sheet1!D2:D100"\]/);
     assert.match(sheets.markdown, /never nest formatting under `cell_format`/i);
-    assert.match(sheets.markdown, /report that feature\s+partial instead of claiming it was applied/s);
+    assert.match(sheets.markdown, /report that feature partial instead of\s+claiming it was applied/s);
     assert.match(sheets.markdown, /failed,\s+rate-limited, incomplete, or missing read-back cannot be replaced/s);
   });
 
@@ -152,7 +169,9 @@ describe('Google Workspace system skills', () => {
         'draft_gmail_message',
         'After an ambiguous mutation failure',
         'Newsletter cleanup',
-        'tools.preflight',
+        // Not `tools.preflight` — that is the internal gateway op. Pi exposes
+        // it to the model as the typed tool `divo_preflight`.
+        'divo_preflight',
         'googleGmail:create',
         'number of search candidates separately from the number classified as newsletters',
         'Hard bounded latest-thread contract',
@@ -173,7 +192,10 @@ describe('Google Workspace system skills', () => {
         'manage_event',
         'resolved date and timezone',
         'avoid duplicate meetings',
-        'Empty or placeholder event input is not a preflight',
+        // `divo_preflight` states in its own promptGuidelines that a
+        // placeholder input validates nothing; the skill keeps the part that
+        // is specific to calendar — build the complete event first.
+        'pass that exact invocation to `divo_preflight`',
       ],
       'google-docs': [
         'create_doc',

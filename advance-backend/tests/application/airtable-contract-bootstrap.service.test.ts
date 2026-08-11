@@ -23,7 +23,10 @@ const connection = {
 
 const LIST_RECORDS_SCHEMA = {
   type: 'object',
-  properties: { filters: { type: 'object' } },
+  properties: {
+    filters: { type: 'object' },
+    pageSize: { type: 'number', maximum: 8_000 },
+  },
 } as const;
 
 function resolverReturning(describeTool: (name: string) => Promise<unknown>) {
@@ -81,9 +84,16 @@ describe('Airtable work-contract bootstrap', () => {
     assert.deepEqual(listRecords, {
       toolId: 'airtableRecords',
       nativeTool: 'list_records_for_table',
-      description: 'List records',
-      inputSchema: LIST_RECORDS_SCHEMA,
+      description: 'List records Divo returns record values under records[].cellValuesByFieldId, the exact filtered count at metadata.totalRecordCount, and continuation at nextCursor when present. Direct calls are previews; use the same call through divo-local for protected file pages.',
+      inputSchema: {
+        ...LIST_RECORDS_SCHEMA,
+        properties: {
+          ...LIST_RECORDS_SCHEMA.properties,
+          pageSize: { type: 'number', maximum: 200 },
+        },
+      },
     });
+    assert.equal(LIST_RECORDS_SCHEMA.properties.pageSize.maximum, 8_000, 'provider schema is not mutated');
   });
 
   it('reports operations as unavailable rather than inventing a schema', async () => {

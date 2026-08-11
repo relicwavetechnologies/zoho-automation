@@ -1,6 +1,7 @@
 import type {
   AccessibleConnection,
   ConnectionAccess,
+  ConnectionOwnerType,
 } from './connection-registry.port';
 
 const ACCESS_RANK: Readonly<Record<ConnectionAccess, number>> = {
@@ -54,6 +55,11 @@ export function selectAccessibleConnection(input: {
   readonly filteredOut?: readonly AccessibleConnection[];
   readonly connectionId?: string;
   readonly minimumAccess: Exclude<ConnectionAccess, 'admin'>;
+  /**
+   * Prefer this ownership class only when the caller did not name an account.
+   * If none qualify, ordinary ambiguity/selection still applies.
+   */
+  readonly preferredOwnerType?: ConnectionOwnerType;
 }): AccessibleConnectionSelection {
   const eligible = input.connections.filter(
     (connection) => ACCESS_RANK[connection.access] >= ACCESS_RANK[input.minimumAccess],
@@ -79,8 +85,12 @@ export function selectAccessibleConnection(input: {
       accessible: eligible,
     };
   }
-  if (eligible.length === 1) return { status: 'selected', connection: eligible[0]! };
-  if (eligible.length > 1) return { status: 'choose_connection', connections: eligible };
+  const preferred = input.preferredOwnerType
+    ? eligible.filter(connection => connection.ownerType === input.preferredOwnerType)
+    : [];
+  const candidates = preferred.length > 0 ? preferred : eligible;
+  if (candidates.length === 1) return { status: 'selected', connection: candidates[0]! };
+  if (candidates.length > 1) return { status: 'choose_connection', connections: candidates };
   return {
     status: 'unavailable',
     reason: reachable.length > 0 ? 'insufficient_access' : 'none_accessible',
@@ -94,6 +104,7 @@ export function publicConnectionChoices(connections: readonly AccessibleConnecti
     label: connection.label,
     ...(connection.accountEmail ? { accountEmail: connection.accountEmail } : {}),
     ...(connection.accountName ? { accountName: connection.accountName } : {}),
+    ownerType: connection.ownerType,
     access: connection.access,
   }));
 }

@@ -16,13 +16,9 @@
  *     build_lead_report      — lead funnel by source/status
  *     build_deal_forecast    — deals closing within a date range
  *
- * Script mode:
- *   Add a `script` parameter to any list operation to auto-escalate to exhaustive
- *   fetch + VM sandbox (same pattern as Books tool).
- *
- * Token safety:
+ * Result safety:
  *   - CRUD ops return at most `limit` records (default 25, max 200)
- *   - Reports return summary + top-N inline; full dataset → CSV link
+ *   - Reports return a summary plus a bounded inline sample
  */
 
 import { z } from 'zod';
@@ -34,37 +30,53 @@ import type { ToolActionGroup }            from '../../../domain/permissions/too
 import { asToolId }                        from '../../../shared/ids';
 import type { ZohoCrmOps }                 from '../../zoho/zoho-crm-ops';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
-import type { ZohoCrmPaginatedClient, ZohoCrmModule } from '../../../infrastructure/zoho/zoho-crm-paginated.client';
-import { getCrmModuleSchema, injectCrmSyntheticFields, toCrmSchemaHint } from '../../../infrastructure/zoho/zoho-crm-schema.cache';
-import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
+import type { ZohoCrmPaginatedClient } from '../../../infrastructure/zoho/zoho-crm-paginated.client';
 import { parseDateFilter } from '../../zoho/zoho-filter.utils';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
 
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
-const Schema = z.object({
-  connectionId: z.string().uuid(),
-  op: z.enum([
-    'list', 'get', 'search', 'search_text', 'create', 'update', 'delete',
-    'build_pipeline_summary', 'build_lead_report', 'build_deal_forecast',
-  ]),
+const connectionField = { connectionId: z.string().uuid().optional() } as const;
+const moduleField = { module: z.string().min(1) } as const;
+const pageField = {
+  limit: z.number().int().min(1).max(200).optional(),
+  page: z.number().int().min(1).max(10).optional(),
+} as const;
 
-  module:    z.string().optional(),
-  recordId:  z.string().optional(),
-  criteria:  z.string().optional(),
-  query:     z.string().optional(),
-  fields:    z.record(z.unknown()).optional(),
-  limit:     z.number().int().min(1).max(200).optional(),
-  page:      z.number().int().min(1).max(10).optional(),
+const ListSchema = z.object({
+  ...connectionField,
+  ...moduleField,
+  ...pageField,
+  op: z.literal('list'),
   pageToken: z.string().min(1).max(2048).optional(),
-  sortBy:    z.string().optional(),
+  sortBy: z.string().optional(),
   sortOrder: z.enum(['asc', 'desc']).optional(),
+}).strict();
 
-  closingFrom: z.string().optional(),
-  closingTo:   z.string().optional(),
-
-  script:     z.string().optional(),
-  scriptArgs: z.record(z.unknown()).optional(),
+const Schema = z.discriminatedUnion('op', [
+  ListSchema,
+  z.object({ ...connectionField, ...moduleField, op: z.literal('get'), recordId: z.string().min(1) }).strict(),
+  z.object({ ...connectionField, ...moduleField, ...pageField, op: z.literal('search'), criteria: z.string().min(1) }).strict(),
+  z.object({ ...connectionField, ...moduleField, ...pageField, op: z.literal('search_text'), query: z.string().min(1) }).strict(),
+  z.object({ ...connectionField, ...moduleField, op: z.literal('create'), fields: z.record(z.unknown()) }).strict(),
+  z.object({ ...connectionField, ...moduleField, op: z.literal('update'), recordId: z.string().min(1), fields: z.record(z.unknown()) }).strict(),
+  z.object({ ...connectionField, ...moduleField, op: z.literal('delete'), recordId: z.string().min(1) }).strict(),
+  z.object({ ...connectionField, op: z.literal('build_pipeline_summary') }).strict(),
+  z.object({ ...connectionField, op: z.literal('build_lead_report') }).strict(),
+  z.object({
+    ...connectionField,
+    op: z.literal('build_deal_forecast'),
+    closingFrom: z.string().optional(),
+    closingTo: z.string().optional(),
+  }).strict(),
+]).superRefine((value, ctx) => {
+  if (value.op === 'list' && value.page !== undefined && value.pageToken !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['pageToken'],
+      message: 'pageToken cannot be combined with page',
+    });
+  }
 });
 
 type Args = z.infer<typeof Schema>;
@@ -80,23 +92,9 @@ const ResultSchema = z.object({
   page:            z.number().int().positive().optional(),
   nextPage:        z.number().int().positive().optional(),
   nextPageToken:   z.string().optional(),
-  rowCount:        z.number().optional(),
-  totalFetched:    z.number().optional(),
-  moduleSchema:    z.unknown().optional(),
-  sourceTruncated: z.boolean().optional(),
 });
 
 type Res = z.infer<typeof ResultSchema>;
-
-// ─── Client port (simple per-request client, for backwards compat) ────────────
-
-export interface ZohoCrmClientPort {
-  searchRecords(module: string, query: string, limit?: number): Promise<unknown[]>;
-  getRecord(module: string, recordId: string): Promise<unknown>;
-  createRecord(module: string, fields: Record<string, unknown>): Promise<{ recordId: string }>;
-  updateRecord(module: string, recordId: string, fields: Record<string, unknown>): Promise<void>;
-  deleteRecord(module: string, recordId: string): Promise<void>;
-}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -105,7 +103,11 @@ const readOps = new Set<Args['op']>([
   'build_pipeline_summary', 'build_lead_report', 'build_deal_forecast',
 ]);
 
-const INLINE_SCRIPT_LIMIT = 50;
+export const zohoCrmActionFor = (op: string): ToolActionGroup =>
+  readOps.has(op as Args['op']) ? 'read'
+    : op === 'create' ? 'create'
+      : op === 'update' ? 'update'
+        : 'delete';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -126,99 +128,9 @@ function formatCrmResult(value: unknown): unknown {
   return formatted;
 }
 
-// ─── Script-mode handler ──────────────────────────────────────────────────────
-
-async function executeScriptMode(
-  args: Args,
-  ctx: ToolExecutionContext,
-  scriptDeps: {
-    crmClient:  ZohoCrmPaginatedClient;
-    requesterEmail?: string | undefined;
-  },
-): Promise<Result<Res, ToolError>> {
-  const { companyId } = ctx.runContext;
-  const moduleName = args.module ?? 'Deals';
-
-  ctx.onProgress?.(`Fetching ${moduleName} from Zoho CRM…`);
-
-  let fetchResult: Awaited<ReturnType<typeof scriptDeps.crmClient.listAllRecords>>;
-  try {
-    fetchResult = await scriptDeps.crmClient.listAllRecords({
-      companyId,
-      connectionId: args.connectionId,
-      userId: ctx.runContext.userId,
-      module: moduleName,
-      ...(args.sortBy ? { sortBy: args.sortBy } : {}),
-      ...(args.sortOrder ? { sortOrder: args.sortOrder } : {}),
-    });
-  } catch (e) {
-    return err(new ToolError({
-      toolId: 'zohoCrm', reason: 'upstream_failure',
-      message: `Failed to fetch ${moduleName}: ${e instanceof Error ? e.message : String(e)}`,
-    }));
-  }
-
-  const schema = getCrmModuleSchema(moduleName);
-  const scopedRecords = scriptDeps.requesterEmail
-    ? filterZohoRecordsByEmail(fetchResult.items, scriptDeps.requesterEmail)
-    : fetchResult.items;
-  const items = injectCrmSyntheticFields(scopedRecords, schema);
-  const schemaHint = toCrmSchemaHint(schema, items[0]);
-
-  ctx.onProgress?.(`Processing ${items.length} ${moduleName}…`);
-
-  ctx.logger.info('zohoCrm.script_mode.run', {
-    companyId, module: moduleName,
-    recordsFetched: items.length, sourceRecordsFetched: fetchResult.items.length, truncated: fetchResult.truncated,
-  });
-
-  let sandboxResult;
-  try {
-    sandboxResult = runInSandbox({
-      script: args.script!,
-      data: items,
-      args: args.scriptArgs,
-      schema: schemaHint,
-    });
-  } catch (e) {
-    if (e instanceof SandboxTimeoutError || e instanceof SandboxScriptError ||
-        e instanceof SandboxInputTooLargeError || e instanceof SandboxSerializationError) {
-      return err(new ToolError({ toolId: 'zohoCrm', reason: 'upstream_failure', message: e.message }));
-    }
-    throw e;
-  }
-
-  const resultArray = sandboxResult.isArray ? sandboxResult.result as unknown[] : null;
-
-  ctx.onProgress?.(`Analysis complete — ${sandboxResult.rowCount ?? 1} results from ${items.length} records`);
-
-  const inlineData = resultArray && resultArray.length > INLINE_SCRIPT_LIMIT
-    ? resultArray.slice(0, INLINE_SCRIPT_LIMIT) : sandboxResult.result;
-
-  const parts: string[] = [`Fetched ${items.length} ${moduleName} records from Zoho CRM.`];
-  if (fetchResult.truncated) {
-    parts.push('DATA INCOMPLETE - pagination limit reached. Totals may be understated.');
-  }
-  if (resultArray) {
-    parts.push(`Processed into ${resultArray.length} rows.`);
-    if (resultArray.length > INLINE_SCRIPT_LIMIT) parts.push(`Showing first ${INLINE_SCRIPT_LIMIT} inline.`);
-  }
-
-  return ok({
-    success: true,
-    data: inlineData,
-    message: parts.join(' '),
-    rowCount: sandboxResult.rowCount,
-    totalFetched: items.length,
-    moduleSchema: schemaHint,
-    sourceTruncated: fetchResult.truncated,
-  });
-}
-
 // ─── Tool factory ─────────────────────────────────────────────────────────────
 
 export const createZohoCrmTool = (deps: {
-  getClient:  (companyId: string, userId: string, connectionId?: string) => Promise<ZohoCrmClientPort | null>;
   crmClient:  ZohoCrmPaginatedClient;
   crmOps:     ZohoCrmOps;
 }): Tool<Args, Res> => ({
@@ -232,7 +144,6 @@ export const createZohoCrmTool = (deps: {
     'Access Zoho CRM: list, get, search, create, update, delete records across Leads, Contacts, Accounts, Deals, Tasks.',
     'Search uses Zoho criteria syntax: (Field:operator:value) with and/or.',
     'Reports: build_pipeline_summary (deals by stage), build_lead_report (funnel by source), build_deal_forecast (closing deals).',
-    'For data analysis, add a `script` parameter to the list operation — fetches ALL records and runs JS in sandbox.',
     'For a complete list workflow, page from a governed local script using page/nextPage, then pageToken when returned.',
   ].join(' '),
 
@@ -247,19 +158,13 @@ export const createZohoCrmTool = (deps: {
     'query: free-text search (for search_text op) — searches name/email fields',
     'fields: record fields for create/update',
     'limit: max records to return (1-200, default 25 direct or 200 in a local-file workflow)',
-    'page: list page 1-10. When hasMore=true, call the next page; after page 10 use nextPageToken.',
+    'page: list/search page 1-10. When hasMore=true, call nextPage; list switches to nextPageToken when Zoho returns one.',
     'pageToken: opaque continuation returned by a prior list call; do not combine with page.',
     'sortBy: field name to sort by (e.g., Created_Time, Amount)',
     'sortOrder: asc|desc',
     '',
     'REPORT PARAMS:',
     'build_deal_forecast: closingFrom, closingTo (ISO dates or natural: "this month", "this quarter")',
-    '',
-    'SCRIPT MODE (list op only):',
-    'script: JS code. Receives `data` (array) and `args` (object). Must return a value.',
-    '  Synthetic fields: _amount (primary amount), _date (primary date), _id, _status, _owner (resolved name)',
-    '  Example: "const g={}; data.forEach(d=>{const s=d._status||\'Unknown\'; if(!g[s])g[s]={stage:s,count:0,total:0}; g[s].count++; g[s].total+=d._amount;}); return Object.values(g).sort((a,b)=>b.total-a.total)"',
-    'scriptArgs: extra parameters available as `args` in the script',
     '',
     'CRM MODULE FIELDS:',
     'Leads: First_Name, Last_Name, Email, Company, Phone, Lead_Source, Lead_Status, Annual_Revenue, Owner',
@@ -270,10 +175,7 @@ export const createZohoCrmTool = (deps: {
   ].join('\n'),
 
   permissionCheck(args, perm) {
-    const action: ToolActionGroup = readOps.has(args.op) ? 'read'
-      : args.op === 'create' ? 'create'
-      : args.op === 'update' ? 'update'
-      : 'delete';
+    const action = zohoCrmActionFor(args.op);
     const allowed = perm.allowedActionsByTool.get(asToolId('zohoCrm'))?.has(action) ?? false;
     return allowed ? ok(action) : err(new PermissionError({ toolId: 'zohoCrm', action, reason: 'not_allowed' }));
   },
@@ -281,8 +183,8 @@ export const createZohoCrmTool = (deps: {
   async execute(args: Args, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     const { companyId, userId } = ctx.runContext;
     const connectionContext = {
-      connectionId: args.connectionId,
       userId,
+      ...(args.connectionId ? { connectionId: args.connectionId } : {}),
     };
     const personalizedScope = ctx.perm.department?.zohoReadScope === 'personalized';
     const requesterEmail = normalizedEmail(ctx.runContext.requesterEmail);
@@ -366,21 +268,6 @@ export const createZohoCrmTool = (deps: {
       }
     }
 
-    // ── Script mode (auto-escalate list to exhaustive fetch + sandbox) ─────────
-    if (args.script && args.op === 'list') {
-      return executeScriptMode(args, ctx, {
-        crmClient:  deps.crmClient,
-        ...(personalizedScope ? { requesterEmail: requesterEmail! } : {}),
-      });
-    }
-
-    if (args.script) {
-      return err(new ToolError({
-        toolId: 'zohoCrm', reason: 'bad_args',
-        message: 'script is only supported on the list operation, not ' + args.op,
-      }));
-    }
-
     // ── CRUD operations via paginated client ──────────────────────────────────
     const mod = args.module;
 
@@ -434,17 +321,21 @@ export const createZohoCrmTool = (deps: {
           const result = await deps.crmClient.searchRecords({
             companyId, ...connectionContext, module: mod,
             criteria: args.criteria,
-            perPage: args.limit ?? 25,
+            perPage: args.limit ?? (ctx.resultAudience === 'local_file' ? 200 : 25),
+            page: args.page ?? 1,
           });
           const items = personalizedScope ? filterZohoRecordsByEmail(result.items, requesterEmail!) : result.items;
+          const sourceTruncated = result.hasMore && (result.page ?? args.page ?? 1) >= 10;
           return ok({
             success: true,
             data: formatCrmResult(items),
             message: items.length > 0
-              ? `Found ${items.length} ${mod} record(s).${result.hasMore ? ' Additional matching records exist, but this search contract has no continuation.' : ''}`
+              ? `Found ${items.length} ${mod} record(s).${sourceTruncated ? ' Zoho search reached its 2,000-record limit.' : ''}`
               : `No ${mod} records matched the search criteria.`,
             hasMore: result.hasMore,
-            ...(result.hasMore ? { truncated: true } : {}),
+            ...(result.page !== undefined ? { page: result.page } : {}),
+            ...(result.hasMore && !sourceTruncated ? { nextPage: (result.page ?? 1) + 1 } : {}),
+            ...(sourceTruncated ? { truncated: true } : {}),
           });
         }
 
@@ -455,17 +346,21 @@ export const createZohoCrmTool = (deps: {
           const result = await deps.crmClient.searchByText({
             companyId, ...connectionContext, module: mod,
             query: args.query,
-            perPage: args.limit ?? 25,
+            perPage: args.limit ?? (ctx.resultAudience === 'local_file' ? 200 : 25),
+            page: args.page ?? 1,
           });
           const items = personalizedScope ? filterZohoRecordsByEmail(result.items, requesterEmail!) : result.items;
+          const sourceTruncated = result.hasMore && (result.page ?? args.page ?? 1) >= 10;
           return ok({
             success: true,
             data: formatCrmResult(items),
             message: items.length > 0
-              ? `Found ${items.length} ${mod} record(s) matching "${args.query}".${result.hasMore ? ' Additional matching records exist, but this search contract has no continuation.' : ''}`
+              ? `Found ${items.length} ${mod} record(s) matching "${args.query}".${sourceTruncated ? ' Zoho search reached its 2,000-record limit.' : ''}`
               : `No ${mod} records found matching "${args.query}".`,
             hasMore: result.hasMore,
-            ...(result.hasMore ? { truncated: true } : {}),
+            ...(result.page !== undefined ? { page: result.page } : {}),
+            ...(result.hasMore && !sourceTruncated ? { nextPage: (result.page ?? 1) + 1 } : {}),
+            ...(sourceTruncated ? { truncated: true } : {}),
           });
         }
 

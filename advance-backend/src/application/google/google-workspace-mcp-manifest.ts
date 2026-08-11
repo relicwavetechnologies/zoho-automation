@@ -333,6 +333,27 @@ const STATIC_ACTIONS: Readonly<Record<string, ToolActionGroup>> = {
   create_version: 'create',
 };
 
+/**
+ * New durable work artifacts belong to the company account by default. This
+ * deliberately excludes mail, calendars, tasks, and edits to existing files.
+ */
+const COMPANY_ARTIFACT_CREATE_TOOLS = new Set([
+  'create_drive_file',
+  'create_drive_folder',
+  'copy_drive_file',
+  'import_to_google_doc',
+  'import_to_google_slides',
+  'import_to_google_sheets',
+  'create_doc',
+  'create_spreadsheet',
+  'create_presentation',
+  'create_form',
+]);
+
+export function prefersCompanyGoogleArtifactAccount(nativeTool: string): boolean {
+  return COMPANY_ARTIFACT_CREATE_TOOLS.has(nativeTool);
+}
+
 const ACTION_DRIVEN_TOOLS = new Set([
   'manage_gmail_label',
   'manage_gmail_filter',

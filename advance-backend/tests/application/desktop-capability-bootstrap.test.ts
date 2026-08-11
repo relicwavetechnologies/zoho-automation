@@ -61,19 +61,17 @@ describe('desktop capability bootstrap', () => {
       { toolId: 'zohoBooks', actions: ['read'] },
       { toolId: 'webSearch', actions: ['read'] },
     ]);
-    // A hint must route the model through the skill that declares the tool. The
-    // gateway refuses a tools.invoke whose skill was not loaded in the same run,
-    // so a hint saying "invoke directly" would send it into a guaranteed refusal.
+    // The recipe is advisory native guidance. Backend RBAC remains the authority.
     assert.ok(bootstrap.routingHints.some(hint =>
       hint.includes('build_overdue_report')
-      && hint.includes('load finance-core-id with divo_skill_view')));
+      && hint.includes('follow the native finance-ops-core recipe')));
     assert.ok(!bootstrap.routingHints.some(hint => hint.includes('invoke webSearch directly')));
 
     // webSearch is permitted here but no visible skill declares it, so it cannot
     // be loaded and must not be advertised as a route.
     assert.ok(!bootstrap.routingHints.some(hint => hint.includes('webSearch')));
     assert.ok(!bootstrap.routingHints.some(hint => hint.includes('zohoCrm')));
-    assert.deepEqual(bootstrap.zohoConnection, { accessibleCount: 0 });
+    assert.deepEqual(bootstrap.zohoConnections, []);
     assert.deepEqual(bootstrap.families.find(family => family.familyId === 'zoho'), {
       familyId: 'zoho',
       displayName: 'Zoho',
@@ -166,7 +164,27 @@ describe('desktop capability bootstrap', () => {
     assert.deepEqual(bootstrap.routingHints, []);
   });
 
-  it('routes explicit Menhood analysis away from Airtable checkpoints', () => {
+  it('preserves every visible Zoho choice for pre-terminal account selection', () => {
+    const bootstrap = buildDesktopCapabilityBootstrap({
+      departmentName: 'Finance',
+      departmentSlug: 'finance',
+      companyRole: 'MEMBER',
+      permission: permission([['zohoCrm', ['read']]]),
+      visibleSkills: [],
+      registryRevision: 1,
+      zohoConnections: [
+        { connectionId: 'zoho-1', label: 'Emiac', access: 'read_only', services: ['books'] },
+        { connectionId: 'zoho-2', label: 'Macobs', access: 'read_only', services: ['crm'] },
+      ],
+    });
+
+    assert.deepEqual(bootstrap.zohoConnections, [
+      { connectionId: 'zoho-1', label: 'Emiac', access: 'read_only', services: ['books'] },
+      { connectionId: 'zoho-2', label: 'Macobs', access: 'read_only', services: ['crm'] },
+    ]);
+  });
+
+  it('routes settled Menhood analysis without hiding the live Airtable path', () => {
     const bootstrap = buildDesktopCapabilityBootstrap({
       departmentName: 'Operations',
       departmentSlug: 'operations',
@@ -185,9 +203,9 @@ describe('desktop capability bootstrap', () => {
     });
 
     assert.ok(bootstrap.routingHints.some(hint =>
-      hint.includes('load menhood-skill-id with divo_skill_view')
-      && hint.includes('invoke menhoodData')
-      && hint.includes('Do not use Airtable Records')));
+      hint.includes('follow the native menhood-data recipe')
+      && hint.includes('use menhoodData for settled analysis')
+      && hint.includes('current/latest or Airtable-only operational fields')));
   });
 
   it('routes a permitted tool through the skill that declares it', () => {
@@ -210,8 +228,7 @@ describe('desktop capability bootstrap', () => {
 
     const hint = bootstrap.routingHints.find(entry => entry.includes('webSearch'));
     assert.ok(hint, 'a declared tool should be routed');
-    // The load step is the whole point: the gateway refuses the invoke otherwise.
-    assert.match(hint, /load web-research-id with divo_skill_view, then invoke webSearch/);
+    assert.match(hint, /follow the native web-research recipe, then invoke webSearch/);
     assert.doesNotMatch(hint, /directly/);
   });
 

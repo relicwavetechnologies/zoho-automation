@@ -61,7 +61,7 @@ describe('Shopify runtime gateway integration', () => {
     const outcome = await executor.executeForRuntime(runtimeInput({ args: { operation: 'sales_summary' } }));
 
     assert.equal(outcome.status, 'invalid_args');
-    assert.match(outcome.message ?? '', /More than one Shopify connection/);
+    assert.match(outcome.message ?? '', /More than one Shopify account/);
     assert.doesNotMatch(outcome.message ?? '', /token|secret|refresh/i);
   });
 
@@ -119,6 +119,7 @@ describe('Shopify runtime gateway integration', () => {
     const executor = new ToolExecutor({
       toolRegistry: registry,
       permissions: {} as never,
+      connectionRegistry: shopifyConnectionRegistry(),
       protectedDataRuns: { observe: async input => { protectedRuns.push(input); } },
       shopifyDataRuns: { record: async input => { shopifyRuns.push(input); } },
       logger: noopLogger,
@@ -200,6 +201,7 @@ describe('Shopify runtime gateway integration', () => {
     const executor = new ToolExecutor({
       toolRegistry: registry,
       permissions: {} as never,
+      connectionRegistry: shopifyConnectionRegistry(),
       protectedDataRuns: { observe: async () => undefined },
       shopifyDataRuns: { record: async () => { throw new Error('stamp unavailable'); } },
       logger: noopLogger,
@@ -252,6 +254,7 @@ describe('Shopify runtime gateway integration', () => {
     const executor = new ToolExecutor({
       toolRegistry: registry,
       permissions: {} as never,
+      connectionRegistry: shopifyConnectionRegistry(),
       protectedDataRuns: { observe: async () => { throw new Error('database unavailable'); } },
       logger: noopLogger,
       clock: { now: () => new Date(), nowMs: () => Date.now() },
@@ -379,6 +382,12 @@ function buildExecutor(input: {
     logger: noopLogger,
     clock: { now: () => new Date(), nowMs: () => Date.now() },
   });
+}
+
+function shopifyConnectionRegistry() {
+  return {
+    listAccessibleShopifyConnections: async () => ok([connection('Store A', connectionId)]),
+  } as never;
 }
 
 function runtimeInput(overrides: Record<string, unknown> = {}) {

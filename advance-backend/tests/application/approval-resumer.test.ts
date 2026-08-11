@@ -69,6 +69,18 @@ function makeExecutableResumer(
   const executor = new ToolExecutor({
     toolRegistry: registry,
     permissions: {} as any,
+    connectionRegistry: {
+      listAccessibleLarkConnections: async () => ok([{
+        connectionId: 'lark-connection-1',
+        provider: 'lark',
+        label: 'Primary Lark',
+        ownerType: 'user',
+        ownerUserId: 'user-1',
+        access: 'read_write',
+        scopes: [],
+        connectedAt: new Date('2026-08-11T00:00:00.000Z'),
+      }]),
+    } as any,
     logger: noopLogger,
     clock: { now: () => new Date(), nowMs: () => Date.now() },
   });

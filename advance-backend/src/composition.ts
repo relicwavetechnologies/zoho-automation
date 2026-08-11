@@ -102,7 +102,6 @@ import {
 } from './shared/ids';
 import { ZohoConnectionRepository } from './infrastructure/zoho/zoho-connection.repository';
 import { ZohoTokenService } from './infrastructure/zoho/zoho-token.service';
-import { ZohoCrmClient } from './infrastructure/zoho/zoho-crm.client';
 import { ZohoBooksPaginatedClient } from './infrastructure/zoho/zoho-books-paginated.client';
 import { ConversationAttachmentService } from './application/conversation-attachments/conversation-attachment.service';
 import { PrismaConversationAttachmentStore } from './infrastructure/persistence/conversation-attachment.repository';
@@ -883,6 +882,7 @@ export async function buildContainer(
     readonly connectionId?: string;
     readonly minimumAccess: 'read_only' | 'read_write';
     readonly requiredScopeGroups: readonly (readonly string[])[];
+    readonly preferredOwnerType?: 'user' | 'company';
     readonly markLastUsed?: boolean;
     readonly abortSignal?: AbortSignal;
   }) {
@@ -904,6 +904,7 @@ export async function buildContainer(
       filteredOut: accessible.value.filter((connection) => !scopeEligible.includes(connection)),
       ...(input.connectionId ? { connectionId: input.connectionId } : {}),
       minimumAccess: input.minimumAccess,
+      ...(input.preferredOwnerType ? { preferredOwnerType: input.preferredOwnerType } : {}),
     });
     if (selection.status === 'choose_connection') {
       return {
@@ -968,6 +969,8 @@ export async function buildContainer(
       return {
         status: 'resolved' as const,
         connection: {
+          connectionId: selectedConnectionId,
+          ownerType: selection.connection.ownerType,
           client: new GoogleWorkspaceGatewayClient(
             token,
             new GoogleWorkspaceMcpClient(
@@ -1431,36 +1434,6 @@ export async function buildContainer(
     logger.child({ service: 'zoho-token' }),
     integrationConnectionRepo,
   );
-
-  async function resolveZohoAuth(
-    companyId: string,
-    userId?: string,
-    connectionId?: string,
-    minimumAccess: 'read_only' | 'read_write' = 'read_only',
-  ): Promise<{ accessToken: string; apiBaseUrl: string } | null> {
-    if ((!connectionId || !userId) && !zohoTokenService.isConfigured()) {
-      logger.warn('zoho.token.not_configured', { companyId });
-      return null;
-    }
-    try {
-      const auth = connectionId && userId
-        ? await zohoTokenService.getValidConnectionAuth({ companyId, userId, connectionId, minimumAccess })
-        : {
-          accessToken: await zohoTokenService.getValidToken(companyId),
-          apiBaseUrl: env.ZOHO_API_BASE_URL.replace(/\/$/, ''),
-        };
-      logger.info('zoho.token.resolved', { companyId, connectionId, hasToken: !!auth.accessToken });
-      return auth;
-    } catch (e) {
-      logger.error('zoho.token.resolve_failed', { companyId, error: e instanceof Error ? e.message : String(e) });
-      return null;
-    }
-  }
-
-  const getZohoCrmClient = async (companyId: string, userId: string, connectionId?: string) => {
-    const auth = await resolveZohoAuth(companyId, userId, connectionId);
-    return auth ? new ZohoCrmClient(auth.accessToken, auth.apiBaseUrl) : null;
-  };
 
   // ── Cloudinary adapter (graceful no-op when credentials absent) ──────────
   const cloudinaryConfig = (
@@ -1995,7 +1968,6 @@ export async function buildContainer(
     toolRegistry.register(tool);
   }
   toolRegistry.register(createZohoCrmTool({
-    getClient:   getZohoCrmClient,
     crmClient:   zohoPaginatedCrmClient,
     crmOps:      zohoCrmOps,
   }));

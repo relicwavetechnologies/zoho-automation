@@ -264,6 +264,52 @@ export function useCaught(limit = 50) {
   return { caught, loading, error, refresh: load }
 }
 
+/**
+ * Every message a rule of yours touched in a window, as bare times.
+ *
+ * Kept apart from `useCaught` because the two answer different questions. The
+ * feed answers "what happened to this message" and carries a subject, a sender
+ * and a rule, which is why the route caps it at a hundred rows. A calendar
+ * answers "when", needs four scalars, and covers a season — and built from the
+ * capped feed it drew ordinary empty squares on days the request never reached.
+ */
+export type MailActivity = {
+  status: string
+  lastError: string | null
+  firstAttemptAt: string
+  deliveredAt: string | null
+}
+
+export function useCaughtActivity(days: number) {
+  const { token } = useAdminAuth()
+  const [activity, setActivity] = useState<MailActivity[]>([])
+  const [truncated, setTruncated] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    if (!token) return
+    try {
+      const data = await api.get<{ activity: MailActivity[]; truncated: boolean }>(
+        `${BASE}/caught/activity?days=${days}`, token, { quiet: true },
+      )
+      setActivity(data.activity ?? [])
+      setTruncated(data.truncated === true)
+      setError(null)
+    } catch {
+      // Carried rather than swallowed: a chart that could not be read and one
+      // with nothing in it look identical, and only one of them means "quiet".
+      setError('This could not be read, so it is blank rather than empty.')
+    } finally {
+      setLoading(false)
+    }
+  }, [token, days])
+
+  useEffect(() => { void load() }, [load])
+
+  return { activity, truncated, loading, error, refresh: load }
+}
+
 /* ── Which mailbox a rule can watch ───────────────────
    Mirrors `MailAutomationConnectionResolution` on the tool side, which is the
    authority on this and already got it right: a rule needs a Google account
@@ -730,8 +776,38 @@ export type MailRuleCreateState = {
    * Not an error, and kept apart from one for that reason: nothing the member
    * typed is wrong, no rule exists yet, and the only thing left to do is wait.
    */
-  pending: { approverName: string; destination: string; reused: boolean } | null
+  pending: MailRulePending | null
 }
+
+/**
+ * A forward waiting on a named person, and where they will find it.
+ *
+ * `deliveredVia` is the server's answer, not a guess: whether a Lark card went
+ * out depends on the approver having a Lark account and on the deployment
+ * having card delivery switched on, and this screen can see neither. Telling
+ * someone their manager was asked in Lark when no card was sent sends them to
+ * look somewhere empty, which is how a working approval gets reported as a
+ * broken one.
+ */
+export type MailRulePending = {
+  approverName: string
+  destination: string
+  reused: boolean
+  deliveredVia: 'lark' | 'desktop'
+}
+
+/** The pending payload as it arrives, with the server's own wording preserved. */
+const readPending = (
+  data: { approverName?: string; destination?: string; reused?: boolean; deliveredVia?: string },
+  fallbackDestination: string,
+): MailRulePending => ({
+  approverName: data.approverName ?? 'your manager',
+  destination: data.destination ?? fallbackDestination,
+  reused: data.reused === true,
+  // Anything unrecognised reads as the inbox: that is the surface every
+  // approver has, so it is the answer that stays true.
+  deliveredVia: data.deliveredVia === 'lark' ? 'lark' : 'desktop',
+})
 
 /**
  * Turning a rule on has three endings, not two.
@@ -752,7 +828,7 @@ export type MailRuleCreateOutcome =
    * deliveries.
    */
   | { kind: 'created'; ruleId: string; existing: 'active' | 'paused' | 'archived' | null }
-  | { kind: 'pending_approval'; approverName: string; destination: string; reused: boolean }
+  | ({ kind: 'pending_approval' } & MailRulePending)
   | { kind: 'refused' }
 
 export function useCreateMailRule() {
@@ -772,6 +848,7 @@ export function useCreateMailRule() {
         approverName?: string
         destination?: string
         reused?: boolean
+        deliveredVia?: string
         existing?: 'active' | 'paused' | 'archived' | null
       }>(`${BASE}/rules`, draft, token, { quiet: true })
 
@@ -779,12 +856,10 @@ export function useCreateMailRule() {
       // the payload and nothing else, and the payload already says which of the
       // two endings this is.
       if (data.status === 'pending_approval') {
-        const pending = {
-          approverName: data.approverName ?? 'your manager',
-          destination: data.destination
-            ?? (draft.destination.type === 'email' ? draft.destination.email : ''),
-          reused: data.reused === true,
-        }
+        const pending = readPending(
+          data,
+          draft.destination.type === 'email' ? draft.destination.email : '',
+        )
         setState({ saving: false, error: null, code: 'pending_approval', pending })
         return { kind: 'pending_approval', ...pending }
       }
@@ -830,7 +905,7 @@ export type MailRuleUpdateOutcome =
    */
   | { kind: 'saved'; ruleId: string; resumed: boolean }
   /** The edit changed the destination to somewhere outside the company. */
-  | { kind: 'pending_approval'; approverName: string; destination: string; reused: boolean }
+  | ({ kind: 'pending_approval' } & MailRulePending)
   /**
    * These conditions already belong to another rule on this mailbox.
    *
@@ -852,7 +927,7 @@ export type MailRuleUpdateOutcome =
 export type MailRuleUpdateState = {
   saving: boolean
   error: string | null
-  pending: { approverName: string; destination: string; reused: boolean } | null
+  pending: MailRulePending | null
   duplicate: { ruleId: string; name: string; archived: boolean; message: string } | null
 }
 
@@ -876,18 +951,17 @@ export function useUpdateMailRule() {
         approverName?: string
         destination?: string
         reused?: boolean
+        deliveredVia?: string
         conflictRuleId?: string
         conflictRuleName?: string
         conflictArchived?: boolean
       }>(`${BASE}/rules/${ruleId}`, draft, token, { quiet: true })
 
       if (data.status === 'pending_approval') {
-        const pending = {
-          approverName: data.approverName ?? 'your manager',
-          destination: data.destination
-            ?? (draft.destination.type === 'email' ? draft.destination.email : ''),
-          reused: data.reused === true,
-        }
+        const pending = readPending(
+          data,
+          draft.destination.type === 'email' ? draft.destination.email : '',
+        )
         setState({ saving: false, error: null, pending, duplicate: null })
         return { kind: 'pending_approval', ...pending }
       }
@@ -1039,6 +1113,16 @@ export type MailRulePreview = {
   consideredCount: number
   matchedCount: number
   bodyUnavailableCount: number
+  /**
+   * The oldest message the replay reached, so a count can be read as a span.
+   *
+   * "Read 11 · none matched" is true and reads as a broken rule. Eleven may be
+   * every message Divo has ever recorded here — the conditions could be perfect
+   * and there is simply nothing to catch yet.
+   */
+  coversSince?: string
+  /** At the ceiling, "none matched" is about the recent past, not the mailbox. */
+  truncated?: boolean
   matched: Array<{ eventId: string; occurredAt: string; from: string; subject: string }>
 }
 

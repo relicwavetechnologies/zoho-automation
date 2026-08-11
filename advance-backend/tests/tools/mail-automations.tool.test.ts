@@ -904,13 +904,19 @@ describe('mailAutomations tool', () => {
     assert.match(router.markdown, /load `schedule-divo-work` and `google-gmail`/);
     assert(mailOps);
     assert.deepEqual(mailOps.toolIds, ['mailAutomations']);
-    assert.match(mailOps.markdown, /do not invoke an LLM/i);
-    assert.match(mailOps.markdown, /per-message approval/i);
-    assert.match(
-      mailOps.markdown,
-      /preserves the original Gmail MIME content.*attachments/i,
-    );
-    assert.match(mailOps.markdown, /never convert a brand, display name, or loose word/i);
+    /*
+     * When a model runs, and what a forward preserves, are the tool's own
+     * behaviour. The recipe said both a second time; it now states only the
+     * decisions the contract cannot make.
+     */
+    const docs = createMailAutomationsTool({} as never).parameterDocs;
+    assert.match(docs, /No LLM runs for matching or delivery unless the rule has a judge/i);
+    assert.match(docs, /per-message approval/i);
+    assert.match(docs, /preserves the original Gmail MIME content.*attachments/i);
+    assert.match(docs, /never a brand or display-name substring/i);
+    // The recipe owns the loophole no schema closes: from/to/notFrom refuse a
+    // brand word, and subjectContains will happily accept the same word.
+    assert.match(mailOps.markdown, /do not smuggle that word into `subjectContains`/i);
     assert.match(mailOps.markdown, /Ask whether subject narrowing is wanted/i);
   });
 
@@ -931,19 +937,28 @@ describe('mailAutomations tool', () => {
     }
 
     const mailOps = MAIL_OPS_SYSTEM_SKILLS.find(skill => skill.slug === 'mail-ops')!;
-    // Constraints a user hits in practice must be stated where the model reads.
-    assert.match(mailOps.markdown, /Gmail only/i);
-    assert.match(mailOps.markdown, /delivers the whole message/i);
+    const docs = createMailAutomationsTool({} as never).parameterDocs;
+    /*
+     * Constraints a user hits in practice must be stated where the model reads
+     * — which is the tool, since it is in the tool list for every Mail Ops run
+     * and the recipe is loaded on demand. These were in both.
+     */
+    assert.match(docs, /Gmail only/i);
+    assert.match(docs, /delivers the entire message/i);
     // The subdomain rule, stated in the direction the runtime now works. It
-    // was pinned here in the opposite direction, which is exactly why this
+    // was pinned in the opposite direction once, which is exactly why this
     // assertion is worth having: the instruction layer and the matcher have to
     // move together or the model confidently describes behaviour that is gone.
-    assert.match(mailOps.markdown, /every subdomain of it/i);
-    assert.match(mailOps.markdown, /never matches a lookalike/i);
-    assert.match(mailOps.markdown, /invalidReason/);
-    assert.match(mailOps.markdown, /includeInactive/);
-    assert.match(mailOps.markdown, /google_workspace_connection_selection_required/);
+    assert.match(docs, /matches that domain and every subdomain/i);
+    assert.match(docs, /never matches a lookalike/i);
+    assert.match(docs, /invalidReason/);
+    assert.match(docs, /includeInactive/);
+    assert.match(docs, /google_workspace_connection_selection_required/);
+    // What the recipe keeps: the channel consequence, which is a routing
+    // decision between destinations rather than a fact about one field.
     assert.match(mailOps.markdown, /rejected on desktop and web/i);
+    assert.match(mailOps.markdown, /ask for an email destination or an exact chat ID instead/i);
+    assert.match(mailOps.markdown, /delivers the whole message/i);
   });
 
   it('grants all five Mail Ops actions to a system role that has none', async () => {

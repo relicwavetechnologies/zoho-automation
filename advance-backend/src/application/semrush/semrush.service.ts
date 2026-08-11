@@ -2,7 +2,6 @@ import type { Logger } from '../../shared/logger';
 import type { SemrushWebClient } from '../../infrastructure/semrush/semrush-web.client';
 import type { SemrushKeyProvider } from './semrush-key.provider';
 import {
-  semrushPreflightLimits,
   type SemrushFetchedData,
   type SemrushToolArgs,
   SemrushServiceError,
@@ -23,18 +22,6 @@ export class SemrushService {
     private readonly keys: SemrushKeyProvider,
     private readonly logger: Logger,
   ) {}
-
-  async preflight(args: SemrushToolArgs): Promise<Record<string, unknown>> {
-    await this.keys.resolve();
-    return {
-      configured: true,
-      operation: args.operation,
-      apiVersion: 'web_private',
-      providerHost: 'www.semrush.com',
-      reportType: semrushWebReportType(args),
-      limits: semrushPreflightLimits(args),
-    };
-  }
 
   async execute(args: SemrushToolArgs): Promise<SemrushFetchedData> {
     const request = semrushRequestLogContext(args);

@@ -11,6 +11,7 @@ import {
   GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT,
   GOOGLE_WORKSPACE_PRODUCTS,
   googleWorkspaceActionFor,
+  prefersCompanyGoogleArtifactAccount,
   googleWorkspaceScopeGroupsFor,
   type GoogleWorkspaceProductDefinition,
 } from '../../google/google-workspace-mcp-manifest';
@@ -31,7 +32,7 @@ function createNativeArgsSchema(nativeTool: z.ZodType<string>) {
       input: z.record(z.unknown()).optional(),
     }),
     z.object({
-      connectionId: z.string().uuid(),
+      connectionId: z.string().uuid().optional(),
       op: z.literal('call'),
       nativeTool,
       input: z.record(z.unknown()).optional(),
@@ -48,7 +49,7 @@ function createSheetArgsSchema(nativeTool: z.ZodType<string>) {
       input: z.record(z.unknown()).optional(),
     }),
     z.object({
-      connectionId: z.string().uuid(),
+      connectionId: z.string().uuid().optional(),
       op: z.literal('call'),
       nativeTool,
       input: z.record(z.unknown()).optional(),
@@ -81,6 +82,20 @@ const ResultSchema = z.object({
   nativeTool: z.string(),
   data: z.unknown().optional(),
   message: z.string().optional(),
+  delivery: z.object({
+    required: z.literal(true),
+    toolId: z.literal('googleDrive'),
+    connectionId: z.string().uuid(),
+    nativeTool: z.literal('manage_drive_access'),
+    input: z.object({
+      file_id: z.string().min(1),
+      action: z.literal('grant'),
+      share_with: z.string().email(),
+      role: z.literal('reader'),
+      share_type: z.literal('user'),
+      send_notification: z.boolean(),
+    }),
+  }).optional(),
 });
 type ToolResult = z.infer<typeof ResultSchema>;
 
@@ -103,6 +118,8 @@ export interface GoogleWorkspaceMcpPort {
 
 export interface GoogleWorkspaceMcpConnection {
   readonly client: GoogleWorkspaceMcpPort;
+  readonly connectionId?: string;
+  readonly ownerType?: 'user' | 'company';
 }
 
 export interface GoogleWorkspaceMcpConnectionChoice {
@@ -110,6 +127,7 @@ export interface GoogleWorkspaceMcpConnectionChoice {
   readonly label: string;
   readonly accountEmail?: string;
   readonly accountName?: string;
+  readonly ownerType?: 'user' | 'company';
   readonly access: 'read_only' | 'read_write' | 'admin';
 }
 
@@ -129,6 +147,7 @@ export type ResolveGoogleWorkspaceMcpConnection = (input: {
   readonly connectionId?: string;
   readonly minimumAccess: 'read_only' | 'read_write';
   readonly requiredScopeGroups: readonly (readonly string[])[];
+  readonly preferredOwnerType?: 'user' | 'company';
   /** Discovery-only schema preload must not count as real account usage. */
   readonly markLastUsed?: boolean;
   readonly abortSignal?: AbortSignal;
@@ -203,7 +222,7 @@ function createProductTool(
     resultSchema: ResultSchema,
     description: product.description,
     parameterDocs: [
-      'connectionId: reuse the exact run-bootstrap account when supplied. In backend-hosted channels, omit it when no account was supplied; the backend selects only one eligible account or returns safe choices. Reuse the same connectionId for describe and call.',
+      'connectionId: reuse the exact run-bootstrap account when supplied. In backend-hosted channels, omit it when no account was supplied; new durable Google artifacts prefer one eligible company-owned account, while other calls select only one eligible account or return safe choices. Reuse the same connectionId for describe and call.',
       product.toolId === 'googleSheets'
         ? 'op: describe|call|resolve_reference|call_resolved_sheet. Use resolve_reference with url for an exact pasted Google Sheet or Google Drive Excel workbook before any web lookup. Use call_resolved_sheet only with the destinationReferenceId returned by resolve_reference in the same Lark run; the backend injects the verified connection and spreadsheet IDs. Excel workbooks require explicit confirmation before Divo creates a new Google Sheet copy; the original workbook is never changed. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required operation whose schema is absent.'
         : 'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required native operation whose schema is absent; input may be omitted for describe.',
@@ -273,6 +292,9 @@ function createProductTool(
         requiredScopeGroups: args.op === 'describe'
           ? []
           : googleWorkspaceScopeGroupsFor(product, args.nativeTool, action),
+        ...(args.op === 'call' && prefersCompanyGoogleArtifactAccount(args.nativeTool)
+          ? { preferredOwnerType: 'company' as const }
+          : {}),
         ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
       });
       if (connectionResolution.status === 'choose_connection') {
@@ -413,6 +435,9 @@ function createProductTool(
         requiredScopeGroups: args.op === 'describe'
           ? []
           : googleWorkspaceScopeGroupsFor(product, args.nativeTool, action),
+        ...(args.op === 'call' && prefersCompanyGoogleArtifactAccount(args.nativeTool)
+          ? { preferredOwnerType: 'company' as const }
+          : {}),
         ...(ctx.abortSignal ? { abortSignal: ctx.abortSignal } : {}),
       });
       if (connectionResolution.status === 'choose_connection') {
@@ -485,11 +510,20 @@ function createProductTool(
           args.input ?? {},
           ctx.abortSignal,
         );
+        const delivery = companySheetDelivery({
+          nativeTool: args.nativeTool,
+          data,
+          connection,
+          ...(ctx.runContext.requesterEmail
+            ? { requesterEmail: ctx.runContext.requesterEmail }
+            : {}),
+        });
         return ok({
           success: true,
           nativeTool: args.nativeTool,
           data,
           message: `${product.name} operation completed`,
+          ...(delivery ? { delivery } : {}),
         });
       } catch (cause) {
         return err(new ToolError({
@@ -506,6 +540,47 @@ function createProductTool(
       }
     },
   };
+}
+
+function companySheetDelivery(input: {
+  readonly nativeTool: string;
+  readonly data: unknown;
+  readonly connection: GoogleWorkspaceMcpConnection;
+  readonly requesterEmail?: string;
+}): ToolResult['delivery'] | undefined {
+  if (
+    input.nativeTool !== 'create_spreadsheet'
+    || input.connection.ownerType !== 'company'
+    || !input.connection.connectionId
+    || !input.requesterEmail
+    || !z.string().email().safeParse(input.requesterEmail).success
+  ) return undefined;
+  const spreadsheetId = isRecord(input.data)
+    ? readNonEmptyString(input.data['spreadsheetId']) ?? readNonEmptyString(input.data['spreadsheet_id'])
+    : undefined;
+  if (!spreadsheetId) return undefined;
+  return {
+    required: true,
+    toolId: 'googleDrive',
+    connectionId: input.connection.connectionId,
+    nativeTool: 'manage_drive_access',
+    input: {
+      file_id: spreadsheetId,
+      action: 'grant',
+      share_with: input.requesterEmail,
+      role: 'reader',
+      share_type: 'user',
+      send_notification: false,
+    },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readNonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
 function validateDivoNativeInput(

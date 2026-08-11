@@ -27,6 +27,8 @@ import type { MediaOcrService } from '../../src/application/gateway/media-ocr.se
 import type { Clock } from '../../src/shared/clock.ts';
 import { MODEL_FACING_RESULT_MAX_BYTES } from '../../src/application/gateway/model-facing-result-limit.ts';
 import { KnowledgeMutationError } from '../../src/application/knowledge/knowledge-mutation.errors.ts';
+import { GOOGLE_SCOPE } from '../../src/domain/google/google-workspace-scope.ts';
+import { AIRTABLE_SCOPE } from '../../src/application/airtable/airtable-mcp-manifest.ts';
 
 const member: GatewayMemberContext = {
   companyId: 'co-test',
@@ -157,6 +159,240 @@ function makeLocalApprovals(
 }
 
 describe('ToolExecutor', () => {
+  it('selects the only write-and-scope-eligible Google account before desktop or Cloud-Pi governance', async () => {
+    const registry = new ToolRegistry();
+    const executed: Array<Record<string, unknown>> = [];
+    registry.register({
+      id: asToolId('googleSheets'),
+      family: 'google',
+      actionGroups: new Set(['create']),
+      argsSchema: z.object({
+        connectionId: z.string().uuid().optional(),
+        op: z.literal('call'),
+        nativeTool: z.literal('create_spreadsheet'),
+        input: z.record(z.unknown()).optional(),
+      }),
+      resultSchema: z.object({ completed: z.boolean() }),
+      description: 'Google Sheets selection test',
+      parameterDocs: 'closed test contract',
+      permissionCheck: () => ok('create'),
+      execute: async args => {
+        executed.push(args);
+        return ok({ completed: true });
+      },
+    });
+    const writableId = '22222222-2222-4222-8222-222222222222';
+    const connections = [
+      {
+        connectionId: '11111111-1111-4111-8111-111111111111',
+        provider: 'google_workspace' as const,
+        label: 'Company read-only',
+        ownerType: 'company' as const,
+        access: 'read_only' as const,
+        scopes: [GOOGLE_SCOPE.sheetsReadonly, GOOGLE_SCOPE.driveReadonly],
+        connectedAt: new Date(),
+      },
+      {
+        connectionId: writableId,
+        provider: 'google_workspace' as const,
+        label: 'Personal writable',
+        ownerType: 'user' as const,
+        ownerUserId: 'user-test',
+        access: 'read_write' as const,
+        scopes: [GOOGLE_SCOPE.sheetsFull, GOOGLE_SCOPE.driveFull],
+        connectedAt: new Date(),
+      },
+    ];
+    const permissions = makePermissionService(makeAllowedPerm('googleSheets', ['create']));
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions,
+      connectionRegistry: {
+        listAccessibleGoogleConnections: async () => ok(connections),
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+    const args = {
+      op: 'call',
+      nativeTool: 'create_spreadsheet',
+      input: { title: 'Quarterly review' },
+    };
+
+    const desktop = await executor.invoke({ member, toolId: 'googleSheets', args });
+    const cloudPi = await executor.executeForRuntime({
+      toolId: 'googleSheets',
+      args,
+      runContext: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        companyRole: 'MEMBER',
+        channel: 'lark',
+      } as never,
+      perm: makeAllowedPerm('googleSheets', ['create']),
+    });
+
+    assert.equal(desktop.status, 'success');
+    assert.equal(cloudPi.status, 'success');
+    assert.deepEqual(executed.map(call => call.connectionId), [writableId, writableId]);
+  });
+
+  it('selects the only write-and-scope-eligible Airtable account before Cloud-Pi governance', async () => {
+    const registry = new ToolRegistry();
+    let executedArgs: Record<string, unknown> | undefined;
+    registry.register({
+      id: asToolId('airtableRecords'),
+      family: 'airtable',
+      actionGroups: new Set(['update']),
+      argsSchema: z.object({
+        connectionId: z.string().uuid().optional(),
+        op: z.literal('call'),
+        nativeTool: z.literal('update_records_for_table'),
+        input: z.record(z.unknown()).optional(),
+      }),
+      resultSchema: z.object({ completed: z.boolean() }),
+      description: 'Airtable selection test',
+      parameterDocs: 'closed test contract',
+      permissionCheck: () => ok('update'),
+      execute: async args => {
+        executedArgs = args;
+        return ok({ completed: true });
+      },
+    });
+    const writableId = '44444444-4444-4444-8444-444444444444';
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('airtableRecords', ['update'])),
+      connectionRegistry: {
+        listAccessibleAirtableConnections: async () => ok([
+          {
+            connectionId: '33333333-3333-4333-8333-333333333333',
+            provider: 'airtable',
+            label: 'Read-only workspace',
+            ownerType: 'company',
+            access: 'read_only',
+            scopes: [AIRTABLE_SCOPE.recordsRead],
+            connectedAt: new Date(),
+          },
+          {
+            connectionId: writableId,
+            provider: 'airtable',
+            label: 'Writable workspace',
+            ownerType: 'user',
+            ownerUserId: 'user-test',
+            access: 'read_write',
+            scopes: [AIRTABLE_SCOPE.recordsWrite],
+            connectedAt: new Date(),
+          },
+        ]),
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const outcome = await executor.executeForRuntime({
+      toolId: 'airtableRecords',
+      args: {
+        op: 'call',
+        nativeTool: 'update_records_for_table',
+        input: { baseId: 'app1', tableId: 'tbl1', records: [] },
+      },
+      runContext: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        companyRole: 'MEMBER',
+        channel: 'lark',
+      } as never,
+      perm: makeAllowedPerm('airtableRecords', ['update']),
+    });
+
+    assert.equal(outcome.status, 'success');
+    assert.equal(executedArgs?.connectionId, writableId);
+  });
+
+  it('prefers the eligible company Google account for a new artifact', async () => {
+    const registry = new ToolRegistry();
+    let selectedConnectionId: unknown;
+    registry.register({
+      id: asToolId('googleSheets'),
+      family: 'google',
+      actionGroups: new Set(['create']),
+      argsSchema: z.object({
+        connectionId: z.string().uuid().optional(),
+        op: z.literal('call'),
+        nativeTool: z.literal('create_spreadsheet'),
+        input: z.record(z.unknown()).optional(),
+      }),
+      resultSchema: z.object({ completed: z.boolean() }),
+      description: 'Company artifact selection test',
+      parameterDocs: 'closed test contract',
+      permissionCheck: () => ok('create'),
+      execute: async args => {
+        selectedConnectionId = args.connectionId;
+        return ok({ completed: true });
+      },
+    });
+    const companyId = '55555555-5555-4555-8555-555555555555';
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('googleSheets', ['create'])),
+      connectionRegistry: {
+        listAccessibleGoogleConnections: async () => ok([
+          {
+            connectionId: '66666666-6666-4666-8666-666666666666',
+            provider: 'google_workspace',
+            label: 'Personal Google',
+            ownerType: 'user',
+            ownerUserId: 'user-test',
+            access: 'admin',
+            scopes: [GOOGLE_SCOPE.sheetsFull, GOOGLE_SCOPE.driveFull],
+            connectedAt: new Date(),
+          },
+          {
+            connectionId: companyId,
+            provider: 'google_workspace',
+            label: 'Company Google',
+            ownerType: 'company',
+            access: 'admin',
+            scopes: [GOOGLE_SCOPE.sheetsFull, GOOGLE_SCOPE.driveFull],
+            connectedAt: new Date(),
+          },
+          {
+            connectionId: '77777777-7777-4777-8777-777777777777',
+            provider: 'google_workspace',
+            label: 'Second personal Google',
+            ownerType: 'user',
+            ownerUserId: 'user-test',
+            access: 'admin',
+            scopes: [GOOGLE_SCOPE.sheetsFull, GOOGLE_SCOPE.driveFull],
+            connectedAt: new Date(),
+          },
+        ]),
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.executeForRuntime({
+      toolId: 'googleSheets',
+      args: {
+        op: 'call',
+        nativeTool: 'create_spreadsheet',
+        input: { title: 'Company report' },
+      },
+      runContext: {
+        companyId: 'co-test',
+        userId: 'user-test',
+        companyRole: 'MEMBER',
+        channel: 'lark',
+      } as never,
+      perm: makeAllowedPerm('googleSheets', ['create']),
+    });
+
+    assert.equal(result.status, 'success');
+    assert.equal(selectedConnectionId, companyId);
+  });
+
   it('fails closed when a tool returns data outside its declared result schema', async () => {
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({
@@ -939,7 +1175,7 @@ describe('ToolExecutor', () => {
     assert.equal(receivedSignal, controller.signal);
   });
 
-  it('resolves the only accessible connected account before runtime validation', async () => {
+  it('resolves the only accessible Zoho account before desktop or runtime validation', async () => {
     const connectionId = '00000000-0000-4000-8000-000000000001';
     let receivedConnectionId: string | undefined;
     const registry = new ToolRegistry();
@@ -970,7 +1206,7 @@ describe('ToolExecutor', () => {
           label: 'Work Zoho',
           ownerType: 'user',
           access: 'admin',
-          scopes: [],
+          scopes: ['ZohoCRM.modules.READ'],
           connectedAt: new Date(),
         }]),
       } as never,
@@ -978,7 +1214,12 @@ describe('ToolExecutor', () => {
       clock: { now: () => new Date(), nowMs: () => Date.now() },
     });
 
-    const result = await executor.executeForRuntime({
+    const desktop = await executor.invoke({
+      member,
+      toolId: 'zohoCrm',
+      args: { op: 'list' },
+    });
+    const runtime = await executor.executeForRuntime({
       toolId: 'zohoCrm',
       args: { op: 'list' },
       runContext: {
@@ -990,8 +1231,116 @@ describe('ToolExecutor', () => {
       perm: makeAllowedPerm('zohoCrm', ['read']),
     });
 
-    assert.equal(result.status, 'success');
+    assert.equal(desktop.status, 'success');
+    assert.equal(runtime.status, 'success');
     assert.equal(receivedConnectionId, connectionId);
+  });
+
+  it('does not select a read-only Zoho account for a write', async () => {
+    const writableId = '00000000-0000-4000-8000-000000000002';
+    let receivedConnectionId: string | undefined;
+    const registry = new ToolRegistry();
+    registry.register({
+      id: asToolId('zohoCrm'),
+      family: 'zoho',
+      actionGroups: new Set(['create']),
+      argsSchema: z.object({
+        connectionId: z.string().uuid(),
+        op: z.literal('create'),
+      }),
+      resultSchema: z.object({ result: z.string() }),
+      description: 'Connected-account write test tool',
+      parameterDocs: 'connectionId, op',
+      permissionCheck: () => ok('create'),
+      execute: async (args) => {
+        receivedConnectionId = args.connectionId;
+        return ok({ result: 'done' });
+      },
+    });
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('zohoCrm', ['create'])),
+      connectionRegistry: {
+        listAccessibleZohoConnections: async () => ok([
+          {
+            connectionId: '00000000-0000-4000-8000-000000000001',
+            provider: 'zoho',
+            label: 'Read-only Zoho',
+            ownerType: 'user',
+            access: 'read_only',
+            scopes: ['ZohoCRM.modules.READ'],
+            connectedAt: new Date(),
+          },
+          {
+            connectionId: writableId,
+            provider: 'zoho',
+            label: 'Writable Zoho',
+            ownerType: 'user',
+            access: 'read_write',
+            scopes: ['ZohoCRM.modules.ALL'],
+            connectedAt: new Date(),
+          },
+        ]),
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.invoke({
+      member,
+      toolId: 'zohoCrm',
+      args: { op: 'create' },
+    });
+
+    assert.equal(result.status, 'success');
+    assert.equal(receivedConnectionId, writableId);
+  });
+
+  it('rejects an explicitly selected Zoho account before execution when its service scope is missing', async () => {
+    let executions = 0;
+    const connectionId = '00000000-0000-4000-8000-000000000003';
+    const registry = new ToolRegistry();
+    registry.register({
+      id: asToolId('zohoCrm'),
+      family: 'zoho',
+      actionGroups: new Set(['read']),
+      argsSchema: z.object({ connectionId: z.string().uuid(), op: z.literal('list') }),
+      resultSchema: z.object({ result: z.string() }),
+      description: 'Zoho scope selection test',
+      parameterDocs: 'connectionId, op',
+      permissionCheck: () => ok('read'),
+      execute: async () => {
+        executions += 1;
+        return ok({ result: 'unexpected' });
+      },
+    });
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('zohoCrm', ['read'])),
+      connectionRegistry: {
+        listAccessibleZohoConnections: async () => ok([{
+          connectionId,
+          provider: 'zoho',
+          label: 'Books only',
+          ownerType: 'company',
+          access: 'read_only',
+          scopes: ['ZohoBooks.fullaccess.READ'],
+          connectedAt: new Date(),
+        }]),
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const result = await executor.invoke({
+      member,
+      toolId: 'zohoCrm',
+      args: { op: 'list', connectionId },
+    });
+
+    assert.equal(result.status, 'invalid_args');
+    assert.match(result.error?.message ?? '', /selected Zoho account is not eligible/i);
+    assert.equal(executions, 0);
   });
 
   it('returns safe connected-account choices instead of guessing between accounts', async () => {
@@ -1322,6 +1671,28 @@ describe('LocalApprovalIntentService', () => {
     const executor = new ToolExecutor({
       toolRegistry: registry,
       permissions,
+      connectionRegistry: {
+        listAccessibleGoogleConnections: async () => ok([{
+          connectionId: 'google-1',
+          provider: 'google_workspace',
+          label: 'Google approval fixture',
+          ownerType: 'user',
+          ownerUserId: member.userId,
+          access: 'read_write',
+          scopes: [GOOGLE_SCOPE.gmailSend],
+          connectedAt: new Date(),
+        }]),
+        listAccessibleZohoConnections: async () => ok([{
+          connectionId: 'zoho-1',
+          provider: 'zoho',
+          label: 'Zoho approval fixture',
+          ownerType: 'user',
+          ownerUserId: member.userId,
+          access: 'read_write',
+          scopes: ['ZohoCRM.modules.UPDATE'],
+          connectedAt: new Date(),
+        }]),
+      } as never,
       logger: noopLogger,
       clock: { now: () => new Date(), nowMs: () => Date.now() },
     });
@@ -2912,6 +3283,18 @@ describe('GatewayDispatcher', () => {
       toolExecutor: new ToolExecutor({
         toolRegistry: registry,
         permissions,
+        connectionRegistry: {
+          listAccessibleGoogleConnections: async () => ok([{
+            connectionId: '11111111-1111-4111-8111-111111111111',
+            provider: 'google_workspace',
+            label: 'Resolved Sheet fixture',
+            ownerType: 'user',
+            ownerUserId: member.userId,
+            access: 'read_write',
+            scopes: [GOOGLE_SCOPE.sheetsFull, GOOGLE_SCOPE.driveFull],
+            connectedAt: new Date(),
+          }]),
+        } as never,
         logger: noopLogger,
         clock: { now: () => new Date(), nowMs: () => Date.now() },
       }),
@@ -3615,7 +3998,7 @@ describe('GatewayDispatcher', () => {
     }, member);
 
     assert.equal(result.ok, true);
-    const plan = (result.data as { googleVendorOnboarding: { status: 'ready'; plan: { parent: { id: string; instructions: string }; connection: { status: string }; phases: Array<{ skillId: string; requiredActions: string[]; skill?: { instructions: string } }> } } }).googleVendorOnboarding.plan;
+    const plan = (result.data as { googleVendorOnboarding: { status: 'ready'; plan: { parent: { id: string; instructions: string }; connection: { status: string }; phases: Array<{ slug: string; skillId: string; requiredActions: string[]; skill?: { instructions: string } }> } } }).googleVendorOnboarding.plan;
     assert.deepEqual(plan.parent, {
       id: 'google-router-id',
       name: 'Google Workspace Router',
@@ -3623,6 +4006,7 @@ describe('GatewayDispatcher', () => {
       instructions: 'Load exact Google product specialists.',
     });
     assert.deepEqual(plan.phases.map((phase) => phase.skillId), ['gmail-id', 'contacts-id', 'docs-id', 'sheets-id']);
+    assert.deepEqual(plan.phases.map((phase) => phase.slug), ['google-gmail', 'google-contacts', 'google-docs', 'google-sheets']);
     assert.deepEqual(plan.phases.map((phase) => phase.requiredActions), [['read'], ['read'], ['create'], ['create', 'update']]);
     assert.equal(plan.phases.every((phase) => phase.skill === undefined), true);
     assert.deepEqual(plan.connection, {

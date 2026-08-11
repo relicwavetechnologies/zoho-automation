@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 import {
 	assertPinnedIdentity,
 	piOptions,
+	recordPendingInterruption,
 	validateBootstrap,
 } from "../container-entry.mjs";
 import {
 	buildChildEnvironment,
 	buildPiArguments,
+	readInterruptedWorkFact,
+	resolveSessionPaths,
 } from "../runtime.mjs";
 
 const bootstrap = {
@@ -159,6 +165,29 @@ test("a Lark bootstrap requires the backend-issued run identity", () => {
 		() => validateBootstrap({ ...bootstrap, channel: "lark" }),
 		/runId is required for Lark/,
 	);
+});
+
+test("a soft abort records interrupted work without stopping the container", () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "divo-container-interruption-"));
+	const dataDir = path.join(root, "data");
+	const interruptionPath = path.join(root, "interruption.json");
+	fs.writeFileSync(interruptionPath, JSON.stringify({
+		thread: "same-thread",
+		task: "Build the export",
+	}));
+
+	assert.equal(recordPendingInterruption(interruptionPath, dataDir), true);
+	const { threadDir } = resolveSessionPaths({
+		dataDir,
+		thread: "same-thread",
+		runId: "run-1",
+	});
+	assert.deepEqual(readInterruptedWorkFact(threadDir), {
+		task: "Build the export",
+		clarificationShown: false,
+	});
+	assert.equal(fs.existsSync(interruptionPath), false);
+	fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("the container forwards the session scope it was given to Pi", () => {

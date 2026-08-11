@@ -33,9 +33,15 @@ export interface LarkSystemSkillDefinition {
 }
 
 const LARK_GOVERNED_ROUTING = `For ${GOVERNED_DIRECT_ACTION_CRITERION}, use the governed Divo route directly. ${GOVERNED_LOCAL_WORKFLOW_ROUTE} Never call Lark directly from Bash: no lark-cli, curl, local credentials, or direct Lark API calls.`;
-const LARK_USER_CONNECTION = `- Reuse an exact \`connectionId\` already supplied by the current run.
-- Otherwise omit \`connectionId\`. The backend selects an account only when exactly one accessible account qualifies; when several qualify, retry with one exact ID from the safe choices it returns.
-- Never invent an ID or call \`connections.list\` merely to rediscover an account the backend can select.`;
+/**
+ * Every Lark tool states in parameterDocs how `connectionId` itself behaves —
+ * omit it and the backend either selects the one accessible account or returns
+ * exact choices. Six skills repeated that. What is left is the part no schema
+ * can state: never re-discover through a different tool, and ask when the
+ * backend hands back choices instead of picking one for you.
+ */
+const LARK_USER_CONNECTION = `- Never invent a \`connectionId\` or call \`connections.list\` to rediscover an account the backend can select for itself.
+- When the backend returns account choices instead of selecting one, ask which account to use. Never pick for the member.`;
 
 export const LARK_SYSTEM_SKILLS: readonly LarkSystemSkillDefinition[] = [
   createLarkRouterSkill(LARK_GOVERNED_ROUTING),

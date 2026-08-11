@@ -16,7 +16,7 @@ import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
 import {
-  costByDay, fillSeries, priceSum, startOfToday,
+  costByDay, fillSeries, priceSum, startOfToday, windowStart,
   type DailyModelRow,
 } from '../../application/observability/token-cost';
 
@@ -26,7 +26,19 @@ export interface DesktopActivityRoutesDeps {
   memberJwtSecret: string;
 }
 
-const MAX_DAYS = 90;
+/*
+ * Sixteen weeks, because that is what a calendar of days is drawn over.
+ *
+ * Ninety was an arbitrary round number and it silently clamped the one caller
+ * that asks for a full window — the Home usage card, whose heatmap is sixteen
+ * columns of seven. Clamped to 90 it drew thirteen columns and a ragged
+ * thirteenth, which reads as missing data rather than as a shorter window.
+ *
+ * The cost of the extra 22 days is one wider `WHERE createdAt >= …` on an
+ * indexed column, plus the same again for the preceding window this route
+ * already reads to report a change.
+ */
+const MAX_DAYS = 112;
 const MAX_RUNS = 50;
 
 const readDays = (req: Request, fallback: number): number => {
@@ -55,7 +67,16 @@ export function createDesktopActivityRoutes(deps: DesktopActivityRoutesDeps): Ro
       const userId = res.locals['userId'] as string;
       const companyId = res.locals['companyId'] as string;
       const days = readDays(req, 30);
-      const from = new Date(Date.now() - days * 86_400_000);
+      /*
+       * The first midnight of the window, not this moment minus N days.
+       *
+       * `fillSeries` draws whole calendar days from today backwards, so a
+       * `from` set to the current clock time N days ago swept in part of one
+       * extra day — spend that counted towards the total and had no square to
+       * sit in. The card then showed a total its own calendar did not add up
+       * to. Aligning the boundary makes the window mean one thing.
+       */
+      const from = windowStart(days);
       const today = startOfToday();
       const previousFrom = new Date(from.getTime() - days * 86_400_000);
 
@@ -247,7 +268,16 @@ export function createDesktopTeamActivityRoutes(deps: DesktopActivityRoutesDeps)
       }
 
       const days = readDays(req, 30);
-      const from = new Date(Date.now() - days * 86_400_000);
+      /*
+       * The first midnight of the window, not this moment minus N days.
+       *
+       * `fillSeries` draws whole calendar days from today backwards, so a
+       * `from` set to the current clock time N days ago swept in part of one
+       * extra day — spend that counted towards the total and had no square to
+       * sit in. The card then showed a total its own calendar did not add up
+       * to. Aligning the boundary makes the window mean one thing.
+       */
+      const from = windowStart(days);
 
       const memberships = await deps.prisma.departmentMembership.findMany({
         where: { departmentId, status: 'active', department: { companyId } },
@@ -262,12 +292,17 @@ export function createDesktopTeamActivityRoutes(deps: DesktopActivityRoutesDeps)
       if (userIds.length === 0) {
         res.json({
           success: true,
-          data: { days, spendUsd: 0, runs: 0, totalPeople: 0, activePeople: 0, people: [] },
+          data: {
+            days, spendUsd: 0, runs: 0, totalPeople: 0, activePeople: 0,
+            // Still every day in the window. An empty array would draw no
+            // calendar at all, which reads as "not loaded" rather than "empty".
+            series: fillSeries(new Map(), days), people: [],
+          },
         });
         return;
       }
 
-      const [byUserModel, runsByUser] = await Promise.all([
+      const [byUserModel, runsByUser, dailyRows] = await Promise.all([
         deps.prisma.aiTokenUsage.groupBy({
           by: ['userId', 'modelId'],
           where: { companyId, userId: { in: userIds }, createdAt: { gte: from } },
@@ -280,6 +315,25 @@ export function createDesktopTeamActivityRoutes(deps: DesktopActivityRoutesDeps)
           _count: { id: true },
           orderBy: { userId: 'asc' },
         }),
+        /*
+         * The team's spend by day — the personal route's query with the single
+         * user swapped for the team's, so the two are priced by the same
+         * helpers and cannot disagree about what a day cost.
+         *
+         * A total over sixteen weeks says nothing about whether the team uses
+         * Divo daily or used it once; the client had no way to tell those apart
+         * because nothing here carried a date.
+         */
+        deps.prisma.$queryRaw<DailyModelRow[]>(Prisma.sql`
+          SELECT date_trunc('day', "createdAt") AS day, "modelId" AS model,
+            COALESCE(SUM("actualInputTokens"), 0)::float AS miss,
+            COALESCE(SUM("cacheReadInputTokens"), 0)::float AS hit,
+            COALESCE(SUM("actualOutputTokens"), 0)::float AS out
+          FROM "AiTokenUsage"
+          WHERE "companyId" = ${companyId}
+            AND "userId" IN (${Prisma.join(userIds)})
+            AND "createdAt" >= ${from}
+          GROUP BY day, model ORDER BY day ASC`),
       ]);
 
       const spendByUser = new Map<string, number>();
@@ -315,6 +369,9 @@ export function createDesktopTeamActivityRoutes(deps: DesktopActivityRoutesDeps)
           // "Used Divo at all in this window", which is the number a manager
           // actually wants — adoption, not headcount.
           activePeople: people.filter(p => p.runs > 0).length,
+          // Every day in the window, zeroes included, so a quiet stretch is
+          // drawn as quiet rather than compressed out of the axis.
+          series: fillSeries(costByDay(dailyRows), days),
           people,
         },
       });

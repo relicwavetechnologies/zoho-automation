@@ -95,12 +95,19 @@ The saved JSON is \`{ ok, status, data, meta, ... }\`; \`data\` is the provider
 result, not necessarily a row array. Never use \`len(data)\` as a record count.
 Use the source skill's exact row, reported-count, and pagination fields.
 
-Use the exact \`connectionId\` already present in the current run bootstrap.
-Only when the required provider is absent may the script call
-\`connections.list\` once with exactly one provider. Never guess, copy an old
-ID, or retry several IDs. Provider args must match the loaded source skill
-exactly; for Zoho Books a page read requires \`op\`, \`connectionId\`, and its
-document/page fields.
+Omit an optional \`connectionId\` unless the user selected an account or the
+previous tool result returned eligible choices. The governed executor selects
+the sole account eligible for the exact action and scopes before approvals and
+rate limits. When the source schema requires an ID, use an exact current-run ID;
+never guess, copy an old ID, or retry several IDs.
+
+The source skill and current work bootstrap already provide the backend
+\`toolId\`, argument contract, and continuation fields. Use those exact values.
+Do not call \`tools.list\`, run \`divo-local --help\`, or probe the tool merely to
+rediscover a loaded contract. If an exact contract is genuinely missing, stop
+and report that contract gap instead of inventing a second discovery workflow.
+For Zoho Books a page read requires \`op\`, \`connectionId\`, and its document/page
+fields.
 
 Read the native skill that owns a tool before the script calls it. Never pass a
 skill ID on the command line: skills provide workflow guidance, while the
@@ -158,12 +165,14 @@ def divo_invoke(tool_id, args, label, args_name):
     return response["data"]
 ~~~
 
-For discovery that is genuinely necessary, use:
+When account discovery is genuinely necessary, use:
 
 ~~~text
 divo-local request --op connections.list --payload-file <path>
-divo-local request --op tools.list --payload-file <path>
 ~~~
+
+\`divo-local\` writes machine-readable JSON to stdout and progress or diagnostics
+to stderr. Parse stdout only; never merge stderr into it with \`2>&1\`.
 
 Do not use curl, raw backend URLs, local SaaS SDK credentials, member tokens,
 OAuth tokens, or copied tool secrets.

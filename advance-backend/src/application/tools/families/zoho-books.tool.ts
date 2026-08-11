@@ -33,7 +33,7 @@
  *                            top-10 customers, return a bounded summary
  *
  * Token safety:
- *   - Plain list ops return at most `limit` records (default 25, max 100)
+ *   - Plain list ops return at most `limit` records (default 25, max 200)
  *     and fetch only one bounded page on the model-facing path
  *   - Complete artifacts page through the governed terminal without entering model context
  */
@@ -89,8 +89,6 @@ import { formatAmount, formatDate }        from '../../zoho/zoho-format.utils';
 import { normalizeStatus, parseDateFilter } from '../../zoho/zoho-filter.utils';
 import { handleZohoList, type ZohoListCsvColumn } from '../../zoho/zoho-list-handler';
 import type { ZohoBooksPaginatedClient, ZohoBooksModule, ZohoBooksOrganization } from '../../../infrastructure/zoho/zoho-books-paginated.client';
-import { getModuleSchema, injectSyntheticFields, toSchemaHint } from '../../../infrastructure/zoho/zoho-books-schema.cache';
-import { runInSandbox, SandboxTimeoutError, SandboxScriptError, SandboxInputTooLargeError, SandboxSerializationError } from '../shared/sandbox-runner';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
 import {
   createDatasetPreview,
@@ -100,7 +98,7 @@ import {
 // ─── Args schema ──────────────────────────────────────────────────────────────
 
 const MAX_TERMINAL_PAGE = 100;
-const TERMINAL_FILE_PAGE_LIMIT = 100;
+const TERMINAL_FILE_PAGE_LIMIT = 200;
 
 const Schema = z.object({
   connectionId: z.string().uuid(),
@@ -150,7 +148,7 @@ const Schema = z.object({
   searchQuery:    z.string().optional(),
   email:          z.string().email().optional(),
   fields:         z.record(z.unknown()).optional(),
-  limit:          z.number().int().min(1).max(100).optional(),
+  limit:          z.number().int().min(1).max(TERMINAL_FILE_PAGE_LIMIT).optional(),
   // Each response remains bounded to at most 25 model-facing rows. A higher
   // cursor ceiling lets governed terminal workflows page large date ranges.
   page:           z.number().int().min(1).max(MAX_TERMINAL_PAGE).optional(),
@@ -166,9 +164,6 @@ const Schema = z.object({
   invoiceDateFrom:  z.string().optional(),
   invoiceDateTo:    z.string().optional(),
 
-  // Script mode — auto-escalates list ops to exhaustive fetch + VM sandbox
-  script:     z.string().optional(),
-  scriptArgs: z.record(z.unknown()).optional(),
 }).strict();
 
 type Args = z.infer<typeof Schema>;
@@ -305,6 +300,12 @@ const updateOps = new Set<Args['op']>([
   'mark_invoice_sent',
 ]);
 
+export const zohoBooksActionFor = (op: string): ToolActionGroup =>
+  readOps.has(op as Args['op']) ? 'read'
+    : createOps.has(op as Args['op']) ? 'create'
+      : updateOps.has(op as Args['op']) ? 'update'
+        : 'delete';
+
 const listOpToModule: Record<string, ZohoBooksModule> = {
   list_invoices:         'invoices',
   list_bills:            'bills',
@@ -338,8 +339,6 @@ const READ_BACK_DETAIL_LIMIT = 25;
  * disable the duplicate guard. Refusing says so out loud.
  */
 const TWIN_READ_BACK_LIMIT = 5;
-
-const INLINE_SCRIPT_LIMIT = 10;
 
 const amountFields = new Set([
   'amount',
@@ -558,121 +557,6 @@ const reportDateParams = (args: Args): Record<string, string> => {
 
 const singleDateValue = (input: string): string => parseDateFilter(input).to;
 
-// ─── Script-mode handler ──────────────────────────────────────────────────────
-
-async function executeScriptMode(
-  args: Args,
-  ctx: ToolExecutionContext,
-  scriptDeps: { booksClient: ZohoBooksPaginatedClient; scopeFilter?: Record<string, unknown>; requesterEmail?: string | undefined },
-): Promise<Result<Res, ToolError>> {
-  const { companyId } = ctx.runContext;
-  const moduleName = listOpToModule[args.op]! as ZohoBooksModule;
-
-  const rawFilters: Record<string, string> = { ...dateParams(args) } as Record<string, string>;
-  if (args.searchQuery) rawFilters['search_text'] = args.searchQuery;
-  if (scriptDeps.scopeFilter) Object.assign(rawFilters, scriptDeps.scopeFilter);
-
-  ctx.onProgress?.(`Fetching ${moduleName} from Zoho Books…`);
-
-  let fetchResult: Awaited<ReturnType<typeof scriptDeps.booksClient.listAllRecords>>;
-  try {
-    fetchResult = await scriptDeps.booksClient.listAllRecords({
-      companyId,
-      connectionId: args.connectionId,
-      userId: ctx.runContext.userId,
-      moduleName,
-      ...(Object.keys(rawFilters).length > 0 ? { filters: rawFilters } : {}),
-    });
-  } catch (e) {
-    return err(new ToolError({
-      toolId: 'zohoBooks', reason: 'upstream_failure',
-      cause: e,
-      message: mapZohoError(e),
-    }));
-  }
-
-  const { getExchangeRates, buildCurrencyUtilities } = await import('../../zoho/exchange-rate.service');
-  const rates = await getExchangeRates();
-  const currencyUtils = buildCurrencyUtilities(rates);
-
-  const schema = getModuleSchema(moduleName);
-  const scopedItems = scriptDeps.requesterEmail
-    ? filterZohoRecordsByEmail(fetchResult.items, scriptDeps.requesterEmail)
-    : fetchResult.items;
-  const enriched = injectSyntheticFields(scopedItems, schema, currencyUtils);
-
-  const items = enriched.map(item => {
-    const slim: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(item)) {
-      if (value === null || value === undefined || typeof value !== 'object') {
-        slim[key] = value;
-      }
-    }
-    return slim;
-  });
-
-  const schemaHint = toSchemaHint(schema, items[0]);
-
-  ctx.onProgress?.(`Processing ${items.length} ${moduleName}…`);
-
-  ctx.logger.info('zohoBooks.script_mode.run', {
-    companyId, module: moduleName,
-    recordsFetched: items.length, sourceRecordsFetched: fetchResult.items.length, truncated: fetchResult.truncated,
-  });
-
-  let sandboxResult;
-  try {
-    sandboxResult = runInSandbox({
-      script: args.script!,
-      data: items,
-      args: args.scriptArgs,
-      schema: schemaHint,
-      currency: currencyUtils,
-    });
-  } catch (e) {
-    if (e instanceof SandboxTimeoutError || e instanceof SandboxScriptError ||
-        e instanceof SandboxInputTooLargeError || e instanceof SandboxSerializationError) {
-      return err(new ToolError({ toolId: 'zohoBooks', reason: 'upstream_failure', message: e.message }));
-    }
-    throw e;
-  }
-
-  const resultArray = sandboxResult.isArray ? sandboxResult.result as unknown[] : null;
-
-  ctx.onProgress?.(`Analysis complete — ${sandboxResult.rowCount ?? 1} results from ${items.length} records`);
-
-  const inlineData = resultArray && resultArray.length > INLINE_SCRIPT_LIMIT
-    ? resultArray.slice(0, INLINE_SCRIPT_LIMIT) : sandboxResult.result;
-
-  const parts: string[] = [`Fetched ${items.length} records from Zoho Books.`];
-  if (fetchResult.truncated) {
-    parts.push('DATA INCOMPLETE - pagination limit (4000 records) reached. Totals may be understated.');
-  }
-  if (args.script === 'return data' && items.length > 0) {
-    const sumAmountInr = items.reduce((s, d) => s + Number(d._amount_inr ?? d._amount ?? 0), 0);
-    const sumBalanceInr = items.reduce((s, d) => s + Number(d._balance_inr ?? d._balance ?? 0), 0);
-    const aggParts = [`_amount_inr sum = ${formatAmount(sumAmountInr, 'INR')}`];
-    if (Math.abs(sumBalanceInr - sumAmountInr) > 0.01) {
-      aggParts.push(`_balance_inr sum = ${formatAmount(sumBalanceInr, 'INR')}`);
-    }
-    parts.push(`Aggregates (all ${items.length} records): ${aggParts.join(', ')}.`);
-  }
-  if (resultArray) {
-    parts.push(`Processed into ${resultArray.length} rows.`);
-    if (resultArray.length > INLINE_SCRIPT_LIMIT) parts.push(`Showing first ${INLINE_SCRIPT_LIMIT} inline.`);
-  }
-
-  return ok({
-    success: true,
-    data: inlineData,
-    message: parts.join(' '),
-    rowCount: sandboxResult.rowCount,
-    totalFetched: items.length,
-    moduleSchema: schemaHint,
-    sourceTruncated: fetchResult.truncated,
-  });
-}
-
 // ─── Tool factory ─────────────────────────────────────────────────────────────
 
 export const createZohoBooksTool = (deps: {
@@ -713,21 +597,24 @@ export const createZohoBooksTool = (deps: {
     'A created invoice is a draft until mark_invoice_sent or send_invoice; report the status the tool returns rather than assuming it was issued.',
     'attach_document puts a file the member sent in this Lark conversation onto an invoice or bill, and verifies it against Zoho documents[].',
     'Plain list operations fetch one bounded page and return only the requested limit.',
-    'For custom chat analysis (grouping, aggregation, ranking), add a `script` parameter to fetch up to 4000 records with pre-converted INR fields (_amount_inr, _balance_inr, _total_inr). Script mode is not an export or transfer contract: never stringify or return source rows from it for an artifact.',
     'For a complete artifact or exact multi-page aggregate, use page/nextPage from one governed local Python file. Do not call this registered Pi tool for a preview first when the user already requested an export; begin the local workflow and call Zoho through divo-local.',
     'Use populated _amount_inr/_balance_inr for INR calculations; never infer an original currency when _currency is UNKNOWN.',
   ].join(' '),
 
   parameterDocs: [
     'connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.',
-    'op: list_invoices|get_invoice|create_invoice|update_invoice|mark_invoice_sent|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
-    `read params: invoiceId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, limit (1-100), page (1-${MAX_TERMINAL_PAGE})`,
+    'op: list_invoices|get_invoice|stage_invoice|create_invoice|update_invoice|mark_invoice_sent|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
+    `read params: invoiceId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, limit (1-${TERMINAL_FILE_PAGE_LIMIT}), page (1-${MAX_TERMINAL_PAGE})`,
     'For terminal paging, start with page=1 and continue with nextPage while hasMore=true.',
     'get_invoice accepts a Zoho numeric invoice ID or an exact human invoice number. list_invoices forwards searchQuery to Zoho and returns newest invoice dates first.',
-    'limit is the requested maximum. Once that many rows are returned, do not fetch more pages or switch to script mode unless the user explicitly asks for an export or an aggregate within script mode’s documented 4,000-record ceiling.',
+    'limit is the requested maximum. Once that many rows are returned, do not fetch more pages unless the user explicitly asks for a complete export or aggregate.',
     'write params: invoiceId, email, fields',
     'update_invoice/create_bill/create_contact/create_expense/record_payment take fields; the tool returns the stored record, its status, and its link. Never restate a status the tool did not return.',
     'INVOICES ARE STAGED. stage_invoice takes fields (and fileName when a document is the source) and writes nothing to Zoho: it checks the draft, has a reviewer read it cold, and returns stagedSummary plus stagingId. Show the member that summary verbatim, including everything under review.unsourced, and create only once they agree.',
+    // `fields` is z.record(z.unknown()), so the serialized schema says nothing
+    // about its shape. Without this line the model has to guess the payload and
+    // finds out from a blocking reviewer verdict, one model call later.
+    'stage_invoice fields, at minimum: customer_id, date, due_date or payment_terms, and line_items, each carrying item_id or name, quantity, rate, and tax_id. Include place_of_supply whenever the draft carries tax — without it the IGST-versus-CGST check cannot run and only warns that it did not. The zoho-books-invoice recipe states the rest.',
     'create_invoice takes ONLY stagingId. It replays the approved payload, so what the member saw is what Zoho receives. It refuses a draft that failed review, one already created, and one with no stagingId.',
     'When review.outcome is fail, fix the exact fields named in review.issues and call stage_invoice again with supersedesStagingId. review.attemptsRemaining says how many corrections are left; at zero, put the objection to the member instead of re-staging.',
     'stage_invoice: supply invoice_number only when the member gave one — the tool then overrides Zoho auto-numbering. Omit it to let Zoho number the invoice.',
@@ -738,27 +625,15 @@ export const createZohoBooksTool = (deps: {
     'list_items gives item_id and rate for invoice line_items. list_taxes gives the real tax_id values for GST; never guess a tax rate or tax id.',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
     '',
-    'SCRIPT MODE (list ops only — for ANALYSIS/GROUPING/AGGREGATION):',
-    'script: JS code. Receives data (all records), args (extra params), schema (field hints). Must return a value.',
-    `  ${ZOHO_BOOKS_ROW_CONTRACT}`,
-    `  ${ZOHO_BOOKS_OUTSTANDING_RULE}`,
-    `  ${ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE}`,
-    '  _amount/_total = original currency amount. _balance = original outstanding. _currency = ISO code or UNKNOWN; never label UNKNOWN as INR.',
-    '  For INR sums: use _balance_inr or _amount_inr directly. For "show in USD": fromINR(total, "USD").',
-    '  formatAmount(value, currency) and formatDate(iso) are available in the sandbox.',
-    '  Example (bill-balance ranking only — not contact payable total): "const g={}; data.forEach(b=>{const v=b.vendor_name||\'Unknown\'; if(!g[v])g[v]={vendor:v,count:0,billBalance:0}; g[v].count++; g[v].billBalance+=b._balance_inr;}); return Object.values(g).sort((a,b)=>b.billBalance-a.billBalance)"',
-    'scriptArgs: extra parameters available as `args` in the script',
-    'Script results stay bounded inline. For a complete artifact, page from governed local Python and use the destination specialist.',
+    'ROW FIELDS (on every list result):',
+    ZOHO_BOOKS_ROW_CONTRACT,
+    '_amount/_total = original currency amount. _balance = original outstanding. _currency = ISO code or UNKNOWN; never label UNKNOWN as INR, and never produce an original-currency breakdown from UNKNOWN rows.',
+    ZOHO_BOOKS_OUTSTANDING_RULE,
+    ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE,
   ].join('\n'),
 
   permissionCheck(args, perm) {
-    const action: ToolActionGroup = readOps.has(args.op)
-      ? 'read'
-      : createOps.has(args.op)
-        ? 'create'
-        : updateOps.has(args.op)
-          ? 'update'
-          : 'delete';
+    const action = zohoBooksActionFor(args.op);
     const allowed = perm.allowedActionsByTool.get(asToolId('zohoBooks'))?.has(action) ?? false;
     return allowed
       ? ok(action)
@@ -828,24 +703,11 @@ export const createZohoBooksTool = (deps: {
       }
     }
 
-    const scopeFilter: Record<string, unknown> = personalizedScope ? { email: requesterEmail! } : {};
-
-    // ── Script mode (auto-escalate list ops to exhaustive fetch + sandbox) ──
-    if (args.script) {
-      const moduleName = listOpToModule[args.op];
-      if (moduleName) {
-        return executeScriptMode(args, ctx, {
-          booksClient: deps.booksClient,
-          ...(personalizedScope ? { scopeFilter, requesterEmail: requesterEmail! } : {}),
-        });
-      }
-      return err(new ToolError({
-        toolId: 'zohoBooks', reason: 'bad_args',
-        message: `script is only supported on list operations (${Object.keys(listOpToModule).join(', ')}), not ${args.op}`,
-      }));
-    }
-
     // ── CRUD operations ──────────────────────────────────────────────────────
+    const scopeFilter: Record<string, unknown> = personalizedScope
+      ? { email: requesterEmail! }
+      : {};
+
     const appBaseUrl = deps.appBaseUrl ?? 'https://books.zoho.com';
 
     /** Single-record GET. Unlike getRecord() this surfaces provider errors

@@ -91,6 +91,13 @@ export function Artifacts({ replay, toast }: Props) {
       <PageHeader
         eyebrow="Your workspace"
         title="Things Divo made"
+        /*
+         * Said once, at the top, rather than left to be inferred from the
+         * "Needs backend" note further down. Everything on this page is a
+         * picture of a screen that does not exist yet, and a reader who works
+         * that out only after clicking a card has been misled by us.
+         */
+        badge={<span className="ws-soon">Coming soon</span>}
         description="Decks, checklists and research Divo produced while working with you. Each one is a real file it can keep editing."
       />
       <div className="ws-stack">

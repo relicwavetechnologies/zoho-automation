@@ -84,12 +84,12 @@ export function registerTypedPlatformTools(
 		name: "divo_connections",
 		label: "Divo connected accounts",
 		description:
-			"List the accounts you may use for one provider family, with the exact connectionId each governed call requires.",
+			"List accessible accounts for one provider when the user asks or an exact typed tool says an account choice is required.",
 		promptSnippet:
-			"Call divo_connections once for a provider before a governed call when the run context has not already supplied an account.",
+			"Use divo_connections only for explicit account discovery or to resolve an account choice returned by a governed tool.",
 		promptGuidelines: [
-			"Reuse a connectionId already supplied by the run context; call this only when the required account is missing from it.",
-			"Pass the connectionId returned here unchanged, even when only one account exists.",
+			"Do not call this merely to fill an optional connectionId; the exact tool can select the sole action-eligible account.",
+			"When a tool or the user requires a choice, pass one returned connectionId unchanged.",
 			"An empty list is a real answer: the user has no connected account for that provider and must connect one.",
 		],
 		parameters: DIVO_CONNECTIONS_PARAMS as unknown as Record<string, unknown>,

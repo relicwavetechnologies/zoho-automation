@@ -32,6 +32,7 @@ import type { ManagerPersonaRuntimeService } from '../../application/persona-lea
 import type { MemoryService } from '../../application/knowledge/semantic-memory.port';
 import { getCanonicalPersonalMemorySnapshot } from '../../application/knowledge/knowledge-resource-query.service';
 import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
+import { zohoServicesForScopes } from '../../domain/zoho/zoho-scope';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
 import { DEFAULT_ALLOWED_MODELS, PROXY_MODEL_SPECS, RUNTIME_MODEL_PREFERENCE } from '../../application/observability/pricing';
@@ -1208,6 +1209,28 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         }
       }
 
+      /*
+       * Keep the picture Lark just handed over.
+       *
+       * It arrived on every Lark sign-in and was passed straight through to the
+       * desktop response, so the web app — which reads the person from the
+       * database — had no way to know it existed and drew initials for somebody
+       * whose photograph Divo had been given minutes earlier.
+       *
+       * Best effort on purpose. An avatar is decoration; failing a sign-in
+       * because a decorative write failed would be the wrong trade every time.
+       */
+      if (tokenBundle.avatarUrl) {
+        try {
+          await deps.prisma.user.update({
+            where: { id: user.id },
+            data: { avatarUrl: tokenBundle.avatarUrl },
+          });
+        } catch (error) {
+          log.warn('lark.exchange.avatar_not_saved', { userId: user.id, error: String(error) });
+        }
+      }
+
       const session = await issueDesktopSession(deps, user.id, companyId, role, {
         authProvider:  'lark',
         larkTenantKey: tenantKey,
@@ -1410,7 +1433,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
       const user = await deps.prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, email: true, name: true },
+        select: { id: true, email: true, name: true, avatarUrl: true },
       });
       const company = await deps.prisma.company.findUnique({
         where: { id: companyId },
@@ -1457,6 +1480,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
             : null,
           email: user?.email,
           name:  user?.name,
+          // Null for anybody who has never signed in through Lark, which every
+          // surface reads as "draw initials" rather than as a broken image.
+          avatarUrl: user?.avatarUrl ?? null,
           departments,
           lark: larkConnections.ok ? {
             connected: larkConnections.value.length > 0,
@@ -1960,6 +1986,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
                 connectionId: connection.connectionId,
                 label: connection.label,
                 access: connection.access,
+                services: zohoServicesForScopes(connection.scopes),
               })),
             } : {}),
           });

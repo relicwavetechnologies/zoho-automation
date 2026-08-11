@@ -1,18 +1,18 @@
 import type { Skill } from './skill.types';
-import {
-  ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE,
-  ZOHO_BOOKS_OUTSTANDING_RULE,
-  ZOHO_BOOKS_ROW_CONTRACT,
-} from '../../shared/zoho-books-row-contract';
 import { GOVERNED_LOCAL_AVAILABLE_RUNTIME } from './governed-local-routing';
 
+/**
+ * How connectionId itself behaves — omit it when one account qualifies, retry
+ * with the exact ID an error returns — is stated by both Zoho tools' own
+ * parameterDocs. What survives here is what a schema cannot say: which surface
+ * to call, when to ask the member, and when to stop.
+ */
 const ZOHO_CONNECTION_METHOD = `DIVO-GOVERNED ZOHO CONNECTION:
 - Invoke Zoho only through the matching registered Divo Zoho tool for a direct action. Inside a governed terminal workflow, ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use \`divo-local\` with the source recipe's exact toolId. Never call Zoho directly, use local credentials, or switch to an unavailable tool surface.
-- Reuse an exact connectionId already supplied by the current run. Otherwise omit it: the backend selects an account only when exactly one accessible account qualifies.
-- If Divo returns structured connection choices, ask one short account-choice question using those labels, then retry with the selected exact ID. Do not guess.
-- Do not call connections.list merely to rediscover an account the backend can select.
-- If no connection is accessible, tell the member to connect or request access to Zoho.
-- Never use a label, organization name, or guessed value as connectionId. Use only a backend-provided connectionId.`;
+- Do not call connections.list to rediscover an account the backend can select for itself.
+- If the loaded work context shows multiple Zoho accounts, first restrict them to the requested service: CRM or Books. When exactly one account lists that service, omit connectionId or use that exact ID and let backend validation select it. Ask the member only when multiple accounts list the requested service.
+- If Divo returns structured connection choices, ask one short account-choice question using those labels, then retry with the selected exact ID. Never send a label, organisation name, or guessed value as connectionId.
+- If no accessible connection lists the requested service, tell the member that the matching CRM or Books authorization is missing and ask them to reconnect or request access.`;
 
 /**
  * Rules every Zoho write shares. They used to live in `finance-ops-core`, which
@@ -23,7 +23,7 @@ const ZOHO_WRITE_SAFETY = `WRITE SAFETY:
 - Stay read-only when the user says "don't change anything".
 - Use a write op only after the exact record IDs, fields, and payload are clear. Never write from a guessed id.
 - Let backend RBAC/HITL handle approval. Never state a mutation is complete until the tool confirms it.
-- Report the status the tool returned, not the status you expected. A created invoice comes back as a draft unless you issue it.`;
+- Report the status the tool returned, not the status you expected.`;
 
 export const financeZohoRouterSkill: Skill = {
   id: 'finance-zoho-router',
@@ -41,7 +41,7 @@ export const financeZohoRouterSkill: Skill = {
 
 Creating an invoice and recording a vendor bill are different workflows. Money owed to us is an invoice; money we owe a supplier is a bill. Ask which one is meant rather than guessing when the request could be either.
 
-Preserve explicit read-only constraints. If more than one accessible Zoho account could satisfy the request, ask one short account-choice question using backend-provided labels before calling a Zoho tool. Never guess an account, create a todo, export data, or perform a write merely because routing was ambiguous.`,
+Preserve explicit read-only constraints. Never create a todo, export data, or perform a write merely because routing was ambiguous.`,
 };
 
 export const zohoCrmReadAnalysisSkill: Skill = {
@@ -53,13 +53,11 @@ export const zohoCrmReadAnalysisSkill: Skill = {
 
 READ ROUTING:
 - Use zohoCrm read operations for customer, lead, contact, account, deal, case, owner, and relationship context.
-- Use narrow search/list filters before fetching a specific record.
-- For a complete CRM artifact, follow the tool's real pagination fields and keep pages in local files rather than model context. Do not claim completeness without reconciling every page.
-- Stay read-only unless the user explicitly requests a CRM mutation and an approved write specialist is available.
+- Use \`search\` with provider-side criteria for a bounded filtered set. \`list\` does not accept criteria; never scan a whole module and filter locally when Zoho search can answer the request.
+- Keep the pages of a complete CRM artifact in local files rather than model context, and do not claim completeness without reconciling every one of them.
 
 WRITES ARE NOT THIS SKILL:
-- This skill is for reading. Creating, editing, issuing, emailing, voiding, paying, or attaching anything is a different workflow with its own safeguards, and those safeguards are not in this file.
-- If the member wants a write, stop and load the right skill first: \`zoho-books-invoice\` for invoices and customers, \`zoho-books-bill\` for vendor bills, \`zoho-books-money\` for payments and expenses.
+- This skill reads. Creating, editing, issuing, emailing, voiding, paying, or attaching anything is a different workflow with its own safeguards, and those safeguards are not in this file: \`zoho-books-invoice\` for invoices and customers, \`zoho-books-bill\` for vendor bills, \`zoho-books-money\` for payments and expenses.
 - Sharing a tool with those skills does not make a write safe here. Do not perform one merely because the tool would accept it.
 
 OUTPUT:
@@ -75,33 +73,24 @@ export const zohoBooksReadAnalysisSkill: Skill = {
   instructions: `${ZOHO_CONNECTION_METHOD}
 
 READ ROUTING:
-- For complete paginated Zoho Books reads, set \`limit=100\` on every page (the validated maximum) unless the tool rejects that exact value. Do not copy a small chat-preview limit such as 10 or 25 into the terminal workflow; follow \`nextPage\` until \`hasMore=false\`.
-- Zoho Books terminal arguments are top-level: for example \`{"op":"list_expenses","connectionId":"<exact bootstrap UUID>","dateFrom":"2026-04-01","dateTo":"2026-07-31","page":1,"limit":100}\`. Never wrap them in Google-style \`input\`, and do not probe an unsupported \`describe\` op.
-- Bounded lookup or preview, with no requested artifact or destination -> use the matching zohoBooks read operation with narrow filters.
-- For an ordinary list request, keep the direct model preview bounded. Do not fetch additional pages unless the member asked for a complete artifact, a whole-account calculation, or another workflow that genuinely needs them.
-- For a complete artifact, use the local Python workflow described below, persist every page outside model context, then use the requested destination specialist and reconcile source, written, and read-back counts.
-- A request such as “export all expenses for this date range from this account into a new Google Sheet” is already clear. Do not ask whether to proceed.
-- When the member gives a bounded date range, pass its exact ISO boundaries as \`dateFrom\` and \`dateTo\` on the first call and every paginated call. Never fetch the whole Zoho account and filter it locally when the provider operation accepts those filters.
-- For that artifact workflow, do not use the Zoho \`script\` parameter and do not return or stringify source rows from a provider-side script. \`script\` is for bounded server-side analysis, not paging or transfer. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use \`page\`, \`hasMore\`, and \`nextPage\` through \`divo-local\` so each saved response keeps the documented structured page envelope.
-- Latest/recent bounded invoices -> use zohoBooks op="list_invoices" with the requested limit; it is already sorted by invoice date newest-first. Do not scan or sort thousands of rows.
-- Human invoice number -> use zohoBooks op="get_invoice" with that exact number, or list_invoices with searchQuery and accept only an exact normalized invoice_number match before using its invoice_id. Never substitute a fuzzy result.
+- Bounded lookup or preview, with no requested artifact or destination -> the matching zohoBooks read op with narrow filters.
+- Complete artifact -> use the local Python workflow below, persist every page outside model context, then use the requested destination specialist and reconcile source, written, and read-back counts. A request such as “export all expenses for this date range from this account into a new Google Sheet” is already clear. Do not ask whether to proceed.
 - Exact whole-account or potentially large aggregate with no requested artifact -> ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, load \`divo-python-automation\`, fetch \`page=1\` then each returned \`nextPage\` through the same persistent Python file, and write rows to disk before calculating. Do not pull pages into model context. If page 100 still reports more rows, state that the source cap was reached rather than claiming completeness.
+- In either terminal paging loop, set \`limit=200\` on every page, matching Zoho Books' supported page size. A chat-preview limit such as 10 or 25 belongs to chat; carrying it into the loop multiplies provider calls for no benefit.
+- Zoho Books arguments are top-level. Never wrap them in a Google-style \`input\` object — that is a different tool's shape.
+- When the member gives a bounded date range, pass its exact ISO boundaries as \`dateFrom\` and \`dateTo\` on the first call and every paginated call. Never fetch the whole Zoho account and filter it locally when the provider operation accepts those filters.
+- Never page or transfer with the Zoho \`script\` parameter. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use \`page\`, \`hasMore\`, and \`nextPage\` through \`divo-local\` so each saved response keeps the documented structured page envelope.
 - ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, read the result file path returned by \`divo-local invoke\`; its governed Zoho result is at \`data\`, list rows are \`data.preview.rows\`, the reported count is \`data.report.returnedCount\`, and pagination is \`data.hasMore\` plus \`data.nextPage\`. Never count keys in \`data\` as records.
-- Aging/overdue report -> use zohoBooks op="build_overdue_report".
-- Product, item, SKU, or standard rate question -> zohoBooks op="list_items". Report the item_id and rate it returns; never quote a price from memory or from an earlier conversation.
-- GST or tax rate question, and any tax decision that will be written to a record -> zohoBooks op="list_taxes". Use the tax_id it returns. Never infer a percentage from an invoice you read, and never guess a rate.
-- Vendor or customer outstanding / payable / receivable balance for one contact -> list_contacts with searchQuery when needed, then get_contact with the contactId. Report outstanding_payable_amount or outstanding_receivable_amount from get_contact; that matches Zoho's Payables/Receivables UI. Bill or invoice balance sums are detail only and can be lower when opening balances exist.
+- Latest/recent bounded invoices -> op="list_invoices" with the requested limit. Do not scan or sort thousands of rows to find them.
+- Human invoice number -> op="get_invoice" with that exact number, or list_invoices with searchQuery. Accept only an exact normalized invoice_number match before using its invoice_id; never substitute a fuzzy result.
+- Aging/overdue report -> op="build_overdue_report".
+- Product, item, SKU, or standard rate question -> op="list_items". Report the rate it returns; never quote a price from memory or from an earlier conversation.
+- GST or tax rate question, and any tax decision that will be written to a record -> op="list_taxes". Never infer a percentage from an invoice you read.
+- Vendor or customer outstanding / payable / receivable balance for one contact -> list_contacts with searchQuery when needed, then get_contact with the contactId. Bill or invoice balance sums are detail only and can be lower when opening balances exist.
 - Before describing a total as exact, reconcile it: every source page accounted for, and the row count you computed over stated alongside the figure.
-- Zoho customer-payment list rows may omit original currency. When _currency is UNKNOWN, do not call it INR or produce an original-currency breakdown. _amount_inr remains safe when populated from Zoho bcy_amount; otherwise state that original-currency analysis requires stronger evidence.
-
-ROW CONTRACT:
-${ZOHO_BOOKS_ROW_CONTRACT}
-${ZOHO_BOOKS_OUTSTANDING_RULE}
-${ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE}
 
 WRITES ARE NOT THIS SKILL:
-- This skill reads. Creating, editing, issuing, emailing, voiding, attaching, paying, or expensing anything is a different workflow, and the safeguards those need — staging, duplicate checks, the GST direction check, payment application — are not in this file.
-- If the member wants a write, stop and load the right skill first: \`zoho-books-invoice\` for invoices and customers, \`zoho-books-bill\` for vendor bills, \`zoho-books-money\` for customer payments and expenses.
+- This skill reads. Creating, editing, issuing, emailing, voiding, attaching, paying, or expensing anything is a different workflow, and the safeguards those need — staging, duplicate checks, the GST direction check, payment application — are not in this file: \`zoho-books-invoice\` for invoices and customers, \`zoho-books-bill\` for vendor bills, \`zoho-books-money\` for customer payments and expenses.
 - The zohoBooks tool will accept a write from here because it is the same tool. That is not permission. A write performed under this skill is a write performed without its checks.
 
 OUTPUT:
@@ -114,18 +103,15 @@ OUTPUT:
 const ZOHO_BOOKS_BILL_WORKFLOW = `ZOHO BOOKS BILL RECORDING:
 - Use this workflow when the user asks to record, create, or enter a vendor bill/invoice in Zoho Books, especially with a PDF invoice.
 - Extract invoice data from the attached/source PDF before writing: invoice or bill number, date, vendor name, GSTIN/PAN/address, line items, tax breakdown, total, and IRN when present. The PDF is already in the workspace at the path given in [ATTACHED_FILES]; open and read it before any Zoho write.
-- Treat the source invoice/bill number as the unique Zoho Books bill_number.
-- Never create a second bill with the same normalized bill_number. Search existing bills first with zohoBooks op="list_bills" using searchQuery/date/vendor filters where possible; accept only exact normalized bill_number matches.
-- If an existing bill is found, do not create another bill and do not record another payment. Read its \`documents\` list with op="get_invoice"-style single-record reads or from the write response; attach the PDF only if it is missing.
-- Resolve the vendor with op="list_contacts" and searchQuery first. Only when that returns no match, create it with op="create_contact", and say in your reply that a new vendor was created.
+- The source invoice/bill number is the Zoho Books bill_number. It is the vendor's own reference, printed on their invoice: read it from the document or ask for it. Never compose one from the vendor's name and the month — an invented number reconciles against nothing and hides the real duplicate.
+- Never create a second bill with the same normalized bill_number. Search existing bills first with op="list_bills" using searchQuery/date/vendor filters where possible; accept only exact normalized bill_number matches. If one already exists, do not create another bill and do not record another payment — read its \`documents\` list and attach the PDF only if it is missing.
+- Resolve the vendor with op="list_contacts" and searchQuery.
 - Fetch chart of accounts with op="get_chart_of_accounts" and choose the expense account that matches the service. Do not guess silently when the account choice is ambiguous.
-- Fetch the real tax records with op="list_taxes" and apply GST using the tax_id they return. Divo compares the vendor's state against the selling organisation's own state, so do not assume one. Different state means IGST; the same state means CGST plus SGST. Never invent a rate or a tax id.
-- Create the bill with zohoBooks op="create_bill" and fields containing vendor_id, bill_number, date, due_date, line_items, taxes, and notes including IRN/payment context when available.
-- bill_number is the vendor's own reference, printed on their invoice. Read it from the document or ask for it. Never compose one from the vendor's name and the month: an invented number reconciles against nothing and hides the real duplicate.
-- Attach the source PDF with op="attach_document", recordType="bill", recordId set to the bill_id, and fileName set to the exact name of the file the member sent in this conversation. The tool confirms against Zoho's own document list; report attached only when it says so.
-- Attaching works only for a file sent in this Lark conversation. If the tool says it cannot find or download the file, say the bill was created without its PDF and ask the member to send the file again. Never describe an attachment the tool did not confirm.
+- Apply GST from op="list_taxes". Divo compares the vendor's state against the selling organisation's own state, so do not assume one: a different state means IGST, the same state means CGST plus SGST.
+- Create the bill with op="create_bill" and fields containing vendor_id, bill_number, date, due_date, line_items, taxes, and notes including IRN/payment context when available.
+- Attach the source PDF with op="attach_document" and recordType="bill" on the bill_id. If the tool says it cannot find or download the file, say the bill was created without its PDF and ask the member to send the file again.
 - Record payment only when the user asks or the invoice is clearly paid. If unpaid or bill-only, leave it open and say payment was not recorded.
-- For vendor payments, Zoho defaults to Undeposited Funds unless the paid-through account is set. Set paid_through_account_id in the create payload. There is no vendor-payment update op, so if that account is not known before recording, stop and ask rather than recording a payment that will need correcting by hand.
+- For vendor payments, Zoho defaults to Undeposited Funds unless paid_through_account_id is set in the create payload. There is no vendor-payment update op, so if that account is not known before recording, stop and ask rather than recording a payment that will need correcting by hand.
 - Verify by re-reading the final bill and checking status, balance, payment_made, bill_id, and its document list.
 - Final response must say whether the bill was created, updated, unchanged, or blocked; include bill ID/link, payment status, and PDF attachment status.`;
 
@@ -176,24 +162,15 @@ ${ZOHO_WRITE_SAFETY}
 
 BEFORE WRITING:
 1. Duplicate check. Search with op="list_invoices" and searchQuery, or op="get_invoice" with an exact invoice number, before creating anything the member describes as already existing. Accept only an exact normalized invoice_number match.
-2. Customer. op="list_contacts" with searchQuery. Use the contact_id it returns. Only when there is no match, op="create_contact" — and say in your reply that a new customer was created.
-3. Line items. op="list_items" for item_id and rate. Use free-typed name and rate only when the member explicitly describes a one-off charge that is not in the item list, and say that you did.
-4. Tax. op="list_taxes" for the real tax_id values, and set place_of_supply to the customer's state code as Zoho writes it ("RJ", "KA"). A customer in another state than the selling organisation means IGST; the same state means CGST plus SGST. Divo checks that direction against the organisation it is creating in and refuses a draft that has it backwards. Never guess a rate or a tax id, and never copy one from a document you read.
+2. Customer and line items. op="list_contacts", then op="list_items". Use a free-typed name and rate only when the member explicitly describes a one-off charge that is not in the item list, and say that you did.
+3. Tax. op="list_taxes", and set place_of_supply to the customer's state code as Zoho writes it ("RJ", "KA"). A customer in another state than the selling organisation means IGST; the same state means CGST plus SGST. Divo checks that direction against the organisation it is creating in and refuses a draft that has it backwards. Never copy a rate or a tax id from a document you read.
 
 CREATING — STAGE, SHOW, THEN CREATE:
-- Never call create_invoice first. It requires a stagingId and will refuse without one.
-- op="stage_invoice" with fields containing customer_id, date, due_date or payment_terms, and line_items each carrying item_id or name, quantity, rate, and tax_id. Pass fileName when the member sent a document this invoice comes from, so the reviewer can read it.
-- payment_terms is a whole number of DAYS, not words: 15, not "Net 15"; 0 for due on receipt. A document saying "Net 15" means payment_terms 15. Zoho keeps the wording in payment_terms_label, which the tool fills in for you.
-- Nothing is written to Zoho by staging. It runs the automatic checks, has a reviewer read the draft cold, and returns a summary plus a stagingId.
-- Supply invoice_number only when the member gave you one. Omitting it lets Zoho apply its own numbering, which is what most organisations want.
-
-- If the reviewer FAILED the draft, it found something that contradicts what the member said, the document, or a Zoho record. Correct those exact fields and call stage_invoice again with supersedesStagingId set to the previous stagingId. You get two corrections. If the second is still refused, stop and put the reviewer's objection to the member in their own words — do not keep re-staging.
+- op="stage_invoice" writes nothing to Zoho: it runs the automatic checks, has a reviewer read the draft cold, and returns a summary plus a stagingId. Pass fileName when the member sent the document this invoice comes from, so the reviewer reads the source rather than your account of it.
+- Show the member that summary EXACTLY as written, including everything listed as unconfirmed. Those are values nobody stated — a rate taken from the catalogue, a due date copied from past terms. They are usually right, and the member is the only one who can say so.
+- Ask them to confirm, then op="create_invoice" with that stagingId. If they want a change, do not edit and create: stage again with the change and show them the new summary.
+- If the reviewer FAILED the draft, it found something that contradicts what the member said, the document, or a Zoho record. Correct those exact fields and re-stage. When the tool reports no corrections left, stop and put the reviewer's objection to the member in their own words — do not keep re-staging.
 - If the reviewer could not run, the summary says so. Show the member and tell them plainly that this draft was not reviewed.
-
-- Show the member the returned summary EXACTLY as written, including everything listed as unconfirmed. Those are values nobody stated — a rate taken from the catalogue, a due date copied from past terms. They are usually right, and the member is the only one who can say so.
-- Ask them to confirm. When they agree, call op="create_invoice" with that stagingId and nothing else; the tool replays the payload they approved, so what they saw is what Zoho receives.
-- If they want a change, do not edit and create. Stage again with the change and show them the new summary.
-- Zoho creates invoices as drafts. The tool reports the status it stored — repeat that status; do not describe a draft as sent, issued, or billed.
 - If the result carries a drift list, Zoho stored something differently from what the member approved. Tell them that before anything else, and before issuing or emailing it.
 
 WHEN A CREATE DOES NOT COME BACK CLEANLY:
@@ -203,17 +180,14 @@ WHEN A CREATE DOES NOT COME BACK CLEANLY:
 - Re-staging is a decision the member makes, never a retry you perform. When they do confirm, Divo searches Zoho again before letting the new draft through — so if it refuses at that point, an earlier attempt did reach the books and the customer would have been billed twice. Repeat that refusal to them as it is written.
 
 ISSUING:
-- op="mark_invoice_sent" moves a draft to sent without emailing anyone.
-- op="send_invoice" emails it, optionally to a specific address.
-- These are different acts. Ask which the member wants rather than choosing; issuing an invoice and emailing a customer have different consequences.
+- Ask whether the member wants the invoice issued (mark_invoice_sent) or emailed to the customer (send_invoice) rather than choosing for them. Issuing an invoice and emailing a customer have different consequences.
 
 CORRECTING:
 - op="update_invoice" with invoiceId and only the fields that change.
 - Zoho refuses edits to an invoice that is paid or partially paid. When that happens, say so and offer a credit note as the next step rather than retrying.
 
 ATTACHING:
-- op="attach_document" with recordType="invoice", recordId set to the invoice_id, and fileName set to the exact name of a file the member sent in this Lark conversation.
-- The tool verifies against Zoho's own document list. Report attached only when it confirms it. If it says the file is missing, ambiguous, or undownloadable, say the invoice stands without its attachment and ask the member to send the file again.
+- op="attach_document" with recordType="invoice" on the invoice_id. If the tool says the file is missing, ambiguous, or undownloadable, say the invoice stands without its attachment and ask the member to send the file again.
 
 VERIFY AND REPORT:
 - State the invoice number, its status, total, balance, and its link, all from what the tool returned.

@@ -50,38 +50,6 @@ describe('SemrushService', () => {
     assert.deepEqual(calls, [{ apiKey: 'env-key', args: overview }]);
   });
 
-  it('preflights without spending a provider request', async () => {
-    const service = new SemrushService(
-      { fetch: async () => { throw new Error('preflight must not call Semrush'); } } as any,
-      staticProvider(),
-      logger,
-    );
-
-    assert.deepEqual(await service.preflight(overview), {
-      configured: true,
-      operation: 'domain_overview',
-      apiVersion: 'web_private',
-      providerHost: 'www.semrush.com',
-      reportType: 'dpa/rpc ranks.Ranks organic.overview',
-      limits: { maxRowsPerRequest: 200 },
-    });
-  });
-
-  it('reports backlinks web limits in preflight', async () => {
-    const service = new SemrushService({ fetch: async () => complete } as any, staticProvider(), logger);
-    assert.deepEqual(
-      await service.preflight({ operation: 'backlinks_comparison', targets: ['a.com', 'b.com'] }),
-      {
-        configured: true,
-        operation: 'backlinks_comparison',
-        apiVersion: 'web_private',
-        providerHost: 'www.semrush.com',
-        reportType: 'backlinks/webapi2 backlinks_comparison',
-        limits: { maxTargets: 10, requestsBilled: 1 },
-      },
-    );
-  });
-
   it('surfaces a missing key rather than pretending Semrush answered', async () => {
     const service = new SemrushService(
       { fetch: async () => { throw new Error('must not call'); } } as any,

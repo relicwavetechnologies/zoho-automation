@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readdir, readFile } from 'node:fs/promises';
 import { describe, it } from 'node:test';
 import { DIVO_SEMRUSH_SYSTEM_SKILL } from '../../src/application/skills/semrush-system-skill.ts';
 import { DIVO_OMS_SITE_DATA_SYSTEM_SKILL } from '../../src/application/skills/oms-site-data-system-skill.ts';
@@ -8,10 +9,19 @@ import {
   airtableSchemaOpsSkill,
 } from '../../src/application/skills/airtable.skill.ts';
 import { MENHOOD_DATA_SYSTEM_SKILL } from '../../src/application/skills/menhood-data-system-skill.ts';
+import { shopifySkills } from '../../src/application/skills/shopify.skill.ts';
+import { aitableSkills } from '../../src/application/skills/aitable.skill.ts';
 import { zohoBooksReadAnalysisSkill } from '../../src/application/skills/zoho.skill.ts';
 import { DIVO_LOCAL_PYTHON_SYSTEM_SKILL } from '../../src/application/skills/divo-local-python-system-skill.ts';
 import { GOOGLE_WORKSPACE_SYSTEM_SKILLS } from '../../src/application/skills/google-workspace-system-skills.ts';
+import { DIVO_PRESENTATIONS_SYSTEM_SKILL } from '../../src/application/skills/divo-presentations-system-skill.ts';
+import { ZOHO_FINANCE_SYSTEM_SKILLS } from '../../src/application/skills/zoho-finance-system-skills.ts';
+import { LARK_SYSTEM_SKILLS } from '../../src/application/skills/lark-system-skills.ts';
+import { MAIL_OPS_SYSTEM_SKILLS } from '../../src/application/skills/mail-ops-system-skills.ts';
+import { SCHEDULE_DIVO_WORK_SKILL_MARKDOWN } from '../../src/application/skills/scheduled-work-system-skill.ts';
+import { KNOWLEDGE_MANAGEMENT_SKILL_MARKDOWN } from '../../src/application/skills/knowledge-system-skill.ts';
 import {
+  ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS,
   ROUTING_SYSTEM_SKILLS,
   SYSTEM_SKILL_ROUTE_SEEDS,
   unroutedSeededSystemSkillSlugs,
@@ -58,23 +68,46 @@ describe('system skill routes', () => {
     assert.doesNotMatch(router.markdown, /exportCandidate|dataExport|secure-data-export/);
   });
 
-  it('teaches exact Airtable gateway and record-read shapes', () => {
-    assert.match(airtableCoreSkill.instructions, /root `op: "tools\.invoke"`/);
-    assert.match(airtableCoreSkill.instructions, /Put `connectionId` inside `payload\.args`, never beside `payload`/);
-    assert.match(airtableCoreSkill.instructions, /toolId: "airtableRecords"/);
-    assert.match(airtableSchemaOpsSkill.instructions, /toolId: "airtableSchema"/);
-    assert.match(airtableAutomationOpsSkill.instructions, /toolId: "airtableAutomation"/);
-    assert.match(airtableCoreSkill.instructions, /list_records_for_table input uses `filters` plural, not `filter`/);
-    assert.match(airtableCoreSkill.instructions, /search_records has a different input shape/);
-    assert.match(airtableCoreSkill.instructions, /Each leaf condition is `\{ operator, operands: \[fieldId, value\] \}`/);
+  it('sends each Airtable job to its own registered tool, without a gateway envelope', () => {
+    /*
+     * These three skills taught the divo_gateway wrapper — root
+     * `op: "tools.invoke"` around `payload: { toolId, args }`, with a rule
+     * about which level `connectionId` sits at. That mega-tool is deleted and
+     * each family is a registered typed tool, so the envelope is not just
+     * unnecessary, it is rejected. The test asserted the envelope, so the
+     * suite was holding a deleted call shape in place.
+     */
+    for (const skill of [airtableCoreSkill, airtableSchemaOpsSkill, airtableAutomationOpsSkill]) {
+      assert.doesNotMatch(skill.instructions, /tools\.invoke|payload\.args|divo_gateway|call_tool/);
+    }
+    assert.match(airtableCoreSkill.instructions, /goes through `airtableRecords`/);
+    assert.match(airtableSchemaOpsSkill.instructions, /goes through `airtableSchema`/);
+    assert.match(airtableAutomationOpsSkill.instructions, /goes through `airtableAutomation`/);
+    /*
+     * AirtableContractBootstrapService binds list_records_for_table before
+     * inference for every record run, precisely because its filter tree is a
+     * nested union no model rebuilds correctly from prose. The skill wrote the
+     * tree, the leaf-condition shape, and the date value/range objects out in
+     * full anyway, and this test pinned them there. What the skill still owes
+     * is the part no schema encodes.
+     */
+    assert.match(airtableCoreSkill.instructions, /Build the `filters` tree from the bound `list_records_for_table` contract/);
+    assert.match(airtableCoreSkill.instructions, /never send `filter` singular/);
+    assert.match(airtableCoreSkill.instructions, /are not interchangeable/);
+    assert.doesNotMatch(airtableCoreSkill.instructions, /operands: \[fieldId, value\]|mode: "exactDate"|thisCalendarYear/);
+    // Divo synthesizes list_fields_for_table, so nothing is ever bound for it.
+    assert.match(airtableCoreSkill.instructions, /no contract is ever bound for that one/);
+    // A named calendar month is not a rolling window: this one changes the answer.
+    assert.match(airtableCoreSkill.instructions, /Filtering July with pastMonth answers a different question/);
   });
 
-  it('keeps direct Airtable reads bounded while naming trusted local page mode', () => {
-    assert.match(airtableCoreSkill.instructions, /Ordinary direct `op: "call"` record reads return a small preview/);
-    assert.match(airtableCoreSkill.instructions, /`op: "page"`/);
-    assert.match(airtableCoreSkill.instructions, /available only through `divo-local`/);
-    assert.match(airtableCoreSkill.instructions, /follow each returned `nextCursor` until `hasMore=false`/);
+  it('keeps direct Airtable reads bounded while using one native contract for file-backed pages', () => {
+    assert.match(airtableCoreSkill.instructions, /Ordinary direct `op: "call"` record reads return a byte-safe preview/);
+    assert.doesNotMatch(airtableCoreSkill.instructions, /`op: "page"`/);
+    assert.match(airtableCoreSkill.instructions, /exact same native `op: "call"` through `divo-local`/);
+    assert.match(airtableCoreSkill.instructions, /Pass each returned cursor into the next call/);
     assert.match(airtableCoreSkill.instructions, /`metadata\.totalRecordCount`/);
+    assert.match(airtableCoreSkill.instructions, /values under `cellValuesByFieldId`, not `fields`/);
     assert.match(airtableCoreSkill.instructions, /Never derive a distribution, share, percentage, average, minimum, maximum, date range, or sum/);
   });
 
@@ -82,14 +115,15 @@ describe('system skill routes', () => {
     assert.match(airtableCoreSkill.instructions, /A date operand is never a bare date string/);
     assert.match(airtableCoreSkill.instructions, /`timeZone` is always required/);
     assert.match(airtableCoreSkill.instructions, /`pastMonth` is a rolling window ending today, not a calendar month/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /never a relative window such as `pastMonth` or `thisCalendarMonth`/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /never replace a named month with a rolling window/);
   });
 
   it('keeps Semrush and OMS truthful about bounded provider coverage', () => {
     for (const skill of [DIVO_SEMRUSH_SYSTEM_SKILL, DIVO_OMS_SITE_DATA_SYSTEM_SKILL]) {
       assert.doesNotMatch(skill.markdown, /exportCandidate|dataExport|cloudinary/i);
     }
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /continuation as incomplete\s+coverage/s);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /receives every row Semrush returned for that one\s+bounded report/s);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /do not invent\s+pagination/s);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /never paginates and never returns a total count/i);
   });
 
@@ -102,6 +136,88 @@ describe('system skill routes', () => {
       'Add a Notes column to that Sheet',
     ]) {
       assert.ok(data.markdown.includes(phrase), `missing routing example: ${phrase}`);
+    }
+  });
+
+  /*
+   * `divo-presentations` provisioned for every company, appeared in the
+   * registry, and no router pointed at it — while `unroutedSeededSystemSkillSlugs`
+   * returned []. The guard was not passing; it could not see the skill, because
+   * ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS never listed it. A definition missing
+   * from that list is exempt from the only check that would notice.
+   */
+  it('sees every seeded skill it claims to check', () => {
+    assert.ok(ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS.includes(DIVO_PRESENTATIONS_SYSTEM_SKILL.slug));
+    const files = SYSTEM_SKILL_ROUTE_SEEDS.find(seed => seed.routerSlug === 'files-router')!;
+    assert.ok(files.targetSlugs.includes(DIVO_PRESENTATIONS_SYSTEM_SKILL.slug));
+    const router = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'files-router')!;
+    assert.match(router.markdown, /slide deck or presentation/);
+  });
+
+  /*
+   * divo_gateway was the mega-tool every provider skill was written against:
+   * root `op: "tools.invoke"` wrapping `payload: { toolId, args }`, with
+   * `call_tool` as the server-channel variant. It is deleted, and each family
+   * is a registered typed tool, so that envelope is now rejected rather than
+   * merely redundant — a skill still teaching it describes a call that cannot
+   * succeed. Airtable, Shopify and AITable each carried it well past the
+   * migration because nothing failed when a skill went stale.
+   */
+  /*
+   * Hand-listed bodies are how the scheduler kept its dead gateway protocol:
+   * a family missing from the list is exempt from the only check that would
+   * notice. Zoho, Lark, mail-ops and the scheduler were all absent. Build the
+   * list from the seeded collections so a new family is covered by existing.
+   */
+  it('never teaches a call surface the runtime removed', () => {
+    const bodies = [
+      ...ROUTING_SYSTEM_SKILLS.map(skill => skill.markdown),
+      ...shopifySkills.map(skill => skill.instructions),
+      ...aitableSkills.map(skill => skill.instructions),
+      airtableCoreSkill.instructions,
+      airtableSchemaOpsSkill.instructions,
+      airtableAutomationOpsSkill.instructions,
+      DIVO_SEMRUSH_SYSTEM_SKILL.markdown,
+      MENHOOD_DATA_SYSTEM_SKILL.markdown,
+      DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown,
+      ...GOOGLE_WORKSPACE_SYSTEM_SKILLS.map(skill => skill.markdown),
+      ...ZOHO_FINANCE_SYSTEM_SKILLS.map(skill => skill.markdown),
+      ...LARK_SYSTEM_SKILLS.map(skill => skill.markdown),
+      ...MAIL_OPS_SYSTEM_SKILLS.map(skill => skill.markdown),
+      SCHEDULE_DIVO_WORK_SKILL_MARKDOWN,
+      KNOWLEDGE_MANAGEMENT_SKILL_MARKDOWN,
+    ];
+    for (const body of bodies) {
+      assert.doesNotMatch(body, /divo_gateway|call_tool|tools\.invoke|payload\.args/);
+    }
+    /*
+     * `tools.preflight` and `tools.list` are internal gateway ops. Pi exposes
+     * the first as the typed tool `divo_preflight` and never exposed the
+     * second, so two Google skills were naming a call the model cannot make.
+     * The op survives inside the backend, which is why the gateway sweep did
+     * not catch it — the name is real, just not model-facing.
+     */
+    for (const skill of GOOGLE_WORKSPACE_SYSTEM_SKILLS) {
+      assert.doesNotMatch(skill.markdown, /tools\.preflight|tools\.list/, skill.slug);
+    }
+    const gmail = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find(skill => skill.slug === 'google-gmail')!;
+    assert.match(gmail.markdown, /call `divo_preflight` once/);
+  });
+
+  /*
+   * The guard above covers skills, which is where the envelope was swept from
+   * — and `scheduledWorkflows` still opened its parameterDocs with "Gateway
+   * invocation: tools.invoke payload must be { toolId, args }". Tool docs are
+   * model-facing copy exactly like a skill body, so a check that skips them
+   * misses the layer with the strongest claim on the model's attention.
+   */
+  it('keeps the removed call surface out of tool documentation too', async () => {
+    const dir = new URL('../../src/application/tools/families/', import.meta.url);
+    const files = (await readdir(dir)).filter(name => name.endsWith('.ts'));
+    assert.ok(files.length > 10, 'expected the tool families directory');
+    for (const file of files) {
+      const source = await readFile(new URL(file, dir), 'utf8');
+      assert.doesNotMatch(source, /divo_gateway|tools\.invoke|Gateway invocation/, file);
     }
   });
 

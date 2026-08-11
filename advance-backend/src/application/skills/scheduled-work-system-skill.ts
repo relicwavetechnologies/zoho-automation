@@ -35,7 +35,7 @@ Use this skill to make Divo perform work once in the future or on an hourly, dai
 
 ## Non-negotiable execution contract
 
-Before creating or replacing a schedule, resolve the user's complete request and load this recipe. Resolve any separate business recipe needed by the future task as part of the same work resolution.
+Before creating or replacing a schedule, load any separate business recipe the future task will need — you are writing its instructions, so you need to know what that work actually involves.
 
 Build two distinct contracts:
 
@@ -59,75 +59,7 @@ When changing an existing schedule:
 - Never reconstruct the work contract from only the schedule name or recurrence.
 - If the available list result does not contain the full work contract and it is not present in the conversation, ask the user for it instead of guessing.
 
-## Required gateway sequence
-
-1. Resolve the exact user request with a scheduling-focused variant so this recipe and any required business recipe are loaded. Do not call the create operation before resolution succeeds.
-2. Before the first scheduler invocation, call:
-
-~~~json
-{
-  "op": "tools.list",
-  "payload": { "toolId": "scheduledWorkflows" }
-}
-~~~
-
-3. Read the returned schema. Invoke the scheduler only through:
-
-~~~json
-{
-  "op": "tools.invoke",
-  "payload": {
-    "toolId": "scheduledWorkflows",
-    "args": { "operation": "<operation>", "...": "operation-specific fields" }
-  }
-}
-~~~
-
-Keep **operation** and every schedule field inside **payload.args**. Never put scheduler fields beside **payload** or **toolId**.
-
-## Create contract
-
-Every create requires:
-
-- **name**: short label, at most 120 characters.
-- **intent**: complete instructions that can run without this chat history. State the task, source/account, time window, filters, required skills/tools, output format, delivery expectation, external-action boundary, and what to do when data is missing or a tool fails.
-- **timezone**: exact IANA timezone such as **Asia/Kolkata**.
-- **delivery**: omit it. It is accepted only for compatibility and changes nothing: every scheduled result is delivered by the runtime to the authenticated schedule creator's own Lark DM. Do not add a separate **larkMessaging** delivery step for the same final result.
-- **scheduleType** and only the timing fields for that type.
-
-Never tell the user a schedule will post into this chat, a group, or a channel, and never write an intent that names a delivery destination. A run executes with the creator's own history and permissions, so its result goes to the creator in Lark and nowhere else. Say that plainly when confirming the schedule. If the user asks for it in a group, tell them it will arrive in their Lark DM instead.
-
-Do not guess a material task, time, timezone, recurrence, monitoring scope, recipient, external side effect, or failure behavior. Ask only for missing material details.
-
-### One time
-
-~~~json
-{
-  "operation": "create",
-  "name": "Send launch reminder",
-  "intent": "At run time, produce a concise reminder that the launch review begins in 30 minutes as the final answer; runtime delivery is handled separately. Do not contact anyone.",
-  "scheduleType": "one_time",
-  "timezone": "Asia/Kolkata",
-  "runAt": "2026-07-20T09:30:00+05:30"
-}
-~~~
-
-### Hourly
-
-~~~json
-{
-  "operation": "create",
-  "name": "Check urgent support mail",
-  "intent": "Using the approved Gmail skill and account, inspect mail received since the previous run for urgent support incidents. Produce only new incidents as the final answer; runtime delivery is handled separately. Do not reply to or modify mail. If Gmail is unavailable, report the failure without retrying another account.",
-  "scheduleType": "hourly",
-  "timezone": "Asia/Kolkata",
-  "intervalHours": 2,
-  "minute": 15
-}
-
-~~~
-
-### Daily
+## What a good intent looks like
 
 ~~~json
 {
@@ -141,53 +73,14 @@ Do not guess a material task, time, timezone, recurrence, monitoring scope, reci
 }
 ~~~
 
-### Weekly
+That intent is the standard: it names the account, the window, the output, the read-only boundary, and the failure behaviour, and a fresh agent could run it having seen nothing else. Write every intent that way, and never name a delivery destination in one — the runtime delivers.
 
-~~~json
-{
-  "operation": "create",
-  "name": "Monday pipeline review",
-  "intent": "Using the approved CRM reporting skill, summarize open pipeline changes since the previous run and produce the report as the final answer; runtime delivery is handled separately. Read only. If the CRM query fails, report the error and do not fabricate totals.",
-  "scheduleType": "weekly",
-  "timezone": "Asia/Kolkata",
-  "daysOfWeek": ["MO"],
-  "hour": 9,
-  "timeMinute": 30
-}
-~~~
-
-### Monthly
-
-~~~json
-{
-  "operation": "create",
-  "name": "Monthly finance pack",
-  "intent": "Using the approved finance reporting skill, prepare the previous calendar month's summary and produce it as the final answer; runtime delivery is handled separately. Read only. Call out missing data explicitly and do not estimate unavailable values.",
-  "scheduleType": "monthly",
-  "timezone": "Asia/Kolkata",
-  "dayOfMonth": 1,
-  "hour": 10,
-  "timeMinute": 0
-}
-~~~
-
-For recurring schedules, **hour** uses 0-23 local time and **timeMinute** uses 0-59. For one-time schedules, **runAt** must be a future ISO 8601 timestamp with an explicit UTC offset.
-
-## Manage schedules
-
-- List: **{ "operation": "list", "includeInactive": false }**
-- List including paused/archived: **{ "operation": "list", "includeInactive": true }**
-- Pause: **{ "operation": "pause", "scheduleId": "<UUID from create/list>" }**
-- Resume: **{ "operation": "resume", "scheduleId": "<UUID from create/list>" }**
-- Cancel: **{ "operation": "cancel", "scheduleId": "<UUID from create/list>" }**
-- Run now: **{ "operation": "run_now", "scheduleId": "<UUID from create/list>" }**
-
-Never invent a schedule ID. Use the exact ID returned by create or list.
+If the user asks for the result in a group, tell them it will arrive in their own Lark DM instead. Never invent a schedule ID; use the exact ID returned by create or list.
 
 ## Completion contract
 
 - A request is not scheduled when the tool is merely available, arguments are drafted, approval is pending, or invocation fails.
-- Claim success only after **tools.invoke** returns **operation: "create"** with a schedule ID and status.
+- Claim success only after create returns a schedule ID and status.
 - Report the schedule name, recurrence in the user's local wording, timezone, next run, and schedule ID.
 - If approval is required, say it is pending. After approval, retry the exact same invocation; changing arguments requires a new approval.
 - Treat pause, resume, cancel, and run-now as complete only when the returned schedule confirms the requested state/action.`;
@@ -198,7 +91,7 @@ const SKILL_FIELDS = {
   scope: 'company',
   name: 'Schedule Divo Work',
   slug: SCHEDULE_DIVO_WORK_SKILL_SLUG,
-  summary: 'Create and manage durable one-time or recurring Divo work, reminders, monitoring, and reports; distinguish agent work from calendar events and use the exact governed gateway contract.',
+  summary: 'Create and manage durable one-time or recurring Divo work, reminders, monitoring, and reports, and tell scheduled agent work apart from a calendar event.',
   markdown: SCHEDULE_DIVO_WORK_SKILL_MARKDOWN,
   toolIds: ['scheduledWorkflows'],
   tags: ['scheduling', 'automation', 'recurring', 'monitoring', 'reminder'],

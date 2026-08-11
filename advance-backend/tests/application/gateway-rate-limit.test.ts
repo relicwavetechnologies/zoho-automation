@@ -8,6 +8,7 @@ import { ConnectionRateLimitService } from '../../src/application/governance/con
 import type { ConnectionGovernanceRepository } from '../../src/application/governance/connection-governance.repository.ts';
 import type { RateLimitCheck, RateLimitStore, RateLimitWindow } from '../../src/application/governance/rate-limit.port.ts';
 import type { PermissionService } from '../../src/application/permissions/permission.service.ts';
+import { GOOGLE_SCOPE } from '../../src/domain/google/google-workspace-scope.ts';
 import { asToolId } from '../../src/shared/ids.ts';
 import { ok } from '../../src/shared/result.ts';
 import { makeAllowedPerm, noopLogger } from '../tools/tool-test.helpers.ts';
@@ -79,6 +80,18 @@ describe('ToolExecutor connection rate limiting', () => {
       toolRegistry: registry,
       permissions,
       connectionRateLimits: limits,
+      connectionRegistry: {
+        listAccessibleGoogleConnections: async () => ok([{
+          connectionId: '00000000-0000-4000-8000-000000000002',
+          provider: 'google_workspace',
+          label: 'Workspace',
+          ownerType: 'user',
+          ownerUserId: 'user-1',
+          access: 'read_only',
+          scopes: [GOOGLE_SCOPE.sheetsFull, GOOGLE_SCOPE.driveFull],
+          connectedAt: new Date('2026-07-22T12:00:00Z'),
+        }]),
+      } as never,
       logger: noopLogger,
       clock: { now: () => new Date('2026-07-22T12:00:00Z'), nowMs: () => 0 },
     });

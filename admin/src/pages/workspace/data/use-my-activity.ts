@@ -101,6 +101,74 @@ export const durationLabel = (ms: number | null): string | null => {
   return `${Math.floor(total / 60)}m ${String(total % 60).padStart(2, '0')}s`
 }
 
+/**
+ * What to call a run when nothing has named it.
+ *
+ * Three screens each wrote `summary ?? entrypoint`, and `entrypoint` is the
+ * name of the container the work ran in — so a member's Recent list was five
+ * rows all reading "pi", which is both meaningless to them and an internal
+ * detail they were never meant to see. Every run in the dev database has a null
+ * summary, so this is not the rare path: it is the only one.
+ *
+ * Where it came from is the one true thing left, and it is worth more than the
+ * container's name. The wording matches `CHANNEL_WORD` on the run-detail page.
+ */
+const CHANNEL_TITLE: Record<string, string> = {
+  lark: 'Asked in Lark',
+  desktop: 'Asked on the desktop',
+  api: 'Asked over the API',
+}
+
+export const runTitle = (run: { summary: string | null; channel: string }): string =>
+  run.summary?.trim() || CHANNEL_TITLE[run.channel] || 'Something you asked Divo'
+
+/**
+ * Sixteen weeks — the width a calendar of days is drawn over.
+ *
+ * Not a preference: sixteen columns of seven fills a card at a legible cell
+ * size, and thirty days is five columns and cannot. Shared so the personal and
+ * team pages ask for the same window and their calendars are comparable.
+ */
+export const USAGE_DAYS = 112
+export const USAGE_WEEKS = USAGE_DAYS / 7
+
+/** Today, yesterday, or a short date. */
+export const dayLabel = (iso: string): string => {
+  const at = new Date(iso)
+  const midnight = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+  const days = Math.round((midnight(new Date()) - midnight(at)) / 86_400_000)
+  if (days === 0) return 'Today'
+  if (days === 1) return 'Yesterday'
+  return at.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+}
+
+/**
+ * The facts a total cannot give you.
+ *
+ * A spend over sixteen weeks means nothing until you know whether it was one
+ * heavy day or eighty quiet ones — so the average is over days that were
+ * actually used, not over the window, which would divide by the silence and
+ * report a figure nobody ever spent.
+ *
+ * Shared by the personal and the team page: the same arithmetic on the same
+ * shape, so "busiest day" cannot mean two things in one product.
+ */
+export function summarizeSpend(series: { date: string; spendUsd: number }[]) {
+  const active = series.filter((p) => p.spendUsd > 0)
+  const busiest = active.reduce<{ date: string; value: number } | null>(
+    (best, p) => (best && best.value >= p.spendUsd ? best : { date: p.date, value: p.spendUsd }),
+    null,
+  )
+  const total = active.reduce((sum, p) => sum + p.spendUsd, 0)
+  return {
+    busiest,
+    activeDays: active.length,
+    perActiveDay: active.length > 0 ? total / active.length : 0,
+    // Series is oldest-first, so the last spending day is the most recent one.
+    last: active.length > 0 ? active[active.length - 1]!.date : null,
+  }
+}
+
 /** Percentage change between two windows, guarding the divide by zero. */
 export const changePct = (now: number, before: number): number =>
   before === 0 ? (now > 0 ? 100 : 0) : Math.round(((now - before) / before) * 100)

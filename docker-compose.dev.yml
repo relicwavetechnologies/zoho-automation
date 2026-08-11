@@ -42,8 +42,11 @@ services:
       # switches. The production compose file enforces strict startup secrets.
       NODE_ENV: development
       PORT: 3001
-      APP_BASE_URL: ${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}
-      BACKEND_PUBLIC_URL: ${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}
+      # Overridable independently, for the same reason as production — see the
+      # note in docker-compose.yml. Dev answers to one hostname today, so both
+      # fall through to DIVO_DEV_PUBLIC_URL and nothing changes.
+      APP_BASE_URL: ${APP_BASE_URL:-${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}}
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL:-${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}}
       LARK_CARD_CALLBACK_URL: "${DIVO_DEV_PUBLIC_URL:?DIVO_DEV_PUBLIC_URL is required}/webhooks/lark/events"
       REDIS_URL: redis://divo-dev-redis-cache:6379/0
       REDIS_QUEUE_URL: redis://divo-dev-redis-queue:6379/0

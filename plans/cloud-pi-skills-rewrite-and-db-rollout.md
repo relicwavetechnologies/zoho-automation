@@ -1,6 +1,6 @@
 # Cloud-Pi skills rewrite, native wiring, and DB rollout
 
-> Status: **Planned — handoff to a separate skills agent**
+> Status: **Active — owned by the separate skills agent**
 >
 > Last updated: **2026-08-10**
 >
@@ -47,9 +47,8 @@ architecture.
   is read-only.
 - `divo-local` lets a credential-free script call the same governed backend
   tools and persist large results outside model context.
-- The legacy candidate/offer/sample export tool and `secure-data-export` skill
-  are being hard-removed by the runtime track. Do not rewrite or provision
-  either one. Route complete data movement through the source specialist,
+- The legacy candidate/offer/sample export planner and its skill are removed.
+  Do not recreate either one. Route complete data movement through the source specialist,
   `divo-python-automation`, and the destination specialist only when the source
   contract exposes truthful continuation. Otherwise require an honest bounded
   answer; prose must not invent missing paging.
@@ -186,7 +185,6 @@ between “provider returned no row” and “measured zero.”
       catalogue-wide paragraph pass ahead of the rewrites was not attempted.*
 - [ ] Map every skill to at least one natural prompt and expected tool sequence.
 - [ ] Map every tool-bearing skill to the actual current typed contract.
-      *Done for `dataExport` only, in Wave 1.*
 - [ ] Record capability gaps in the non-skills plan instead of writing imagined
       workarounds. *None found yet.*
 - [ ] Capture a baseline: prompt tokens, skill reads, tool calls, corrections,
@@ -218,7 +216,6 @@ Regenerate with the read-only script recorded in §16.
 | zoho-books-invoice | zoho | 7385 | 1846 | 1 | 15 | finance-zoho-router |
 | google-docs | google | 7073 | 1768 | 1 | 2 | google-workspace-router |
 | zoho-books-bill | zoho | 6857 | 1714 | 2 | 7 | finance-zoho-router |
-| secure-data-export | data | 6638 | 1660 | 1 | 6 | data-router |
 | google-calendar | google | 6606 | 1652 | 1 | 3 | google-workspace-router |
 | google-contacts | google | 6402 | 1601 | 1 | 2 | google-workspace-router |
 | read-understand-files | files | 6146 | 1537 | 0 | 10 | data-router, files-router |
@@ -286,26 +283,7 @@ Regenerate with the read-only script recorded in §16.
 The exact second member of a pair may change after inventory, but a commit may
 not rewrite more than two skill definitions.
 
-### Wave 1 — central data decision
-
-- [x] `data-router`
-- [x] ~~`secure-data-export`~~ — **superseded, not shipped.**
-
-Rewritten 2026-08-10 in `0dda5a26e`; see §15. The runtime track then removed the
-whole export pipeline in `e90de44f2` and `4596fc00a`, deleting the
-`secure-data-export` skill and the `dataExport` tool outright and rewriting
-`data-router` to route complete data movement through the source specialist,
-`divo-python-automation`, and the destination specialist. The compression of
-that skill therefore never reached a runtime. What survived the retirement is
-the method, not the text: the tool-owns-its-own-contract rule, the ask/stop
-lesson in §15, and the test-fossilization fix.
-
-Goal: one unambiguous distinction between bounded chat work, replayable
-provider export, bespoke local transformation, and reading/editing an existing
-file. Preserve the governed export compatibility boundary until source E2E
-evidence permits removal.
-
-### Wave 2 — local transformation and Sheet destination
+### Wave 1 — local transformation and Sheet destination
 
 - [x] `google-sheets`
 - [x] `divo-python-automation` — **examined and deliberately left unchanged.**
@@ -325,22 +303,22 @@ truthful interpretation and the cheapest proven operation selection.
 
 ### Wave 4 — files and delivery
 
-- [ ] `files-router`
-- [ ] `read-understand-files`
+- [x] `files-router`
+- [x] `read-understand-files`
 
 Then:
 
-- [ ] `create-edit-files`
-- [ ] `divo-presentations`
+- [x] `create-edit-files`
+- [x] `divo-presentations`
 
 Goal: local paths are intermediate; final delivery is a governed artifact or
 connected destination. Keep export ownership in the export boundary.
 
 ### Wave 5 — Airtable and Menhood
 
-- [ ] `airtable-router` + `airtable-core`
-- [ ] `airtable-schema-ops` + `airtable-automation-ops`
-- [ ] `menhood-data` + the router it actually depends on after inventory
+- [x] `airtable-router` + `airtable-core`
+- [x] `airtable-schema-ops` + `airtable-automation-ops`
+- [x] `menhood-data` + the router it actually depends on after inventory
 
 Goal: distinguish live Airtable record work from settled Menhood analytics;
 never infer totals from bounded previews or serialize unresolved objects into a
@@ -557,64 +535,6 @@ This track is complete only when:
 
 ## 15. Rolling evidence
 
-### Pair: data-router + secure-data-export — 2026-08-10
-
-- Commit / environment: local worktree on `dev`, not yet reconciled to any DB.
-- Before → after bytes: `secure-data-export` 6,638 → 4,376 (1,660 → 1,094 tok);
-  `data-router` 3,907 → 2,349 (977 → 587 tok). Pair total −3,820 bytes,
-  −956 tokens. Catalogue 256,710 → 252,890 bytes.
-- What was removed and why: every fact the registered `dataExport` tool already
-  states through its zod schema, description, or `parameterDocs` — the format
-  row/cell caps, the `destination.format` enum meanings, `transform.script`
-  receiving `row`/`index`/`args`, the legacy `op=confirm` path, "do not create a
-  sample or ask for another confirmation", and the verbatim "the backend
-  re-checks…" paragraph. The skill imported four limit constants purely to print
-  numbers the tool already prints; only the Menhood spool cap, which the tool
-  does not publish, is still imported.
-- What was deliberately kept: candidate attribution to the table the member was
-  actually shown, the single-offer rule and its skip list, "the file and the
-  chat answer are different artifacts", queued-is-not-finished and the
-  completion card as sole truth, permanent-source-failure handling, the Zoho
-  Books `accountId` scoping rule, Airtable MCP not being a bulk-export source,
-  and the cross-tool refusals (no personal OAuth, no Google permission tool, no
-  reshare) that no single tool contract can express.
-- Router/specialist boundary: `op=plan` mechanics and the missing-destination
-  message moved out of `data-router` into `secure-data-export`, which owns the
-  tool. The router keeps task-class selection, the opaque-handle ownership
-  table, and four examples that each decide a boundary the bullets decide
-  slowly; three examples that merely restated a bullet were dropped.
-- Tests: exact-sentence assertions across three suites replaced with
-  wrap-insensitive invariant tokens, plus a new guard,
-  `leaves the dataExport contract to the dataExport tool`, that fails if any of
-  the removed tool-owned facts is pasted back. Backend suite 3,597 pass /
-  0 fail / 30 skipped; `tsc --noEmit` clean.
-- Cold review: found the first cut too deep in two places, both restored before
-  any commit. (a) **Both ask/stop conditions had been deleted** — ask which
-  format when the member named none, and ask which table when a direct recipe
-  needs one they never named. Neither is deducible from the contract:
-  `exportPlanRequestSchema` has no `auto` format, so a silent choice is a silent
-  choice of row cap, and `parameterDocs` never tells the model to stop and ask.
-  This is the general lesson for later waves — a tool contract states what an
-  argument *means* and never that Divo should decline to fill it in.
-  (b) The permanent-failure stop rule had been narrowed to the completion card,
-  but `op=plan` returns terminal `blocked` outcomes (revoked grant, stale replay
-  candidate) that produce no card at all. (c) The legacy
-  `preview.exportOfferId` handle row was restored to the router, since Wave 1
-  requires preserving that boundary and `gateway-dispatcher.ts` still reads it.
-  Each restored rule now has its own regression test. The review independently
-  verified every "the tool already says this" claim against
-  `data-export.tool.ts`; all held.
-- Agent Seat result: not run.
-- Cloud-Pi Development result: not run.
-- DB revisions / registry revision: not reconciled.
-- Cross-plan dependencies discovered: none.
-- Pre-existing defect noticed, not fixed here: the skill says pass `accountId`
-  for Zoho Books bank transactions, while the backend rule keys on the source
-  filter `account_id` and its refusal message says "Add account_id"
-  (`data-export.types.ts:105-113`). Same wording before the rewrite, so not a
-  regression; worth settling in Wave 7.
-- Decision: content complete; **gates §9.3 and §9.4 still open.**
-
 ### Pair: google-sheets + divo-python-automation — 2026-08-11
 
 - Commit / environment: local worktree on `dev`, clean baseline after the export
@@ -721,6 +641,134 @@ This track is complete only when:
 - DB revisions / registry revision: not reconciled.
 - Decision: content complete; **gates §9.3 and §9.4 still open, and §12's cold
   review is owed.**
+
+### Pair: files-router + divo-presentations — 2026-08-11
+
+- Commit / environment: local worktree on `dev`. Not reconciled to any DB.
+- **This pair fixed a defect rather than removing text; byte delta is +190.**
+  `divo-presentations` provisioned for every company, appeared in the registry,
+  and no router pointed at it, so it was reachable only by a member who already
+  knew the slug. It is now a `files-router` target — a deck is a file Divo was
+  asked to author — and the router names it.
+- **The guard that should have caught this was blind, not passing.**
+  `unroutedSeededSystemSkillSlugs()` returned `[]` because
+  `ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS` never listed the skill, and a definition
+  missing from that list is exempt from the only check that would notice. Both
+  fixed, and proved: with the new route edge removed the function now reports
+  `["divo-presentations"]`, where before it reported `[]` either way.
+- **`read-understand-files` and `create-edit-files` were examined and left
+  unchanged.** Their shared "Dependencies install on demand" block already comes
+  from one `DEPENDENCY_TIERS` constant in `bundled-file-scripts.ts`, whose own
+  comment explains the drift risk; both skills rendering it is correct, since
+  each `SKILL.md` must stand alone. There is no typed tool behind these — the
+  helpers are bundled scripts — so nothing defers to a contract. The remaining
+  content is tier choice, `--render` versus `--images`, and the
+  untrusted-extracted-content rule, all of which change what Divo does.
+- Also corrected: the module comment still described the capability chain as
+  `files-router` → `divo_skill_view` → markdown. That tool was removed with the
+  process-local skill ledger.
+- Tests: 3,371 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
+- Cold review: deferred to a single review covering Waves 3-5.
+- Decision: content complete; **gates §9.3 and §9.4 still open.**
+
+### Wave 5, slice 1: the Airtable connection block — 2026-08-11
+
+- Commit / environment: local worktree on `dev`. Not reconciled to any DB.
+- `airtable-core` 13,080 → 12,544; `airtable-schema-ops` 4,366 → 3,830;
+  `airtable-automation-ops` 4,552 → 4,016. −1,608 bytes from one shared helper,
+  `airtableConnectionMethod`, which all three skills render.
+- **All three were teaching a deleted tool.** The block described the
+  `divo_gateway` mega-tool: reach Airtable through `divo_gateway` or `call_tool`
+  depending on runtime, wrap the call in root `op: "tools.invoke"` with
+  `payload: { toolId, args }`, and keep `connectionId` inside `payload.args`
+  rather than beside `payload`. That mega-tool is gone (§2) and each family is a
+  registered typed tool, so the envelope is not merely unnecessary — it is
+  rejected. A run following this skill literally could not call Airtable.
+- **The test asserted the envelope**, so the suite was holding the deleted call
+  shape in place. Third instance of this pattern, after the `google-sheets`
+  `{"toolId","args"}` blocks and the Semrush env-var section. It now guards that
+  no gateway vocabulary returns, and asserts the surviving fact instead: which
+  of the three Airtable tools owns a given job.
+- **Systemic, not local.** `divo_gateway` is still taught by
+  `shopify.skill.ts` (three places, including "call shopifyOrders only as a
+  direct divo_gateway tool invocation") and `aitable.skill.ts`. Those belong to
+  Wave 6 and were deliberately not touched here.
+- **Wave 5 is not finished.** The bodies of `airtable-core` (12.5 KB, and still
+  one wall of text with no headings), the two ops skills, and `menhood-data`
+  are not yet rewritten. Notably `airtable-core` restates the `filters` tree,
+  the date VALUE/RANGE objects, and `get_table_schema` input — and §2 says
+  Airtable nested schemas are bound before inference, so those are candidates
+  once verified against `airtable-contract-bootstrap.service.ts`.
+- Tests: 3,371 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
+- Cold review: pending, to cover Waves 3-5 together.
+
+### Wave 5, slice 2: Airtable bodies + menhood-data — 2026-08-11
+
+- `airtable-core` 12,544 → 11,435; `menhood-data` 11,132 → 10,764. Airtable
+  family total 20,390 → 19,369. Catalogue now 232,374 bytes.
+- **The filter tree and date objects had an owner already.**
+  `AirtableContractBootstrapService` binds `list_records_for_table` before
+  inference for every record run, and its own comment states why: the filter
+  tree is a deeply nested union that no model reconstructs correctly from
+  prose, and each failed guess costs a larger validation dump than the schema
+  itself. The skill wrote out the tree, the leaf-condition shape, the full
+  operator list, and the date VALUE/RANGE mode enumerations regardless — the
+  losing copy of a contract the runtime was already binding. Same for
+  `get_table_schema` input.
+- **Kept, because no schema encodes it:** which operator suits which field
+  type, why a `sel...` choice ID beats a choice name, and the one that changes
+  an answer rather than a call — a named calendar month is not a rolling
+  window, so filtering July with `pastMonth` returns a different number.
+  `list_fields_for_table` guidance stays too: Divo synthesizes that operation,
+  so no contract is ever bound for it.
+- `menhood-data`: dropped the single-SELECT rule, bound-parameter rule, table
+  allow-list, and the `ORDER BY o.order_date, o.order_number, o.id` example —
+  all in `menhoodData`'s `parameterDocs`. Kept the reason stable ordering
+  matters (a sample is only reviewable if the full replay matches it), the
+  never-through-local-Python routing rule, the zero-row schema probe technique,
+  and the spend-claim consequence of the unavailable ad-cost table. Its
+  coverage and data-model sections were left intact — that is the domain
+  semantics §5 exists to protect.
+- **Four more fossilized assertions** removed across two suites, pinning the
+  gateway envelope, the filter tree, the leaf-condition shape, and the ORDER BY
+  column list. Running total for the session: every wave has found at least one
+  test holding stale prose in place.
+- Tests: 3,371 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
+
+### Waves 6 and 8: the deleted call surface, and the shared Google preamble — 2026-08-11
+
+- **Wave 6** removed the last `divo_gateway` references, from `shopify.skill.ts`
+  (three) and `aitable.skill.ts` (one). The Shopify rules mattered beyond the
+  name: "call `shopifyOrders` only as a direct tool invocation" exists to keep
+  protected record results on the runtime path that deletes the session and
+  suppresses learning, which a `divo-local` or Bash path does not do. That rule
+  is kept with its reason spelled out. A catalogue-wide guard now fails if
+  `divo_gateway`, `call_tool`, `tools.invoke`, or `payload.args` reappears in
+  any skill body.
+- **Wave 8 is the largest single change in this track.** The shared preamble in
+  `buildProductSkillMarkdown` fell 3,398 → 1,848 bytes, and eleven skills carry
+  it: catalogue **232,155 → 208,154 bytes**, −24,001 bytes, roughly −6,000
+  tokens from one edit. Google family 76,861 → 49,824.
+- What it was duplicating, all from the `googleWorkspace` tool's own
+  `parameterDocs`: reuse the bootstrap `connectionId` and reuse it across
+  describe and call; prefer the schema already in `bootstrap.nativeContracts`
+  and describe once only when absent; `input` may be omitted for describe; the
+  approved-operation list, which is the `nativeTool` enum verbatim; and the
+  canonical argument object, which is the zod schema. Step 7 was
+  `GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT.agentGuidance` — **the same constant the
+  tool already emits** in its `input` doc, so eleven copies shipped beside the
+  original.
+- Kept: the no-account OAuth protocol (describe once, wait for
+  `google_workspace_authorization_pending`, end the run), never rotating
+  accounts after an error, the Bash/CLI/curl/SDK refusal, the `divo-local`
+  args-file transport and its no-envelope rule, and the whole reliability
+  section — pending is not completed, never guess resource IDs, verify with a
+  read, satisfy `level: "required"` advisories.
+- Two over-cuts caught by the suite and restored: the `divo_connections`
+  routing rule, which the Google tool cannot state because it governs when to
+  call a *different* tool, and the availability criterion that every line
+  mentioning `divo-local` must carry.
+- Tests: 3,372 pass / 0 fail / 30 skipped; `tsc --noEmit` clean.
 
 Append one block per pair:
 

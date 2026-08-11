@@ -187,11 +187,10 @@ describe('airtable args schema', () => {
     assert.equal(tool.argsSchema.safeParse({ op: 'describe', nativeTool: 'get_values' }).success, false);
   });
 
-  it('requires connectionId for a call but not for describe', () => {
+  it('lets the governed executor select the sole eligible account for call and describe', () => {
     assert.equal(
       tool.argsSchema.safeParse({ op: 'call', nativeTool: 'list_records_for_table' }).success,
-      false,
-      'a real call must name exactly one account',
+      true,
     );
     assert.equal(
       tool.argsSchema.safeParse({ op: 'describe', nativeTool: 'list_records_for_table' }).success,
@@ -206,7 +205,7 @@ describe('airtable args schema', () => {
     );
   });
 
-  it('makes terminal page mode exact and unavailable to unrelated Airtable products', () => {
+  it('uses one native call contract and rejects the retired page dialect', () => {
     const tools = createAirtableMcpTools({ getConnection: async () => ({ status: 'unavailable' }) });
     const records = tools.find(tool => tool.id === 'airtableRecords')!;
     const automation = tools.find(tool => tool.id === 'airtableAutomation')!;
@@ -217,22 +216,16 @@ describe('airtable args schema', () => {
       op: 'page',
       nativeTool: 'list_records_for_table',
       input: { baseId: 'app1', tableId: 'tbl1' },
-    }).success, true);
-    assert.equal(records.argsSchema.safeParse({
-      connectionId,
-      op: 'page',
-      nativeTool: 'search_records',
-      input: { baseId: 'app1', tableId: 'tbl1' },
     }).success, false);
     assert.equal(records.argsSchema.safeParse({
       connectionId,
-      op: 'page',
+      op: 'call',
       nativeTool: 'list_records_for_table',
-      input: { base_id: 'app1', table_id: 'tbl1' },
-    }).success, false);
+      input: { baseId: 'app1', tableId: 'tbl1', cursor: 'next', filters: { operator: 'and' } },
+    }).success, true);
     assert.equal(automation.argsSchema.safeParse({
       connectionId,
-      op: 'page',
+      op: 'call',
       nativeTool: 'list_records_for_table',
       input: { baseId: 'app1', tableId: 'tbl1' },
     }).success, false);
@@ -315,7 +308,7 @@ describe('airtable execute', () => {
     assert.equal(result.ok, true);
     assert.deepEqual(calls, [{
       name: 'list_records_for_table',
-      input: { baseId: 'appAAAAAAAAAAAAAA', tableId: 'Orders', pageSize: 10 },
+      input: { baseId: 'appAAAAAAAAAAAAAA', tableId: 'Orders', pageSize: 100 },
     }]);
   });
 
@@ -352,29 +345,36 @@ describe('airtable execute', () => {
     );
 
     assert.equal(result.ok, true);
-    assert.equal(calls[0]?.['pageSize'], 10);
+    assert.equal(calls[0]?.['pageSize'], 200);
     const value = result.ok ? result.value as any : null;
     assert.ok(Buffer.byteLength(JSON.stringify(value.data), 'utf8') <= 24_000);
     assert.match(value.data.records[0].cellValuesByFieldId.fldAttachment, /value omitted from preview/);
     assert.equal(value.data.hasMore, true);
     assert.equal(value.data.nextCursor, undefined);
-    assert.match(value.message, /MCP preview is not a full export or broad analytics source/i);
+    assert.match(value.message, /metadata\.totalRecordCount.*protected local-file call/i);
   });
 
-  it('pages complete Airtable rows only into trusted local result files', async () => {
-    const calls: unknown[] = [];
+  it('keeps the native filtered page and cursor raw only for a trusted local result file', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const filters = {
+      operator: 'and',
+      operands: [{ fieldId: 'fldDate', operator: '>=', value: { date: '2026-08-08', timeZone: 'Asia/Kolkata' } }],
+    };
+    const rawRecords = Array.from({ length: 200 }, (_, index) => ({
+      id: `rec${index}`,
+      cellValuesByFieldId: { fldName: `Order ${index}`, fldPayload: 'x'.repeat(3_000) },
+    }));
     const [records] = createAirtableMcpTools({
       getConnection: async () => ({
         status: 'resolved' as const,
         connection: {
           client: {
             describeTool: async () => ({ name: 'list_records_for_table', inputSchema: { type: 'object' } }),
-            callTool: async () => { throw new Error('MCP preview must not run for page mode'); },
-            listRecordsPage: async (input: unknown) => {
+            callTool: async (_name: string, input: Record<string, unknown>) => {
               calls.push(input);
               return {
-                records: Array.from({ length: 100 }, (_, index) => ({ id: `rec${index}`, fields: { Name: `Order ${index}` } })),
-                nextCursor: 'offset-page-2',
+                records: rawRecords,
+                nextCursor: 'mcp-page-2',
               };
             },
           },
@@ -383,14 +383,16 @@ describe('airtable execute', () => {
     });
     const ctx = { ...makeCtx('airtableRecords', ['read']), resultAudience: 'local_file' as const };
     const result = await records!.execute({
-      op: 'page',
+      op: 'call',
       nativeTool: 'list_records_for_table',
       connectionId: '11111111-1111-4111-8111-111111111111',
       input: {
         baseId: 'app1',
         tableId: 'tbl1',
         fieldIds: ['fldName'],
-        cursor: 'offset-page-1',
+        filters,
+        cursor: 'mcp-page-1',
+        pageSize: 8_000,
       },
     } as any, ctx);
 
@@ -399,42 +401,64 @@ describe('airtable execute', () => {
       baseId: 'app1',
       tableId: 'tbl1',
       fieldIds: ['fldName'],
-      offset: 'offset-page-1',
+      filters,
+      cursor: 'mcp-page-1',
+      pageSize: 200,
     }]);
     const data = result.ok ? result.value.data as any : null;
-    assert.equal(data.records.length, 100);
-    assert.equal(data.returnedRecordCount, 100);
-    assert.equal(data.hasMore, true);
-    assert.equal(data.nextCursor, 'offset-page-2');
+    assert.equal(data.records.length, 200);
+    assert.equal(data.records[0].cellValuesByFieldId.fldPayload.length, 3_000);
+    assert.equal(data.nextCursor, 'mcp-page-2');
+    assert.match(result.ok ? result.value.message ?? '' : '', /file page completed/i);
   });
 
-  it('refuses Airtable page mode on a model-facing call', async () => {
-    let pageCalled = false;
+  it('keeps large select catalogues out of direct schema discovery but preserves them in local files', async () => {
+    const choices = Array.from({ length: 80 }, (_, index) => ({
+      id: `sel${index}`,
+      name: `SKU-${index}`,
+    }));
+    const rawSchema = {
+      tables: [{
+        tableId: 'tbl1',
+        fields: [
+          { id: 'fldSku', type: 'singleSelect', config: { choices } },
+          { id: 'fldStatus', type: 'singleSelect', config: { choices: choices.slice(0, 2) } },
+        ],
+      }],
+    };
     const [records] = createAirtableMcpTools({
       getConnection: async () => ({
         status: 'resolved' as const,
         connection: {
           client: {
-            describeTool: async () => ({ name: 'list_records_for_table', inputSchema: { type: 'object' } }),
-            callTool: async () => ({}),
-            listRecordsPage: async () => {
-              pageCalled = true;
-              return { records: [] };
-            },
+            describeTool: async () => ({ name: 'get_table_schema', inputSchema: { type: 'object' } }),
+            callTool: async () => rawSchema,
           },
         },
       }),
     });
-    const result = await records!.execute({
-      op: 'page',
-      nativeTool: 'list_records_for_table',
+    const args = {
+      op: 'call',
+      nativeTool: 'get_table_schema',
       connectionId: '11111111-1111-4111-8111-111111111111',
-      input: { baseId: 'app1', tableId: 'tbl1' },
-    } as any, makeCtx('airtableRecords', ['read']));
+      input: { baseId: 'app1', tables: [{ tableId: 'tbl1', fieldIds: ['fldSku', 'fldStatus'] }] },
+    } as any;
 
-    assert.equal(result.ok, false);
-    assert.match(!result.ok ? result.error.message : '', /only inside a divo-local terminal workflow/i);
-    assert.equal(pageCalled, false);
+    const direct = await records!.execute(args, makeCtx('airtableRecords', ['read']));
+    assert.equal(direct.ok, true);
+    const directFields = direct.ok ? (direct.value.data as any).tables[0].fields : [];
+    assert.deepEqual(directFields[0].config, {
+      choiceCount: 80,
+      choicesOmittedFromPreview: true,
+    });
+    assert.equal(directFields[1].config.choices.length, 2);
+
+    const local = await records!.execute(args, {
+      ...makeCtx('airtableRecords', ['read']),
+      resultAudience: 'local_file' as const,
+    });
+    assert.equal(local.ok, true);
+    assert.equal(local.ok && (local.value.data as any).tables[0].fields[0].config.choices.length, 80);
   });
 
   it('normalizes stale record-read params before calling Airtable MCP', async () => {
@@ -472,7 +496,7 @@ describe('airtable execute', () => {
     );
 
     assert.equal(result.ok, true);
-    assert.equal(calls[0]?.['limit'], 10);
+    assert.equal(calls[0]?.['limit'], 100);
     assert.equal(calls[0]?.['pageSize'], undefined);
     assert.equal(calls[0]?.['tableId'], undefined);
     assert.equal(calls[0]?.['fieldIds'], undefined);
@@ -512,7 +536,7 @@ describe('airtable execute', () => {
     assert.deepEqual(calls[0]?.['filters'], filter);
     assert.equal(calls[0]?.['filter'], undefined);
     assert.equal(calls[0]?.['limit'], undefined);
-    assert.equal(calls[0]?.['pageSize'], 10);
+    assert.equal(calls[0]?.['pageSize'], 100);
   });
 
   it('lists the complete field ID/name index through the backend adapter', async () => {

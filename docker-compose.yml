@@ -37,8 +37,23 @@ services:
     environment:
       NODE_ENV: production
       PORT: 3001
-      APP_BASE_URL: ${DIVO_PUBLIC_URL:?DIVO_PUBLIC_URL is required}
-      BACKEND_PUBLIC_URL: ${DIVO_PUBLIC_URL:?DIVO_PUBLIC_URL is required}
+      # Both default to DIVO_PUBLIC_URL, so a deployment that sets neither
+      # behaves exactly as it always has. They can differ because a deployment
+      # can answer to more than one hostname — a real domain and the bare-IP
+      # name it was stood up on — and the two names are not interchangeable:
+      #
+      #   APP_BASE_URL       what people browse. Sessions live in localStorage,
+      #                      which is partitioned per origin, so every link Divo
+      #                      sends must name the origin its own sign-in uses or
+      #                      the recipient lands on a login page.
+      #   BACKEND_PUBLIC_URL where OAuth comes back to. This one is registered
+      #                      with Google, Lark, Zoho and Shopify, so it can only
+      #                      move once those consoles have the new value.
+      #
+      # Forcing them equal meant adopting a domain required re-registering six
+      # integrations on the same day, so the domain never got adopted.
+      APP_BASE_URL: ${APP_BASE_URL:-${DIVO_PUBLIC_URL:?DIVO_PUBLIC_URL is required}}
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL:-${DIVO_PUBLIC_URL:?DIVO_PUBLIC_URL is required}}
       REDIS_URL: redis://divo-redis-cache:6379/0
       REDIS_QUEUE_URL: redis://divo-redis-queue:6379/0
       REDIS_CACHE_URL: redis://divo-redis-cache:6379/0

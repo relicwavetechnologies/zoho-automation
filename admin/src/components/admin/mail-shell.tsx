@@ -21,7 +21,7 @@
 import { useEffect, useRef } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Diamond, Inbox, LogOut, Mail, Moon, Settings, Sun, type LucideIcon,
+  Diamond, House, Inbox, LogOut, Mail, Moon, Settings, Sun, type LucideIcon,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { RoleProvider } from '@/cursor/role-context'
@@ -39,6 +39,10 @@ type NavItem = { to: string; label: string; icon: LucideIcon; end?: boolean }
  * is the record of what Divo did with some of it.
  */
 const NAV: NavItem[] = [
+  // Home is the answer to "has this been working", which Rules and Caught can
+  // only be read to infer. It leads because it is the question somebody opens
+  // the app with; the two pages under it are where that answer is checked.
+  { to: '/me/home', label: 'Home', icon: House, end: true },
   { to: '/me/mail', label: 'Rules', icon: Mail, end: true },
   { to: '/me/caught', label: 'Caught', icon: Inbox },
 ]

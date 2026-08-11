@@ -124,6 +124,20 @@ export interface MailCaughtRecord extends MailDeliveryRecord {
 }
 
 /**
+ * One message reduced to what a calendar can draw it with.
+ *
+ * Deliberately not a `MailCaughtRecord`: the subject, sender, rule and frozen
+ * payload are what make that record too heavy to fetch a season of, and none
+ * of them is visible in a square.
+ */
+export interface MailCaughtActivityRecord {
+  status: string;
+  lastError: string | null;
+  firstAttemptAt: Date;
+  deliveredAt: Date | null;
+}
+
+/**
  * The address a verdict settled on, if it settled on one.
  *
  * Read defensively: this column holds whatever the worker wrote at the time,
@@ -480,6 +494,56 @@ export class MailOpsReadRepository {
       }));
     } catch (cause) {
       return err(wrapInfra('prisma', 'mailOpsRead.listCaughtForUser', cause));
+    }
+  }
+
+  /**
+   * Just the times, for a calendar.
+   *
+   * `listCaughtForUser` carries the frozen payload, the judge verdict and a
+   * join to the rule, which is why it is capped at a hundred rows. A heatmap
+   * needs four scalars per message and nothing else, so it can cover a window
+   * measured in months at a fraction of the weight — and a chart built from a
+   * capped feed is the one that lies quietly, drawing ordinary empty squares
+   * on the days it never heard about.
+   *
+   * Timestamps rather than a server-side `GROUP BY date`: the member's day
+   * boundary is their own, and grouping in the database's timezone files a
+   * late-evening message under tomorrow for everybody east of it.
+   *
+   * Scoped through the rule's owner in the same query, as the feed is, so no
+   * prior lookup can widen it to another member's history.
+   */
+  async listCaughtActivityForUser(input: {
+    companyId: string;
+    userId: string;
+    since: Date;
+    limit: number;
+  }): Promise<Result<MailCaughtActivityRecord[], InfraError>> {
+    try {
+      const rows = await this.db.mailDelivery.findMany({
+        where: {
+          companyId: input.companyId,
+          rule: { createdByUserId: input.userId, companyId: input.companyId },
+          firstAttemptAt: { gte: input.since },
+        },
+        orderBy: [{ firstAttemptAt: 'desc' }, { id: 'desc' }],
+        take: input.limit,
+        select: {
+          status: true,
+          lastError: true,
+          firstAttemptAt: true,
+          deliveredAt: true,
+        },
+      });
+      return ok(rows.map(row => ({
+        status: row.status,
+        lastError: row.lastError,
+        firstAttemptAt: row.firstAttemptAt,
+        deliveredAt: row.deliveredAt,
+      })));
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'mailOpsRead.listCaughtActivityForUser', cause));
     }
   }
 

@@ -17,17 +17,8 @@ import { assertLosslessPagingFixture } from './lossless-paging.fixture.ts';
 // ─── zoho-crm ─────────────────────────────────────────────────────────────────
 
 describe('zohoCrm tool', () => {
-  const fakeCrmClient = {
-    searchRecords: async () => [{ id: 'lead-1', name: 'Alice' }],
-    getRecord:     async () => ({ id: 'lead-1', name: 'Alice' }),
-    createRecord:  async () => ({ recordId: 'lead-new' }),
-    updateRecord:  async () => {},
-    deleteRecord:  async () => {},
-  };
-
   const fakePaginatedCrmClient = {
     listRecords:   async () => ({ items: [{ id: 'lead-1', Last_Name: 'Alice' }], hasMore: false, page: 1 }),
-    listAllRecords: async () => ({ items: [{ id: 'lead-1', Last_Name: 'Alice' }], truncated: false }),
     searchRecords: async () => ({ items: [{ id: 'lead-1', Last_Name: 'Alice' }], hasMore: false, page: 1 }),
     searchByText:  async () => ({ items: [{ id: 'lead-1', Last_Name: 'Alice' }], hasMore: false, page: 1 }),
     getRecord:     async () => ({ id: 'lead-1', Last_Name: 'Alice' }),
@@ -43,12 +34,8 @@ describe('zohoCrm tool', () => {
   } as unknown as ZohoCrmOps;
 
 
-  const noClient  = async () => null;
-  const yesClient = async () => fakeCrmClient;
-
-  const makeCrmTool = (getClient = yesClient as typeof noClient | typeof yesClient) =>
+  const makeCrmTool = () =>
     createZohoCrmTool({
-      getClient,
       crmClient:  fakePaginatedCrmClient,
       crmOps:     fakeCrmOps,
     });
@@ -106,6 +93,26 @@ describe('zohoCrm tool', () => {
       assert.doesNotMatch(`${tool.description}\n${tool.parameterDocs}`, /dataExport|export candidate/i);
     });
 
+    it('rejects the retired embedded script contract', () => {
+      const tool = makeCrmTool();
+      assert.equal(tool.argsSchema.safeParse({ op: 'list', module: 'Deals', script: 'return data' }).success, false);
+      assert.doesNotMatch(`${tool.description}\n${tool.parameterDocs}`, /script mode|scriptArgs|sandbox/i);
+    });
+
+    it('rejects ambiguous page and pageToken input', () => {
+      const tool = makeCrmTool();
+      assert.equal(tool.argsSchema.safeParse({
+        op: 'list', module: 'Deals', page: 2, pageToken: 'opaque',
+      }).success, false);
+    });
+
+    it('rejects filter criteria on list instead of silently ignoring it', () => {
+      const tool = makeCrmTool();
+      assert.equal(tool.argsSchema.safeParse({
+        op: 'list', module: 'Deals', criteria: '(Closing_Date:between:2026-07-01,2026-07-31)',
+      }).success, false);
+    });
+
     it('list: bad_args when module missing', async () => {
       const tool = makeCrmTool();
       const r = await tool.execute({ op: 'list' }, ctx);
@@ -128,7 +135,7 @@ describe('zohoCrm tool', () => {
           return { items: [{ id: 'lead-1' }], hasMore: true, nextPageToken: 'next-token' };
         },
       } as unknown as ZohoCrmPaginatedClient;
-      const tool = createZohoCrmTool({ getClient: yesClient, crmClient: paginatedClient, crmOps: fakeCrmOps });
+      const tool = createZohoCrmTool({ crmClient: paginatedClient, crmOps: fakeCrmOps });
 
       const r = await tool.execute({ op: 'list', module: 'Leads', pageToken: 'current-token' }, ctx);
 
@@ -139,7 +146,6 @@ describe('zohoCrm tool', () => {
       assert.deepEqual(calls, [{
         companyId: 'co-test',
         userId: 'user-test',
-        connectionId: undefined,
         module: 'Leads',
         perPage: 25,
         pageToken: 'current-token',
@@ -170,7 +176,6 @@ describe('zohoCrm tool', () => {
         },
       } as unknown as ZohoCrmPaginatedClient;
       const tool = createZohoCrmTool({
-        getClient: yesClient,
         crmClient: paginatedClient,
         crmOps: fakeCrmOps,
       });
@@ -229,7 +234,7 @@ describe('zohoCrm tool', () => {
           page: 1,
         }),
       } as unknown as ZohoCrmPaginatedClient;
-      const tool = createZohoCrmTool({ getClient: yesClient, crmClient: scopedClient, crmOps: fakeCrmOps });
+      const tool = createZohoCrmTool({ crmClient: scopedClient, crmOps: fakeCrmOps });
       const personalized = makeCtx('zohoCrm', ['read'], { requesterEmail: 'member@example.com' });
       (personalized.perm as any).department = { zohoReadScope: 'personalized' };
 
@@ -256,19 +261,51 @@ describe('zohoCrm tool', () => {
       assert.equal(r.ok, true);
     });
 
-    it('marks search coverage truncated when Zoho has more rows but no continuation contract', async () => {
+    it('continues search pages until Zoho reaches its documented 2,000-record limit', async () => {
+      const calls: unknown[] = [];
       const paginatedClient = {
         ...fakePaginatedCrmClient,
-        searchRecords: async () => ({ items: [{ id: 'lead-1' }], hasMore: true }),
+        searchRecords: async (input: unknown) => {
+          calls.push(input);
+          return { items: [{ id: 'lead-201' }], hasMore: true, page: 2 };
+        },
       } as unknown as ZohoCrmPaginatedClient;
-      const tool = createZohoCrmTool({ getClient: yesClient, crmClient: paginatedClient, crmOps: fakeCrmOps });
+      const tool = createZohoCrmTool({ crmClient: paginatedClient, crmOps: fakeCrmOps });
 
-      const r = await tool.execute({ op: 'search', module: 'Leads', criteria: '(Last_Name:contains:Alice)' }, ctx);
+      const r = await tool.execute({
+        op: 'search', module: 'Leads', criteria: '(Last_Name:contains:Alice)', page: 2,
+      }, { ...ctx, resultAudience: 'local_file' });
 
       assert.equal(r.ok, true);
       assert.equal((r as any).value.hasMore, true);
+      assert.equal((r as any).value.page, 2);
+      assert.equal((r as any).value.nextPage, 3);
+      assert.equal((r as any).value.truncated, undefined);
+      assert.deepEqual(calls, [{
+        companyId: 'co-test',
+        userId: 'user-test',
+        module: 'Leads',
+        criteria: '(Last_Name:contains:Alice)',
+        perPage: 200,
+        page: 2,
+      }]);
+    });
+
+    it('reports the real Zoho search ceiling only after page 10', async () => {
+      const paginatedClient = {
+        ...fakePaginatedCrmClient,
+        searchRecords: async () => ({ items: [{ id: 'lead-2000' }], hasMore: true, page: 10 }),
+      } as unknown as ZohoCrmPaginatedClient;
+      const tool = createZohoCrmTool({ crmClient: paginatedClient, crmOps: fakeCrmOps });
+
+      const r = await tool.execute({
+        op: 'search', module: 'Leads', criteria: '(Last_Name:contains:Alice)', page: 10,
+      }, ctx);
+
+      assert.equal(r.ok, true);
+      assert.equal((r as any).value.nextPage, undefined);
       assert.equal((r as any).value.truncated, true);
-      assert.match((r as any).value.message, /no continuation/i);
+      assert.match((r as any).value.message, /2,000-record limit/i);
     });
 
     it('search_text: ok with query', async () => {
@@ -333,7 +370,6 @@ describe('zohoCrm tool', () => {
         searchRecords: async () => { throw new Error('err'); },
       } as unknown as ZohoCrmPaginatedClient;
       const tool = createZohoCrmTool({
-        getClient: yesClient,
         crmClient: throwingPaginated,
         crmOps: fakeCrmOps,
         });
@@ -392,11 +428,6 @@ describe('zohoBooks tool', () => {
       hasMore: false,
       page: 1,
     }),
-    listAllRecords: async () => ({
-      organizationId: 'org-1',
-      items: [{ invoice_id: 'inv-1', total: 100 }],
-      truncated: false,
-    }),
   } as unknown as ZohoBooksPaginatedClient;
 
   const makeBooksTool = (financeOps = fakeFinanceOps as ZohoFinanceOps) =>
@@ -438,6 +469,12 @@ describe('zohoBooks tool', () => {
       const tool = makeBooksTool();
       assert.match(tool.description, /page\/nextPage from one governed local Python file/);
       assert.doesNotMatch(`${tool.description}\n${tool.parameterDocs}`, /dataExport|export candidate/i);
+    });
+
+    it('rejects the retired embedded script contract', () => {
+      const tool = makeBooksTool();
+      assert.equal(tool.argsSchema.safeParse({ op: 'list_expenses', script: 'return data' }).success, false);
+      assert.doesNotMatch(`${tool.description}\n${tool.parameterDocs}`, /script mode|scriptArgs|sandbox|4,000-record/i);
     });
 
     it('get_invoice: provider error → upstream_failure', async () => {

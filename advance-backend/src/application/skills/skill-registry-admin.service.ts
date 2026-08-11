@@ -67,6 +67,14 @@ export interface SkillNodeDto {
   readonly isSystem: boolean;
   readonly revision: number;
   readonly updatedAt: string;
+  /**
+   * How many grants this skill has.
+   *
+   * Zero is the one that matters: the skill exists, appears in the library, and
+   * cannot be run by anybody. The tree carries it so a screen can say so
+   * without asking per skill.
+   */
+  readonly grantCount: number;
 }
 export interface FolderNodeDto {
   readonly id: string;
@@ -212,7 +220,21 @@ export class SkillRegistryAdminService {
       const folderStatus = opts.includeArchived ? undefined : 'active';
       const skillStatusIn = opts.includeArchived ? undefined : 'active';
 
-      const [folders, skills, departments, registry] = await Promise.all([
+      /*
+       * How many people or groups each skill is shared with, counted once for
+       * the whole library.
+       *
+       * A skill nobody has been granted exists but can never run, and that was
+       * only discoverable by opening each skill's Access tab in turn — a
+       * hundred skills, a hundred clicks, to find the handful that are dead.
+       * One grouped count answers it for every skill at once, so this stays a
+       * fixed number of queries rather than one per skill.
+       *
+       * Counted across the company rather than filtered to the visible tree:
+       * the group-by is cheaper than assembling an id list, and skills outside
+       * the tree simply never get looked up.
+       */
+      const [folders, skills, departments, registry, grantCounts] = await Promise.all([
         this.db.skillFolder.findMany({
           where: { companyId, ...(folderStatus ? { status: folderStatus } : {}) },
           select: { id: true, name: true, slug: true, departmentId: true, parentId: true, status: true },
@@ -236,9 +258,18 @@ export class SkillRegistryAdminService {
           where: { companyId },
           select: { revision: true },
         }),
+        this.db.skillAccessGrant.groupBy({
+          by: ['skillId'],
+          where: { companyId },
+          _count: { skillId: true },
+        }),
       ]);
 
-      const tree = buildTree(folders, skills, departments, registry?.revision ?? 1);
+      const grantsBySkill = new Map(
+        grantCounts.map((row) => [row.skillId, row._count.skillId] as const),
+      );
+
+      const tree = buildTree(folders, skills, departments, registry?.revision ?? 1, grantsBySkill);
       return ok(tree);
     } catch (e) {
       this.deps.logger.error('skill_registry.tree.failed', { companyId, error: String(e) });
@@ -980,8 +1011,9 @@ export function auditRefsSkill(metadata: unknown, skillId: string): boolean {
   return Array.isArray(ids) && ids.includes(skillId);
 }
 
-function toSkillDto(s: SkillRow): SkillNodeDto {
+function toSkillDto(s: SkillRow, grantCount = 0): SkillNodeDto {
   return {
+    grantCount,
     id: s.id,
     name: s.name,
     slug: s.slug,
@@ -1003,6 +1035,12 @@ export function buildTree(
   skills: SkillRow[],
   departments: { id: string; name: string }[],
   registryRevision: number,
+  /*
+   * Grants per skill. Optional so the existing callers and tests that build a
+   * tree without access data keep working — an absent map means every skill
+   * reports zero, which is what the tree said before this existed.
+   */
+  grantsBySkill: ReadonlyMap<string, number> = new Map(),
 ): RegistryTreeDto {
   const folderIds = new Set(folders.map((f) => f.id));
   // Skills whose folder was archived/removed render at their scope root.
@@ -1010,7 +1048,7 @@ export function buildTree(
   const looseByDepartment = new Map<string | null, SkillNodeDto[]>();
 
   for (const s of skills) {
-    const dto = toSkillDto(s);
+    const dto = toSkillDto(s, grantsBySkill.get(s.id) ?? 0);
     const parkedInFolder = s.folderId && folderIds.has(s.folderId);
     if (parkedInFolder) {
       const arr = skillsByFolder.get(s.folderId as string) ?? [];

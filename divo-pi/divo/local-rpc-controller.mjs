@@ -31,6 +31,7 @@ const RPC_TIMEOUT_MS = 30_000;
 const KEYCHAIN_TIMEOUT_MS = 15_000;
 const MAX_TRANSIENT_MODEL_RETRIES = 3;
 const MODEL_RETRY_IDLE_TIMEOUT_MS = 5_000;
+const SOFT_ABORT_TIMEOUT_MS = 15_000;
 const MODEL_RETRY_PROMPT =
 	"The previous model continuation failed because the provider was temporarily unavailable. Continue this same request from the work already present in the session. Do not repeat completed tool calls or side effects. Finish the remaining work and return only the final user-facing answer.";
 /**
@@ -1405,6 +1406,19 @@ export function buildContainerPrepareArgs(container) {
 	];
 }
 
+export function buildContainerRecordInterruptionArgs(container) {
+	return [
+		"exec",
+		"--interactive",
+		"--user",
+		WORKSPACE_UID_GID,
+		container,
+		"node",
+		"divo/container-entry.mjs",
+		"record-interruption",
+	];
+}
+
 export function buildContainerRunArgs(container) {
 	return [
 		"exec",
@@ -1425,12 +1439,42 @@ async function stageRuntimeInterruption(container, bootstrap) {
 		|| typeof bootstrap.interruptionTask !== "string"
 		|| !bootstrap.interruptionTask
 	) {
-		return;
+		return false;
 	}
 	await runWithInput("docker", buildInterruptionWriteArgs(container), JSON.stringify({
 		thread: bootstrap.thread,
 		task: bootstrap.interruptionTask,
 	}));
+	return true;
+}
+
+async function recordRuntimeInterruption(container) {
+	const result = await runWithInput("docker", buildContainerRecordInterruptionArgs(container), "");
+	let parsed;
+	try {
+		parsed = JSON.parse(result.stdout);
+	} catch {
+		throw new Error(`Divo interruption recorder returned invalid JSON: ${result.stdout.slice(0, 160)}`);
+	}
+	if (parsed?.recorded !== true) {
+		throw new Error("Divo interruption recorder did not persist the interrupted work");
+	}
+}
+
+export async function abortRuntimeInPlace({ rpc, container, bootstrap }, {
+	stageInterruptionFn = stageRuntimeInterruption,
+	recordInterruptionFn = recordRuntimeInterruption,
+	timeoutMs = SOFT_ABORT_TIMEOUT_MS,
+} = {}) {
+	const interruptionStaged = await stageInterruptionFn(container, bootstrap);
+	await rpc.send({ type: "abort" }, timeoutMs);
+	const state = await rpc.send({ type: "get_state" }, timeoutMs);
+	if (state?.isStreaming === true || state?.isCompacting === true) {
+		throw new Error("Pi did not become idle after abort");
+	}
+	if (interruptionStaged) await recordInterruptionFn(container);
+	const messageState = await rpc.send({ type: "get_messages" }, timeoutMs);
+	return collectProtectedRunMetadata(messageState?.messages);
 }
 
 async function prepareWarmRuntime(container) {
@@ -1715,6 +1759,8 @@ export function collectRunAssistantText(messages) {
 const PROTECTED_SHOPIFY_TOOLS = new Set(["shopifyOrders", "shopifyCustomers"]);
 
 function gatewayToolId(call, result) {
+	if (call?.name === "divo_shopify_orders") return "shopifyOrders";
+	if (call?.name === "divo_shopify_customers") return "shopifyCustomers";
 	const payloadToolId = call?.arguments?.payload?.toolId;
 	if (typeof payloadToolId === "string") return payloadToolId;
 	const dataToolId = result?.details?.data?.toolId;
@@ -2399,6 +2445,7 @@ export async function finalizeRuntimeLifecycle({
 	completedSuccessfully,
 	runError,
 	abortStop,
+	retainRuntimeProcess = false,
 	ephemeral = false,
 }, {
 	clearBootstrapFn = clearBootstrap,
@@ -2437,7 +2484,7 @@ export async function finalizeRuntimeLifecycle({
 				cleanupErrors.push(error);
 			}
 		}
-	} else if (completedSuccessfully && cleanupErrors.length === 0) {
+	} else if ((completedSuccessfully || retainRuntimeProcess) && cleanupErrors.length === 0) {
 		scheduler.keepWarm(profile);
 	} else {
 		try {
@@ -2600,15 +2647,43 @@ async function runPrompt({
 	let exited;
 	let rpc;
 	let retainRuntimeProcess = false;
+	let softInterrupted = false;
+	let softInterruptMetadata;
 	let completedSuccessfully = false;
 	let runError;
 	const abort = () => {
+		if (abortStop) return;
 		abortStop = (async () => {
+			const warmEntry = warmPiProcesses.get(profile);
+			const activeRpc = rpc ?? warmEntry?.rpc;
+			if (piKeepAlive && lifecycle === undefined && activeRpc) {
+				try {
+					softInterruptMetadata = await abortRuntimeInPlace({
+						rpc: activeRpc,
+						container: resources.container,
+						bootstrap,
+					});
+					softInterrupted = true;
+					console.error(`[Pi] ${JSON.stringify({
+						event: "pi_runtime.interrupted",
+						mode: "soft",
+						sessionScope: normalizedSessionScope,
+					})}`);
+					return;
+				} catch (error) {
+					console.error(`[Pi] Soft abort failed; stopping runtime: ${error.message}`);
+				}
+			}
 			await stageRuntimeInterruption(resources.container, bootstrap).catch((error) => {
 				console.error(`[Pi] Failed to stage interrupted work: ${error.message}`);
 			});
 			forgetWarmPiProcess(profile);
 			await stopOwnedContainer(profile);
+			console.error(`[Pi] ${JSON.stringify({
+				event: "pi_runtime.interrupted",
+				mode: "hard",
+				sessionScope: normalizedSessionScope,
+			})}`);
 		})().then(
 			() => undefined,
 			(error) => error,
@@ -2718,6 +2793,7 @@ async function runPrompt({
 		const completion = await promptWithTransientRetries({
 			rpc,
 			message: `${attachmentManifestBlock(attachments)}${message}`,
+			signal,
 			onRetry: ({ attempt, maxRetries, summary }) => {
 				console.error(
 					`Transient model failure; retrying continuation ${attempt}/${maxRetries}: ${summary}`,
@@ -2744,9 +2820,19 @@ async function runPrompt({
 		return { profile, thread, text, ...metadata };
 	} catch (error) {
 		runError = error;
-		await discardWarmPiProcess(profile).catch((cleanupError) => {
-			console.error(`[Pi] Failed to discard warm Pi process: ${cleanupError.message}`);
-		});
+		if (signal?.aborted && abortStop) await abortStop;
+		const protectedDataUsed = error?.protectedDataUsed === true
+			|| softInterruptMetadata?.protectedDataUsed === true;
+		if (softInterrupted && !protectedDataUsed) {
+			if (piKeepAlive && !warmPiProcesses.has(profile) && child && exited && rpc) {
+				rememberWarmPiProcess(profile, { profile, binding, child, exited, rpc });
+			}
+			retainRuntimeProcess = true;
+		} else {
+			await discardWarmPiProcess(profile).catch((cleanupError) => {
+				console.error(`[Pi] Failed to discard warm Pi process: ${cleanupError.message}`);
+			});
+		}
 		throw error;
 	} finally {
 		signal?.removeEventListener("abort", abort);
@@ -2758,6 +2844,7 @@ async function runPrompt({
 			completedSuccessfully,
 			runError,
 			abortStop,
+			retainRuntimeProcess,
 			ephemeral,
 		});
 	}

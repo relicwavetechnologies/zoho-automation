@@ -1743,8 +1743,12 @@ describe('desktop auth routes', () => {
           ok: true,
           value: [{
             connectionId: 'zoho-connection-1',
+            provider: 'zoho',
             label: 'Finance Books',
+            ownerType: 'company',
             access: 'read_write',
+            scopes: ['ZohoBooks.fullaccess.all'],
+            connectedAt: new Date('2026-07-01T00:00:00.000Z'),
           }],
         }),
       },
@@ -1776,12 +1780,12 @@ describe('desktop auth routes', () => {
       { toolId: 'zohoCrm', actions: ['read'] },
       { toolId: 'webSearch', actions: ['read'] },
     ]);
-    assert.deepEqual(result.body.data.capabilityBootstrap.zohoConnection, {
-      accessibleCount: 1,
+    assert.deepEqual(result.body.data.capabilityBootstrap.zohoConnections, [{
       connectionId: 'zoho-connection-1',
       label: 'Finance Books',
       access: 'read_write',
-    });
+      services: ['books'],
+    }]);
   });
 
   it('returns complete native skill files only to the pinned Pi runtime lease', async () => {

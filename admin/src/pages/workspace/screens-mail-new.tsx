@@ -29,10 +29,10 @@
  * "how do I make a rule". `useCompileMailRule` and `POST /compile` are still
  * there for when that surface exists.
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
-  ArrowLeft, Inbox, Info, Mail, Plus, ShieldAlert, Split, TriangleAlert, X,
+  ArrowLeft, Inbox, Info, Mail, Plus, Split, TriangleAlert, X,
 } from 'lucide-react'
 import {
   matchClauses, readAction, readDestination, useCreateMailRule, useMailAutomations,
@@ -40,6 +40,8 @@ import {
   type MailRule, type MailRuleDraft, type MailRulePreview, type MailboxOption,
 } from './data/use-mail-automations'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { notify } from '@/lib/notify'
+import { previewScopeSentence } from './data/preview-scope'
 import { GmailMark, LarkMark } from './brand'
 import { MailboxSetup } from './screens-mail'
 import { Confirm, Empty, PageHeader, Panel, SkelRows } from './ui'
@@ -314,6 +316,19 @@ function MailRuleForm({
   const ruleName = nameEdited ? name : suggestedName(destination, address)
 
   /*
+   * Which conditions the dry run's answer is an answer *to*.
+   *
+   * The result sat on screen until the next press, so adding a condition after
+   * a check left "3 matched" describing conditions that no longer existed — the
+   * one number on this page somebody is entitled to trust, quietly describing
+   * something else. Recorded at the press and compared to the live draft, so
+   * the proof can say it has gone out of date rather than pretending.
+   */
+  const draftKey = useMemo(() => JSON.stringify(draft), [draft])
+  const provenFor = useRef<string | null>(null)
+  const proofStale = preview.result !== null && provenFor.current !== draftKey
+
+  /*
    * Seeding, once.
    *
    * A duplicate and an edit start from the same place — the stored rule, read
@@ -401,6 +416,34 @@ function MailRuleForm({
   const saving = creating.saving || updating.saving
   const pending = creating.pending ?? updating.pending
 
+  /*
+   * Mail leaving the company, said once.
+   *
+   * This is a property of the form rather than an event: the address stays
+   * outside the domain until it is changed, and it is recomputed on every
+   * keystroke. Three panels used to assert it inline — one per destination
+   * shape — which is why the page filled with warning boxes while somebody was
+   * still typing an address.
+   */
+  const externals = destination === 'routed'
+    ? routedExternals(routes, otherwiseEmail, mailbox?.accountEmail ?? '')
+    : destination === 'email' && leavesDomain(address, mailbox?.accountEmail ?? '')
+      ? [address.trim()]
+      : []
+  const ownDomain = domainOf(mailbox?.accountEmail ?? '')
+  // Fail-open plus an external forward is the compounding case, and worth its
+  // own sentence: it is the one combination that sends mail Divo could not read
+  // out of the company.
+  const unreadLeaves = failOpen && externals.length > 0
+  const advisory = externals.length === 0 ? null : {
+    title: externals.length > 1
+      ? `${externals.length} of these are outside ${ownDomain}`
+      : `${externals[0]} is outside ${ownDomain}`,
+    body: unreadLeaves
+      ? 'Matching mail leaves your company in full, so your manager is asked before this starts — and with off-days included, mail Divo could not read is sent out unread.'
+      : 'Matching mail leaves your company in full, so your manager is asked before this starts.',
+  }
+
   const buildDraft = (): MailRuleDraft | null => {
     if (!mailbox || !destination) return null
     return {
@@ -446,9 +489,103 @@ function MailRuleForm({
     }
   }
 
+  /*
+   * Every outcome that used to be a panel, raised where the press happened.
+   *
+   * Watched rather than returned from `onSubmit`, because create and edit
+   * report the same four endings through different shapes — an effect keyed on
+   * the state says each one once, whichever path produced it.
+   */
+  const saveError = creating.error ?? updating.error
+  const spokenError = useRef<string | null>(null)
+  useEffect(() => {
+    if (!saveError || spokenError.current === saveError) return
+    spokenError.current = saveError
+    // The server's own sentence, never replaced with a generic failure: several
+    // checks can refuse this and each has a different remedy, which is the only
+    // part of a refusal anybody can act on.
+    notify.failed(editing ? 'The change was not saved' : 'The rule was not created', saveError)
+  }, [saveError, editing])
+
+  const spokenPending = useRef<string | null>(null)
+  useEffect(() => {
+    if (!pending) { spokenPending.current = null; return }
+    const key = `${pending.approverName}|${pending.destination}|${pending.reused}|${pending.deliveredVia}`
+    if (spokenPending.current === key) return
+    spokenPending.current = key
+    /*
+     * Asked, not refused. Nothing the member typed is wrong and there is
+     * nothing to correct — somebody else has to answer.
+     *
+     * Where they were asked is said out loud. "Asked your manager" with no
+     * place named sent people to check Lark for a card that, on a deployment
+     * with card delivery off or an approver with no Lark account, was never
+     * sent — and finding nothing there reads as the request having gone
+     * nowhere, when it is sitting live in Divo the whole time.
+     */
+    const waitsAt = pending.deliveredVia === 'lark'
+      ? `Divo sent ${pending.approverName} a card in Lark.`
+      : `It is waiting for them in Divo, under Approvals.`
+    notify.heads(
+      pending.reused
+        ? `${pending.approverName} has already been asked`
+        : `Asked ${pending.approverName} to approve this`,
+      `Forwarding to ${pending.destination} sends mail outside your organisation, so it needs their yes. ${waitsAt} ${editing ? 'The change applies' : 'The rule turns on'} by itself once they agree.`,
+    )
+  }, [pending, editing])
+
+  const duplicate = updating.duplicate
+  const spokenDuplicate = useRef<string | null>(null)
+  useEffect(() => {
+    if (!duplicate) { spokenDuplicate.current = null; return }
+    const key = duplicate.message
+    if (spokenDuplicate.current === key) return
+    spokenDuplicate.current = key
+    // A question, not a failure — and the rule it collides with may be one the
+    // member cannot reach from here, so the way to it travels with the message.
+    notify.heads(
+      duplicate.archived
+        ? 'An archived rule already has these conditions'
+        : 'Another rule already has these conditions',
+      duplicate.message,
+      duplicate.ruleId
+        ? { label: 'Open that rule', onClick: () => navigate(`/me/mail/${duplicate.ruleId}`) }
+        : undefined,
+    )
+  }, [duplicate, navigate])
+
+  const previewError = preview.error
+  const spokenPreview = useRef<string | null>(null)
+  useEffect(() => {
+    if (!previewError || spokenPreview.current === previewError) return
+    spokenPreview.current = previewError
+    // The dry run sends nothing, so a failure here costs only the answer — but
+    // said in silence it reads as "no mail matched", which is the opposite.
+    notify.failed('The dry run could not finish', previewError)
+  }, [previewError])
+
   const onSubmit = async () => {
+    /*
+     * One answer per press.
+     *
+     * `blockedReason` returns the first thing standing in the way and nothing
+     * else, so fixing it and pressing again surfaces the next — which is how
+     * somebody works through a form, rather than being handed a list of
+     * everything wrong with it at once.
+     */
+    if (blocked) {
+      notify.refused('This rule is not ready yet', blocked)
+      return
+    }
     const request = buildDraft()
     if (!request) return
+
+    /*
+     * The one consequence worth hearing before the rule exists, said at the
+     * moment it is committed rather than while an address is still being typed.
+     * Not a refusal — the rule is made either way, and somebody is asked.
+     */
+    if (advisory) notify.heads(advisory.title, advisory.body)
 
     if (editing && sourceRuleId) {
       const outcome = await updating.update(sourceRuleId, request)
@@ -573,14 +710,14 @@ function MailRuleForm({
           <ArrowLeft size={13} /> {editing ? 'Back to the rule' : 'Mail'}
         </button>}
         title={editing ? 'Edit rule' : sourceRuleId ? 'Duplicate rule' : 'New rule'}
+        // Why the button is refusing, over the button. It was a `title` first —
+        // invisible on touch and to a keyboard — then a yellow panel at the foot
+        // of the page, which said what the conditions block already said and
+        // said it in alarm colours. It is neither: the rule is unfinished, not
+        // wrong. Sharing the actions row made it wrap beside Cancel and Turn it
+        // on, so it takes a line of its own above them.
         actions={
           <>
-            {/* Why the button is refusing, beside the button. It was a `title`
-                first — invisible on touch and to a keyboard — then a yellow
-                panel at the foot of the page, which said the same sentence the
-                conditions block was already saying and said it in alarm
-                colours. It is neither: the rule is unfinished, not wrong. */}
-            {blocked ? <span className="ws-mk-blocked">{blocked}</span> : null}
             {resolution.status === 'choose' && !editing ? (
               /* Whoever had to choose can un-choose. Without this the only way
                  back to the other account is to leave and start again. */
@@ -592,10 +729,18 @@ function MailRuleForm({
             <button
               type="button"
               className="btn primary"
-              // Nothing to press once it is with somebody else. Leaving it live
-              // invites the same request again, and a member who clicks twice
-              // should not have to wonder whether they sent two.
-              disabled={saving || blocked !== null || pending !== null}
+              /*
+               * Live even when the rule is unfinished.
+               *
+               * Disabled, it refused silently: the reason lived in a line
+               * beside it that somebody who had already decided to press was
+               * not reading. Pressing is how a person asks what is wrong, and
+               * the answer comes back as one toast.
+               *
+               * Still dead once the request is with somebody else — leaving it
+               * live there invites the same approval twice.
+               */
+              disabled={saving || pending !== null}
               onClick={() => { void onSubmit() }}
             >
               {pending
@@ -609,69 +754,14 @@ function MailRuleForm({
       />
 
       <div className="ws-stack">
-        {/* Asked, not refused.
-            Nothing the member typed is wrong and there is nothing to correct —
-            a person has to answer. Rendering this as an error would send
-            somebody back to rewrite a rule that was fine. */}
-        {pending ? (
-          <div className="ws-pending">
-            <ShieldAlert size={14} />
-            <div>
-              <b>
-                {pending.reused
-                  ? `${pending.approverName} has already been asked.`
-                  : `Asked ${pending.approverName} to approve this.`}
-              </b>{' '}
-              Forwarding to {pending.destination} sends mail outside your organisation, so it needs
-              their yes. <b>{editing ? 'The change applies by itself' : 'The rule turns on by itself'}</b>{' '}
-              once they agree — you do not need to come back and do this again.
-            </div>
-          </div>
-        ) : null}
-
-        {/* A question, not a failure. The rule this collides with may be one the
-            member cannot see from here at all, which is why "archived" is said
-            out loud rather than left as "that already exists". */}
-        {updating.duplicate ? (
-          <div className="ws-ceiling">
-            <TriangleAlert size={14} />
-            <div>
-              <b>
-                {updating.duplicate.archived
-                  ? 'An archived rule already has these conditions.'
-                  : 'Another rule already has these conditions.'}
-              </b>{' '}
-              {/* The server's own sentence. It used to name the colliding rule
-                  in quotes — but nothing sends that name, so the panel read
-                  「"another rule" watches this mailbox」. Better to say the true
-                  thing without the name than to quote a placeholder. */}
-              {updating.duplicate.message}
-            </div>
-            {updating.duplicate.ruleId ? (
-              <button
-                type="button"
-                className="btn"
-                onClick={() => navigate(`/me/mail/${updating.duplicate!.ruleId}`)}
-              >
-                Open that rule
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-
-        {/* The server's own sentence, never replaced with a generic failure:
-            six checks can refuse this and each has a different remedy, which is
-            the only part of a refusal anybody can act on. */}
-        {creating.error || updating.error ? (
-          <div className="ws-ceiling">
-            <TriangleAlert size={14} />
-            <div>
-              <b>{editing ? 'The change was not saved.' : 'The rule was not created.'}</b>{' '}
-              {creating.error ?? updating.error}
-            </div>
-          </div>
-        ) : null}
-
+        {/*
+          No panels here any more.
+          Approval, a colliding rule and a failed save were three boxes stacked
+          above the form, pushing it down and describing a press that had
+          already happened. Each is raised as one toast at the moment it
+          happens — see the effects above — and the header button carries the
+          standing state, which is what "Waiting for …" is for.
+        */}
         <div className="ws-sheet">
           <div className="ws-sheet-main">
             <section className="ws-blk">
@@ -731,18 +821,34 @@ function MailRuleForm({
               The runtime refuses the pair outright, so a rule built from both
               could not be saved at all.
             */}
+            {/*
+              The toggle sits with the sentence that justifies it, not at the far
+              edge of the header.
+
+              It was in the `ws-blk-h` slot the other blocks use for a label —
+              which is right for "all of these must hold" and wrong for a
+              control: on a wide screen the box ended up a thousand pixels from
+              the words naming it, and the reason to tick it was in a paragraph
+              underneath that the tick had no visible relationship to.
+            */}
             <section className="ws-blk" hidden={destination === 'routed'}>
-              <div className="ws-blk-h">
-                <span className="ws-blk-t">Then Divo reads it</span>
-                <label className="ws-mk-tog">
-                  <input
-                    type="checkbox"
-                    checked={judging}
-                    onChange={(e) => { setJudging(e.target.checked); setTouched(true) }}
-                  />
-                  {' '}Ask a question first
-                </label>
-              </div>
+              <div className="ws-blk-h"><span className="ws-blk-t">Then Divo reads it</span></div>
+
+              <label className="ws-opt" data-on={judging ? 'true' : undefined}>
+                <input
+                  type="checkbox"
+                  checked={judging}
+                  onChange={(e) => { setJudging(e.target.checked); setTouched(true) }}
+                />
+                <div>
+                  <b>Ask a question first</b>
+                  <p>
+                    Conditions match words. A question lets Divo tell a real invoice from an
+                    advert that says “invoice” — worth adding when what you want is a judgement
+                    rather than a pattern.
+                  </p>
+                </div>
+              </label>
 
               {judging ? (
                 <div className="ws-blk-body">
@@ -752,6 +858,7 @@ function MailRuleForm({
                     value={question}
                     onChange={(e) => { setQuestion(e.target.value); setTouched(true) }}
                     placeholder="Is this a real invoice addressed to us, rather than marketing, a quote, or a reminder for something already paid?"
+                    aria-label="The question Divo should ask about each matching message"
                   />
                   <p className="ws-mk-hint">
                     Divo answers yes or no for each matching message and only acts on a yes.
@@ -760,41 +867,33 @@ function MailRuleForm({
                     attachments. A question decides <i>whether</i>, never <i>who</i>.
                   </p>
 
-                  <label className="ws-mk-tog">
+                  {/* The same shape as the option above it, because it is the
+                      same kind of choice one level down — and toned when it is
+                      on, because it is the one choice on this screen whose wrong
+                      answer is invisible: a rule that fails open looks identical
+                      to one that is working, right up until the model is
+                      unreachable. */}
+                  <label className="ws-opt" data-warn={failOpen ? 'true' : undefined}>
                     <input
                       type="checkbox"
                       checked={failOpen}
                       onChange={(e) => { setFailOpen(e.target.checked); setTouched(true) }}
                     />
-                    {' '}If Divo cannot answer, go ahead anyway
-                  </label>
-                  {/* Said here rather than in a tooltip, because it is the one
-                      choice on this screen whose wrong answer is invisible: a
-                      rule that fails open looks identical to one that is
-                      working right up until the model is unreachable. */}
-                  <p className="ws-mk-hint">
-                    {failOpen
-                      ? 'Off-days included: if Divo cannot read a message it will be acted on unread.'
-                      : 'Left off, a message Divo cannot read is held back and shown to you.'}
-                  </p>
-                  {failOpen && destination === 'email'
-                    && leavesDomain(address, mailbox.accountEmail) ? (
-                    <div className="ws-ceiling">
-                      <ShieldAlert size={14} />
-                      <div>
-                        <b>This forward leaves {domainOf(mailbox.accountEmail)}.</b> With this on,
-                        mail Divo could not read is sent out of the company unread.
-                      </div>
+                    <div>
+                      <b>If Divo cannot answer, go ahead anyway</b>
+                      <p>
+                        {failOpen
+                          ? 'Off-days included: if Divo cannot read a message it will be acted on unread.'
+                          : 'Left off, a message Divo cannot read is held back and shown to you.'}
+                      </p>
                     </div>
-                  ) : null}
+                  </label>
                 </div>
               ) : (
                 <div className="ws-blk-body">
                   <p className="ws-mk-hint">
-                    Conditions match words. A question lets Divo tell a real invoice from an
-                    advert that says “invoice” — worth adding when what you want is a judgement
-                    rather than a pattern. To send different mail to different people instead,
-                    choose <b>Sort it between people</b> below.
+                    To send different mail to different people instead, choose{' '}
+                    <b>Sort it between people</b> below.
                   </p>
                 </div>
               )}
@@ -834,19 +933,6 @@ function MailRuleForm({
                     onChange={(e) => { setAddress(e.target.value); setTouched(true) }}
                     placeholder="books@vendor-cpa.com"
                   />
-                  {/* The warning that used to appear only after the rule was
-                      already running. A forward out of the mailbox's own domain
-                      is a standing export, and that is worth knowing before it
-                      exists rather than on a review screen afterwards. */}
-                  {leavesDomain(address, mailbox.accountEmail) ? (
-                    <div className="ws-ceiling">
-                      <ShieldAlert size={14} />
-                      <div>
-                        <b>Outside {domainOf(mailbox.accountEmail)}.</b> Matching mail leaves your
-                        company in full, so your manager is asked before this starts.
-                      </div>
-                    </div>
-                  ) : null}
                 </div>
               ) : null}
 
@@ -921,22 +1007,6 @@ function MailRuleForm({
                   >
                     <Plus size={12} /> Add another · {routes.length} of {MAX_ROUTES}
                   </button>
-
-                  {routedExternals(routes, otherwiseEmail, mailbox.accountEmail).length > 0 ? (
-                    <div className="ws-ceiling">
-                      <ShieldAlert size={14} />
-                      <div>
-                        <b>
-                          {routedExternals(routes, otherwiseEmail, mailbox.accountEmail).join(', ')}
-                          {' '}
-                          {routedExternals(routes, otherwiseEmail, mailbox.accountEmail).length > 1
-                            ? 'are' : 'is'} outside {domainOf(mailbox.accountEmail)}.
-                        </b>{' '}
-                        Matching mail leaves your company in full, so your manager is asked
-                        before this starts.
-                      </div>
-                    </div>
-                  ) : null}
 
                   <div className="ws-route-else">
                     <span>Anything that fits none of these →</span>
@@ -1039,16 +1109,43 @@ function MailRuleForm({
               <button
                 type="button"
                 className="btn"
-                disabled={preview.running || clauses.length === 0}
-                onClick={() => { void preview.preview(draft, mailbox.connectionId) }}
+                /* Live with no conditions, for the reason Turn it on is: dead,
+                   it refused silently, and on a narrow screen the block that
+                   explains why is a scroll away under the rail. */
+                disabled={preview.running}
+                onClick={() => {
+                  if (clauses.length === 0) {
+                    notify.refused(
+                      'Nothing to check yet',
+                      'A dry run replays the conditions, and this rule has none. Add one first.',
+                    )
+                    return
+                  }
+                  provenFor.current = draftKey
+                  void preview.preview(draft, mailbox.connectionId)
+                }}
               >
                 {preview.running ? 'Checking…' : preview.result ? 'Check again' : 'Check it'}
               </button>
-              <p className="ws-cond-note">
-                Replays these conditions over mail Divo has already seen. Nothing is sent.
-              </p>
-              {preview.error ? <p className="ws-proof-line">{preview.error}</p> : null}
-              {preview.result ? <PreviewResult result={preview.result} /> : null}
+
+              {/* The answer takes the note's place rather than sitting below it.
+                  Read {n} · none matched was the same size, colour and spacing as
+                  the sentence explaining the button, so the one line anybody
+                  pressed for looked like more instructions. */}
+              {preview.result ? (
+                <PreviewResult
+                  result={preview.result}
+                  stale={proofStale}
+                  // Only when there is a question that would actually be saved —
+                  // an empty box is not a step, and flagging one would send
+                  // somebody looking for a caveat that does not apply.
+                  judged={judging && question.trim().length >= 8}
+                />
+              ) : (
+                <p className="ws-cond-note">
+                  Replays these conditions over mail Divo has already seen. Nothing is sent.
+                </p>
+              )}
             </div>
           </aside>
         </div>
@@ -1227,28 +1324,58 @@ function MailboxPicker({
  * they are neither a match nor a miss, and folding them either way states a
  * certainty nobody has.
  */
-function PreviewResult({ result }: { result: MailRulePreview }) {
+function PreviewResult({
+  result, judged, stale,
+}: { result: MailRulePreview; judged: boolean; stale: boolean }) {
   if (!result.watched) {
     return (
-      <p className="ws-proof-line">
-        Divo has not watched this inbox before, so there is nothing stored to check against. Your
-        first rule starts the watch.
-      </p>
+      <div className="ws-proof">
+        <b className="ws-proof-n">Nothing to check against</b>
+        <p className="ws-proof-line">
+          Divo has not watched this inbox before. Your first rule starts the watch.
+        </p>
+      </div>
     )
   }
+
   return (
-    <>
-      <p className="ws-proof-line">
-        Read {result.consideredCount} ·{' '}
-        {result.matchedCount === 0 ? 'none matched' : <b>{result.matchedCount} matched</b>}
-      </p>
-      {result.bodyUnavailableCount > 0 ? (
+    <div className="ws-proof" data-stale={stale ? 'true' : undefined}>
+      <b className="ws-proof-n">
+        {result.matchedCount === 0 ? 'None matched' : `${result.matchedCount} matched`}
+      </b>
+
+      {/* Said before the numbers rather than after them, because once the
+          conditions have moved on every line below is about something else. */}
+      {stale ? (
+        <p className="ws-proof-line ws-proof-warn">
+          <TriangleAlert size={12} />
+          The conditions have changed since this ran. Check again.
+        </p>
+      ) : (
+        <p className="ws-proof-line">{previewScopeSentence(result)}</p>
+      )}
+
+      {/*
+        The half of the rule a dry run cannot answer.
+        A replay matches words; it never asks the model, so with a question set
+        this number is an upper bound and not a result. Unsaid, "3 matched"
+        promises three deliveries that the question may well refuse.
+      */}
+      {judged && !stale ? (
+        <p className="ws-proof-line ws-proof-warn">
+          <TriangleAlert size={12} />
+          Conditions only — your question is not asked here, so a match may still be turned down.
+        </p>
+      ) : null}
+
+      {result.bodyUnavailableCount > 0 && !stale ? (
         <p className="ws-proof-line">
           {result.bodyUnavailableCount} could not be judged — their bodies have been discarded.
           Neither a match nor a miss.
         </p>
       ) : null}
-      {result.matched.length > 0 ? (
+
+      {result.matched.length > 0 && !stale ? (
         <ul className="ws-hits">
           {result.matched.slice(0, 5).map((hit) => (
             <li key={hit.eventId}>
@@ -1258,7 +1385,13 @@ function PreviewResult({ result }: { result: MailRulePreview }) {
           ))}
         </ul>
       ) : null}
-    </>
+
+      {/* Only where the worry exists. Nobody who was told none matched is
+          wondering whether mail went out. */}
+      {result.matchedCount > 0 && !stale ? (
+        <p className="ws-proof-line">Nothing was sent.</p>
+      ) : null}
+    </div>
   )
 }
 

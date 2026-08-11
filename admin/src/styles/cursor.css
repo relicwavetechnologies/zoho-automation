@@ -86,10 +86,30 @@
 .cur .nav-label { font-size: 12px; font-weight: 400; letter-spacing: 0; color: var(--cur-muted); padding: 18px 10px 6px; }
 .cur .nav-item { display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 10px; border-radius: var(--cur-r-cta);
   font-size: 13px; color: var(--cur-body); cursor: pointer; user-select: none; text-decoration: none; }
-.cur .nav-item:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
-/* A flat fill, no ring. The reference's active row is simply a lighter block. */
-.cur .nav-item.active { background: var(--cur-surface-strong); color: var(--cur-ink); font-weight: 400; }
+/*
+ * Hover and active were the same declaration — same fill, same colour, same
+ * weight — so the row under the pointer was indistinguishable from the page you
+ * were actually on. Two rows appeared selected at once, which is not a lie the
+ * navigation can afford: it is the one control whose whole job is saying where
+ * you are.
+ *
+ * Hover is now the lighter of the two and says only "this is a target". Active
+ * keeps the solid fill and adds the weight and the accent rail, so it wins on
+ * three counts at a glance rather than none.
+ */
+.cur .nav-item:hover { background: var(--cur-canvas-soft); color: var(--cur-ink); }
+.cur .nav-item.active {
+  position: relative;
+  background: var(--cur-surface-strong); color: var(--cur-ink); font-weight: 500;
+}
+/* Inset rather than a border, so it follows the row's rounded corner and does
+   not shift the label by a pixel when the page changes. */
+.cur .nav-item.active::before {
+  content: ''; position: absolute; left: 0; top: 7px; bottom: 7px; width: 2px;
+  border-radius: 999px; background: var(--cur-accent);
+}
 .cur .nav-item .g { width: 16px; display: grid; place-items: center; opacity: .85; }
+.cur .nav-item.active .g { opacity: 1; color: var(--cur-accent); }
 .cur .sidebar-foot { margin-top: auto; padding-top: 10px; }
 .cur .acct { display: flex; align-items: center; gap: 9px; padding: 6px 8px; }
 .cur .avatar { width: 27px; height: 27px; border-radius: 50%; background: var(--cur-surface-strong); color: var(--cur-ink); display: grid; place-items: center; font-size: 11px; font-weight: 600; flex-shrink: 0; }

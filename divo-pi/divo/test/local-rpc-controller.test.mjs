@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+	abortRuntimeInPlace,
 	assertExpectedLogin,
 	assertPinnedProfile,
 	approveHeadlessWorkspaceAction,
@@ -14,6 +15,7 @@ import {
 	buildNativeSkillStagingArgs,
 	buildInterruptionWriteArgs,
 	buildContainerPrepareArgs,
+	buildContainerRecordInterruptionArgs,
 	buildContainerRunArgs,
 	canReusePiProcess,
 	collectProtectedRunMetadata,
@@ -424,6 +426,73 @@ test("a warm runtime can prepare the cached Pi process through docker exec", () 
 			"node",
 			"divo/container-entry.mjs",
 		],
+	);
+});
+
+test("a warm runtime can persist interruption state without stopping", () => {
+	assert.deepEqual(
+		buildContainerRecordInterruptionArgs("divo-pi-local-abhishek"),
+		[
+			"exec",
+			"--interactive",
+			"--user",
+			"10001:10001",
+			"divo-pi-local-abhishek",
+			"node",
+			"divo/container-entry.mjs",
+			"record-interruption",
+		],
+	);
+});
+
+test("soft abort waits for Pi to become idle and records interrupted work", async () => {
+	const calls = [];
+	const rpc = {
+		send: async (command, timeoutMs) => {
+			calls.push({ command, timeoutMs });
+			return command.type === "get_state"
+				? { isStreaming: false, isCompacting: false }
+				: command.type === "get_messages"
+					? { messages: [] }
+				: undefined;
+		},
+	};
+	await abortRuntimeInPlace({
+		rpc,
+		container: "divo-pi-local-abhishek",
+		bootstrap: { channel: "lark", thread: "thread-1", interruptionTask: "Export orders" },
+	}, {
+		stageInterruptionFn: async (container, bootstrap) => {
+			calls.push({ stage: container, task: bootstrap.interruptionTask });
+			return true;
+		},
+		recordInterruptionFn: async (container) => calls.push({ record: container }),
+		timeoutMs: 321,
+	});
+
+	assert.deepEqual(calls, [
+		{ stage: "divo-pi-local-abhishek", task: "Export orders" },
+		{ command: { type: "abort" }, timeoutMs: 321 },
+		{ command: { type: "get_state" }, timeoutMs: 321 },
+		{ record: "divo-pi-local-abhishek" },
+		{ command: { type: "get_messages" }, timeoutMs: 321 },
+	]);
+});
+
+test("soft abort refuses to retain a runtime that is still active", async () => {
+	await assert.rejects(
+		abortRuntimeInPlace({
+			rpc: {
+				send: async (command) => command.type === "get_state"
+					? { isStreaming: true, isCompacting: false }
+					: undefined,
+			},
+			container: "divo-pi-local-abhishek",
+			bootstrap: {},
+		}, {
+			stageInterruptionFn: async () => false,
+		}),
+		/did not become idle/,
 	);
 });
 
@@ -1001,6 +1070,26 @@ test("a completed run is kept warm without spending a container to clear the boo
 	});
 	// container-entry already unlinked it; the absent "clear" is the point.
 	assert.deepEqual(calls, ["warm"]);
+});
+
+test("a safely interrupted private run keeps its Pi process and container warm", async () => {
+	const calls = [];
+	await finalizeRuntimeLifecycle({
+		profile: "abhishek",
+		resources: { authVolume: "auth-volume" },
+		bootstrapAttempted: true,
+		completedSuccessfully: false,
+		retainRuntimeProcess: true,
+		runError: new Error("request disconnected"),
+		abortStop: Promise.resolve(undefined),
+	}, {
+		clearBootstrapFn: async () => calls.push("clear"),
+		scheduler: {
+			keepWarm: () => calls.push("warm"),
+			stopNow: async () => calls.push("stop"),
+		},
+	});
+	assert.deepEqual(calls, ["clear", "warm"]);
 });
 
 test("a startup failure stops the container even before bootstrap is written", async () => {
