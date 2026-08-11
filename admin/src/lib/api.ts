@@ -1,8 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import { notifyForStatus } from "@/lib/notify";
 
+/*
+ * `import.meta.env` is Vite's, and only Vite's.
+ *
+ * Read bare, this threw for anything that imported the module outside a Vite
+ * build — which is every `node --test` run, and therefore every module in the
+ * data layer that reaches `api` through an import chain. The whole permission
+ * derivation behind the agent map was untestable because of this one property
+ * access. Optional chaining costs nothing in the browser, where the object is
+ * always there.
+ */
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL
+  ?? "http://localhost:8000";
 
 type ApiResponse<T> = {
   success: boolean;
