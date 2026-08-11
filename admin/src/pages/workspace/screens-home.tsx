@@ -16,19 +16,22 @@
  * not a rewrite, and the panels that were already telling the truth keep
  * telling it.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
-  Activity, ArrowUp, ArrowUpRight, Check, ChevronLeft, ChevronRight, Link2, Lock, MessageSquare,
+  Activity, ArrowUpRight, Check, ChevronLeft, ChevronRight, Link2, Lock, MessageSquare,
   Plus, Sparkles, X,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
-import { useMyRuns, useMyUsage, changePct, durationLabel } from './data/use-my-activity'
+import {
+  useMyRuns, useMyUsage, changePct, durationLabel, runTitle,
+  dayLabel, summarizeSpend, USAGE_DAYS, USAGE_WEEKS,
+} from './data/use-my-activity'
 import { useConnections, CONNECTABLE } from './data/use-connections'
 import type { MyRun } from './data/use-my-activity'
 import type { Provider } from './fixtures'
 import {
-  ClickRow, Empty, Fade, Panel, ProviderMark, Skel, SkelRows, Spark,
+  ClickRow, Empty, Fade, Heatmap, Panel, ProviderMark, Skel, SkelRows,
   money, providerName, useStaged, type Toast,
 } from './ui'
 
@@ -82,7 +85,10 @@ function useDismissed() {
 
 type StartCard = {
   id: string
-  mark: string
+  /** A node, because a provider card carries that app's real mark. */
+  mark: ReactNode
+  /** True when `mark` brings its own tile, so the wrapper stops drawing one. */
+  markPlain?: boolean
   title: string
   body: string
   cta: string
@@ -119,7 +125,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
   const [r1, r2, r3] = useStaged([260, 520, 800], replay)
   const { session } = useAdminAuth()
   const { awaitingMe, requestedByMe, loading: approvalsLoading } = useApprovals()
-  const { usage, loading: usageLoading } = useMyUsage(30)
+  const { usage, loading: usageLoading } = useMyUsage(USAGE_DAYS)
   const { runs, loading: runsLoading } = useMyRuns(6)
   const { byProvider, loading: connectionsLoading } = useConnections()
   const { dismissed, dismiss } = useDismissed()
@@ -128,6 +134,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
   // surname adds nothing the person does not already know about themselves.
   const viewer = (session?.name ?? session?.email ?? 'there').split(/[\s@]/)[0]
   const runChange = changePct(usage.runs, usage.previousRuns)
+  const spend = useMemo(() => summarizeSpend(usage.series), [usage.series])
 
   const connected = CONNECTABLE
     .map((provider) => ({ provider, status: byProvider.get(provider) }))
@@ -154,7 +161,13 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
     for (const provider of unconnected) {
       list.push({
         id: `connect:${provider}`,
-        mark: providerName(provider).slice(0, 1),
+        // The app's own mark, not the first letter of its name. A row of cards
+        // reading C / A / A asked somebody to tell Canva from Airtable from
+        // AITable by initial, which is the one thing an icon is for.
+        // 22 used to mean a 22px logo in a tile CSS pinned at 34. `size` is the
+        // tile now, and the onboarding card wants the same one the lists use.
+        mark: <ProviderMark provider={provider} size={34} />,
+        markPlain: true,
         title: `Connect ${providerName(provider)}`,
         body: PITCH[provider],
         cta: `Connect ${providerName(provider)}`,
@@ -208,7 +221,16 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
 
   return (
     <div className="ws-home">
-      <Composer toast={toast} onConnect={() => go('connections')} />
+      {/*
+        The only page in the app with no heading of its own.
+        Every other screen gets one from `PageHeader`; this one opens straight
+        into the composer, which is right on screen and wrong underneath — a
+        document whose outline starts at h2 gives a screen reader nothing to
+        announce the page by, and leaves five sibling panels with no parent.
+        Named, not shown: the composer is a better greeting than a title bar.
+      */}
+      <h1 className="ws-a11y-title">Your workspace</h1>
+      <Composer />
 
       {cards.length > 0 ? (
         <section className="ws-band">
@@ -257,7 +279,9 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
                   >
                     <X size={13} />
                   </button>
-                  <span className="ws-gs-mark" aria-hidden>{card.mark}</span>
+                  <span className="ws-gs-mark" data-plain={card.markPlain ? 'true' : undefined} aria-hidden>
+                    {card.mark}
+                  </span>
                   <h3>{card.title}</h3>
                   <p>{card.body}</p>
                   <button
@@ -322,30 +346,41 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
 
       <section className="ws-band">
         <div className="ws-cols">
+          {/*
+            The same card as the member dashboard's, because it answers the
+            same question about a different subject.
+
+            It was thirty days, and thirty days is five columns of seven
+            whatever the styling — a strip that could neither fill the card nor
+            sit under it without leaving two thirds of a row empty. Sixteen
+            weeks is sixteen columns, which is the width the calendar was drawn
+            for; the mail card has said so in a comment since it was built.
+          */}
           <Panel
-            title="Your last 30 days"
+            title={`Your last ${USAGE_WEEKS} weeks`}
             source="myUsage"
             aside={<button type="button" className="btn" onClick={() => go('usage')}>Details</button>}
           >
             <div className="ws-panel-body">
               {!r2 || usageLoading ? (
                 <>
-                  <div style={{ display: 'flex', gap: 40 }}>
+                  <div className="ws-stat3">
+                    <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
                     <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
                     <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
                   </div>
-                  <div style={{ height: 20 }} />
-                  <Skel w="100%" h={46} />
+                  <div style={{ height: 22 }} />
+                  <Skel w="100%" h={130} block />
                 </>
               ) : (
                 <Fade>
-                  <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
+                  <div className="ws-stat3">
                     <div>
                       <div className="ws-lbl">Tasks run</div>
                       <div className="ws-num" style={{ marginTop: 8 }}>{usage.runs}</div>
                       <div className="ws-sub" style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 5 }}>
                         {runChange >= 0 ? <ArrowUpRight size={13} style={{ color: 'var(--cur-success)' }} /> : null}
-                        {runChange >= 0 ? '+' : '−'}{Math.abs(runChange)}% vs the month before
+                        {runChange >= 0 ? '+' : '−'}{Math.abs(runChange)}% vs the period before
                       </div>
                     </div>
                     <div>
@@ -353,8 +388,37 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
                       <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
                       <div className="ws-sub" style={{ marginTop: 5 }}>{money(usage.spendTodayUsd)} today</div>
                     </div>
+                    <div>
+                      <div className="ws-lbl">Busiest day</div>
+                      <div className="ws-num" style={{ marginTop: 8 }}>
+                        {spend.busiest ? money(spend.busiest.value) : '—'}
+                      </div>
+                      <div className="ws-sub" style={{ marginTop: 5 }}>
+                        {spend.busiest ? dayLabel(spend.busiest.date) : 'Nothing yet'}
+                      </div>
+                    </div>
                   </div>
-                  <div style={{ marginTop: 22 }}><Spark data={usage.series.map((p) => p.spendUsd)} /></div>
+
+                  <div style={{ marginTop: 22 }}>
+                    <Heatmap
+                      data={usage.series.map((p) => ({ date: p.date, value: p.spendUsd }))}
+                      format={(n) => money(n)}
+                    />
+                  </div>
+                  <div className="ws-heat-facts">
+                    <div>
+                      <div className="ws-lbl">Days used</div>
+                      <div style={{ marginTop: 5 }}>{spend.activeDays} of {usage.days || USAGE_DAYS}</div>
+                    </div>
+                    <div>
+                      <div className="ws-lbl">On a day you used it</div>
+                      <div style={{ marginTop: 5 }}>{spend.activeDays ? money(spend.perActiveDay) : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="ws-lbl">Last run</div>
+                      <div style={{ marginTop: 5 }}>{spend.last ? dayLabel(spend.last) : '—'}</div>
+                    </div>
+                  </div>
                 </Fade>
               )}
             </div>
@@ -381,7 +445,10 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
                   })}
                   {CONNECTABLE.length - connected.length > 0 ? (
                     <ClickRow onOpen={() => go('connections')}>
-                      <span className="ws-ic"><Plus size={14} /></span>
+                      {/* The app tile, not the old glyph box — this row sits
+                          under real marks and a 32px square beside 34px tiles
+                          is a misalignment you see before you read it. */}
+                      <span className="ws-app"><Plus size={15} /></span>
                       <div className="ws-row-main">
                         <b className="muted" style={{ fontWeight: 400 }}>
                           {CONNECTABLE.length - connected.length} more you can connect
@@ -400,72 +467,40 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
 }
 
 /**
- * The composer.
+ * The composer, as a preview of itself.
  *
- * Presentation only, on purpose (see the file header). The send control is
- * disabled and titled with the reason, and typing is allowed so the box can be
- * judged as a design — but nothing is ever dispatched from here.
+ * Presentation only, on purpose (see the file header) — and now it says so in
+ * the one place somebody is looking.
+ *
+ * It used to invite you in and then take it back: the box carried
+ * "Ask Divo to do something… (@ for an app, / for a skill)", advertising two
+ * affordances that do nothing, and a banner underneath explained that none of
+ * it works yet. Two elements, overlapping, and the contradiction was between
+ * them rather than in either — so the box read as broken and the banner read as
+ * an apology for it.
+ *
+ * The status now lives in the control. The banner is gone, and nothing was lost
+ * with it: its "Connect an app" button was the fourth route to the same page on
+ * this screen, after the quick action, the Connected panel's Manage, and the
+ * "more you can connect" row.
+ *
+ * Not a textarea any more. A box that takes a caret, accepts characters and
+ * drops them is a worse lie than a placeholder — and to a screen reader it was
+ * a textbox that does nothing. This is text that looks like a composer, which
+ * is exactly what it is.
  */
-function Composer({ toast, onConnect }: { toast: Toast; onConnect: () => void }) {
-  const [draft, setDraft] = useState('')
-
+function Composer() {
   return (
-    <div>
-      <div className="ws-comp">
-        <textarea
-          data-composer
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="Ask Divo to do something…  (“@” for an app, “/” for a skill)"
-          rows={2}
-        />
-        <div className="ws-comp-foot">
-          <button type="button" className="ws-comp-chip" disabled title="Chosen by your admin — see Settings">
-            <Sparkles size={13} /> Divo · default
-          </button>
-          <button type="button" className="ws-comp-chip" disabled title="Set on the Approvals page">
-            <Lock size={13} /> Ask me first
-          </button>
-          <span className="ws-comp-sp" />
-          <button
-            type="button"
-            className="ws-comp-send"
-            disabled
-            title="Chat is not wired up in the web app yet — ask Divo in Lark or on the desktop"
-            /* Disabled controls swallow clicks, so the explanation is attached
-               to the wrapper. Without it the only way to learn why nothing
-               happens is to keep pressing it. */
-            aria-label="Send (not available yet)"
-          >
-            <ArrowUp size={15} />
-          </button>
-        </div>
+    <div className="ws-comp" data-preview="true">
+      <span className="ws-comp-ic"><MessageSquare size={16} /></span>
+      <div className="ws-comp-say">
+        <b>Chat is coming to the web</b>
+        <p>Today Divo answers in Lark and on the desktop — everything you connect here works in both.</p>
       </div>
-      {/*
-        Said once, in place, rather than only on a click nobody makes. A
-        disabled send button explains itself to whoever hovers it; everybody
-        else types a sentence, presses nothing, and concludes the product is
-        broken. There is no "Open in Lark" button here on purpose — there is no
-        deep link to Divo's chat that this app knows, and a button that lands
-        somewhere approximate is worse than a sentence that is true.
-      */}
-      <div className="ws-soon">
-        <MessageSquare size={13} />
-        <p>
-          <b>Chat is coming to the web.</b> Today Divo answers in Lark and in the desktop app —
-          everything you connect here works in both.
-        </p>
-        <button
-          type="button"
-          className="btn"
-          onClick={() => {
-            toast('Connect an app here and Divo can use it in Lark and on the desktop too.')
-            onConnect()
-          }}
-        >
-          <Link2 size={13} /> Connect an app
-        </button>
-      </div>
+      {/* Where send will be. A dead send button on a box nobody can type in is
+          the same contradiction one size smaller, so this states the reason
+          there is no button rather than dimming one. */}
+      <span className="ws-comp-pill">Soon</span>
     </div>
   )
 }
@@ -479,7 +514,7 @@ function RunList({ runs }: { runs: MyRun[] }) {
           <div className="ws-row" key={r.id}>
             <div className="ws-row-main">
               <b>
-                {r.summary ?? r.entrypoint}
+                {runTitle(r)}
                 {r.status === 'running' && r.channel === 'lark' ? (
                   <span className="ws-note" title="Lark runs are never closed by the backend — status and duration are unreliable for this channel.">
                     status unknown

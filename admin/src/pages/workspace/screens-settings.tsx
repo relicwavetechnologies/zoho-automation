@@ -14,9 +14,9 @@ import { Check, CircleAlert } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useTheme } from '@/lib/use-theme'
 import { useMyModelOptions } from './data/use-my-activity'
-import { Empty, Seg, SkelRows } from './ui'
+import { Avatar, Empty, Seg, SkelRows } from './ui'
 
-const COMPANY_ROLE_LABEL: Record<string, string> = {
+export const COMPANY_ROLE_LABEL: Record<string, string> = {
   MEMBER: 'Member',
   COMPANY_ADMIN: 'Company admin',
   SUPER_ADMIN: 'Super admin',
@@ -50,6 +50,29 @@ export function SettingsRow({
   )
 }
 
+/**
+ * A section label above a group.
+ *
+ * Distinct from `SettingsHead`, which is the page's one title. Reusing the
+ * title for every section drew four 26px headings down a page whose content is
+ * a list of one-line statements — nothing on it was more important than
+ * anything else, and it read as four pages stacked.
+ */
+export function SettingsSection({ title }: { title: string }) {
+  return <h2 className="set-section">{title}</h2>
+}
+
+/**
+ * The card a group of rows sits in.
+ *
+ * Rows used to sit on the page with a hairline above each, so a group was only
+ * implied by the gap around it and a row belonged to whichever heading it
+ * happened to follow. A border makes the grouping the thing you see first.
+ */
+export function SettingsGroup({ children }: { children: React.ReactNode }) {
+  return <div className="set-group">{children}</div>
+}
+
 /** A rule between groups of rows, as the reference draws between sections. */
 export const SettingsGap = () => <div className="set-gap" />
 
@@ -62,6 +85,13 @@ export function SettingsProfile() {
     <>
       <SettingsHead title="Profile" description="How you appear across the web app, Lark and the desktop." />
 
+      {/* First row, because the page is called Profile and this is the part of
+          it people look for. It was absent entirely — so somebody who signed in
+          through Lark, which is when Divo stores their picture, had nowhere on
+          this screen that could show it. Falls back to initials on its own. */}
+      <SettingsRow label="Profile picture" description="How you are shown around Divo">
+        <Avatar name={session?.name} email={session?.email} src={session?.avatarUrl} size={34} />
+      </SettingsRow>
       <SettingsRow label="Full name" description="Your display name">
         {/* Read-only, and that is not an oversight. No route updates a member's
             own name — it comes from the directory — so an editable field here

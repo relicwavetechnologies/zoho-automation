@@ -24,6 +24,8 @@ import {
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useManagedDepartments } from '@/pages/workspace/data/use-team'
 import { useOnboarding, useRecentRuns } from '@/pages/workspace/data/use-onboarding'
+import { runTitle } from '@/pages/workspace/data/use-my-activity'
+import { Avatar } from '@/pages/workspace/ui'
 import { RAIL } from '@/components/admin/settings-shell'
 import { RoleProvider } from '@/cursor/role-context'
 import { useTheme } from '@/lib/use-theme'
@@ -164,9 +166,27 @@ export function WorkspaceShell() {
               data-static={scopes.length === 1}
               onClick={scopes.length === 1 ? undefined : () => setScopeOpen((v) => !v)}
             >
-              <span className="ws-scope-ic" data-tone="brand">
-                <Diamond size={12} fill="currentColor" strokeWidth={0} />
-              </span>
+              {/*
+                Your own face on your own workspace.
+
+                Only on the `you` scope: this row reads "<name>'s workspace"
+                there, so the picture and the words say the same thing. On team
+                and company it would be wrong — those are not yours, and a
+                personal photo beside "RelicWave" claims something about who
+                owns it. Those keep the mark.
+
+                `Avatar` already falls back to initials when Lark gave us no
+                picture, and again if the URL 404s — Lark's avatar links expire,
+                and a broken image where a face should be reads as a fault in
+                Divo rather than a link that aged out.
+              */}
+              {active?.kind === 'you' && session?.avatarUrl ? (
+                <Avatar name={session.name} email={session.email} src={session.avatarUrl} size={22} />
+              ) : (
+                <span className="ws-scope-ic" data-tone="brand">
+                  <Diamond size={12} fill="currentColor" strokeWidth={0} />
+                </span>
+              )}
               <span className="ws-scope-txt">
                 <b>{active.label}</b>
               </span>
@@ -340,6 +360,20 @@ function shortAgo(iso: string): string {
   return `${Math.round(days / 7)}w`
 }
 
+/**
+ * Which colour the dot takes.
+ *
+ * `running` is deliberately unreachable for Lark: the backend never closes a
+ * Lark run, so every one of them reports `running` indefinitely — see the
+ * "status unknown" note the run lists carry for the same reason. A rail of five
+ * permanently-live dots would say nothing at all, so those read as done.
+ */
+function runDotState(run: { status: string; channel: string }): 'ok' | 'err' | 'run' {
+  if (run.status === 'failed') return 'err'
+  if (run.status === 'running' && run.channel !== 'lark') return 'run'
+  return 'ok'
+}
+
 function RecentRuns({ onOpen, onSearch }: { onOpen: () => void; onSearch: () => void }) {
   const { runs, loading } = useRecentRuns(5)
 
@@ -359,8 +393,21 @@ function RecentRuns({ onOpen, onSearch }: { onOpen: () => void; onSearch: () => 
       </div>
       {runs.map((run) => (
         <button type="button" className="ws-recent-item" key={run.id} onClick={onOpen}>
-          <b>{run.summary ?? run.entrypoint}</b>
-          <span>{shortAgo(run.startedAt)}</span>
+          <b>{runTitle(run)}</b>
+          {/*
+            A dot before the time, because the age of a run is only half of what
+            somebody scanning this rail wants — "22h" reads the same whether it
+            worked or failed, and a failure sitting quietly in the list is the
+            one entry they would have wanted to notice.
+
+            Lark runs are excluded from `running` on purpose: the backend never
+            closes them, so every Lark run stays "running" forever and a live
+            dot on all five would mean nothing.
+          */}
+          <span data-state={runDotState(run)}>
+            <i className="ws-recent-dot" />
+            {shortAgo(run.startedAt)}
+          </span>
         </button>
       ))}
     </div>

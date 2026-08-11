@@ -363,10 +363,21 @@ export type TeamUsage = {
   runs: number
   totalPeople: number
   activePeople: number
+  /**
+   * The team's spend by day, every day in the window including the zeroes.
+   *
+   * A total on its own cannot tell a team that uses Divo daily from one that
+   * used it once and stopped, and that is the question a manager opens this
+   * page with. Priced by the same helpers as the personal figure, so the two
+   * cannot disagree about what a day cost.
+   */
+  series: { date: string; spendUsd: number }[]
   people: TeamMemberUsage[]
 }
 
-const EMPTY_USAGE: TeamUsage = { days: 30, spendUsd: 0, runs: 0, totalPeople: 0, activePeople: 0, people: [] }
+const EMPTY_USAGE: TeamUsage = {
+  days: 30, spendUsd: 0, runs: 0, totalPeople: 0, activePeople: 0, series: [], people: [],
+}
 
 /** What this department cost, per person, heaviest first. */
 export function useTeamUsage(departmentId?: string, days = 30) {

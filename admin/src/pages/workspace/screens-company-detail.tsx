@@ -31,6 +31,7 @@ import {
   ROLE_LABEL, ago, displayName, initialsOf, useDepartmentDetail, useRuns,
 } from './data/use-company'
 import { foldRepeats, readStep } from './data/trace-step'
+import { runTitle } from './data/use-my-activity'
 import { useTeamUsage } from './data/use-team'
 
 /** Mirrors the run badge on the AI Ops list, so a status reads the same everywhere. */
@@ -117,7 +118,7 @@ export function CompanyRunDetail({ replay, go }: Props) {
 
       <PageHeader
         eyebrow="Run"
-        title={run.latestSummary ?? 'No summary recorded'}
+        title={runTitle({ summary: run.latestSummary, channel: run.channel })}
         description={`Asked by ${run.userName ?? 'someone unattributed'} · ${CHANNEL_WORD[run.channel] ?? run.channel} · ${run.entrypoint}`}
         actions={
           <button type="button" className="btn" onClick={() => setShowRaw((v) => !v)}>
@@ -492,7 +493,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
                   {runs.data.map((r) => (
                     <ClickRow key={r.id} onOpen={() => go(`co-run:${r.id}`)}>
                       <div className="ws-row-main">
-                        <b>{r.latestSummary ?? 'No summary recorded'}</b>
+                        <b>{runTitle({ summary: r.latestSummary, channel: r.channel })}</b>
                         <p>{ago(r.startedAt)} · {CHANNEL_WORD[r.channel] ?? r.channel}</p>
                       </div>
                       <div className="ws-row-act">

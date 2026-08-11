@@ -24,7 +24,7 @@
 import { useMemo } from 'react'
 import {
   useDepartment, useDepartmentMatrix,
-  type ConfiguredProvenance, type DeptMember, type DeptRole,
+  type ConfiguredProvenance, type DeptMember, type DeptRole, type ToolScopeSnapshot,
 } from './use-team'
 import {
   familyAgentId, isAuthored, useAgentDrafts,
@@ -274,92 +274,113 @@ export type AgentGraph = {
  * chosen. Showing everything lit until someone is picked would read as "the
  * department can do all of this" and be wrong the moment it mattered.
  */
+/**
+ * The agents a person can actually reach, derived from the permission matrix.
+ *
+ * Lifted out of the hook so it can be tested. This is the calculation behind
+ * the map's one promise — "lit edges are permissions the backend would really
+ * grant today" — and a wrong edge here is not a cosmetic bug: it tells an
+ * admin somebody can do something they cannot, or cannot do something they
+ * can. It ran entirely untested inside a `useMemo`, reachable only by loading
+ * the page against a live department.
+ *
+ * Pure: same inputs, same answer, no fetching.
+ */
+export function buildAgents(
+  tools: readonly ToolScopeSnapshot[],
+  userId: string | undefined,
+  drafts: Record<string, AgentDefinition>,
+): AgentNode[] {
+  // Which authored agent has claimed each tool. Built first because a claimed
+  // tool must leave its family — otherwise it would appear twice and the map
+  // would be lying about who runs it.
+  const claimedBy = new Map<string, AgentDefinition>()
+  for (const draft of Object.values(drafts)) {
+    if (!isAuthored(draft.id)) continue
+    for (const toolId of draft.toolIds) claimedBy.set(toolId, draft)
+  }
+
+  const buckets = new Map<string, AgentTool[]>()
+
+  for (const snapshot of tools) {
+    const mine = userId
+      ? snapshot.memberActionStates.filter((s) => s.userId === userId)
+      : []
+
+    const allowedActions = mine.filter((s) => s.effectiveAllowed).map((s) => s.actionGroup)
+    const blockedActions = mine
+      .filter((s) => s.configuredAllowed && !s.effectiveAllowed)
+      .map((s) => s.actionGroup)
+
+    // Provenance of the grant that actually landed. A member override beats a
+    // role grant beats a default, and naming the strongest one tells an admin
+    // where to go to change it.
+    const strongest = mine
+      .filter((s) => s.effectiveAllowed)
+      .sort((a, b) => rankProvenance(b.configuredProvenance) - rankProvenance(a.configuredProvenance))[0]
+
+    const tool: AgentTool = {
+      toolId: snapshot.tool.toolId,
+      name: snapshot.tool.name,
+      description: snapshot.tool.description ?? null,
+      supportedActions: snapshot.supportedActions,
+      actionLabels: snapshot.actionLabels,
+      allowedActions,
+      blockedActions,
+      provenance: strongest?.configuredProvenance ?? null,
+      reachable: allowedActions.length > 0,
+    }
+
+    const owner = claimedBy.get(tool.toolId)
+    const key = owner ? owner.id : familyAgentId(familyOf(tool.toolId))
+    const bucket = buckets.get(key)
+    if (bucket) bucket.push(tool)
+    else buckets.set(key, [tool])
+  }
+
+  const nodes = Array.from(buckets.entries()).map(([id, tools]) => {
+    const draft = drafts[id]
+    const authored = isAuthored(id)
+    const family = authored ? null : (id.slice('family:'.length) as ToolFamily)
+    const reachableTools = tools.filter((t) => t.reachable)
+
+    return {
+      id,
+      kind: authored ? 'authored' : 'family',
+      family,
+      name: draft?.name || (family ? familyName(family) : 'Untitled agent'),
+      tools,
+      // Deduped: "read" on eight Lark tools is one capability to a reader,
+      // not eight.
+      allowedActions: Array.from(new Set(reachableTools.flatMap((t) => t.allowedActions))),
+      reachableToolCount: reachableTools.length,
+      blockedToolCount: tools.filter((t) => !t.reachable && t.blockedActions.length > 0).length,
+      reachable: reachableTools.length > 0,
+      // An admin's edit wins over the family's shipped defaults, which win
+      // over the bare default. Same precedence as the permission resolver.
+      config: mergeConfig(family ? CONFIG_BY_FAMILY[family] : undefined, draft ?? undefined),
+      authored: Boolean(draft) || (family ? isConfigured(family) : false),
+    } satisfies AgentNode
+  })
+
+  // Authored agents first — somebody made those on purpose. Then reachable,
+  // then the biggest, so the eye lands on what this person actually has.
+  return nodes.sort((a, b) =>
+    Number(b.kind === 'authored') - Number(a.kind === 'authored')
+    || Number(b.reachable) - Number(a.reachable)
+    || b.tools.length - a.tools.length
+    || a.name.localeCompare(b.name))
+}
+
 export function useAgentGraph(departmentId?: string, userId?: string): AgentGraph {
   const dept = useDepartment(departmentId)
   const matrix = useDepartmentMatrix(departmentId)
   const drafts = useAgentDrafts()
 
-  const agents = useMemo<AgentNode[]>(() => {
-    // Which authored agent has claimed each tool. Built first because a claimed
-    // tool must leave its family — otherwise it would appear twice and the map
-    // would be lying about who runs it.
-    const claimedBy = new Map<string, AgentDefinition>()
-    for (const draft of Object.values(drafts)) {
-      if (!isAuthored(draft.id)) continue
-      for (const toolId of draft.toolIds) claimedBy.set(toolId, draft)
-    }
-
-    const buckets = new Map<string, AgentTool[]>()
-
-    for (const snapshot of matrix.tools) {
-      const mine = userId
-        ? snapshot.memberActionStates.filter((s) => s.userId === userId)
-        : []
-
-      const allowedActions = mine.filter((s) => s.effectiveAllowed).map((s) => s.actionGroup)
-      const blockedActions = mine
-        .filter((s) => s.configuredAllowed && !s.effectiveAllowed)
-        .map((s) => s.actionGroup)
-
-      // Provenance of the grant that actually landed. A member override beats a
-      // role grant beats a default, and naming the strongest one tells an admin
-      // where to go to change it.
-      const strongest = mine
-        .filter((s) => s.effectiveAllowed)
-        .sort((a, b) => rankProvenance(b.configuredProvenance) - rankProvenance(a.configuredProvenance))[0]
-
-      const tool: AgentTool = {
-        toolId: snapshot.tool.toolId,
-        name: snapshot.tool.name,
-        description: snapshot.tool.description ?? null,
-        supportedActions: snapshot.supportedActions,
-        actionLabels: snapshot.actionLabels,
-        allowedActions,
-        blockedActions,
-        provenance: strongest?.configuredProvenance ?? null,
-        reachable: allowedActions.length > 0,
-      }
-
-      const owner = claimedBy.get(tool.toolId)
-      const key = owner ? owner.id : familyAgentId(familyOf(tool.toolId))
-      const bucket = buckets.get(key)
-      if (bucket) bucket.push(tool)
-      else buckets.set(key, [tool])
-    }
-
-    const nodes = Array.from(buckets.entries()).map(([id, tools]) => {
-      const draft = drafts[id]
-      const authored = isAuthored(id)
-      const family = authored ? null : (id.slice('family:'.length) as ToolFamily)
-      const reachableTools = tools.filter((t) => t.reachable)
-
-      return {
-        id,
-        kind: authored ? 'authored' : 'family',
-        family,
-        name: draft?.name || (family ? familyName(family) : 'Untitled agent'),
-        tools,
-        // Deduped: "read" on eight Lark tools is one capability to a reader,
-        // not eight.
-        allowedActions: Array.from(new Set(reachableTools.flatMap((t) => t.allowedActions))),
-        reachableToolCount: reachableTools.length,
-        blockedToolCount: tools.filter((t) => !t.reachable && t.blockedActions.length > 0).length,
-        reachable: reachableTools.length > 0,
-        // An admin's edit wins over the family's shipped defaults, which win
-        // over the bare default. Same precedence as the permission resolver.
-        config: mergeConfig(family ? CONFIG_BY_FAMILY[family] : undefined, draft ?? undefined),
-        authored: Boolean(draft) || (family ? isConfigured(family) : false),
-      } satisfies AgentNode
-    })
-
-    // Authored agents first — somebody made those on purpose. Then reachable,
-    // then the biggest, so the eye lands on what this person actually has.
-    return nodes.sort((a, b) =>
-      Number(b.kind === 'authored') - Number(a.kind === 'authored')
-      || Number(b.reachable) - Number(a.reachable)
-      || b.tools.length - a.tools.length
-      || a.name.localeCompare(b.name))
-  }, [matrix.tools, userId, drafts])
+  const agents = useMemo<AgentNode[]>(
+    () => buildAgents(matrix.tools, userId, drafts),
+    [matrix.tools, userId, drafts],
+  )
 
   return {
     department: dept.snapshot

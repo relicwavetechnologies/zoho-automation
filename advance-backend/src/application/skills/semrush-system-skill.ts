@@ -71,8 +71,30 @@ and can be described as ranking without earning clicks.
 The same distinction applies to backlinks. When \`coverage.missingTargets\` names
 a target, that is no provider data, not zero.
 
-Counts come from the rows, never from memory. Before writing how many countries
-had zero traffic, count the returned rows whose \`Organic Traffic\` is 0.
+## Counts come from \`insights\`
+
+Never from memory, and never by tallying the table. Every result carries
+\`insights\`, counted by the backend from the same rows the run returned.
+
+A \`domain_overview\` result answers "how many countries", "how much traffic",
+"how concentrated" and "which are the biggest markets" from
+\`countriesReturned\`, \`countriesWithTraffic\`, \`countriesWithZeroTraffic\`,
+\`totalOrganicTraffic\`, \`countriesForEightyPercentOfTraffic\`, \`tiers\` and
+\`topCountries\`. Quote those fields.
+
+A \`backlinks_comparison\` result carries \`insights.ranking\`: every target
+numbered 1..N, strongest authority first, with
+\`insights.targetsWithoutProviderData\` naming the ones Semrush had no report
+for. Walk that list when you write the answer and **report every position** —
+eleven sites were once described as ten, and every number in that answer was
+correct, which is why nobody caught it. Targets with no report rank last with
+null metrics; never present one as an authority score of 0 or as the weakest
+site.
+
+Counting the preview by eye is what these fields replaced: the same run was
+reported as 22 zero-traffic countries and then 23, and the preview stops at 25
+rows, so tallying it undercounts a longer run. If a number you want is not in
+\`insights\`, say what you can support rather than deriving it.
 
 ## Reporting
 

@@ -33,6 +33,7 @@ const PENDING: ApprovalDecision = {
   requestState: 'created',
   nextAction: 'wait',
   retry: 'retry_exact',
+  deliveredVia: 'lark',
 };
 
 const INPUT = {
@@ -248,7 +249,20 @@ describe('mail rule external approval — the request', () => {
       approvalId: 'ap_1',
       approverName: 'Abhishek',
       reused: false,
+      deliveredVia: 'lark',
     });
+  });
+
+  /*
+   * The member is told where to look, and the gate is the only thing that
+   * knows. A request that lands in the approval inbox is as delivered as a
+   * card is; what made it read as a silent failure was being told "asked
+   * them" and finding nothing in Lark.
+   */
+  it('says where the request is waiting when no card was sent', async () => {
+    const { request } = ask({ ...PENDING, deliveredVia: 'desktop' });
+    const outcome = await request(INPUT);
+    assert.equal(outcome.kind === 'requested' && outcome.deliveredVia, 'desktop');
   });
 
   it('says an open request is open rather than sending a second card', async () => {

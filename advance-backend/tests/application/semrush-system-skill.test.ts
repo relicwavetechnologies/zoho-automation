@@ -31,12 +31,39 @@ describe('Semrush system skill', () => {
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /ranking without earning clicks/);
   });
 
-  it('requires counts to be taken from the rows', () => {
+  it('sends every count to the insights field instead of asking for a tally', () => {
     // The same answer said 22 zero-traffic countries and listed 22, dropping
-    // Taiwan; the rows held 23. Another turn on the same data said 23.
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Counts come from the rows, never from memory/);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /count the returned rows whose `Organic Traffic` is 0/);
+    // Taiwan; the rows held 23. Another turn on the same data said 23. Telling
+    // the model to count more carefully did not fix it — which is why the
+    // backend counts now and the skill points at the answer rather than asking
+    // for a tally.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Counts come from `insights`/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never from memory, and never by tallying the table/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /tallying it undercounts a longer run/);
   });
+
+  it('requires every compared target to be reported, and says why that fails silently', () => {
+    // Eleven sites came back described as ten. Each number in the answer was
+    // right, so the omission was invisible.
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /every target\s+numbered 1\.\.N/s);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /\*\*report every position\*\*/i);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /every number in that answer was\s+correct, which is why nobody caught it/s);
+  });
+
+  it('keeps a missing backlinks report out of the weakest slot', () => {
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /insights\.targetsWithoutProviderData/);
+    assert.match(
+      DIVO_SEMRUSH_SYSTEM_SKILL.markdown,
+      /never present one as an authority score of 0 or as the weakest\s+site/s,
+    );
+  });
+
+  /*
+   * The derived-column test that stood here described the columns Divo added to
+   * an exported file. The export it described was retired with the rest of the
+   * data-export pipeline, and the assertion three tests below now checks the
+   * opposite — that the skill mentions no export at all.
+   */
 
   it('is discoverable by SEO terms and constrained to the canonical Semrush tool', () => {
     assert.deepEqual(DIVO_SEMRUSH_SYSTEM_SKILL.toolIds, ['semrush']);

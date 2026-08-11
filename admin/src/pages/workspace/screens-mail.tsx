@@ -33,6 +33,7 @@
  * something broader than it is.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { notify } from '@/lib/notify'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   Archive, Copy, Inbox, Mail, MailWarning, MoreHorizontal,
@@ -48,7 +49,7 @@ import { useConnections } from './data/use-connections'
 import { ago } from './data/use-approvals'
 import { GmailMark, LarkMark } from './brand'
 import { DetailPage, RailChip, RailEmpty, RailRow, RailSection } from './detail'
-import { Confirm, DataNote, Empty, Fade, PageHeader, Panel, Seg, SkelRows, useStaged } from './ui'
+import { Confirm, DataNote, Empty, Fade, PageHeader, Panel, RowMenu, Seg, SkelRows, useStaged } from './ui'
 import type { Persona } from './fixtures'
 import type { Toast } from './ui'
 
@@ -399,66 +400,6 @@ function RuleRow({
 }
 
 /**
- * The row's own actions, behind one affordance.
- *
- * Closed on any outside click and on Escape, and it stops propagation on the
- * way out — without that, every menu click also opened the rule underneath it.
- */
-function RowMenu({
-  items, busy,
-}: {
-  busy?: boolean
-  items: Array<{ label: string; icon: typeof Pencil; onSelect: () => void; danger?: boolean }>
-}) {
-  const [open, setOpen] = useState(false)
-  const wrap = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent) => {
-      if (!wrap.current?.contains(e.target as Node)) setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
-
-  return (
-    <div className="ws-menu-wrap" ref={wrap} onClick={(e) => e.stopPropagation()}>
-      <button
-        type="button"
-        className="icon-btn ws-menu-btn"
-        aria-label="More"
-        aria-expanded={open}
-        disabled={busy}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <MoreHorizontal size={15} />
-      </button>
-      {open ? (
-        <div className="ws-menu" role="menu">
-          {items.map((item) => (
-            <button
-              type="button"
-              role="menuitem"
-              key={item.label}
-              data-danger={item.danger ? 'true' : undefined}
-              onClick={() => { setOpen(false); item.onSelect() }}
-            >
-              <item.icon size={13} /> {item.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  )
-}
-
-/**
  * The two failures a member can actually fix, and the only two that get a
  * button.
  *
@@ -722,6 +663,19 @@ export function MailRuleDetail({ toast }: ScreenProps) {
   const status = useMailRuleStatus()
   const [confirming, setConfirming] = useState(false)
 
+  /*
+   * A refused change is an answer to a press, so it comes back where the press
+   * happened rather than as a panel above a rule whose state did not change.
+   * Said once per distinct message — a retry that fails the same way is the
+   * same news.
+   */
+  const spokenStatusError = useRef<string | null>(null)
+  useEffect(() => {
+    if (!status.error || spokenStatusError.current === status.error) return
+    spokenStatusError.current = status.error
+    notify.failed('That change was not saved', status.error)
+  }, [status.error])
+
   const onChange = async (change: 'pause' | 'resume' | 'archive') => {
     if (!rule) return
     const done = await status.change(rule.ruleId, change)
@@ -832,12 +786,6 @@ export function MailRuleDetail({ toast }: ScreenProps) {
         />
       ) : null}
 
-      {status.error ? (
-        <div className="ws-ceiling">
-          <TriangleAlert size={14} />
-          <div><b>That change was not saved.</b> {status.error}</div>
-        </div>
-      ) : null}
 
       {archived ? (
         <div className="ws-ceiling">
@@ -927,6 +875,18 @@ export function MailRuleDetail({ toast }: ScreenProps) {
 function DryRun({ rule }: { rule: MailRule }) {
   const dryRun = useMailRuleDryRun()
 
+  /*
+   * A dry run that could not finish printed a quiet line directly under the
+   * result, where it read as "nothing matched" — the opposite conclusion from
+   * the same grey text.
+   */
+  const spokenDryError = useRef<string | null>(null)
+  useEffect(() => {
+    if (!dryRun.error || spokenDryError.current === dryRun.error) return
+    spokenDryError.current = dryRun.error
+    notify.failed('The dry run could not finish', dryRun.error)
+  }, [dryRun.error])
+
   return (
     <section className="dt-block">
       <h2>Would it have caught anything?</h2>
@@ -945,7 +905,6 @@ function DryRun({ rule }: { rule: MailRule }) {
         </button>
       </div>
 
-      {dryRun.error ? <p className="dt-sub">{dryRun.error}</p> : null}
 
       {dryRun.result && !dryRun.result.valid ? (
         <div className="ws-ceiling">

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react"
 import { Link, useParams } from "react-router-dom"
 import { ArrowLeft, Building2, RotateCcw, Save, ShieldCheck, UserRound } from "lucide-react"
-import { toast } from "sonner"
+import { notify } from "@/lib/notify"
+import { Skel } from "@/pages/workspace/ui"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { useCompanyScope } from "@/cursor/use-spend"
 import {
@@ -62,17 +63,77 @@ export function ConnectionGovernancePage() {
     for (const action of CONNECTION_ACTIONS) {
       const value = policy.actions[action]
       if (value.mode === "enforced" && !value.approval) {
-        toast.error(`${ACTION_LABEL[action]} needs an approval setting`)
+        // Not a failure — nothing was attempted. The form is incomplete, and
+        // the sentence says which control to go and finish.
+        notify.refused(
+          `${ACTION_LABEL[action]} needs an approval setting`,
+          "An enforced action has to say who approves it before it can be saved.",
+        )
         return
       }
     }
     if (!connectionId) return
     save.mutate({ connectionId, adminOverride: policy }, {
-      onSuccess: () => toast.success("Company override saved", { description: "The next runtime policy check will use these action-level controls." }),
+      onSuccess: () => notify.done(
+        "Company override saved",
+        "The next runtime policy check will use these action-level controls.",
+      ),
     })
   }
 
-  if (connection.isLoading) return <div className="page"><div className="muted">Loading connection governance…</div></div>
+  /*
+   * Shaped like the page it becomes, not a sentence in the corner.
+   *
+   * This is three levels in — company, then a member, then one of their
+   * connections — so it is reached by someone already navigating, and a bare
+   * "Loading…" made each step feel like it had gone nowhere. The blocks below
+   * stand where the crumbs, the profile, the three metric cards and the
+   * controls table land, so the page fills in rather than appearing.
+   */
+  if (connection.isLoading) {
+    return (
+      <div className="page">
+        <div className="crumbs"><Skel w={190} h={11} /></div>
+        <div className="profile">
+          <div className="pic"><ShieldCheck size={21} /></div>
+          <div style={{ flex: 1 }}>
+            <Skel w={210} h={22} />
+            <div style={{ height: 8 }} />
+            <Skel w={300} h={11} />
+          </div>
+        </div>
+        <div className="grid g3">
+          {[0, 1, 2].map((i) => (
+            <div className="card metric" key={i}>
+              <Skel w={78} h={10} />
+              <div style={{ height: 10 }} />
+              <Skel w={116} h={20} />
+              <div style={{ height: 8 }} />
+              <Skel w={140} h={10} />
+            </div>
+          ))}
+        </div>
+        <section className="section mt24">
+          <header>
+            <div><Skel w={200} h={14} /><div style={{ height: 8 }} /><Skel w={430} h={11} /></div>
+          </header>
+          <div style={{ padding: '4px 0' }}>
+            {/* One row per action, so the table does not jump when they land. */}
+            {CONNECTION_ACTIONS.map((a) => (
+              <div key={a} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '13px 18px' }}>
+                <Skel w={150} h={12} />
+                <Skel w={120} h={12} />
+                <Skel w={80} h={12} />
+                <Skel w={80} h={12} />
+                <div style={{ flex: 1 }} />
+                <Skel w={130} h={12} />
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    )
+  }
   if (!connection.data) return <div className="page"><Link to={`/people/${userId}`} className="btn"><ArrowLeft size={15} /> Back to member</Link><div className="section mt24"><div className="muted" style={{ padding: "22px" }}>This connection is unavailable or no longer belongs to this member.</div></div></div>
 
   const data = connection.data

@@ -31,6 +31,7 @@
     "provision:divo-local-python-skill": "tsx scripts/provision-divo-local-python-skill.ts",
     "lark:sdk-parity": "tsx scripts/report-lark-sdk-parity.ts",
     "backfill:dept-permissions": "tsx scripts/backfill-dept-permissions.ts",
+    "seed:shopify-agent-seat": "tsx scripts/seed-shopify-token-connection.ts --session",
     "migrate:lark-connections": "tsx scripts/migrate-lark-user-auth-links.ts",
     "test": "node --import tsx --test 'tests/**/*.test.ts'",
     "test:unit": "node --import tsx --test 'tests/tools/**/*.test.ts'",

@@ -30,6 +30,14 @@ export type Session = {
   companyName: string | null;
   email: string | null;
   name: string | null;
+  /**
+   * The person's Lark picture, when Divo has been given one.
+   *
+   * Null for password sign-in and for anybody who has not signed in through
+   * Lark since Divo started keeping it — which is not a fault, so every surface
+   * falls back to initials rather than to a broken image.
+   */
+  avatarUrl: string | null;
   role: CompanyRole;
   departments: SessionDepartment[];
   /**

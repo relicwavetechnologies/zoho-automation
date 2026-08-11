@@ -75,6 +75,142 @@ describe('semrush tool', () => {
     assert.match(result.value.message, /real measurement/);
   });
 
+  it('counts the countries itself so the model never has to', async () => {
+    // 810 + 3 + 2 + 0 = 815 across four rows, one of them a measured zero.
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'domain_overview',
+          status: 'complete',
+          coverage: { databasesReturned: 4 },
+          rows: [
+            { Database: 'in', 'Organic Keywords': 53, 'Organic Traffic': 810, 'Organic Cost': 1000 },
+            { Database: 'us', 'Organic Keywords': 105, 'Organic Traffic': 3, 'Organic Cost': 12 },
+            { Database: 'ru', 'Organic Keywords': 6, 'Organic Traffic': 2, 'Organic Cost': 0 },
+            { Database: 'ca', 'Organic Keywords': 9, 'Organic Traffic': 0, 'Organic Cost': 0 },
+          ],
+        }),
+      },
+    });
+
+    const result = await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.value.insights, {
+      kind: 'domain_overview',
+      countriesReturned: 4,
+      totalOrganicTraffic: 815,
+      totalOrganicKeywords: 173,
+      countriesWithTraffic: 3,
+      countriesWithZeroTraffic: 1,
+      countriesForEightyPercentOfTraffic: 1,
+      tiers: { core: 1, emerging: 2, dormant: 1 },
+      topCountries: [
+        { database: 'in', organicTraffic: 810, trafficSharePct: 99.39 },
+        { database: 'us', organicTraffic: 3, trafficSharePct: 0.37 },
+        { database: 'ru', organicTraffic: 2, trafficSharePct: 0.25 },
+      ],
+    });
+    assert.match(result.value.message, /4 countries returned/);
+    assert.match(result.value.message, /1 measured at zero/);
+    assert.match(result.value.message, /Quote these numbers rather than counting rows yourself/);
+  });
+
+  it('counts every returned row, not the 25 the chat preview stops at', async () => {
+    // Counting the preview is the failure this replaces: it is capped, so a
+    // tally of what is on screen silently undercounts a longer run.
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'domain_overview',
+          status: 'complete',
+          coverage: { databasesReturned: 30 },
+          rows: Array.from({ length: 30 }, (_, i) => ({
+            Database: `c${i}`,
+            'Organic Keywords': 1,
+            'Organic Traffic': i < 10 ? 100 : 0,
+            'Organic Cost': 0,
+          })),
+        }),
+      },
+    });
+
+    const result = await tool.execute({ operation: 'domain_overview', domain: 'example.com' }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.preview?.rows.length, 25);
+    assert.equal(result.value.insights?.countriesReturned, 30);
+    assert.equal(result.value.insights?.countriesWithZeroTraffic, 20);
+    assert.equal(result.value.insights?.countriesWithTraffic, 10);
+  });
+
+  it('numbers every compared target so an answer cannot quietly drop one', async () => {
+    // A real eleven-site comparison was written up as ten, with every printed
+    // number correct. A count does not catch that; numbered positions do.
+    const targets = Array.from({ length: 11 }, (_, i) => `site${i}.com`);
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'backlinks_comparison',
+          status: 'complete',
+          coverage: {},
+          rows: targets.map((target, i) => ({
+            Target: target,
+            'Authority Score': 30 - i,
+            Backlinks: 1000 * (i + 1),
+            'Referring Domains': 100 * (i + 1),
+            'Provider Data Status': 'Returned',
+          })),
+        }),
+      },
+    });
+
+    const result = await tool.execute({ operation: 'backlinks_comparison', targets }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, true);
+    if (!result.ok || result.value.insights?.kind !== 'backlinks_comparison') {
+      return assert.fail('expected backlinks insights');
+    }
+    const { insights } = result.value;
+    assert.equal(insights.targetsCompared, 11);
+    assert.deepEqual(insights.ranking.map(entry => entry.position), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    assert.deepEqual(insights.ranking.map(entry => entry.target), targets);
+    assert.deepEqual(insights.targetsWithoutProviderData, []);
+    assert.match(result.value.message, /Ranked 11 targets as positions 1 to 11/);
+    assert.match(result.value.message, /do not drop one/);
+    assert.match(result.value.message, /Every target returned a report/);
+  });
+
+  it('ranks a target with no Semrush report last, with null metrics rather than a zero score', async () => {
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'backlinks_comparison',
+          status: 'complete',
+          coverage: { missingTargets: ['gone.com'] },
+          rows: [
+            { Target: 'weak.com', 'Authority Score': 2, Backlinks: 10, 'Referring Domains': 5, 'Provider Data Status': 'Returned' },
+            { Target: 'gone.com', 'Provider Data Status': 'No provider data' },
+          ],
+        }),
+      },
+    });
+
+    const result = await tool.execute({ operation: 'backlinks_comparison', targets: ['weak.com', 'gone.com'] }, makeCtx('semrush', ['read']));
+
+    assert.equal(result.ok, true);
+    if (!result.ok || result.value.insights?.kind !== 'backlinks_comparison') {
+      return assert.fail('expected backlinks insights');
+    }
+    const last = result.value.insights.ranking.at(-1)!;
+    assert.equal(last.target, 'gone.com');
+    assert.equal(last.authorityScore, null);
+    assert.equal(last.hasProviderData, false);
+    assert.match(result.value.message, /missing data and not a score of zero/);
+  });
+
   it('does not add the country caveat to operations that have no countries', async () => {
     const tool = createTool({
       service: {

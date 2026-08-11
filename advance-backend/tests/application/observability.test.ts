@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { AuditService }          from '../../src/application/observability/audit.service.ts';
 import { TokenUsageService }     from '../../src/application/observability/token-usage.service.ts';
 import { ExecutionQueryService } from '../../src/application/observability/execution-query.service.ts';
+import { sparklineHeights }      from '../../src/application/observability/token-cost.ts';
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
@@ -395,5 +396,33 @@ describe('ExecutionQueryService', () => {
       assert.equal(events[0]!.sequence, 1);
       assert.equal(events[0]!.createdAt, now.toISOString());
     });
+  });
+});
+
+describe('sparklineHeights', () => {
+  /*
+   * The bug this exists to stop: a member with nothing in the window was sent
+   * a flat 6 for every day, which drew fourteen full-height bars under a card
+   * reading "$0.00" and "0 tasks".
+   */
+  it('reports nothing for a window with no spend', () => {
+    assert.deepEqual(sparklineHeights([0, 0, 0, 0]), [0, 0, 0, 0]);
+  });
+
+  it('scales to the tallest day', () => {
+    assert.deepEqual(sparklineHeights([0, 5, 10]), [0, 50, 100]);
+  });
+
+  /*
+   * A quiet day inside a busy window is still a quiet day. The old floor of 6
+   * could not be told apart from a real small day, which is the same lie in
+   * miniature.
+   */
+  it('leaves an empty day empty even when other days are busy', () => {
+    assert.deepEqual(sparklineHeights([100, 0, 50]), [100, 0, 50]);
+  });
+
+  it('handles an empty series without producing NaN', () => {
+    assert.deepEqual(sparklineHeights([]), []);
   });
 });

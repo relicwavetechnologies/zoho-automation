@@ -106,7 +106,22 @@ describe('a member reads their own activity', () => {
       locals, query: { days: '100000' },
     });
 
-    assert.equal(result.body.data.days, 90);
+    // 112, not 90: the ceiling is sixteen weeks because that is what the Home
+    // calendar is drawn over — sixteen columns of seven. The number moved; the
+    // guard this test exists for did not.
+    assert.equal(result.body.data.days, 112);
+  });
+
+  it('serves the full sixteen weeks the Home calendar asks for', async () => {
+    const { prisma } = spyPrisma();
+    const result = await callRoute(createDesktopActivityRoutes(deps(prisma)), 'GET', '/usage', {
+      locals, query: { days: '112' },
+    });
+
+    // Silently clamped to 90 this drew thirteen columns and a ragged
+    // fourteenth, which reads as missing data rather than a shorter window.
+    assert.equal(result.body.data.days, 112);
+    assert.equal(result.body.data.series.length, 112);
   });
 
   it('ignores a userId supplied by the caller', async () => {
@@ -188,12 +203,14 @@ describe('a manager reads their team’s cost', () => {
     runs?: Array<{ userId: string; count: number }>;
   } = {}) {
     const wheres: Record<string, unknown>[] = [];
+    const rawValues: unknown[][] = [];
     const members = options.members ?? [
       { userId: 'user-a', name: 'Ada', email: 'ada@example.com', slug: 'MEMBER' },
       { userId: 'user-b', name: 'Ben', email: 'ben@example.com', slug: 'MEMBER' },
     ];
     return {
       wheres,
+      rawValues,
       prisma: {
         adminMembership: {
           findFirst: async () => (options.companyRole === null ? null : { role: options.companyRole ?? 'MEMBER' }),
@@ -215,6 +232,10 @@ describe('a manager reads their team’s cost', () => {
             return (options.runs ?? []).map(r => ({ userId: r.userId, _count: { id: r.count } }));
           },
         },
+        // The daily series is raw SQL, so it never reaches the `where` capture
+        // above. Its bound values are recorded instead — this is the one query
+        // on the page that could go company-wide unnoticed.
+        $queryRaw: async (sql: any) => { rawValues.push(sql?.values ?? []); return []; },
       } as any,
     };
   }
@@ -261,6 +282,21 @@ describe('a manager reads their team’s cost', () => {
     }
   });
 
+  it('bounds the daily series to this team, not the whole company', async () => {
+    const { prisma, rawValues } = spyPrisma({ managesDepartment: true });
+    await callRoute(
+      createDesktopTeamActivityRoutes(deps(prisma)), 'GET', '/departments/:departmentId/usage', { locals, params },
+    );
+
+    // Raw SQL sidesteps the `where` capture the other queries are checked by,
+    // so it is asserted on its own bound values. Unbounded, this one query
+    // would show a department manager what the entire company spends.
+    assert.equal(rawValues.length, 1);
+    const [values] = rawValues;
+    assert.ok(values!.includes('company-1'), 'the series must be scoped to the company');
+    assert.ok(values!.includes('user-a') && values!.includes('user-b'), 'and to this team');
+  });
+
   it('totals spend and runs per person, heaviest first', async () => {
     const { prisma } = spyPrisma({
       usage: [
@@ -291,6 +327,12 @@ describe('a manager reads their team’s cost', () => {
     // An empty team must not turn into an unbounded `userId: { in: [] }` query
     // or a divide-by-zero in the caller's percentages.
     assert.equal(result.status, 200);
-    assert.deepEqual(result.body.data, { days: 30, spendUsd: 0, runs: 0, totalPeople: 0, activePeople: 0, people: [] });
+    assert.equal(result.body.data.people.length, 0);
+    assert.equal(result.body.data.spendUsd, 0);
+    assert.equal(result.body.data.totalPeople, 0);
+    // Still a full calendar of zeroes. An empty array would draw no calendar,
+    // which a reader takes as "not loaded" rather than as "nothing happened".
+    assert.equal(result.body.data.series.length, 30);
+    assert.ok(result.body.data.series.every((d: any) => d.spendUsd === 0));
   });
 });

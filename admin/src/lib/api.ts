@@ -1,8 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
-import { toast } from "sonner";
+import { notifyForStatus } from "@/lib/notify";
 
+/*
+ * `import.meta.env` is Vite's, and only Vite's.
+ *
+ * Read bare, this threw for anything that imported the module outside a Vite
+ * build — which is every `node --test` run, and therefore every module in the
+ * data layer that reaches `api` through an import chain. The whole permission
+ * derivation behind the agent map was untestable because of this one property
+ * access. Optional chaining costs nothing in the browser, where the object is
+ * always there.
+ */
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL
+  ?? "http://localhost:8000";
 
 type ApiResponse<T> = {
   success: boolean;
@@ -51,6 +62,35 @@ const extractErrorMessage = (raw: string, status: number): string => {
     // Keep that implementation detail out of the person's auth screen.
     return fallback;
   }
+};
+
+/**
+ * A fetch that never answered, said in words.
+ *
+ * An aborted request throws a DOMException whose message is "signal is aborted
+ * without reason". Rendered straight into the sign-in form, that sentence
+ * blames something inside the browser and names neither the timeout that fired
+ * nor the server that went quiet — so the one person who could fix it goes
+ * looking in the wrong place. Seen for real against a local backend whose SSH
+ * database tunnel had dropped: the API kept accepting connections and never
+ * replied.
+ */
+const asReadableNetworkError = (error: unknown, timeoutMs: number | undefined): Error => {
+  const aborted = error instanceof DOMException
+    ? error.name === "AbortError"
+    : (error as { name?: string } | null)?.name === "AbortError";
+  if (aborted) {
+    const waited = timeoutMs === undefined ? "" : ` within ${Math.round(timeoutMs / 1000)} seconds`;
+    return new Error(
+      `Divo's server did not respond${waited}. It may still be starting up, or it cannot reach its database.`,
+    );
+  }
+  if (error instanceof TypeError) {
+    // What `fetch` throws when nothing is listening, DNS fails, or CORS blocks
+    // the response — all of which read to a person as "the app is offline".
+    return new Error("Divo's server could not be reached. Check that it is running, then try again.");
+  }
+  return error instanceof Error ? error : new Error("The request could not be completed.");
 };
 
 /**
@@ -146,7 +186,7 @@ const request = async <T>(
     } catch (networkError) {
       // The backend is not answering at all. Worth one more ask before this
       // becomes a sentence on somebody's screen.
-      if (attempt >= retries) throw networkError;
+      if (attempt >= retries) throw asReadableNetworkError(networkError, opts.timeoutMs);
     } finally {
       if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
@@ -157,17 +197,10 @@ const request = async <T>(
     const raw = await response.text();
     const errorMsg = extractErrorMessage(raw, response.status);
     const code = extractErrorCode(raw);
-    if (!opts.quiet) {
-      // A refusal is not an error the person can fix by retrying, and
-      // "Error 403" tells them nothing about which it is. Name the two cases.
-      if (response.status === 403) {
-        toast.error("You do not have access to that", { description: errorMsg });
-      } else if (response.status === 401) {
-        toast.error("Your session has expired", { description: "Sign in again to continue." });
-      } else {
-        toast.error(`Error ${response.status}`, { description: errorMsg });
-      }
-    }
+    // One notifier decides the voice. "Error 500" told a person nothing they
+    // could act on, and a refusal in the same red as a fault made a boundary
+    // look like a bug worth retrying.
+    if (!opts.quiet) notifyForStatus(response.status, errorMsg);
     throw new ApiError(response.status, errorMsg, code);
   }
 
@@ -554,6 +587,15 @@ export type SkillRegistrySkillNode = {
   isSystem: boolean;
   revision: number;
   updatedAt: string;
+  /**
+   * How many people or groups this skill is shared with.
+   *
+   * Zero means it cannot be run by anybody — the one fact about a skill that
+   * used to cost a click each to find. Optional because a backend that has not
+   * been deployed yet will not send it, and a library that silently reported
+   * every skill as dead would be worse than one that reports nothing.
+   */
+  grantCount?: number;
 };
 
 export type SkillRegistryFolderNode = {

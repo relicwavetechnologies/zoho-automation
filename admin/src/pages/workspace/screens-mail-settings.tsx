@@ -25,8 +25,8 @@ import { GmailMark, LarkMark } from './brand'
 import { MailboxSetup } from './screens-mail'
 import { useMailAutomations, useMailboxOptions } from './data/use-mail-automations'
 import { useMailBrief } from './data/use-mail-governance'
-import { SettingsGap, SettingsHead, SettingsRow } from './screens-settings'
-import { Seg, SkelRows } from './ui'
+import { COMPANY_ROLE_LABEL, SettingsGroup, SettingsHead, SettingsRow, SettingsSection } from './screens-settings'
+import { Avatar, Seg, SkelRows } from './ui'
 
 /**
  * The mailbox, said once.
@@ -118,7 +118,7 @@ function BriefSection() {
 
   if (loading) return <SkelRows n={1} icon />
   if (error) {
-    return <SettingsRow label="Your brief" description={error} />
+    return <SettingsRow label="Could not be read" description={error} />
   }
   if (!brief) {
     return (
@@ -202,75 +202,91 @@ export function MailSettings() {
         description="There is not much here, and that is deliberate."
       />
 
-      <SettingsRow label="Name">
-        {/* Read-only everywhere in Divo: a member's name comes from the company
-            directory and no route updates it, so an input would be a box that
-            forgets what you typed. */}
-        <span className="set-val">{session?.name ?? '—'}</span>
-      </SettingsRow>
-      <SettingsRow label="Email" description="Where Divo reaches you, and how you sign in">
-        <span className="set-val">{session?.email ?? '—'}</span>
-      </SettingsRow>
-      <SettingsRow label="Company">
-        <span className="set-val">{session?.companyName ?? '—'}</span>
-      </SettingsRow>
-      <SettingsRow
-        label={(session?.departments.length ?? 0) === 1 ? 'Department' : 'Departments'}
-        // Worth stating even here: people assume the company role is the grant,
-        // and a member wondering why Divo refused something is usually looking
-        // at the wrong one of the two.
-        description="This decides what Divo may actually do for you"
-      >
-        <span className="set-val">
-          {session?.departments.length
-            ? session.departments.map((d) => d.name).join(', ')
-            : 'None'}
-        </span>
-      </SettingsRow>
-      <SettingsRow
-        label="Lark"
-        description={session?.larkLinked
-          ? 'Linked — what Divo sends you, and what you ask it, both resolve to this account'
-          : 'Not linked. Divo cannot send you anything in Lark, and messages you send it there cannot be matched to this account.'}
-      >
-        <span className={`badge ${session?.larkLinked ? 'b-ok' : 'b-warn'}`}>
-          <span className="dot" />{session?.larkLinked ? 'Linked' : 'Not linked'}
-        </span>
-      </SettingsRow>
+      <SettingsSection title="Profile" />
+      <SettingsGroup>
+        <SettingsRow label="Profile picture" description="How you are shown around Divo">
+          {/* Initials, because Divo stores no photograph. Nothing in the schema
+              holds an avatar and no route fetches one from Lark, so a slot for
+              an image would permanently show its own fallback. */}
+          <Avatar name={session?.name} email={session?.email} src={session?.avatarUrl} size={34} />
+        </SettingsRow>
+        <SettingsRow
+          label="Company role"
+          // Named as the ceiling rather than as the grant, because people read
+          // this row as the answer to "why was I refused" and it is not.
+          description="Your company-wide ceiling. What Divo may actually do for you is set per department."
+        >
+          <span className="set-val">{COMPANY_ROLE_LABEL[session?.role ?? ''] ?? session?.role ?? '—'}</span>
+        </SettingsRow>
+        {(session?.departments ?? []).map((dept) => (
+          <SettingsRow
+            key={dept.id}
+            label={dept.name}
+            description={dept.isManager
+              ? 'You manage this department, so you can also grant what it may use.'
+              : 'Your role here decides which tools Divo may use on your behalf.'}
+          >
+            <span className="set-val">{dept.roleName}</span>
+          </SettingsRow>
+        ))}
+      </SettingsGroup>
 
-      <SettingsGap />
+      <SettingsSection title="Account" />
+      <SettingsGroup>
+        <SettingsRow label="Name">
+          {/* Read-only everywhere in Divo: a member's name comes from the company
+              directory and no route updates it, so an input would be a box that
+              forgets what you typed. */}
+          <span className="set-val">{session?.name ?? '—'}</span>
+        </SettingsRow>
+        <SettingsRow label="Email" description="Where Divo reaches you, and how you sign in">
+          <span className="set-val">{session?.email ?? '—'}</span>
+        </SettingsRow>
+        <SettingsRow label="Company">
+          <span className="set-val">{session?.companyName ?? '—'}</span>
+        </SettingsRow>
+        <SettingsRow
+          label="Lark"
+          description={session?.larkLinked
+            ? 'Linked — what Divo sends you, and what you ask it, both resolve to this account'
+            : 'Not linked. Divo cannot send you anything in Lark, and messages you send it there cannot be matched to this account.'}
+        >
+          <span className={`badge ${session?.larkLinked ? 'b-ok' : 'b-warn'}`}>
+            <span className="dot" />{session?.larkLinked ? 'Linked' : 'Not linked'}
+          </span>
+        </SettingsRow>
+      </SettingsGroup>
 
-      <SettingsHead title="Mailbox" />
-      <Mailboxes />
+      <SettingsSection title="Mailbox" />
+      <SettingsGroup><Mailboxes /></SettingsGroup>
 
-      <SettingsGap />
+      <SettingsSection title="Your brief" />
+      <SettingsGroup><BriefSection /></SettingsGroup>
 
-      <SettingsHead title="Your brief" />
-      <BriefSection />
+      <SettingsSection title="Appearance" />
+      <SettingsGroup>
+        <SettingsRow label="Theme" description="Follows your system unless you pick one">
+          <Seg
+            value={theme}
+            onChange={(v) => setTheme(v as 'light' | 'dark' | 'system')}
+            options={[
+              { value: 'light', label: 'Light' },
+              { value: 'dark', label: 'Dark' },
+              { value: 'system', label: 'System' },
+            ]}
+          />
+        </SettingsRow>
+      </SettingsGroup>
 
-      <SettingsGap />
-
-      <SettingsHead title="Appearance" />
-      <SettingsRow label="Theme" description="Follows your system unless you pick one">
-        <Seg
-          value={theme}
-          onChange={(v) => setTheme(v as 'light' | 'dark' | 'system')}
-          options={[
-            { value: 'light', label: 'Light' },
-            { value: 'dark', label: 'Dark' },
-            { value: 'system', label: 'System' },
-          ]}
-        />
-      </SettingsRow>
-
-      <SettingsGap />
-
-      <SettingsRow
-        label="Sign out"
-        description="On this device. Your rules keep running."
-      >
-        <button type="button" className="btn" onClick={() => logout()}>Sign out</button>
-      </SettingsRow>
+      <SettingsSection title="This device" />
+      <SettingsGroup>
+        <SettingsRow
+          label="Sign out"
+          description="On this device. Your rules keep running."
+        >
+          <button type="button" className="btn" onClick={() => logout()}>Sign out</button>
+        </SettingsRow>
+      </SettingsGroup>
 
       <div className="set-note">
         <LarkMark size={13} />

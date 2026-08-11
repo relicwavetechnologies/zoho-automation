@@ -102,6 +102,15 @@ export type MailBrief = {
   status: string
   nextRunAt: string | null
   lastRunAt: string | null
+  /**
+   * The last brief's own markdown.
+   *
+   * Null until one has run since briefs began being kept — the runner used to
+   * compose this, hand it to Lark and drop it, so there is no back-catalogue to
+   * fill in and a card must say "none yet" rather than invent one.
+   */
+  lastBriefText: string | null
+  lastBriefWantCount: number | null
 }
 
 const MAIL_BASE = '/api/mail-automations'

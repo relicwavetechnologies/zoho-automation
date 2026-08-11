@@ -8,6 +8,7 @@ import type { LarkChannelAdapter } from '../../infrastructure/channels/lark/lark
 import type {
   ApprovalAuthority,
   ApprovalDecision,
+  ApprovalDelivery,
   ApprovalExecutionGrant,
   ApprovalRequestState,
 } from './approval.types';
@@ -188,6 +189,16 @@ export class ApprovalGateService {
       approverUserId: requirement.approver.userId,
     };
 
+    // How this request will reach the approver. Lark when Divo can card them,
+    // the desktop approval inbox when it cannot — or when delivery is
+    // suppressed, which is the same thing from the approver's side and must not
+    // be recorded as a card that was never sent. Decided once here because the
+    // stored row and the answer handed back to the requester have to agree:
+    // when they drifted, the requester was told to watch Lark for a card that
+    // was never sent.
+    const deliveredVia: ApprovalDelivery =
+      manager.larkOpenId && !this.options.suppressCardDelivery ? 'lark' : 'desktop';
+
     // Capture the current status bubble messageId so the resumer can edit
     // the same bubble in place (instead of creating a new one).
     const statusMessageId = runContext.traceId
@@ -241,14 +252,8 @@ export class ApprovalGateService {
           autoResume:             input.resumeOnApproval === true,
           execution: execution ?? null,
         },
-        // How this request will reach the approver. Lark when Divo can card
-        // them, the desktop approval inbox when it cannot — or when delivery is
-        // suppressed, which is the same thing from the approver's side and must
-        // not be recorded as a card that was never sent. The row is the source
-        // of truth either way; delivery is a side effect of it.
-        channel:        manager.larkOpenId && !this.options.suppressCardDelivery
-          ? 'lark'
-          : 'desktop',
+        // The row is the source of truth; delivery is a side effect of it.
+        channel:        deliveredVia,
         requestedBy:    requesterId,
         idempotencyKey: idemKey,
         expiresAt:      new Date(Date.now() + 24 * 60 * 60 * 1000),
@@ -319,6 +324,7 @@ export class ApprovalGateService {
         replacedExpired
           ? `The previous approval expired. ${manager.displayName} has a fresh request waiting in Divo (id: ${approval.id}).`
           : `${manager.displayName} has an approval request waiting in Divo. Waiting on their response (id: ${approval.id}).`,
+        deliveredVia,
       );
     }
 
@@ -395,6 +401,7 @@ export class ApprovalGateService {
         requirement,
         'dispatching',
         `The approval card reached ${manager.displayName}, but Divo is still syncing its delivery state (id: ${approval.id}). Do not create another request; the existing card remains usable.`,
+        deliveredVia,
       );
     }
 
@@ -416,6 +423,7 @@ export class ApprovalGateService {
       requestState: replacedExpired ? 'replaced_expired' : 'created',
       nextAction: 'wait',
       retry: 'retry_exact',
+      deliveredVia,
     };
   }
 
@@ -830,6 +838,7 @@ export class ApprovalGateService {
           requestState: 'reused',
           nextAction: 'wait',
           retry: 'retry_exact',
+          deliveredVia: deliveryOfApproval(approval),
         };
       }
       if (current.ok && current.value?.status === 'consumed') {
@@ -916,6 +925,7 @@ export class ApprovalGateService {
         requestState: 'reused',
         nextAction: 'wait',
         retry: 'retry_exact',
+        deliveredVia: deliveryOfApproval(approval),
       };
     }
 
@@ -933,7 +943,8 @@ export class ApprovalGateService {
         approval.id,
         requirement,
         'reused',
-        `This exact action is still waiting for ${requirement.approver.displayName} (id: ${approval.id}). The existing request was reused; no new card was sent.`,
+        `This exact action is still waiting for ${requirement.approver.displayName} (id: ${approval.id}). The existing request was reused; nothing new was sent.`,
+        deliveryOfApproval(approval),
       );
     }
 
@@ -957,7 +968,8 @@ export class ApprovalGateService {
         approval.id,
         requirement,
         'dispatching',
-        `Divo is still delivering this exact approval request to ${requirement.approver.displayName} (id: ${approval.id}). Wait; no duplicate card was sent.`,
+        `Divo is still delivering this exact approval request to ${requirement.approver.displayName} (id: ${approval.id}). Wait; nothing was sent twice.`,
+        deliveryOfApproval(approval),
       );
     }
 
@@ -1062,6 +1074,18 @@ function terminalCheckpointDecision(
     nextAction: 'change_request',
     retry: 'change_request',
   };
+}
+
+/**
+ * Where an already-stored request went.
+ *
+ * The row decided this when it was created, so re-deriving it from the
+ * manager's Lark account would answer for today rather than for the request
+ * actually waiting. Anything unrecognised reads as the inbox: that is the
+ * surface every approver has, so it is the answer that stays true.
+ */
+function deliveryOfApproval(approval: RuntimeApprovalRow): ApprovalDelivery {
+  return approval.channel === 'lark' ? 'lark' : 'desktop';
 }
 
 function approverNameFromApproval(approval: RuntimeApprovalRow): string {
@@ -1260,6 +1284,7 @@ function pendingDecision(
   requirement: Extract<ApprovalRequirement, { kind: 'required' }>,
   requestState: ApprovalRequestState,
   message: string,
+  deliveredVia: ApprovalDelivery,
 ): Extract<ApprovalDecision, { kind: 'pending' }> {
   return {
     kind: 'pending',
@@ -1270,6 +1295,7 @@ function pendingDecision(
     requestState,
     nextAction: 'wait',
     retry: 'retry_exact',
+    deliveredVia,
   };
 }
 

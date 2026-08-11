@@ -37,7 +37,7 @@ export const RAIL: RailGroup[] = [
       { to: '/settings/preferences', label: 'Preferences', icon: SlidersHorizontal },
       { to: '/settings/connections', label: 'Connected apps', icon: Link2 },
       { to: '/settings/access', label: 'What Divo can do', icon: KeyRound },
-      { to: '/settings/usage', label: 'Usage', icon: Gauge },
+      { to: '/settings/usage', label: 'Your usage', icon: Gauge },
     ],
   },
   {
@@ -56,7 +56,12 @@ export const RAIL: RailGroup[] = [
       { to: '/settings/team/people', label: 'People', icon: Users },
       { to: '/settings/team/roles', label: 'Roles', icon: UserSquare },
       { to: '/settings/team/approvals', label: 'Ask me first', icon: ShieldCheck },
-      { to: '/settings/team/usage', label: 'Usage', icon: Gauge },
+      /* "Team usage", not "Usage". The rail carried the word twice — once under
+         Account for your own spend and once here for the team's — so the two
+         were told apart only by which heading you had scrolled past. This is
+         also the title of the page it opens, which is how somebody confirms
+         they landed where they meant to. */
+      { to: '/settings/team/usage', label: 'Team usage', icon: Gauge },
     ],
   },
   {
