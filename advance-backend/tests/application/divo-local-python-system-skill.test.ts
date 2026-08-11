@@ -19,8 +19,14 @@ describe('Divo local Python system skill', () => {
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /credential-free\s+`divo-local`/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /retired `divo_python_automation` tool is unavailable/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /response\["data"\]/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /divo-local call <toolId>\.<nativeTool> --input-file <path>/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /input.*do not put `op`, `nativeTool`, `toolId`,/is);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /automatically writes.*DIVO_RUN_DIR/is);
-    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /failed call creates no result file/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /DIVO_THREAD_WORK_DIR.*workflows/is);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /\.divo-workflow\.json/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Never resume merely because files exist/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Path\(os\.environ\["DIVO_RUN_DIR"\]\)/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /failed call creates no\s+result file/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /data.*provider\s+result.*Never use `len\(data\)`/is);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Never guess, copy an old\s+ID/is);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Do not call `tools\.list`/i);
@@ -51,7 +57,7 @@ describe('Divo local Python system skill', () => {
 
     assert.match(READ_FILES_SYSTEM_SKILL.markdown, /complete user-facing result in chat/i);
     assert.match(CREATE_FILES_SYSTEM_SKILL.markdown, /local file delivery is unavailable/i);
-    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /never claim a local path was delivered/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /never claim a\s+local path was delivered/i);
   });
 
   it('replaces an existing legacy system recipe in place', async () => {

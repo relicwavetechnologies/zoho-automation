@@ -37,13 +37,16 @@ audit, credentials, and rate limits remain authoritative.
 ## Data too large to hold
 
 Never carry a record set through model context to inspect it, and never print
-rows. Keep each page in \`DIVO_RUN_DIR\`, transform it with Python/DuckDB, and
-print only counts, aggregates, validation failures, and required resource IDs.
+rows. Keep raw governed result envelopes in \`DIVO_RUN_DIR\`, which is one-turn
+scratch. When \`DIVO_THREAD_WORK_DIR\` is set, keep resumable scripts,
+checkpoints, normalized JSONL/Parquet, and manifests under its \`workflows/\`
+directory. Transform with Python/DuckDB and print only counts, aggregates,
+validation failures, and required resource IDs.
 
 ## Choose the right path
 
 - For ${GOVERNED_DIRECT_ACTION_CRITERION}, use the Divo gateway directly.
-- Use one persistent Python file under \`DIVO_RUN_DIR\` only when the work has
+- Use one persistent Python file only when the work has
   ${GOVERNED_LOCAL_WORKFLOW_CRITERION}. Gmail/CRM →
   Sheets is always this local-workflow path.
 - Durable or recurring work: schedule Divo work; its future run may use this
@@ -57,24 +60,36 @@ including when an older conversation or cached recipe mentions it.
 1. Read the native source and destination skills relevant to the request if
    they have not been read yet. Use their governed tool contracts; never mutate
    data merely to discover a response shape.
-2. Use the \`write\` tool once to create
-   \`<DIVO_RUN_DIR>/<descriptive-workflow>.py\`. Put non-secret input, output,
-   and \`checkpoint.json\` beside it. In Lark, return the complete user-facing
-   result in chat and never claim a local path was delivered; use a governed
-   connected destination when the user needs a file. In Jan desktop, finished
-   files may go to \`DIVO_ARTIFACTS_DIR\`. \`DIVO_RUN_DIR\` is never delivered.
-3. Use Bash to run the file with
-   \`python3 <absolute-DIVO_RUN_DIR>/<descriptive-workflow>.py\`.
-4. When Python or a provider contract fails, inspect the structured response,
+2. Choose the working directory before the first connected call. If
+   \`DIVO_THREAD_WORK_DIR\` is set, use
+   \`$DIVO_THREAD_WORK_DIR/workflows/<descriptive-workflow>-<shortid>/\`.
+   Otherwise use \`DIVO_RUN_DIR\` and do not pause expecting files to survive the
+   next turn. Use the \`write\` tool once to create the Python file there. Put
+   non-secret normalized input, output, and \`checkpoint.json\` beside it; raw
+   protected \`divo-local\` result envelopes remain in \`DIVO_RUN_DIR\`.
+   In Lark, return the complete user-facing result in chat and never claim a
+   local path was delivered; use a governed connected destination when the user
+   needs a file. In Jan desktop, finished files may go to
+   \`DIVO_ARTIFACTS_DIR\`. \`DIVO_RUN_DIR\` is never delivered.
+3. Write \`.divo-workflow.json\` beside the script with \`status\`, \`task\`,
+   \`source\`, \`destination\`, \`resumeStep\`, \`createdAt\`, and \`updatedAt\`.
+   Never resume merely because files exist; resume only when the current user
+   explicitly asks to continue or the manifest is \`awaiting_user\` for the same
+   task, source, and destination.
+4. Use Bash to run the file with
+   \`python3 <absolute-workflow-dir>/<descriptive-workflow>.py\`.
+5. When Python or a provider contract fails, inspect the structured response,
    use \`edit\` on that exact file, and rerun the exact Bash command.
-5. Do not resend the complete source in a tool argument, rewrite the entire
+6. Do not resend the complete source in a tool argument, rewrite the entire
    file for a small correction, or create a second retry script.
-6. Keep successful mutation IDs in \`checkpoint.json\` before proceeding. A
+7. Keep successful mutation IDs in \`checkpoint.json\` before proceeding. A
    resumed run must reuse or verify an existing resource and must never repeat
-   a successful create or send.
-7. Read important destination records back and reconcile counts before
+   a successful create or send. Set the manifest to \`awaiting_user\` before
+   asking the user mid-workflow, \`completed\` only after verification, or
+   \`failed\` with the safe resume step.
+8. Read important destination records back and reconcile counts before
    reporting completion.
-8. Once this path is selected, keep all connected reads, writes, and
+9. Once this path is selected, keep all connected reads, writes, and
    verification for this workflow inside that file through \`divo-local\`.
    Direct gateway calls before the file are only for a genuinely unknown
    account or schema; never manually carry a record set through model context.
@@ -82,14 +97,23 @@ including when an older conversation or cached recipe mentions it.
 ## Calling Divo from Python
 
 Use \`subprocess\` with \`divo-local\`. It exposes no member token or SaaS
-credential. For generated or substantial arguments, write an adjacent JSON
-file and pass \`--args-file\`.
+credential. For native MCP-style provider operations, write only the native
+\`input\` object to an adjacent JSON file and call
+\`divo-local call <toolId>.<nativeTool> --input-file <path>\`. The command name
+carries the tool and operation; do not put \`op\`, \`nativeTool\`, \`toolId\`,
+\`args\`, or \`skillId\` inside that input file. Use
+\`divo-local describe <toolId>.<nativeTool>\` only when a genuinely required
+native operation schema was not already loaded. Use legacy
+\`divo-local invoke --tool <toolId> --args-file <path>\` only for non-native or
+special operations with no \`<toolId>.<nativeTool>\` call surface.
 
-Every \`divo-local invoke\` automatically writes its successful governed
-response to a new protected JSON file inside \`DIVO_RUN_DIR\` and prints only a
-small path/byte-count/trace summary. Read the returned path in Python. Never
-print or \`cat\` the saved response; print only counts, aggregates, validation
-errors, and IDs the user needs. A failed call creates no result file.
+Every native \`divo-local call\` or legacy \`invoke\` automatically writes its
+successful governed response to a new protected JSON file inside \`DIVO_RUN_DIR\`
+and prints only a small path/byte-count/trace summary. Read the returned path in
+Python, then copy only normalized rows/checkpoints you truly need into the
+workflow directory. Never print or \`cat\` the saved response; print only counts,
+aggregates, validation errors, and IDs the user needs. A failed call creates no
+result file.
 
 The saved JSON is \`{ ok, status, data, meta, ... }\`; \`data\` is the provider
 result, not necessarily a row array. Never use \`len(data)\` as a record count.
@@ -102,7 +126,8 @@ rate limits. When the source schema requires an ID, use an exact current-run ID;
 never guess, copy an old ID, or retry several IDs.
 
 The source skill and current work bootstrap already provide the backend
-\`toolId\`, argument contract, and continuation fields. Use those exact values.
+\`toolId\`, native operation name, input contract, and continuation fields. Use
+those exact values.
 Do not call \`tools.list\`, run \`divo-local --help\`, or probe the tool merely to
 rediscover a loaded contract. If an exact contract is genuinely missing, stop
 and report that contract gap instead of inventing a second discovery workflow.
@@ -115,10 +140,12 @@ backend independently enforces identity, RBAC, approvals, schemas, and audit.
 
 ~~~python
 import json
+import os
 import subprocess
 from pathlib import Path
 
-RUN_DIR = Path(__file__).resolve().parent
+RUN_DIR = Path(os.environ["DIVO_RUN_DIR"]).resolve()
+WORKFLOW_DIR = Path(__file__).resolve().parent
 
 
 class DivoCallError(RuntimeError):
@@ -130,20 +157,22 @@ class DivoCallError(RuntimeError):
         super().__init__(f"{status}: {message}")
 
 
-def divo_invoke(tool_id, args, label, args_name):
-    args_path = RUN_DIR / args_name
-    args_path.write_text(json.dumps(args, ensure_ascii=False), encoding="utf-8")
+def divo_call(operation, input_obj, label, input_name, connection_id=None):
+    input_path = WORKFLOW_DIR / input_name
+    input_path.write_text(json.dumps(input_obj, ensure_ascii=False), encoding="utf-8")
+    command = [
+        "divo-local",
+        "call",
+        operation,
+        "--input-file",
+        str(input_path),
+        "--label",
+        label,
+    ]
+    if connection_id:
+        command.extend(["--connection-id", connection_id])
     completed = subprocess.run(
-        [
-            "divo-local",
-            "invoke",
-            "--tool",
-            tool_id,
-            "--args-file",
-            str(args_path),
-            "--label",
-            label,
-        ],
+        command,
         capture_output=True,
         text=True,
         check=False,
@@ -157,7 +186,9 @@ def divo_invoke(tool_id, args, label, args_name):
     if completed.returncode != 0 or not summary.get("ok"):
         raise DivoCallError(summary)
     output_path = Path(summary["output"])
-    if output_path.parent != RUN_DIR:
+    try:
+        output_path.resolve().relative_to(RUN_DIR)
+    except ValueError:
         raise RuntimeError("divo-local returned a result outside DIVO_RUN_DIR")
     response = json.loads(output_path.read_text(encoding="utf-8"))
     if not response.get("ok"):

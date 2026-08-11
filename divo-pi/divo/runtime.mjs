@@ -92,6 +92,9 @@ const PROVIDER_ENV_KEYS = [
  * anything older than this cannot belong to a run that is still going.
  */
 const ABANDONED_RUN_SESSION_TTL_MS = 6 * 60 * 60_000;
+export const THREAD_WORKFLOW_TTL_MS = 14 * 24 * 60 * 60_000;
+export const THREAD_WORKFLOW_MAX_COMPLETED_DIRS = 25;
+export const THREAD_WORKFLOW_MANIFEST_FILE = ".divo-workflow.json";
 const INTERRUPTED_WORK_FACT_FILE = ".divo-interrupted-work.json";
 const MAX_INTERRUPTED_WORK_CHARS = 600;
 
@@ -320,6 +323,96 @@ export function sweepExpiredPendingAttachments(
 	return removed;
 }
 
+function readThreadWorkflowManifest(directory) {
+	try {
+		const value = JSON.parse(
+			fs.readFileSync(path.join(directory, THREAD_WORKFLOW_MANIFEST_FILE), "utf8"),
+		);
+		if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+		return value;
+	} catch {
+		return null;
+	}
+}
+
+function manifestTimeMs(manifest, fallbackMs) {
+	for (const key of ["updatedAt", "createdAt"]) {
+		const value = manifest?.[key];
+		const parsed = typeof value === "string" || typeof value === "number"
+			? new Date(value).getTime()
+			: Number.NaN;
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	return fallbackMs;
+}
+
+function isCompletedWorkflowStatus(status) {
+	return ["completed", "failed", "cancelled", "canceled", "abandoned"].includes(status);
+}
+
+/**
+ * Keep durable workflow state useful without letting one DM become a landfill.
+ *
+ * The agent may keep resumable scripts/checkpoints in DIVO_THREAD_WORK_DIR, but
+ * it must not treat old files as permission to resume. Cleanup only touches
+ * directories with Divo's manifest file under the exact hidden work root.
+ */
+export function sweepStaleThreadWorkflows(
+	threadWorkDir,
+	now = Date.now(),
+	ttlMs = THREAD_WORKFLOW_TTL_MS,
+	maxCompletedDirs = THREAD_WORKFLOW_MAX_COMPLETED_DIRS,
+) {
+	const workflowsRoot = path.join(threadWorkDir, "workflows");
+	let entries;
+	try {
+		entries = fs.readdirSync(workflowsRoot, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+
+	const removed = [];
+	const retainedCompleted = [];
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue;
+		const directory = path.join(workflowsRoot, entry.name);
+		const manifest = readThreadWorkflowManifest(directory);
+		if (!manifest) continue;
+		let fallbackMs = now;
+		try {
+			fallbackMs = fs.statSync(path.join(directory, THREAD_WORKFLOW_MANIFEST_FILE)).mtimeMs;
+		} catch {
+			try {
+				fallbackMs = fs.statSync(directory).mtimeMs;
+			} catch {
+				continue;
+			}
+		}
+		const updatedMs = manifestTimeMs(manifest, fallbackMs);
+		if (now - updatedMs >= ttlMs) {
+			removeDirectory(directory);
+			removed.push(entry.name);
+			continue;
+		}
+		const status = typeof manifest.status === "string"
+			? manifest.status.trim().toLowerCase()
+			: "";
+		if (isCompletedWorkflowStatus(status)) {
+			retainedCompleted.push({ name: entry.name, directory, updatedMs });
+		}
+	}
+
+	retainedCompleted
+		.sort((a, b) => b.updatedMs - a.updatedMs)
+		.slice(maxCompletedDirs)
+		.forEach(({ name, directory }) => {
+			removeDirectory(directory);
+			removed.push(name);
+		});
+
+	return removed;
+}
+
 /**
  * Ready the volume for a group turn.
  *
@@ -404,6 +497,9 @@ export function buildChildEnvironment(baseEnvironment, values) {
 		DIVO_INTERNAL_DIR: values.internalDir,
 		DIVO_RUN_ID: values.runId,
 		DIVO_RUN_DIR: values.runDir,
+		...(values.isRunScoped || !values.threadWorkDir
+			? {}
+			: { DIVO_THREAD_WORK_DIR: values.threadWorkDir }),
 		DIVO_SCRATCH_DIR: values.scratchDir,
 		DIVO_SCRIPTS_DIR: values.scriptsDir,
 		DIVO_ARTIFACTS_DIR: values.artifactsDir,
@@ -436,6 +532,7 @@ export const RUNTIME_ENVIRONMENT_PATCH_KEYS = [
 	"DIVO_INTERNAL_DIR",
 	"DIVO_RUN_ID",
 	"DIVO_RUN_DIR",
+	"DIVO_THREAD_WORK_DIR",
 	"DIVO_SCRATCH_DIR",
 	"DIVO_SCRIPTS_DIR",
 	"DIVO_ARTIFACTS_DIR",
@@ -571,6 +668,9 @@ export function buildPiArgumentsWithResources(
 			image_policy: imagePolicyFor(values.model),
 			thread_id: values.thread,
 			run_dir: values.runDir,
+			thread_work_dir: values.isRunScoped
+				? "unavailable for this run"
+				: values.threadWorkDir ?? "unavailable",
 			artifacts_dir: values.artifactsDir,
 			interrupted_work_policy: interruptedWorkPolicy(values.interruptedWork),
 		}),
@@ -672,6 +772,7 @@ export function prepareDivoPiRun({
 	const interruptedWork = isRunScoped ? null : readInterruptedWorkFact(threadDir);
 	const internalDir = path.join(workspace, ".divo");
 	const runDir = path.join(internalDir, "threads", thread, "runs", runId);
+	const threadWorkDir = isRunScoped ? undefined : path.join(internalDir, "threads", thread, "work");
 	const scratchDir = path.join(runDir, "tmp");
 	const scriptsDir = path.join(runDir, "scripts");
 	const logsDir = path.join(runDir, "logs");
@@ -690,6 +791,7 @@ export function prepareDivoPiRun({
 		workspace,
 		sessionDir,
 		runDir,
+		...(threadWorkDir ? [threadWorkDir, path.join(threadWorkDir, "workflows")] : []),
 		scratchDir,
 		scriptsDir,
 		logsDir,
@@ -698,6 +800,7 @@ export function prepareDivoPiRun({
 	]) {
 		ensureDirectory(directory);
 	}
+	if (threadWorkDir) sweepStaleThreadWorkflows(threadWorkDir);
 	sweepExpiredPendingAttachments(path.join(internalDir, "inbox"));
 	prepareSessionDirectories({ isRunScoped, runSessionsRoot, runId, threadDir });
 	for (const extensionName of manifest.extensions) {
@@ -770,6 +873,7 @@ export function prepareDivoPiRun({
 		sessionDir,
 		sessionPath,
 		thread,
+		threadWorkDir,
 		token,
 		workspace: path.resolve(workspace),
 	};
