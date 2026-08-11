@@ -456,9 +456,9 @@ jobs:
             *:main-latest*|*:latest*|*:dev-latest*) echo "Mutable image tag refused in main deploy." >&2; exit 1 ;;
           esac
 
-          docker compose --env-file .env.production.local pull
-          docker pull "${DIVO_PI_IMAGE}"
-          docker compose --env-file .env.production.local up -d --wait --wait-timeout 180 \
+          timeout 600s docker compose --env-file .env.production.local pull
+          timeout 300s docker pull "${DIVO_PI_IMAGE}"
+          timeout 240s docker compose --env-file .env.production.local up -d --wait --wait-timeout 180 \
             divo-postgres divo-redis-queue divo-redis-cache divo-redis-memory
 
           if [[ "${RETIRE_DATA_EXPORT_STORAGE}" == "true" ]]; then
@@ -514,8 +514,8 @@ jobs:
               divo-backend pnpm provision:google-workspace-skills </dev/null
           fi
 
-          docker compose --env-file .env.production.local up -d --no-build --remove-orphans
-          docker compose --env-file .env.production.local up -d --wait --wait-timeout 240 --no-build \
+          timeout 240s docker compose --env-file .env.production.local up -d --no-build --remove-orphans
+          timeout 300s docker compose --env-file .env.production.local up -d --wait --wait-timeout 240 --no-build \
             --force-recreate --no-deps divo-pi-controller divo-backend divo-admin
           REMOTE
 
