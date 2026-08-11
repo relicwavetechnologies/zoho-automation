@@ -1,6 +1,6 @@
 # Cloud-Pi skills rewrite, native wiring, and DB rollout
 
-> Status: **Planned — handoff to a separate skills agent**
+> Status: **Active — owned by the separate skills agent**
 >
 > Last updated: **2026-08-10**
 >
@@ -47,9 +47,8 @@ architecture.
   is read-only.
 - `divo-local` lets a credential-free script call the same governed backend
   tools and persist large results outside model context.
-- The legacy candidate/offer/sample export tool and `secure-data-export` skill
-  are being hard-removed by the runtime track. Do not rewrite or provision
-  either one. Route complete data movement through the source specialist,
+- The legacy candidate/offer/sample export planner and its skill are removed.
+  Do not recreate either one. Route complete data movement through the source specialist,
   `divo-python-automation`, and the destination specialist only when the source
   contract exposes truthful continuation. Otherwise require an honest bounded
   answer; prose must not invent missing paging.
@@ -186,7 +185,6 @@ between “provider returned no row” and “measured zero.”
       catalogue-wide paragraph pass ahead of the rewrites was not attempted.*
 - [ ] Map every skill to at least one natural prompt and expected tool sequence.
 - [ ] Map every tool-bearing skill to the actual current typed contract.
-      *Done for `dataExport` only, in Wave 1.*
 - [ ] Record capability gaps in the non-skills plan instead of writing imagined
       workarounds. *None found yet.*
 - [ ] Capture a baseline: prompt tokens, skill reads, tool calls, corrections,
@@ -218,7 +216,6 @@ Regenerate with the read-only script recorded in §16.
 | zoho-books-invoice | zoho | 7385 | 1846 | 1 | 15 | finance-zoho-router |
 | google-docs | google | 7073 | 1768 | 1 | 2 | google-workspace-router |
 | zoho-books-bill | zoho | 6857 | 1714 | 2 | 7 | finance-zoho-router |
-| secure-data-export | data | 6638 | 1660 | 1 | 6 | data-router |
 | google-calendar | google | 6606 | 1652 | 1 | 3 | google-workspace-router |
 | google-contacts | google | 6402 | 1601 | 1 | 2 | google-workspace-router |
 | read-understand-files | files | 6146 | 1537 | 0 | 10 | data-router, files-router |
@@ -286,26 +283,7 @@ Regenerate with the read-only script recorded in §16.
 The exact second member of a pair may change after inventory, but a commit may
 not rewrite more than two skill definitions.
 
-### Wave 1 — central data decision
-
-- [x] `data-router`
-- [x] ~~`secure-data-export`~~ — **superseded, not shipped.**
-
-Rewritten 2026-08-10 in `0dda5a26e`; see §15. The runtime track then removed the
-whole export pipeline in `e90de44f2` and `4596fc00a`, deleting the
-`secure-data-export` skill and the `dataExport` tool outright and rewriting
-`data-router` to route complete data movement through the source specialist,
-`divo-python-automation`, and the destination specialist. The compression of
-that skill therefore never reached a runtime. What survived the retirement is
-the method, not the text: the tool-owns-its-own-contract rule, the ask/stop
-lesson in §15, and the test-fossilization fix.
-
-Goal: one unambiguous distinction between bounded chat work, replayable
-provider export, bespoke local transformation, and reading/editing an existing
-file. Preserve the governed export compatibility boundary until source E2E
-evidence permits removal.
-
-### Wave 2 — local transformation and Sheet destination
+### Wave 1 — local transformation and Sheet destination
 
 - [x] `google-sheets`
 - [x] `divo-python-automation` — **examined and deliberately left unchanged.**
@@ -556,64 +534,6 @@ This track is complete only when:
 - [ ] the rolling evidence below contains the final before/after metrics.
 
 ## 15. Rolling evidence
-
-### Pair: data-router + secure-data-export — 2026-08-10
-
-- Commit / environment: local worktree on `dev`, not yet reconciled to any DB.
-- Before → after bytes: `secure-data-export` 6,638 → 4,376 (1,660 → 1,094 tok);
-  `data-router` 3,907 → 2,349 (977 → 587 tok). Pair total −3,820 bytes,
-  −956 tokens. Catalogue 256,710 → 252,890 bytes.
-- What was removed and why: every fact the registered `dataExport` tool already
-  states through its zod schema, description, or `parameterDocs` — the format
-  row/cell caps, the `destination.format` enum meanings, `transform.script`
-  receiving `row`/`index`/`args`, the legacy `op=confirm` path, "do not create a
-  sample or ask for another confirmation", and the verbatim "the backend
-  re-checks…" paragraph. The skill imported four limit constants purely to print
-  numbers the tool already prints; only the Menhood spool cap, which the tool
-  does not publish, is still imported.
-- What was deliberately kept: candidate attribution to the table the member was
-  actually shown, the single-offer rule and its skip list, "the file and the
-  chat answer are different artifacts", queued-is-not-finished and the
-  completion card as sole truth, permanent-source-failure handling, the Zoho
-  Books `accountId` scoping rule, Airtable MCP not being a bulk-export source,
-  and the cross-tool refusals (no personal OAuth, no Google permission tool, no
-  reshare) that no single tool contract can express.
-- Router/specialist boundary: `op=plan` mechanics and the missing-destination
-  message moved out of `data-router` into `secure-data-export`, which owns the
-  tool. The router keeps task-class selection, the opaque-handle ownership
-  table, and four examples that each decide a boundary the bullets decide
-  slowly; three examples that merely restated a bullet were dropped.
-- Tests: exact-sentence assertions across three suites replaced with
-  wrap-insensitive invariant tokens, plus a new guard,
-  `leaves the dataExport contract to the dataExport tool`, that fails if any of
-  the removed tool-owned facts is pasted back. Backend suite 3,597 pass /
-  0 fail / 30 skipped; `tsc --noEmit` clean.
-- Cold review: found the first cut too deep in two places, both restored before
-  any commit. (a) **Both ask/stop conditions had been deleted** — ask which
-  format when the member named none, and ask which table when a direct recipe
-  needs one they never named. Neither is deducible from the contract:
-  `exportPlanRequestSchema` has no `auto` format, so a silent choice is a silent
-  choice of row cap, and `parameterDocs` never tells the model to stop and ask.
-  This is the general lesson for later waves — a tool contract states what an
-  argument *means* and never that Divo should decline to fill it in.
-  (b) The permanent-failure stop rule had been narrowed to the completion card,
-  but `op=plan` returns terminal `blocked` outcomes (revoked grant, stale replay
-  candidate) that produce no card at all. (c) The legacy
-  `preview.exportOfferId` handle row was restored to the router, since Wave 1
-  requires preserving that boundary and `gateway-dispatcher.ts` still reads it.
-  Each restored rule now has its own regression test. The review independently
-  verified every "the tool already says this" claim against
-  `data-export.tool.ts`; all held.
-- Agent Seat result: not run.
-- Cloud-Pi Development result: not run.
-- DB revisions / registry revision: not reconciled.
-- Cross-plan dependencies discovered: none.
-- Pre-existing defect noticed, not fixed here: the skill says pass `accountId`
-  for Zoho Books bank transactions, while the backend rule keys on the source
-  filter `account_id` and its refusal message says "Add account_id"
-  (`data-export.types.ts:105-113`). Same wording before the rewrite, so not a
-  regression; worth settling in Wave 7.
-- Decision: content complete; **gates §9.3 and §9.4 still open.**
 
 ### Pair: google-sheets + divo-python-automation — 2026-08-11
 

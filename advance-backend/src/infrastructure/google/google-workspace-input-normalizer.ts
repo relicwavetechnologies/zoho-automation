@@ -1,16 +1,4 @@
-/**
- * The upstream Google Workspace MCP names this argument `range_name`. Every
- * other Sheets surface a model has ever read — the Google API itself, gspread,
- * the Sheets docs — calls it `range`, so `range` is what gets sent, and the
- * provider rejects it with a pydantic `unexpected_keyword_argument`. The model
- * then has to guess the synonym from an error that does not name it.
- *
- * That happened twice in one Menhood run and cost two turns before the sheet
- * was read at all. Nothing is being inferred here: `range` carries no meaning
- * in the provider schema, so accepting it as a spelling of `range_name` cannot
- * change the semantics of a call that would otherwise have worked. An explicit
- * `range_name` always wins, and nothing else is touched.
- */
+/** Narrow compatibility fixes at the pinned Google Workspace MCP boundary. */
 
 const RANGE_ALIAS_TOOLS: ReadonlySet<string> = new Set([
   'read_sheet_values',
@@ -22,12 +10,32 @@ export function normalizeGoogleWorkspaceInput(
   nativeTool: string,
   input: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
-  if (!RANGE_ALIAS_TOOLS.has(nativeTool)) return input;
-  if (!('range' in input)) return input;
-  if (input['range_name'] !== undefined) {
-    const { range: _discarded, ...rest } = input;
-    return rest;
+  let normalized = input;
+
+  // The upstream MCP calls the universal Sheets `range` argument
+  // `range_name`. An explicit provider spelling always wins.
+  if (RANGE_ALIAS_TOOLS.has(nativeTool) && 'range' in normalized) {
+    const { range, ...rest } = normalized;
+    normalized = normalized['range_name'] !== undefined
+      ? rest
+      : { ...rest, range_name: range };
   }
-  const { range, ...rest } = input;
-  return { ...rest, range_name: range };
+
+  // Divo accepts ordinary Sheet scalars. The pinned MCP's Pydantic contract
+  // accepts only strings, so adapt that wire quirk here once instead of making
+  // every generated workflow rediscover it from an error.
+  if (nativeTool === 'modify_sheet_values' && Array.isArray(normalized['values'])) {
+    normalized = {
+      ...normalized,
+      values: normalized['values'].map(row => Array.isArray(row)
+        ? row.map(cell => {
+            if (cell === null) return '';
+            if (typeof cell === 'number' || typeof cell === 'boolean') return String(cell);
+            return cell;
+          })
+        : row),
+    };
+  }
+
+  return normalized;
 }

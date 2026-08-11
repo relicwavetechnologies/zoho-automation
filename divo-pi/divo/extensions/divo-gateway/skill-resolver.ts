@@ -81,6 +81,7 @@ interface GoogleVendorOnboardingPlan {
 	phases: Array<{
 		id: string;
 		name: string;
+		slug?: string;
 		skillId: string;
 		toolId: string;
 	}>;
@@ -228,10 +229,10 @@ export function formatSkillResolveResult(result: SkillResolveResult): string {
 	if (planned?.orchestrationPlan) {
 		lines.push("", "Google workflow phases:");
 		for (const [index, phase] of planned.orchestrationPlan.phases.entries()) {
-			lines.push(`${index + 1}. ${phase.name} — ${phase.skillId}`);
+			lines.push(`${index + 1}. ${phase.name} — native skill ${phase.slug ?? phase.name}`);
 		}
 		lines.push(planned.orchestrationPlan.connection.message);
-		lines.push("The parent guidance is included above; read each matching native phase skill by name immediately before its phase.");
+		lines.push("The parent guidance is included above; read each matching native phase skill from its exact Pi available_skills location immediately before its phase.");
 	}
 	if (result.rejected.length) {
 		lines.push("", "Rejected fuzzy matches (do not use):");
@@ -287,10 +288,11 @@ function readGoogleVendorOnboardingPlan(data: unknown): GoogleVendorOnboardingPl
 		const phase = value as Record<string, unknown>;
 		const id = readString(phase.id);
 		const name = readString(phase.name);
+		const slug = readString(phase.slug);
 		const skillId = readString(phase.skillId);
 		const toolId = readString(phase.toolId);
 		if (!id || !name || !skillId || !toolId) return [];
-		return [{ id, name, skillId, toolId }];
+		return [{ id, name, ...(slug ? { slug } : {}), skillId, toolId }];
 	});
 	if (!phases.length) return null;
 	return {

@@ -8,6 +8,7 @@ import {
   isCanonicalToolId,
 } from '../../domain/tools/tool-id';
 import { toolLabel } from '../../domain/tools/tool-labels';
+import type { ZohoService } from '../../domain/zoho/zoho-scope';
 
 const FINANCE_TOOL_PRIORITY = ['zohoBooks', 'zohoCrm', 'webSearch'] as const;
 const ACTION_PRIORITY = ['read', 'create', 'update', 'delete', 'send', 'execute'] as const;
@@ -63,18 +64,14 @@ export interface DesktopCapabilityBootstrap {
     readonly actions: readonly string[];
   }[];
   readonly routingHints: readonly string[];
-  readonly zohoConnection?: {
-    readonly accessibleCount: number;
-    readonly connectionId?: string;
-    readonly label?: string;
-    readonly access?: string;
-  };
+  readonly zohoConnections?: readonly DesktopCapabilityConnection[];
 }
 
 export interface DesktopCapabilityConnection {
   readonly connectionId: string;
   readonly label: string;
   readonly access: string;
+  readonly services: readonly ZohoService[];
 }
 
 export function buildDesktopCapabilityBootstrap(input: {
@@ -195,22 +192,15 @@ export function buildDesktopCapabilityBootstrap(input: {
     });
   }
 
-  /**
-   * The skill that declares a tool, which is what makes the tool invocable.
-   *
-   * A routing hint must say which skill to load, never "invoke X directly":
-   * the gateway refuses any tools.invoke whose tool was not registered by a
-   * divo_skill_view load in the same run, so a hint that skips loading sends
-   * the model into a guaranteed refusal.
-   */
+  /** Finds the advisory specialist that explains a governed tool's workflow. */
   const skillForTool = (toolId: string) =>
     input.visibleSkills.find(skill => skill.toolIds.includes(toolId));
 
-  /** Prefixes the mechanics with the load step, or omits them if no skill declares the tool. */
+  /** Recommends the native specialist before mechanics; authorization remains backend-owned. */
   const viaSkill = (toolId: string, route: string, mechanics: string): string | null => {
     const skill = skillForTool(toolId);
     if (!skill) return null;
-    return `${route} -> load ${skill.id} with divo_skill_view, then ${mechanics}`;
+    return `${route} -> follow the native ${skill.slug} recipe, then ${mechanics}`;
   };
 
   const routingHints: string[] = [];
@@ -239,7 +229,7 @@ export function buildDesktopCapabilityBootstrap(input: {
     const menhoodHint = viaSkill(
       'menhoodData',
       'Menhood orders, customers, products, delivered sales, RTO, COD, campaign, or pincode analysis',
-      'invoke menhoodData. Do not use Airtable Records or reuse an Airtable/Python checkpoint.',
+      'use menhoodData for settled analysis. For current/latest or Airtable-only operational fields, follow airtable-router and use the live filtered Airtable path instead.',
     );
     if (menhoodHint) routingHints.push(menhoodHint);
   }
@@ -258,7 +248,6 @@ export function buildDesktopCapabilityBootstrap(input: {
   }
 
   const connections = finance ? input.zohoConnections : undefined;
-  const soleConnection = connections?.length === 1 ? connections[0] : undefined;
 
   return {
     version: 3,
@@ -272,16 +261,7 @@ export function buildDesktopCapabilityBootstrap(input: {
     preferredSkills,
     preferredTools,
     routingHints,
-    ...(connections ? {
-      zohoConnection: {
-        accessibleCount: connections.length,
-        ...(soleConnection ? {
-          connectionId: soleConnection.connectionId,
-          label: soleConnection.label,
-          access: soleConnection.access,
-        } : {}),
-      },
-    } : {}),
+    ...(connections ? { zohoConnections: connections.map(connection => ({ ...connection })) } : {}),
   };
 }
 

@@ -23,6 +23,9 @@ describe('Divo local Python system skill', () => {
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /failed call creates no result file/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /data.*provider\s+result.*Never use `len\(data\)`/is);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Never guess, copy an old\s+ID/is);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /Do not call `tools\.list`/i);
+    assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /never merge stderr into it with `2>&1`/i);
+    assert.doesNotMatch(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /divo-local request --op tools\.list/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /returned == parsed \+ skipped/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /every skip needs a reason/i);
     assert.match(DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown, /divo-local.*owns the.*safe exact retry/is);

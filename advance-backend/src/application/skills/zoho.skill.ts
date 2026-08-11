@@ -10,8 +10,9 @@ import { GOVERNED_LOCAL_AVAILABLE_RUNTIME } from './governed-local-routing';
 const ZOHO_CONNECTION_METHOD = `DIVO-GOVERNED ZOHO CONNECTION:
 - Invoke Zoho only through the matching registered Divo Zoho tool for a direct action. Inside a governed terminal workflow, ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use \`divo-local\` with the source recipe's exact toolId. Never call Zoho directly, use local credentials, or switch to an unavailable tool surface.
 - Do not call connections.list to rediscover an account the backend can select for itself.
+- If the loaded work context shows multiple Zoho accounts, first restrict them to the requested service: CRM or Books. When exactly one account lists that service, omit connectionId or use that exact ID and let backend validation select it. Ask the member only when multiple accounts list the requested service.
 - If Divo returns structured connection choices, ask one short account-choice question using those labels, then retry with the selected exact ID. Never send a label, organisation name, or guessed value as connectionId.
-- If no connection is accessible, tell the member to connect or request access to Zoho.`;
+- If no accessible connection lists the requested service, tell the member that the matching CRM or Books authorization is missing and ask them to reconnect or request access.`;
 
 /**
  * Rules every Zoho write shares. They used to live in `finance-ops-core`, which
@@ -52,7 +53,7 @@ export const zohoCrmReadAnalysisSkill: Skill = {
 
 READ ROUTING:
 - Use zohoCrm read operations for customer, lead, contact, account, deal, case, owner, and relationship context.
-- Use narrow search/list filters before fetching a specific record.
+- Use \`search\` with provider-side criteria for a bounded filtered set. \`list\` does not accept criteria; never scan a whole module and filter locally when Zoho search can answer the request.
 - Keep the pages of a complete CRM artifact in local files rather than model context, and do not claim completeness without reconciling every one of them.
 
 WRITES ARE NOT THIS SKILL:
@@ -75,7 +76,7 @@ READ ROUTING:
 - Bounded lookup or preview, with no requested artifact or destination -> the matching zohoBooks read op with narrow filters.
 - Complete artifact -> use the local Python workflow below, persist every page outside model context, then use the requested destination specialist and reconcile source, written, and read-back counts. A request such as “export all expenses for this date range from this account into a new Google Sheet” is already clear. Do not ask whether to proceed.
 - Exact whole-account or potentially large aggregate with no requested artifact -> ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, load \`divo-python-automation\`, fetch \`page=1\` then each returned \`nextPage\` through the same persistent Python file, and write rows to disk before calculating. Do not pull pages into model context. If page 100 still reports more rows, state that the source cap was reached rather than claiming completeness.
-- In either terminal paging loop, set \`limit=100\` on every page. A chat-preview limit such as 10 or 25 belongs to chat; carrying it into the loop turns one page into forty.
+- In either terminal paging loop, set \`limit=200\` on every page, matching Zoho Books' supported page size. A chat-preview limit such as 10 or 25 belongs to chat; carrying it into the loop multiplies provider calls for no benefit.
 - Zoho Books arguments are top-level. Never wrap them in a Google-style \`input\` object — that is a different tool's shape.
 - When the member gives a bounded date range, pass its exact ISO boundaries as \`dateFrom\` and \`dateTo\` on the first call and every paginated call. Never fetch the whole Zoho account and filter it locally when the provider operation accepts those filters.
 - Never page or transfer with the Zoho \`script\` parameter. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use \`page\`, \`hasMore\`, and \`nextPage\` through \`divo-local\` so each saved response keeps the documented structured page envelope.

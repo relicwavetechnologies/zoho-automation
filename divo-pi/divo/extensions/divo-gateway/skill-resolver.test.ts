@@ -146,10 +146,10 @@ describe("resolveDivoSkills", () => {
 								parent: { id: "google", name: "Google Workspace", description: "parent", instructions: "Compact parent guidance" },
 								connection: { message: "Selection is execution-time." },
 								phases: [
-									{ id: "source", name: "Gmail source", skillId: "gmail-id", toolId: "googleGmail" },
-									{ id: "contact", name: "Google Contacts", skillId: "contacts-id", toolId: "googleContacts" },
-									{ id: "brief", name: "Google Docs", skillId: "docs-id", toolId: "googleDocs" },
-									{ id: "tracker", name: "Google Sheets", skillId: "sheets-id", toolId: "googleSheets" },
+									{ id: "source", name: "Gmail source", slug: "google-gmail", skillId: "gmail-id", toolId: "googleGmail" },
+									{ id: "contact", name: "Google Contacts", slug: "google-contacts", skillId: "contacts-id", toolId: "googleContacts" },
+									{ id: "brief", name: "Google Docs", slug: "google-docs", skillId: "docs-id", toolId: "googleDocs" },
+									{ id: "tracker", name: "Google Sheets", slug: "google-sheets", skillId: "sheets-id", toolId: "googleSheets" },
 								],
 							},
 						},
@@ -160,8 +160,8 @@ describe("resolveDivoSkills", () => {
 
 		assert.deepEqual(requests.map(request => request.op), ["work.resolve"]);
 		assert.match(result.selected?.instructions ?? "", /Compact parent guidance/);
-		assert.match(formatSkillResolveResult(result), /Google Contacts — contacts-id/);
-		assert.match(formatSkillResolveResult(result), /read each matching native phase skill by name/i);
+		assert.match(formatSkillResolveResult(result), /Google Contacts — native skill google-contacts/);
+		assert.match(formatSkillResolveResult(result), /exact Pi available_skills location/i);
 		assert.doesNotMatch(formatSkillResolveResult(result), /load each later exact skill ID/i);
 	});
 

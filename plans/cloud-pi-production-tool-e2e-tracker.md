@@ -118,7 +118,7 @@ Export modes:
 | [~] | `zohoBooks` | Zoho | Bulk | 8,014 expenses + 6,190 invoices paged; final Sheet proof failed |
 | [x] | `webSearch` | Context | Optional | Main parallel web evidence + Sheet delivery passed |
 | [B] | `knowledge` | Knowledge | Artifact | Main reads are blocked by misconfigured approval routing |
-| [~] | `semrush` | Research | Bulk | Main comparison + parallel domain reads + Sheet passed; bulk paging pending |
+| [~] | `semrush` | Research | Bounded artifact | Main comparison + parallel domain reads + Sheet passed; keyword trend pending |
 | [~] | `omsSiteData` | Internal data | Bulk | Main site-profile evidence + Sheet passed; bulk paging pending |
 | [~] | `menhoodData` | Internal data | Bulk | Main parallel analysis + Sheet delivery passed; raw bulk export pending |
 | [-] | `shopifyAnalytics` | Shopify | Bulk | No direct Shopify connection is available on Main |
@@ -355,11 +355,11 @@ counts, duration, and issue IDs. Detailed sensitive evidence stays outside Git.
 ### Research and internal data
 
 #### `semrush`
-- Status: `[~]`; export: `Bulk`
+- Status: `[~]`; export: `Bounded artifact`
 - Core proof: choose one correct operation without avoidable fan-out.
-- Export proof: page/export a large supported report with exact coverage metadata.
-- Evidence: Main ran one three-domain backlinks comparison, one initial overview, and two competitor overviews concurrently, then delivered and verified a formatted five-tab Google Sheet.
-- Issues: Complete multi-page keyword/backlink export and provider-cap reconciliation remain pending.
+- Export proof: persist every row from one supported bounded report through the protected local-file path, then reconcile destination read-back.
+- Evidence: Main ran one three-domain backlinks comparison, one initial overview, and two competitor overviews concurrently, then delivered and verified a formatted five-tab Google Sheet. Development trace `422abb25-0356-4df1-a0a4-d088c2a6dc2c` used one protected local-file call for the complete current `emiactech.com` overview: 25/25 provider rows stayed in a 10.7 KB file; Python derived 3 above-zero and 22 zero-traffic countries and returned only aggregates/top values to context.
+- Issues: `keyword_position_trend` and destination read-back still need real E2E proof. The Sheet attempt stopped correctly because Development has three personal Google owners and no company-owned default. The three registered reports are single bounded provider calls and expose no cursor; individual backlink-row export is intentionally unavailable rather than a fake paging target.
 
 #### `omsSiteData`
 - Status: `[~]`; export: `Bulk`

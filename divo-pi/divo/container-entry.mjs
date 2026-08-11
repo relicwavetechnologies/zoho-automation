@@ -124,15 +124,16 @@ function validateTrustedSession(value) {
 	};
 }
 
-function recordPendingInterruption(
+export function recordPendingInterruption(
 	filePath = process.env.DIVO_INTERRUPTION_PATH ?? DEFAULT_INTERRUPTION_PATH,
+	dataDir = "/data/state/data",
 ) {
 	if (!fs.existsSync(filePath)) return false;
 	const raw = fs.readFileSync(filePath, "utf8");
 	fs.unlinkSync(filePath);
 	const interruption = validateInterruption(JSON.parse(raw));
 	recordInterruptedWorkFact({
-		dataDir: "/data/state/data",
+		dataDir,
 		thread: interruption.thread,
 		task: interruption.task,
 	});
@@ -244,6 +245,10 @@ if (isMain) {
 		? prepareContainerRun().then((result) => {
 			process.stdout.write(`${JSON.stringify(result)}\n`);
 		})
+		: command === "record-interruption"
+			? Promise.resolve(recordPendingInterruption()).then((recorded) => {
+				process.stdout.write(`${JSON.stringify({ recorded })}\n`);
+			})
 		: runContainer();
 	work.catch((error) => {
 		console.error(`[divo-container] ${error.message}`);

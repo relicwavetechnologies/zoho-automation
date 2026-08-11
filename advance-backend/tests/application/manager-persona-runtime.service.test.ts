@@ -29,11 +29,12 @@ describe('manager persona runtime brief', () => {
 
     assert.equal(brief?.version, 'manager-persona:7:2026-07-18T10:00:00.000Z');
     assert.match(brief?.prompt ?? '', /TREE INDEX/);
-    assert.match(brief?.prompt ?? '', /divo_skill_view/);
+    assert.match(brief?.prompt ?? '', /Pi's available_skills/);
+    assert.doesNotMatch(brief?.prompt ?? '', /divo_skill_view|skillId=/);
     assert.match(brief?.prompt ?? '', /scope=reporting.weekly; rule=weekly-report.bullets/);
     assert.match(brief?.prompt ?? '', /cannot override company policy/);
-    assert.match(brief?.prompt ?? '', /linkedSkills=weekly-risk-report \(skillId=skill-weekly-report; revision=3\)/);
-    assert.match(brief?.prompt ?? '', /Do not fuzzy-search for a linked skill/);
+    assert.match(brief?.prompt ?? '', /linkedSkills=weekly-risk-report \(revision=3\)/);
+    assert.match(brief?.prompt ?? '', /do not fuzzy-search for a linked skill/i);
     assert.match(brief?.prompt ?? '', /Use bullet summaries/);
   });
 

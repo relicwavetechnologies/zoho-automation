@@ -205,6 +205,10 @@ another wrapper.
       cards; avoid a second visual vocabulary.
 - [ ] Record invalid-argument retries, tool calls, wall time, and prompt tokens
       against the controlled baselines in `plans/pi-typed-tool-surface.md`.
+      Development Semrush baseline (2026-08-11): 78.8 s, seven model turns,
+      six tools, 58,027 uncached input tokens on turn one, then 58–67k cached
+      context. Provider work was one successful protected-file call; latency is
+      therefore dominated by prompt/model turns, not Semrush or Lark delivery.
 
 Exit gate: zero rejected/filtered intended tools, exact nested schemas for the
 tested operation, truthful error states, and measured improvement over the old

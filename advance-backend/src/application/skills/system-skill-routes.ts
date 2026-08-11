@@ -37,21 +37,19 @@ export const ROUTING_SYSTEM_SKILLS = [
     summary: 'Routes Airtable and synced Menhood data work to the exact specialist.',
     markdown: `# Airtable Router
 
-Choose the exact approved specialist returned by this router.
+Choose the smallest specialist set that proves the requested result.
 
-- Settled Menhood order, customer, product, RTO, COD, campaign, or pincode analysis that needs joins, aggregates, cohorts, broad filtering, or bulk analysis → \`menhood-data\`. This company-managed reporting source needs no Airtable connection ID and does not use local Python.
-- Current/latest Menhood order counts, the current or previous month before reporting maturity, or questions that depend on Airtable-only view fields such as \`Order Status (Team)\`, \`Order Sub Status\`, Duplicate/TEST/Testing cleanup, or Regular Order filtering → \`airtable-core\` against the live Airtable Orders table. Route there immediately; do not first sample the reporting DB and do not ask whether to check Airtable. Use this for exact live reconciliation, not broad historical analysis.
+- Settled Menhood order, customer, product, RTO, COD, campaign, or pincode analysis that needs SQL joins, aggregates, or cohorts → \`menhood-data\`.
+- Current/latest Menhood facts or Airtable-only operational semantics → \`airtable-core\` against the live Orders table. A named product may also need \`menhood-data\` once to resolve its canonical SKU before filtering Airtable.
+- A complete current/live calculation or artifact → the filtered \`airtable-core\` source plus \`divo-python-automation\` and the destination specialist. Keep pages in protected files; never scan the full Orders table before trying server-side filters.
 - Ordinary Airtable records, comments, and CRUD → \`airtable-core\`.
 - Bases, tables, fields, schemas, and views → \`airtable-schema-ops\`.
 - Interfaces, forms, and automations → \`airtable-automation-ops\`.
 
-Airtable MCP is for ordinary record work, schema work, discovery, and bounded
-preview. Do not route broad historical analytics or full exports through
-Airtable MCP pagination; use the company-managed Menhood data source when the
-request is about settled synced Menhood data. Use live Airtable only for narrow
-current/recent Menhood counts or Airtable-view semantics, and say plainly when a
-bounded preview is not enough to prove a total. Otherwise ask for a bounded
-preview or a backend replayable export source.
+Airtable MCP is the one live record contract for previews and protected
+file-backed pages. Prefer server-side filters and selected fields. Use the
+company-managed reporting source for settled SQL analysis, not as a fallback
+after an avoidable full-table Airtable scan.
 
 Airtable and AITable are different products. Never route an AITable request here.
 This router is instruction-only: loading it successfully means to load one specialist above next.`,
@@ -283,6 +281,7 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
     routerSlug: 'airtable-router',
     targetSlugs: [
       MENHOOD_DATA_SYSTEM_SKILL.slug,
+      DIVO_LOCAL_PYTHON_SKILL_SLUG,
       ...CONNECTED_PROVIDER_SYSTEM_SKILLS
         .filter(skill => skill.slug.startsWith('airtable-'))
         .map(skill => skill.slug),

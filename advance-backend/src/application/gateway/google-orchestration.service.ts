@@ -119,6 +119,7 @@ export interface GoogleVendorOnboardingPlan {
   readonly phases: readonly {
     readonly id: string;
     readonly name: string;
+    readonly slug: string;
     readonly skillId: string;
     readonly toolId: string;
     readonly requiredActions: readonly ToolActionGroup[];
@@ -203,6 +204,7 @@ export async function buildGoogleVendorOnboardingPlan(input: {
     return {
       id: phase.key,
       name: phase.name,
+      slug: skill.slug,
       skillId: skill.id,
       toolId: phase.toolId,
       requiredActions: phase.requiredActions,

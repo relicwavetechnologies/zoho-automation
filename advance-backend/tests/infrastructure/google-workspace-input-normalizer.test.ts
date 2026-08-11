@@ -15,6 +15,19 @@ describe('Google Workspace input normalizer', () => {
     );
   });
 
+  it('adapts ordinary Sheet scalars to the pinned MCP string wire format', () => {
+    assert.deepEqual(
+      normalizeGoogleWorkspaceInput('modify_sheet_values', {
+        range_name: 'Sheet1!A1:D1',
+        values: [['name', 42, true, null]],
+      }),
+      {
+        range_name: 'Sheet1!A1:D1',
+        values: [['name', '42', 'true', '']],
+      },
+    );
+  });
+
   it('lets an explicit range_name win so nothing is silently rewritten', () => {
     assert.deepEqual(
       normalizeGoogleWorkspaceInput('read_sheet_values', { range: 'Wrong!A1', range_name: 'Right!A1' }),
@@ -28,6 +41,14 @@ describe('Google Workspace input normalizer', () => {
 
     const noRange = { spreadsheet_id: 's1' };
     assert.equal(normalizeGoogleWorkspaceInput('read_sheet_values', noRange), noRange);
+  });
+
+  it('does not stringify nested Sheet values that the Divo validator rejects', () => {
+    const nested = { source: 'zoho' };
+    const normalized = normalizeGoogleWorkspaceInput('modify_sheet_values', {
+      values: [['Alice', nested]],
+    });
+    assert.equal((normalized['values'] as unknown[][])[0]![1], nested);
   });
 
   it('preserves an explicitly undefined range_name as the caller wrote it', () => {

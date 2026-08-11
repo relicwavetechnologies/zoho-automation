@@ -54,6 +54,16 @@ describe("registerTypedPlatformTools", () => {
 		assert.ok(!CONNECTION_PROVIDERS.includes("google" as never));
 	});
 
+	it("keeps account listing out of ordinary optional-connection calls", () => {
+		const { host: pi, tools } = host();
+		registerTypedPlatformTools(pi, async () => ({ content: [], details: undefined }));
+		const connections = tools.find(tool => tool.name === "divo_connections")!;
+
+		assert.match(connections.description, /user asks|choice is required/i);
+		assert.doesNotMatch(connections.promptSnippet ?? "", /before a governed call/i);
+		assert.match(connections.promptGuidelines?.join(" ") ?? "", /Do not call this merely to fill an optional connectionId/i);
+	});
+
 	it("requires an image path and keeps the optional hints optional", () => {
 		assert.doesNotThrow(() => validate("divo_image_read", DIVO_IMAGE_READ_PARAMS, { filePath: "/tmp/a.png" }));
 		assert.throws(() => validate("divo_image_read", DIVO_IMAGE_READ_PARAMS, {}), /filePath/);

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  publicConnectionChoices,
   selectAccessibleConnection,
 } from '../../src/application/connections/accessible-connection-selection';
 import type { AccessibleConnection } from '../../src/application/connections/connection-registry.port';
@@ -8,12 +9,13 @@ import type { AccessibleConnection } from '../../src/application/connections/con
 function connection(
   connectionId: string,
   access: AccessibleConnection['access'],
+  ownerType: AccessibleConnection['ownerType'] = 'user',
 ): AccessibleConnection {
   return {
     connectionId,
     provider: 'google_workspace',
     label: connectionId,
-    ownerType: 'user',
+    ownerType,
     access,
     scopes: [],
     connectedAt: new Date('2026-01-01T00:00:00Z'),
@@ -42,6 +44,48 @@ describe('provider-neutral accessible connection selection', () => {
         : [],
       ['first', 'second'],
     );
+  });
+
+  it('prefers one company account for an unbound artifact without overriding an explicit choice', () => {
+    const connections = [
+      connection('personal-a', 'admin'),
+      connection('company', 'admin', 'company'),
+      connection('personal-b', 'admin'),
+    ];
+    const automatic = selectAccessibleConnection({
+      connections,
+      minimumAccess: 'read_write',
+      preferredOwnerType: 'company',
+    });
+    assert.equal(automatic.status === 'selected' && automatic.connection.connectionId, 'company');
+
+    const explicit = selectAccessibleConnection({
+      connections,
+      connectionId: 'personal-b',
+      minimumAccess: 'read_write',
+      preferredOwnerType: 'company',
+    });
+    assert.equal(explicit.status === 'selected' && explicit.connection.connectionId, 'personal-b');
+  });
+
+  it('falls back to ordinary choice when no preferred owner is eligible', () => {
+    const result = selectAccessibleConnection({
+      connections: [connection('personal-a', 'admin'), connection('personal-b', 'admin')],
+      minimumAccess: 'read_write',
+      preferredOwnerType: 'company',
+    });
+    assert.equal(result.status, 'choose_connection');
+  });
+
+  it('keeps ownership visible in safe public choices', () => {
+    assert.deepEqual(publicConnectionChoices([
+      connection('company', 'admin', 'company'),
+    ]), [{
+      connectionId: 'company',
+      label: 'company',
+      ownerType: 'company',
+      access: 'admin',
+    }]);
   });
 
   it('never accepts an inaccessible or underprivileged explicit ID', () => {

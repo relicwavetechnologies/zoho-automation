@@ -51,6 +51,17 @@ describe('Zoho Finance system skill provisioning', () => {
     assert.doesNotMatch(specialist.markdown, /_amount_inr|_balance_inr|_currency/);
   });
 
+  it('asks only when the requested Zoho service still has multiple eligible accounts', () => {
+    const specialist = ZOHO_FINANCE_SYSTEM_SKILLS.find(
+      skill => skill.slug === 'zoho-crm-read-analysis',
+    );
+    assert.ok(specialist);
+    assert.match(specialist.markdown, /first restrict them to the requested service/i);
+    assert.match(specialist.markdown, /ask the member only when multiple accounts list the requested service/i);
+    assert.match(specialist.markdown, /use `search` with provider-side criteria/i);
+    assert.match(specialist.markdown, /`list` does not accept criteria/i);
+  });
+
   /*
    * Every specialist embeds the same connection preamble, so one duplicated
    * sentence there is six in the catalogue. This guards the reverse direction

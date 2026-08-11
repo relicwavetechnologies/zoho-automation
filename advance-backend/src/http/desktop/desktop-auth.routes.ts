@@ -32,6 +32,7 @@ import type { ManagerPersonaRuntimeService } from '../../application/persona-lea
 import type { MemoryService } from '../../application/knowledge/semantic-memory.port';
 import { getCanonicalPersonalMemorySnapshot } from '../../application/knowledge/knowledge-resource-query.service';
 import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
+import { zohoServicesForScopes } from '../../domain/zoho/zoho-scope';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
 import { DEFAULT_ALLOWED_MODELS, PROXY_MODEL_SPECS, RUNTIME_MODEL_PREFERENCE } from '../../application/observability/pricing';
@@ -1985,6 +1986,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
                 connectionId: connection.connectionId,
                 label: connection.label,
                 access: connection.access,
+                services: zohoServicesForScopes(connection.scopes),
               })),
             } : {}),
           });

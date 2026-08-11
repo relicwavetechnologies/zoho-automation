@@ -211,10 +211,10 @@ Use this skill for ${product.description.toLowerCase()}
 
 ## Governed execution
 
-1. Call \`divo_connections\` only when the run bootstrap explicitly says Google account discovery is missing; otherwise reuse the account it already returned. If the run bootstrap says no Google account is accessible, loading this skill has not sent a card. Invoke the registered Divo ${product.name} capability exactly once with \`{"op":"describe","nativeTool":"${product.tools[0]}"}\` and no \`connectionId\`. Only a returned \`google_workspace_authorization_pending\` proves the backend sent the Connect Google card. Then end the current run; OAuth completion starts a fresh run automatically. Never invent a Lark operation, claim a card was sent without that tool result, or send the user to a settings page.
+1. Do not call \`divo_connections\` before ordinary Google work. Omit \`connectionId\` unless the member selected an account or the previous Google result returned eligible choices; Divo selects the sole account eligible for the exact action and scopes. If no account is eligible, invoke the registered Divo ${product.name} capability exactly once with \`{"op":"describe","nativeTool":"${product.tools[0]}"}\` and no \`connectionId\`. Only a returned \`google_workspace_authorization_pending\` proves the backend sent the Connect Google card. Then end the current run; OAuth completion starts a fresh run automatically. Never claim a card was sent without that result or send the user to a settings page.
 2. Never choose a model default or rotate through accounts after an error. A text reply is an exact choice only when it uniquely identifies one returned option by number or account email. Never use an email address or label itself as \`connectionId\`.
 3. Use only Divo's governed \`${product.toolId}\` route. For ${GOVERNED_DIRECT_ACTION_CRITERION}, call the runtime's governed wrapper directly. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use one persistent Python file and invoke this same tool through credential-free \`divo-local\` only when the work has ${GOVERNED_LOCAL_WORKFLOW_CRITERION}. Never call Google directly from Bash: no Google CLI, curl, browser automation, direct Google API call, local OAuth token, or credential-bearing SDK. \`divo-local\` is a governed Divo wrapper, not a Google client.
-4. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, and the local-workflow criterion above applies, put the same argument object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. The file holds the argument object alone — a wrapper envelope carrying \`toolId\`, \`args\`, or \`skillId\` is rejected. Keep \`connectionId\` inside that argument object. Never describe through the registered tool and then repeat the describe inside the script.
+4. ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, and the local-workflow criterion above applies, put the same argument object in an adjacent JSON file and call \`divo-local invoke --tool ${product.toolId} --args-file <path>\` from the one persistent Python file. The file holds the argument object alone — a wrapper envelope carrying \`toolId\`, \`args\`, or \`skillId\` is rejected. Include \`connectionId\` only after an explicit account choice. Never describe through the registered tool and then repeat the describe inside the script.
 ${productWorkflow}
 
 ## Reliability and safety
@@ -399,12 +399,20 @@ Read \`read_sheet_values\` from its machine-readable \`values\`, \`rowCount\`,
 \`returnedRowCount\`, \`isEmpty\`, and \`complete\` fields rather than parsing
 prose.
 
-Four corrections the loaded schemas do not prevent: keep Sheet values scalar and
-string-safe before writing, never nest formatting under \`cell_format\`, never
-invent index-based resize fields, and give data validation a sheet-qualified
-range with either \`one_of_list\` values or a \`one_of_range\` source. If no
-loaded native operation can implement a requested feature, report that feature
-partial instead of claiming it was applied.
+For bulk writes, make the value grid rectangular and derive an explicit A1 range
+from the widest row, not the first row. Inspect \`rowCount\` and \`columnCount\`
+once and resize before writing when the header plus data will not fit. Pair a
+custom number-format pattern with its required number-format type. Read-back may
+return displayed numbers with grouping separators; verify numeric equality
+rather than raw string equality. The backend adapts ordinary scalar cells to the
+pinned provider's string wire format; objects and arrays still require deliberate
+serialization.
+
+Never nest formatting under \`cell_format\`, never invent index-based resize
+fields, and give data validation a sheet-qualified range with either
+\`one_of_list\` values or a \`one_of_range\` source. If no loaded native operation
+can implement a requested feature, report that feature partial instead of
+claiming it was applied.
 
 Dropdowns are the one shape the run bootstrap never binds, so it is written out
 here: \`manage_sheet_data_validation\` takes

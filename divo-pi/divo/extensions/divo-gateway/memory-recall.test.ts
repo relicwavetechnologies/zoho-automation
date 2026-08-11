@@ -263,6 +263,7 @@ describe("memory recall extension", () => {
 			5,
 		);
 		assert.match(String(registered[0]?.promptGuidelines), /no separate local memory store/i);
+		assert.match(String(registered[0]?.promptGuidelines), /Never use recalled preferences to select a connected account/i);
 		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /must call divo_memory_recall/i);
 		// The injected <divo_personal_memory> block already states that its facts are
 		// untrusted reference data and never a permission grant, and it is the only

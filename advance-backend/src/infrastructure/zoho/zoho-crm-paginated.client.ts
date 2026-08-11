@@ -2,7 +2,7 @@
  * ZohoCrmPaginatedClient — production-grade Zoho CRM API v6 client.
  *
  * Key features:
- *   - Proper pagination: page-based up to 2,000, then page_token cursor for up to 100K
+ *   - Provider pagination: page-based up to 2,000, then page_token up to 100K
  *   - Deduplication across pages (CRM can return duplicates on page boundaries)
  *   - Criteria-based search with proper 204 (No Content) handling
  *   - All 5 CRM modules: Leads, Contacts, Accounts, Deals, Tasks
@@ -11,7 +11,7 @@
  *
  * Used by:
  *   - ZohoCrmOps (pipeline summary, lead report, deal forecast)
- *   - zoho-crm.tool.ts (script mode, list/export operations)
+ *   - zoho-crm.tool.ts (bounded reads, writes, and terminal-safe pagination)
  */
 
 import type { ZohoTokenService } from './zoho-token.service';
@@ -147,101 +147,54 @@ export class ZohoCrmPaginatedClient {
 
   // ─── Public API ─────────────────────────────────────────────────────────────
 
-  /**
-   * List records from any CRM module with automatic pagination.
-   *
-   * Behaviour:
-   *   - When `page` is specified: fetches that exact page only
-   *   - When `page` is omitted: loops pages until `more_records = false`,
-   *     collecting up to `perPage` deduplicated records
-   *   - Uses page_token for pagination beyond page 10 (2,000 records)
-   */
+  /** Fetch one provider page. The caller persists it before continuing. */
   async listRecords(input: {
     companyId:   string;
     userId?:     string;
     connectionId?: string;
     module:      string;
-    filters?:    Record<string, string>;
     sortBy?:     string;
     sortOrder?:  'asc' | 'desc';
     fields?:     string[];
     page?:       number;
     pageToken?:  string;
     perPage?:    number;
-    maxPages?:   number;
   }): Promise<ZohoCrmListResult> {
     const mod     = normalizeModule(input.module);
     const perPage = Math.max(1, Math.min(200, input.perPage ?? 25));
-    const maxPg   = input.maxPages ?? 10;
-
-    if (input.page !== undefined || input.pageToken !== undefined) {
-      const pg = await this.fetchPage(input.companyId, mod, {
-        ...(input.pageToken !== undefined ? { pageToken: input.pageToken } : { page: input.page! }),
-        perPage,
-        ...(input.sortBy ? { sortBy: input.sortBy } : {}),
-        ...(input.sortOrder ? { sortOrder: input.sortOrder } : {}),
-        ...(input.fields ? { fields: input.fields } : {}),
-      }, input);
-      return {
-        items: pg.items,
-        hasMore: pg.moreRecords,
-        ...(input.page !== undefined ? { page: input.page } : {}),
-        ...(pg.nextPageToken ? { nextPageToken: pg.nextPageToken } : {}),
-      };
-    }
-
-    const collected: Array<Record<string, unknown>> = [];
-    let lastHasMore = false;
-    let pageToken: string | undefined;
-
-    for (let page = 1; page <= maxPg; page++) {
-      const pg = await this.fetchPage(input.companyId, mod, {
-        ...(pageToken ? { pageToken } : { page }),
-        perPage,
-        ...(input.sortBy ? { sortBy: input.sortBy } : {}),
-        ...(input.sortOrder ? { sortOrder: input.sortOrder } : {}),
-        ...(input.fields ? { fields: input.fields } : {}),
-      }, input);
-      collected.push(...pg.items);
-      const deduped = dedupeRecords(collected);
-      lastHasMore = pg.moreRecords;
-      pageToken = pg.nextPageToken;
-
-      if (deduped.length >= perPage || !pg.moreRecords) {
-        return {
-          items: deduped.slice(0, perPage),
-          hasMore: pg.moreRecords,
-          page,
-          ...(pg.nextPageToken ? { nextPageToken: pg.nextPageToken } : {}),
-        };
-      }
-    }
-
+    const page = input.page ?? 1;
+    const pg = await this.fetchPage(input.companyId, mod, {
+      ...(input.pageToken !== undefined ? { pageToken: input.pageToken } : { page }),
+      perPage,
+      ...(input.sortBy ? { sortBy: input.sortBy } : {}),
+      ...(input.sortOrder ? { sortOrder: input.sortOrder } : {}),
+      ...(input.fields ? { fields: input.fields } : {}),
+    }, input);
     return {
-      items: dedupeRecords(collected).slice(0, perPage),
-      hasMore: lastHasMore,
-      page: maxPg,
+      items: pg.items,
+      hasMore: pg.moreRecords,
+      ...(input.pageToken === undefined ? { page } : {}),
+      ...(pg.nextPageToken ? { nextPageToken: pg.nextPageToken } : {}),
     };
   }
 
   /**
    * Exhaust ALL pages for a module — used by CRM ops that need the full dataset.
    * Returns every record across all pages (deduplicated).
-   * Page-based up to 2,000 records, then page_token for up to maxRecords.
+   * Page-based up to 2,000 records, then page_token up to Zoho's 100,000-record limit.
    */
   async listAllRecords(input: {
     companyId:   string;
     userId?:     string;
     connectionId?: string;
     module:      string;
-    filters?:    Record<string, string>;
     sortBy?:     string;
     sortOrder?:  'asc' | 'desc';
     fields?:     string[];
     maxPages?:   number;
   }): Promise<{ items: Array<Record<string, unknown>>; truncated: boolean }> {
     const mod   = normalizeModule(input.module);
-    const maxPg = input.maxPages ?? 50;
+    const maxPg = input.maxPages ?? 500;
     const all:  Array<Record<string, unknown>> = [];
     const seen  = new Set<string>();
     let truncated = false;
@@ -311,10 +264,7 @@ export class ZohoCrmPaginatedClient {
     return { items, hasMore: moreRecords, page };
   }
 
-  /**
-   * Search records by a free-text word. Builds a criteria query that searches
-   * across common name/email fields for the module.
-   */
+  /** Search records with Zoho's native free-text `word` parameter. */
   async searchByText(input: {
     companyId: string;
     userId?:   string;
@@ -322,28 +272,32 @@ export class ZohoCrmPaginatedClient {
     module:    string;
     query:     string;
     perPage?:  number;
+    page?:     number;
   }): Promise<ZohoCrmListResult> {
     const mod = normalizeModule(input.module);
     const q   = input.query.trim();
     if (!q) return { items: [], hasMore: false, page: 1 };
-
-    const searchFields = MODULE_SEARCH_FIELDS[mod] ?? ['Last_Name'];
-    const criteriaOr = searchFields
-      .map(f => `(${f}:contains:${q})`)
-      .join('or');
-
-    try {
-      return await this.searchRecords({
-        companyId: input.companyId,
-        ...(input.userId ? { userId: input.userId } : {}),
-        ...(input.connectionId ? { connectionId: input.connectionId } : {}),
-        module:    mod,
-        criteria:  criteriaOr,
-        ...(input.perPage !== undefined ? { perPage: input.perPage } : {}),
-      });
-    } catch {
-      return { items: [], hasMore: false, page: 1 };
-    }
+    const perPage = Math.max(1, Math.min(200, input.perPage ?? 25));
+    const page = input.page ?? 1;
+    const params = new URLSearchParams({
+      word: q,
+      per_page: String(perPage),
+      page: String(page),
+    });
+    const data = await this.request<Record<string, unknown>>(
+      input.companyId,
+      `/${mod}/search?${params}`,
+      {},
+      input,
+    );
+    if (!data) return { items: [], hasMore: false, page };
+    const items = asArrayOfRecords(data['data']);
+    const info = asRecord(data['info']);
+    return {
+      items,
+      hasMore: asBoolean(info?.['more_records']) ?? false,
+      page,
+    };
   }
 
   /**
@@ -514,14 +468,4 @@ const MODULE_DEFAULT_FIELDS: Record<string, string[]> = {
     'Who_Id', 'What_Id', 'Description',
     'Owner', 'Created_Time', 'Modified_Time',
   ],
-};
-
-// ─── Module search field mapping ──────────────────────────────────────────────
-
-const MODULE_SEARCH_FIELDS: Record<string, string[]> = {
-  Leads:    ['Last_Name', 'First_Name', 'Email', 'Company'],
-  Contacts: ['Last_Name', 'First_Name', 'Email', 'Account_Name'],
-  Accounts: ['Account_Name', 'Website'],
-  Deals:    ['Deal_Name', 'Account_Name'],
-  Tasks:    ['Subject'],
 };

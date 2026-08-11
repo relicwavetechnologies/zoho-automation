@@ -187,7 +187,8 @@ function freshnessNote(
   }
   const settled =
     `Orders exist only through ${freshness.ordersThrough}, and order dates after ${freshness.maturedThrough} are still arriving`
-    + ` — they undercount until roughly ${freshness.maturityDays} days have passed.`;
+    + ` — they undercount until roughly ${freshness.maturityDays} days have passed.`
+    + ` SOURCE FINALITY RULE: if the requested end date is later than ${freshness.maturedThrough}, do not present this number as final; use live Airtable.`;
   return returnedRows === 0
     ? `${settled} No rows here means the window is out of range or not yet populated, never that no orders were placed.`
     : settled;

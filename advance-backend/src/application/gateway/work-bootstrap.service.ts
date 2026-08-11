@@ -64,10 +64,10 @@ export interface WorkBootstrapDeps {
  * still resolves RBAC, connection policy, approval, and rate limits through
  * ToolExecutor.
  *
- * Shared by the desktop gateway and the backend-hosted channels on purpose.
- * When only the gateway built it, a Lark run reached Google Workspace with no
- * accessible account in hand — and the tool schema requires an exact
- * connectionId — so the model could only guess, and guessing always failed.
+ * Shared by the desktop gateway and backend-hosted channels so both see the
+ * same possible accounts. This list is context, not proof that an account is
+ * eligible for a particular action; exact tool execution applies access and
+ * scope policy and safely selects the sole eligible account when possible.
  */
 export class WorkBootstrapService {
   constructor(private readonly deps: WorkBootstrapDeps) {}
@@ -154,7 +154,7 @@ export class WorkBootstrapService {
         advisories.push({
           code: 'connections_loaded',
           level: 'required',
-          instruction: 'Accessible accounts required by this work are already loaded below. Reuse the selected exact connectionId and do not call connections.list again during this run.',
+          instruction: 'Possible accounts for this work are loaded below. Do not call connections.list preemptively. Omit an optional connectionId unless the user selected an account or a tool returned eligible choices; the exact tool enforces action and scope eligibility.',
         });
       }
     }

@@ -29,6 +29,23 @@ describe('Google Workspace MCP product tools', () => {
     assert.equal(sheets.argsSchema.safeParse({ op: 'describe', nativeTool: 'get_values' }).success, false);
   });
 
+  it('lets the governed executor select the sole action-eligible Google account', () => {
+    const sheets = createGoogleWorkspaceMcpTools({ getConnection: async () => null })
+      .find(tool => tool.id === 'googleSheets')!;
+
+    assert.equal(sheets.argsSchema.safeParse({
+      op: 'call',
+      nativeTool: 'create_spreadsheet',
+      input: { title: 'Quarterly review' },
+    }).success, true);
+    assert.equal(sheets.argsSchema.safeParse({
+      op: 'call',
+      nativeTool: 'create_spreadsheet',
+      connectionId: 'not-a-uuid',
+      input: { title: 'Quarterly review' },
+    }).success, false);
+  });
+
   it('publishes the governed resolved-Sheet call in the Pi contract', () => {
     const tools = createGoogleWorkspaceMcpTools({ getConnection: async () => null });
     const sheets = tools.find(tool => tool.id === 'googleSheets')!;
@@ -287,8 +304,45 @@ describe('Google Workspace MCP product tools', () => {
     const result = await sheets.execute(args, makeCtx('googleSheets', ['create']));
     assert.equal(result.ok, true);
     assert.equal(requests[0].minimumAccess, 'read_write');
+    assert.equal(requests[0].preferredOwnerType, 'company');
     assert.deepEqual(requests[0].requiredScopeGroups, GOOGLE_WORKSPACE_PRODUCTS.find((p) => p.toolId === 'googleSheets')!.writeScopeGroups);
     assert.deepEqual(calls, [{ name: 'create_spreadsheet', input: { title: 'Quarterly plan' } }]);
+  });
+
+  it('returns the exact governed reader-share follow-up for a company-owned Sheet', async () => {
+    const connectionId = '11111111-1111-4111-8111-111111111111';
+    const client: GoogleWorkspaceMcpPort = {
+      describeTool: async () => null,
+      callTool: async () => ({ spreadsheetId: 'sheet-1' }),
+    };
+    const sheets = createGoogleWorkspaceMcpTools({
+      getConnection: async () => ({
+        status: 'resolved',
+        connection: { client, connectionId, ownerType: 'company' },
+      }),
+    }).find((tool) => tool.id === 'googleSheets')!;
+
+    const result = await sheets.execute({
+      op: 'call',
+      nativeTool: 'create_spreadsheet',
+      input: { title: 'Company report' },
+    }, makeCtx('googleSheets', ['create'], { requesterEmail: 'member@example.com' }));
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.ok ? result.value.delivery : undefined, {
+      required: true,
+      toolId: 'googleDrive',
+      connectionId,
+      nativeTool: 'manage_drive_access',
+      input: {
+        file_id: 'sheet-1',
+        action: 'grant',
+        share_with: 'member@example.com',
+        role: 'reader',
+        share_type: 'user',
+        send_notification: false,
+      },
+    });
   });
 
   it('passes parent cancellation through connection resolution and MCP execution', async () => {

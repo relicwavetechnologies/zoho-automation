@@ -16,9 +16,8 @@ import {
  * directory is deliberately not in Pi's `trustedSkills`, so it is never
  * discovered or auto-loaded. The capability is reached the same way every
  * other capability is: `files-router` names this skill, Pi reads its SKILL.md,
- * and the markdown names the scripts to run. (`divo_skill_view` used to sit in
- * that chain and was removed with the process-local skill ledger; reading a
- * skill has never been what grants permission.)
+ * and the markdown names the scripts to run. Reading a skill provides workflow
+ * guidance; the backend independently grants and enforces capabilities.
  *
  * Keep the commands here in step with that directory. A script the markdown
  * does not mention is a script the agent has no way to learn about.

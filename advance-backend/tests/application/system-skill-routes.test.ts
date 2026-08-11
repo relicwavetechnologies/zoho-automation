@@ -101,12 +101,13 @@ describe('system skill routes', () => {
     assert.match(airtableCoreSkill.instructions, /Filtering July with pastMonth answers a different question/);
   });
 
-  it('keeps direct Airtable reads bounded while naming trusted local page mode', () => {
-    assert.match(airtableCoreSkill.instructions, /Ordinary direct `op: "call"` record reads return a small preview/);
-    assert.match(airtableCoreSkill.instructions, /`op: "page"`/);
-    assert.match(airtableCoreSkill.instructions, /available only through `divo-local`/);
-    assert.match(airtableCoreSkill.instructions, /follow each returned `nextCursor` until `hasMore=false`/);
+  it('keeps direct Airtable reads bounded while using one native contract for file-backed pages', () => {
+    assert.match(airtableCoreSkill.instructions, /Ordinary direct `op: "call"` record reads return a byte-safe preview/);
+    assert.doesNotMatch(airtableCoreSkill.instructions, /`op: "page"`/);
+    assert.match(airtableCoreSkill.instructions, /exact same native `op: "call"` through `divo-local`/);
+    assert.match(airtableCoreSkill.instructions, /Pass each returned cursor into the next call/);
     assert.match(airtableCoreSkill.instructions, /`metadata\.totalRecordCount`/);
+    assert.match(airtableCoreSkill.instructions, /values under `cellValuesByFieldId`, not `fields`/);
     assert.match(airtableCoreSkill.instructions, /Never derive a distribution, share, percentage, average, minimum, maximum, date range, or sum/);
   });
 
@@ -114,14 +115,15 @@ describe('system skill routes', () => {
     assert.match(airtableCoreSkill.instructions, /A date operand is never a bare date string/);
     assert.match(airtableCoreSkill.instructions, /`timeZone` is always required/);
     assert.match(airtableCoreSkill.instructions, /`pastMonth` is a rolling window ending today, not a calendar month/);
-    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /never a relative window such as `pastMonth` or `thisCalendarMonth`/);
+    assert.match(MENHOOD_DATA_SYSTEM_SKILL.markdown, /never replace a named month with a rolling window/);
   });
 
   it('keeps Semrush and OMS truthful about bounded provider coverage', () => {
     for (const skill of [DIVO_SEMRUSH_SYSTEM_SKILL, DIVO_OMS_SITE_DATA_SYSTEM_SKILL]) {
       assert.doesNotMatch(skill.markdown, /exportCandidate|dataExport|cloudinary/i);
     }
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /continuation as incomplete\s+coverage/s);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /receives every row Semrush returned for that one\s+bounded report/s);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /do not invent\s+pagination/s);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /never paginates and never returns a total count/i);
   });
 

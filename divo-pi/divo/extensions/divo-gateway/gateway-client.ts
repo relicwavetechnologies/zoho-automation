@@ -214,10 +214,10 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 					"Parent execution guidance:",
 					plan.parentInstructions,
 					"",
-					...plan.phases.map((phase, index) => `${index + 1}. ${phase.name} — skillId ${phase.skillId}`),
+					...plan.phases.map((phase, index) => `${index + 1}. ${phase.name} — native skill ${phase.slug ?? phase.name}`),
 					"",
 					plan.connectionMessage,
-					"The first phase recipe is already loaded below. Do not call skills.get for it. Load each later exact skillId immediately before its phase.",
+					"The first phase recipe is already loaded below. For each later phase, read its exact native skill location from Pi's available_skills immediately before executing it. Never turn a database skill ID into a file path.",
 					...(first?.instructions ? ["", `First specialist recipe (${first.name}):`, first.instructions] : []),
 				].join("\n"),
 				isError: false,
@@ -658,7 +658,7 @@ function assertSupportedImageOcrMimeType(mimeType: string): void {
 function readGooglePlan(data: unknown): {
 	parentInstructions: string;
 	connectionMessage: string;
-	phases: Array<{ name: string; skillId: string; instructions?: string }>;
+	phases: Array<{ name: string; slug?: string; skillId: string; instructions?: string }>;
 } | null {
 	const plan = asRecord(data);
 	if (plan?.workflow !== "vendor_onboarding" || !Array.isArray(plan.phases)) return null;
@@ -668,10 +668,11 @@ function readGooglePlan(data: unknown): {
 	const phases = plan.phases.flatMap((phase) => {
 		const record = asRecord(phase);
 		const name = getString(record?.name);
+		const slug = getString(record?.slug);
 		const skillId = getString(record?.skillId);
 		const skill = asRecord(record?.skill);
 		const instructions = getString(skill?.instructions);
-		return name && skillId ? [{ name, skillId, ...(instructions ? { instructions } : {}) }] : [];
+		return name && skillId ? [{ name, ...(slug ? { slug } : {}), skillId, ...(instructions ? { instructions } : {}) }] : [];
 	});
 	if (!phases.length) return null;
 	const connection = asRecord(plan.connection);

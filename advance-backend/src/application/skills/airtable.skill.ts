@@ -12,8 +12,8 @@ type AirtableToolId = 'airtableRecords' | 'airtableSchema' | 'airtableAutomation
  */
 const airtableConnectionMethod = (toolId: AirtableToolId) => `GOVERNED AIRTABLE ACCESS:
 - Reach Airtable only through Divo's registered Airtable tools. This skill's own work goes through \`${toolId}\`; records and comments use \`airtableRecords\`, base shape uses \`airtableSchema\`, and interfaces and automations use \`airtableAutomation\`. Never call Airtable directly and never use a personal access token.
-- A \`call\` needs the exact \`connectionId\` the current run supplied. \`describe\` may omit it to inspect an approved operation schema.
-- If the run supplies several connections, ask one short account-choice question using their labels, then use the selected exact ID. If none is accessible, tell the member to connect Airtable or request access to an existing one.
+- Omit \`connectionId\` unless the member selected an account or the last Airtable result returned eligible choices. Divo selects the sole account eligible for the exact action and scopes.
+- If a result supplies several connections, ask one short account-choice question using their labels, then use the selected exact ID. If none is eligible, report the returned access or connection problem.
 - Never guess a connection, and never pass a base, workspace, or label name where a backend-provided \`connectionId\` belongs.`;
 
 const AIRTABLE_ID_DISCIPLINE = `IDENTIFIER DISCIPLINE:
@@ -21,6 +21,7 @@ const AIRTABLE_ID_DISCIPLINE = `IDENTIFIER DISCIPLINE:
 - Never invent, guess, or reconstruct an ID, and never pass a user-facing name where an ID is required.
 - Resolve IDs first: search_bases or list_bases for a base, list_tables_for_base for tables, list_fields_for_table for the complete field ID/name index of one table, get_table_schema for detailed selected-field schemas, and list_records_for_table or search_records for records.
 - Resolve field IDs with list_fields_for_table before asking get_table_schema for detail. Divo synthesizes list_fields_for_table rather than Airtable serving it, so no contract is ever bound for that one.
+- Direct schema discovery keeps small select lists inline but replaces large choice catalogues with \`choiceCount\` and \`choicesOmittedFromPreview\`. When an exact choice ID is needed from an omitted catalogue, run that same selected-field get_table_schema call through divo-local and search the protected JSON file locally; do not load the catalogue into chat context.
 - Some operations accept a table or field NAME as well as an ID. Table names resolve case-insensitively; field names resolve case-SENSITIVELY. When a name has failed once, resolve the ID and use it.
 - To act on specific records, filter or search for them first and use the returned record IDs. Never assume a record ID from context.`;
 
@@ -66,15 +67,16 @@ DATE WINDOWS:
 - When the member named a specific month, quarter, year, or date range, express it as two exactDate comparisons — \`>=\` the first day and \`<\` the first day of the NEXT period — and never substitute a relative mode. \`pastMonth\` is a rolling window ending today, not a calendar month, and \`thisCalendarMonth\` is the current month, not the one the member named. Filtering July with pastMonth answers a different question and returns a different number.
 - Use the time zone the business keeps its dates in, not UTC. Menhood order dates are Asia/Kolkata.
 
-DIRECT PREVIEWS AND LOCAL PAGE MODE:
-- Ordinary direct \`op: "call"\` record reads return a small preview and never a continuation cursor. Never send \`offset\` or \`cursor\` to a native MCP operation, and never try to walk its preview for a total.
-- Complete unfiltered table reads are available only through \`divo-local\` and its trusted local-file audience: call \`airtableRecords\` with \`op: "page"\`, \`nativeTool: "list_records_for_table"\`, and \`input: { baseId, tableId, fieldIds?, cursor? }\`. Start without \`cursor\`, save the protected result file, then follow each returned \`nextCursor\` until \`hasMore=false\`. This page mode returns 100 raw rows and never puts them in model context.
-- Page mode deliberately has no filter or sort input. For a complete filtered artifact, page the required fields from the table into local files and apply the member's filter and stable ordering in the persistent Python workflow. Do not pretend a direct 10-row preview was the source.
+DIRECT PREVIEWS AND FILE-BACKED READS:
+- Ordinary direct \`op: "call"\` record reads return a byte-safe preview and hide continuation cursors.
+- For a complete artifact or calculation, make the exact same native \`op: "call"\` through \`divo-local\`. Its raw page and cursor are written to a protected local file instead of model context.
+- Filter at Airtable first with the native structured \`filters\`, request only required \`fieldIds\`, and preserve any sort. Pass each returned cursor into the next call and stop only when the provider reports no page remains.
+- Estimate the scope before an unfiltered scan. If it will be materially large or slow, ask the member before starting it.
 - The response still carries \`metadata.totalRecordCount\`, which is the server's exact count of every record matching the filter, not the number of rows previewed. When the member asked how many, that number IS the answer: filter precisely, read totalRecordCount, and report it. Send \`pageSize: 1\` when only the count is wanted.
 - To break a count down by category, run one more filtered read per bucket and read each totalRecordCount. Resolve the buckets from the field's real options, and show the leftover between the buckets and the total rather than dropping it.
 - When \`hasMore\` is true the returned rows are a preview, not a sample. Never derive a distribution, share, percentage, average, minimum, maximum, date range, or sum from them, and never call them representative. Present them as examples or not at all.
-- Sums — units, quantity, amount — cannot be computed from the direct preview. For a complete non-Menhood calculation, use the local page mode and compute over the reconciled local rows. For settled Menhood history, use \`menhood-data\` instead.
-- If a preview says more rows exist, do not treat it as a complete dataset. For settled synced Menhood analytics use \`menhood-data\`; for live/recent Menhood order counts or Airtable-view filters that the sync does not carry, use the live Orders table here and answer from totalRecordCount. For another complete Airtable artifact or calculation, use local page mode rather than widening model context.
+- Sums — units, quantity, amount — cannot be computed from the direct preview. For a complete non-Menhood calculation, use file-backed calls and compute over the reconciled local rows. For settled Menhood history, use \`menhood-data\` instead.
+- If a preview says more rows exist, do not treat it as a complete dataset. For settled synced Menhood analytics use \`menhood-data\`; for live/recent Menhood order counts or Airtable-view filters that the sync does not carry, use the live Orders table here and answer from totalRecordCount. For another complete Airtable artifact or calculation, use file-backed calls rather than widening model context.
 - Do not claim a total the selected route did not actually prove, and say so plainly when a bounded answer stopped early.`;
 
 export const airtableCoreSkill: Skill = {
@@ -97,16 +99,14 @@ ${AIRTABLE_READ_CRAFT}
 ${AIRTABLE_WRITE_SAFETY}
 
 ANALYSIS:
-- Airtable returns raw rows; it does not aggregate. For Menhood settled historical totals, grouping, ratios, cohorts, or cross-table joins, switch to \`menhood-data\` instead of paging Airtable MCP. Exception: use live Airtable for narrow current/recent Menhood order counts and Airtable-view semantics such as \`Order Status (Team)\`, \`Order Sub Status\`, Duplicate/TEST/Testing cleanup, or Regular Order filtering, because the reporting sync cannot represent those filters. When routed here for recent Menhood data or cleanup fields, perform the live read yourself; do not ask whether to check Airtable. If the live read is truncated, say the total is not proven and do not present it as final.
-- For Menhood live order-count reconciliation, first resolve the live base/table/field IDs and select-choice IDs, then filter the Orders table and read \`metadata.totalRecordCount\`. The cleanup shape is the product identity + \`Order Sub Status\` = Regular Order + \`Order Status (Team)\` isNoneOf Duplicate/TEST/Testing, bounded by the member's exact requested dates. A named month is two exactDate comparisons in Asia/Kolkata — for July 2026, \`Order Date\` >= 2026-07-01 and < 2026-08-01 — never \`pastMonth\`.
-- The Orders table is order-line grain. Call what totalRecordCount returns "order lines" or "records", not orders, and do not state distinct order numbers, units, or amount from this lane, because it cannot aggregate them. A status or payment split is allowed only as one filtered count per bucket, never read off the preview rows.
-- For Menhood product identity, filter on the field the member's wording names: a product-name prompt resolves against \`Product Name\`, and \`SKU\` is for when the member gave a SKU or the name maps to exactly one SKU. Resolve the exact select option with get_table_schema and filter on that option ID; never use \`contains\` on free text. For "Trimmer 1.0" take only the exact Trimmer 1.0 product option; do not include charging cable or replacement blade unless the member asks for accessories/replacements too.
-- For non-Menhood Airtable analysis, use direct MCP for a narrow bounded scope. Use the trusted local page mode for a complete artifact or calculation and keep all pages in local files.
-- Each Airtable row arrives with its fields nested. Flatten once when writing the file, then read plain column names; deciding row-by-row whether to reach for row.fields or row.cellValuesByFieldId is where these scripts go wrong.
-- Never estimate a number you did not compute, and never present a partial page as a complete total.
+- Use \`menhood-data\` for settled historical joins, cohorts, and aggregates. Use live Airtable for current/latest Menhood facts and Airtable-only semantics such as Regular Order and Team Duplicate/TEST/Testing.
+- For a named Menhood product, resolve the catalog entry with \`menhood-data\` first and carry its one canonical \`product_sku\` into Airtable's SKU filter. Product Name is a display label with aliases and duplicate choices, so never treat a literal product-name choice as canonical identity. Ask only when the catalog maps the request to multiple distinct SKUs.
+- For an ordinary Menhood product "sales" request, filter the exact date window and canonical SKU, require \`Order Sub Status\` = Regular Order, and exclude \`Order Status (Team)\` Duplicate/TEST/Testing unless the member explicitly asks to include those operational rows.
+- \`metadata.totalRecordCount\` proves matching Airtable records/order lines. Orders require distinct order numbers; units require summing quantity; amount requires summing the selected value field. Compute those over complete protected local-file pages, not a direct preview. Label \`final_amount\` as final-amount/gross order value unless the member defines another meaning.
+- Hosted MCP records carry values under \`cellValuesByFieldId\`, not \`fields\`. Flatten that map once in the local script. Reconcile every complete calculation or artifact against the filtered source count, and never present a partial page as a complete answer.
 
 ARTIFACTS:
-- Never claim a complete Airtable artifact from an ordinary direct preview. Completeness requires local page mode to reach \`hasMore=false\`, followed by source/written/read-back count reconciliation.
+- Never claim a complete Airtable artifact from an ordinary direct preview. Completeness requires file-backed calls to exhaust the provider cursor, followed by source/written/read-back count reconciliation.
 - Use the persistent Python workflow for paging, calculation, transformation, joins, more than one connected product, or related destination writes.
 - Never expose connection IDs, provider IDs, or bulk rows in the final answer.
 

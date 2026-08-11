@@ -27,9 +27,6 @@ for browser automation, curl, or a local API key instead.
 - Where a domain stands overall → \`domain_overview\`.
 - Where a keyword ranked and how it moved → \`keyword_position_trend\`.
 
-Preflight the exact proposed call first. Preflight verifies configuration and
-operation support; it retrieves no data.
-
 Show one main table in chat. You may offer one follow-up, such as "Want domain
 overview detail for any of these?" Add further Semrush calls only after the
 member asks in the same thread.
@@ -98,17 +95,19 @@ rows, so tallying it undercounts a longer run. If a number you want is not in
 
 ## Reporting
 
-The structured preview holds at most 25 rows. Summarize the useful evidence and
-never pull bulk rows through model context. Treat a continuation as incomplete
-coverage: \`partial\` means Semrush has another page, so say that rather than
-presenting the preview as the whole picture. \`empty\` means the request was
-valid and Semrush had no matching coverage. On \`blocked\` or an invocation
-error, say whether configuration, permission, unsupported capability, or
-provider availability stopped the lookup, and never invent the missing data.
+The structured direct preview holds at most 25 rows. For a complete artifact of
+a supported operation, use the native \`divo-python-automation\` workflow: its
+protected local-file call receives every row Semrush returned for that one
+bounded report. These three operations do not expose a cursor, so do not invent
+pagination or repeat the same report to chase more rows. \`empty\` means the
+request was valid and Semrush had no matching coverage. On \`blocked\` or an
+invocation error, say whether configuration, permission, unsupported
+capability, or provider availability stopped the lookup, and never invent the
+missing data.
 
-If the member asks for something outside these three operations — a backlink
-export, for instance — say it is not available through Divo Semrush yet. Never
-substitute one report for another.`,
+If the member asks for a report outside these three operations — individual
+backlink rows, for instance — say it is not available through Divo Semrush yet.
+Never substitute one report for another.`,
   toolIds: ['semrush'],
   tags: ['divo', 'seo', 'semrush', 'organic', 'rankings', 'domain'],
   aliases: ['semrush', 'seo research', 'organic rankings', 'domain overview'],

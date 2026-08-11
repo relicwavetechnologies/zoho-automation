@@ -70,9 +70,8 @@ describe('Semrush system skill', () => {
     assert.ok(DIVO_SEMRUSH_SYSTEM_SKILL.aliases.includes('semrush'));
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /there is nothing to call directly/);
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Never reach\s+for browser automation, curl, or a local API key/s);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /partial/i);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /continuation as incomplete\s+coverage/s);
-    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /never pull bulk rows through model context/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /protected local-file call receives every row/);
+    assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /do not invent\s+pagination/s);
     assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /exportCandidate|dataExport/);
     // Naming a store the tool can no longer reach only tells the model it exists.
     assert.doesNotMatch(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /cloudinary/i);

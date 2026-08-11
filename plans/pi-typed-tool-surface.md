@@ -7,9 +7,8 @@
 > Confidence: **94%**
 >
 > Scope: cloud Pi extension plus one backward-compatible backend discovery
-> payload. No execution, permission, credential, or approval change. Runs beside
-> `pi-native-skills-and-terminal-export-simplification.md` without sharing a
-> file.
+> payload. No execution, permission, credential, or approval change. Remaining
+> runtime proof is tracked in `cloud-pi-runtime-optimization-consistency-and-proof.md`.
 
 ## 1. Target outcome
 

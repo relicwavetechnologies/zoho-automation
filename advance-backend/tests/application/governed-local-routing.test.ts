@@ -68,7 +68,7 @@ describe('governed local-workflow instruction contract', () => {
       assert.doesNotMatch(skill.instructions, /Before every Zoho action, use connections\.list|Divo never auto-selects a Zoho account/);
       assert.doesNotMatch(skill.instructions, /the backend selects an account only when exactly one/);
       assert.match(skill.instructions, /ask one short account-choice question/);
-      assert.match(skill.instructions, /If no connection is accessible, tell the member to connect/);
+      assert.match(skill.instructions, /If no accessible connection lists the requested service/);
       assert.match(skill.instructions, /Do not call connections\.list to rediscover an account/);
     }
   });

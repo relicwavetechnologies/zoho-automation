@@ -65,22 +65,21 @@ describe('Google Workspace system skills', () => {
        */
       assert.doesNotMatch(skill.markdown, /OAuth bearer token|user_google_email/);
       assert.match(skill.markdown, /result advisory.*level: "required"/);
-      assert.match(skill.markdown, /no Google account is accessible/);
-      assert.match(skill.markdown, /loading this skill has not sent a card/);
-      assert.match(skill.markdown, /Invoke the registered Divo .* capability exactly once/);
-      assert.match(skill.markdown, /Call `divo_connections` only when/);
+      assert.match(skill.markdown, /If no account is eligible/);
+      assert.match(skill.markdown, /invoke the registered Divo .* capability exactly once/i);
+      assert.match(skill.markdown, /Do not call `divo_connections` before ordinary Google work/);
+      assert.match(skill.markdown, /Omit `connectionId` unless/);
       assert.doesNotMatch(skill.markdown, /`call_tool`|`divo_gateway`/);
       // One describe, on whichever path the work is running. Doing it through
       // the registered tool and again inside the script pays for it twice.
       assert.match(skill.markdown, /Never describe through the registered tool and then repeat the describe inside the script/);
       assert.match(skill.markdown, /google_workspace_authorization_pending/);
-      assert.match(skill.markdown, /Never invent a Lark operation/);
       assert.doesNotMatch(skill.markdown, /Divo (injects|derives) user_google_email/);
     }
     const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((skill) => skill.slug === 'google-sheets')!;
     assert.match(sheets.markdown, /manage_sheet_data_validation/);
     assert.match(sheets.markdown, /frozen_row_count/);
-    assert.match(sheets.markdown, /Keep `connectionId` inside that argument object/);
+    assert.match(sheets.markdown, /Include `connectionId` only after an explicit account choice/);
     // A write that acknowledges without `updatedRows` must not become a
     // zero-row claim. Matched on the concept, not the sentence.
     assert.match(sheets.markdown, /acknowledgement under `data\.result`/);
@@ -88,6 +87,10 @@ describe('Google Workspace system skills', () => {
     assert.match(sheets.markdown, /missing `updatedRows` field into a zero-row claim/i);
     assert.match(sheets.markdown, /`get_spreadsheet_info` returns machine-readable `spreadsheetId`/);
     assert.match(sheets.markdown, /Never parse or inspect its compatibility prose in\s+`data\.result`/);
+    assert.match(sheets.markdown, /derive an explicit A1 range\s+from the widest row/s);
+    assert.match(sheets.markdown, /resize before writing when the header plus data will not fit/);
+    assert.match(sheets.markdown, /custom number-format pattern with its required number-format type/);
+    assert.match(sheets.markdown, /displayed numbers with grouping separators/);
     assert(sheets.aliases.includes('dropdown'));
     assert(sheets.aliases.includes('google sheet url'));
     assert(sheets.aliases.includes('drive.google.com/file'));
@@ -154,7 +157,7 @@ describe('Google Workspace system skills', () => {
     assert.doesNotMatch(sheets.markdown, /"column_sizes":|"nativeTool":"format_sheet_range"/);
     assert.match(sheets.markdown, /"action":"set","ranges":\["Sheet1!D2:D100"\]/);
     assert.match(sheets.markdown, /never nest formatting under `cell_format`/i);
-    assert.match(sheets.markdown, /report that feature\s+partial instead of claiming it was applied/s);
+    assert.match(sheets.markdown, /report that feature partial instead of\s+claiming it was applied/s);
     assert.match(sheets.markdown, /failed,\s+rate-limited, incomplete, or missing read-back cannot be replaced/s);
   });
 

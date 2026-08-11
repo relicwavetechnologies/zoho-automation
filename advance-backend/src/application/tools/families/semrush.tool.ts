@@ -12,9 +12,7 @@ import { summarizeSemrushDomainOverview } from '../../semrush/semrush-domain-ins
 import { summarizeSemrushBacklinks } from '../../semrush/semrush-backlinks-insights';
 import { SemrushServiceError, SemrushToolArgsSchema, type SemrushFetchedData, type SemrushToolArgs } from '../../semrush/semrush.types';
 import type { ApiKeyExhaustionNotifierPort } from '../../governance/api-key-exhaustion.notifier';
-import { createDatasetPreview, DATASET_PREVIEW_ROW_LIMIT, type DatasetCoverage } from '../../provider-data/dataset-preview';
-
-const MAX_TASK_ROWS = 1_000;
+import { createDatasetPreview, type DatasetCoverage } from '../../provider-data/dataset-preview';
 
 const ResultSchema = z.object({
   status: z.enum(['complete', 'empty', 'partial', 'blocked']),
@@ -23,7 +21,7 @@ const ResultSchema = z.object({
   coverage: z.record(z.unknown()),
   preview: z.object({
     columns: z.array(z.string()),
-    rows: z.array(z.record(z.unknown())).max(DATASET_PREVIEW_ROW_LIMIT),
+    rows: z.array(z.record(z.unknown())),
     coverage: z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('complete'), totalRows: z.number().int().nonnegative() }),
       z.object({
@@ -99,6 +97,7 @@ export const createSemrushTool = (deps: {
     'domain_overview: { domain, database? }. Rank, organic/paid keywords, traffic and cost for every country database Semrush holds the domain in — one row per country, the requested database first, the rest by organic traffic. Answers "traffic by country" from a single request; read the first row for one country.',
     'backlinks_comparison: { targets[1–10] }. Authority score, total backlinks and referring domains per target in one web request. If Semrush has no report for a requested target, coverage.missingTargets names it as no provider data rather than zero.',
     'keyword_position_trend: { domain, keyword, date, database?, dateType? }. One domain and one keyword, returned as a dated series of positions around the requested date — not a single row. Use for rank on a date and for how that rank moved; not for full keyword lists.',
+    'Each supported operation is one bounded provider report, not a pageable dataset. Direct calls return at most 25 preview rows; a protected local-file call returns every row Semrush returned for that report.',
     'Divo rejects arbitrary Semrush endpoints, headers, cookies, export columns, and API keys. Do not claim an unavailable operation has run.',
   ].join('\n'),
   permissionCheck(_args: SemrushToolArgs, perm: PermissionResult) {
@@ -107,7 +106,7 @@ export const createSemrushTool = (deps: {
       ? ok('read' as ToolActionGroup)
       : err(new PermissionError({ toolId: 'semrush', action: 'read', reason: 'not_allowed' }));
   },
-  async preflight(args: SemrushToolArgs, ctx: ToolExecutionContext): Promise<Result<Record<string, unknown>, ToolError>> {
+  async preflight(args: SemrushToolArgs): Promise<Result<Record<string, unknown>, ToolError>> {
     try {
       return ok(await deps.service.preflight(args));
     } catch (error) {
@@ -119,11 +118,15 @@ export const createSemrushTool = (deps: {
     try {
       ctx.onProgress?.('Retrieving Semrush data…');
       const data = await deps.service.execute(args);
-      const allRows = data.rows.slice(0, MAX_TASK_ROWS);
-      const preview = createDatasetPreview({
-        rows: allRows,
-        coverage: previewCoverageFor(data, allRows.length),
-      });
+      const allRows = data.rows;
+      const sourceCoverage = previewCoverageFor(data, allRows.length);
+      const preview = ctx.resultAudience === 'local_file'
+        ? {
+            columns: Array.from(new Set(allRows.flatMap(row => Object.keys(row)))),
+            rows: allRows,
+            coverage: sourceCoverage,
+          }
+        : createDatasetPreview({ rows: allRows, coverage: sourceCoverage });
       const insights = resultInsights(allRows);
       const result: Res = {
         status: data.status,

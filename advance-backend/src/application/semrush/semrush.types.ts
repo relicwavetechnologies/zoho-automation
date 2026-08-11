@@ -97,16 +97,3 @@ export class SemrushServiceError extends Error {
     this.name = 'SemrushServiceError';
   }
 }
-
-export function semrushPreflightLimits(args: SemrushToolArgs): Record<string, number> {
-  switch (args.operation) {
-    case 'domain_overview':
-      return { maxRowsPerRequest: 200 };
-    case 'backlinks_comparison':
-      return { maxTargets: 10, requestsBilled: 1 };
-    case 'keyword_position_trend':
-      // Semrush answers with a dated series it sizes itself, so no row cap is
-      // claimed here. What the request is bounded by is one domain, one keyword.
-      return { maxDomains: 1, maxKeywords: 1 };
-  }
-}

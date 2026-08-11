@@ -101,15 +101,14 @@ describe("Divo normal-session routing policy", () => {
 
 	it("treats Airtable as an exact governed connection family", () => {
 		assert.equal(Check(DIVO_CONNECTIONS_PARAMS, { provider: "airtable" }), true);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /airtable for Airtable/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /never omit provider/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /google_workspace, zoho, canva, airtable, lark, or shopify/i);
 		assert.match(ROUTER_SKILL, /airtable.*for Airtable/i);
 		assert.match(ROUTER_SKILL, /never omit `provider`/i);
 	});
 
 	it("treats Shopify as an exact governed connection family", () => {
 		assert.equal(Check(DIVO_CONNECTIONS_PARAMS, { provider: "shopify" }), true);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /shopify for Shopify/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /google_workspace, zoho, canva, airtable, lark, or shopify/i);
 	});
 
 	it("uses one persistent local Python file and never routes through the retired inline-code tool", () => {
@@ -175,6 +174,12 @@ describe("Divo normal-session routing policy", () => {
 		assert.doesNotMatch(JSON.stringify(DIVO_CONNECTIONS_PARAMS), /google\.plan/);
 	});
 
+	it("does not pre-list accounts for tools with backend-owned eligible selection", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /When connectionId is optional, omit it/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Never call divo_connections merely to fill an optional field/i);
+		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /mandatory even when only one account/i);
+	});
+
 	it("keeps Lark outcomes in chat while local artifact delivery is disabled", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /complete user-facing outcome in Lark chat/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Do not create a local artifact/i);
@@ -231,7 +236,8 @@ describe("divo-local prompt tracks the runtime flag", () => {
 
 	it("names the replacement route instead of leaving a hole", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /aggregates server-side/i);
-		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /backend export pipeline/i);
+		assert.doesNotMatch(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /backend export pipeline|dataExport/i);
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /large local processing is unavailable/i);
 		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, new RegExp(DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION));
 		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, new RegExp(DIVO_GOVERNED_DIRECT_ACTION_CRITERION));
 	});

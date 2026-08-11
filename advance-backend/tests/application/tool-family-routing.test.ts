@@ -46,12 +46,13 @@ describe('canonical family routing metadata', () => {
     }
   });
 
-  it('does not tell backend channels to omit a required Airtable connection ID', () => {
+  it('lets backend channels omit Airtable connection ID when one account is eligible', () => {
     const [tool] = createAirtableMcpTools({
       getConnection: async () => ({ status: 'unavailable' }),
     });
 
-    assert.match(tool!.parameterDocs, /connectionId: required for call/);
-    assert.doesNotMatch(tool!.parameterDocs, /backend selects only one eligible account/);
+    assert.match(tool!.parameterDocs, /connectionId: optional unless the user selected an account/);
+    assert.match(tool!.parameterDocs, /Divo selects the only account eligible/);
+    assert.match(tool!.parameterDocs, /never send identity, token, or API-key fields/i);
   });
 });

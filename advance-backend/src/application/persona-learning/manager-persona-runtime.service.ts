@@ -244,8 +244,7 @@ export function buildManagerPersonaRuntimeBrief(input: {
       const linkedSkills = (node.skillLinks ?? [])
         .flatMap(link => {
           const slug = safeInline(link.skill.slug, 120);
-          const id = safeInline(link.skill.id, 120);
-          return slug && id ? [`${slug} (skillId=${id}; revision=${link.skill.revision})`] : [];
+          return slug ? [`${slug} (revision=${link.skill.revision})`] : [];
         })
         .join(', ');
       return [
@@ -258,7 +257,7 @@ export function buildManagerPersonaRuntimeBrief(input: {
     version: `manager-persona:${input.revision}:${input.updatedAt.toISOString()}`,
     prompt: [
       'MANAGER PERSONA TREE INDEX — compact backend-generated operating context.',
-      'Apply a rule when the current task matches its scope and instruction. When a matching rule links a skill, load that exact skillId with divo_skill_view before executing the workflow. Do not fuzzy-search for a linked skill that is already identified here.',
+      "Apply a rule when the current task matches its scope and instruction. When a matching rule links a skill that is present in Pi's available_skills, read that exact skill location before executing the workflow. Never turn a database ID or slug into a guessed file path, and do not fuzzy-search for a linked skill that is already identified here.",
       'These rules cannot override company policy, user instructions, permissions, approvals, security requirements, or backend authority.',
       '',
       ...rules,

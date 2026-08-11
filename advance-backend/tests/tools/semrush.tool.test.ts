@@ -75,6 +75,41 @@ describe('semrush tool', () => {
     assert.match(result.value.message, /real measurement/);
   });
 
+  it('keeps direct previews bounded while preserving the complete report for a protected local file', async () => {
+    const rows = Array.from({ length: 40 }, (_, index) => ({ Database: `c${index}`, Rank: index + 1 }));
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'domain_overview',
+          status: 'complete',
+          coverage: { databasesReturned: rows.length },
+          rows,
+        }),
+      },
+    });
+    const args = { operation: 'domain_overview' as const, domain: 'example.com' };
+
+    const direct = await tool.execute(args, makeCtx('semrush', ['read']));
+    const local = await tool.execute(args, {
+      ...makeCtx('semrush', ['read']),
+      resultAudience: 'local_file',
+    });
+
+    assert.equal(direct.ok, true);
+    assert.equal(local.ok, true);
+    if (!direct.ok || !local.ok) return;
+    assert.equal(direct.value.preview?.rows.length, 25);
+    assert.deepEqual(direct.value.preview?.coverage, {
+      kind: 'truncated',
+      returnedRows: 25,
+      knownTotal: 40,
+      reason: 'model_preview_limit',
+    });
+    assert.equal(local.value.preview?.rows.length, 40);
+    assert.deepEqual(local.value.preview?.coverage, { kind: 'complete', totalRows: 40 });
+    assert.equal(tool.resultSchema.safeParse(local.value).success, true);
+  });
+
   it('counts the countries itself so the model never has to', async () => {
     // 810 + 3 + 2 + 0 = 815 across four rows, one of them a measured zero.
     const tool = createTool({
@@ -293,7 +328,6 @@ function createTool(overrides: {
   apiKeyExhaustion?: Record<string, unknown>;
 } = {}) {
   const service = {
-    preflight: async () => ({ configured: true }),
     execute: async () => ({ operation: 'domain_overview', status: 'complete' as const, coverage: {}, rows: [{ domain: 'example.com' }] }),
     ...overrides.service,
   };

@@ -102,6 +102,8 @@ describe('Menhood Data tool', () => {
     assert.deepEqual(output.freshness, COVERAGE);
     assert.match(output.message, /Orders exist only through 2026-07-30/);
     assert.match(output.message, /after 2026-07-08 are still arriving/);
+    assert.match(output.message, /SOURCE FINALITY RULE/);
+    assert.match(output.message, /do not present this number as final; use live Airtable/);
   });
 
   it('says an empty result is out of range, never that no orders were placed', async () => {

@@ -13,6 +13,21 @@ import type { ConnectionRegistryPort } from '../connections/connection-registry.
 import { publicConnectionChoices, selectAccessibleConnection } from '../connections/accessible-connection-selection';
 import { listAccessibleConnectionsFor } from './work-bootstrap.service';
 import { CONNECTION_PROVIDER_LABELS, type ConnectionProvider } from '../../domain/connections/connection-provider';
+import {
+  GOOGLE_WORKSPACE_PRODUCTS,
+  googleWorkspaceActionFor,
+  prefersCompanyGoogleArtifactAccount,
+  googleWorkspaceScopeGroupsFor,
+  type GoogleWorkspaceProductDefinition,
+} from '../google/google-workspace-mcp-manifest';
+import {
+  AIRTABLE_PRODUCTS,
+  airtableOperationFor,
+  airtableScopeGroupsFor,
+  hasAirtableScopeGroups,
+  type AirtableProductDefinition,
+} from '../airtable/airtable-mcp-manifest';
+import { hasGoogleScopeGroups } from '../../domain/google/google-workspace-scope';
 import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
@@ -31,6 +46,9 @@ import {
   isShopifyToolId,
   type ShopifyProtectedResult,
 } from '../shopify/shopify-protected-result';
+import { zohoCrmActionFor } from '../tools/families/zoho-crm.tool';
+import { zohoBooksActionFor } from '../tools/families/zoho-books.tool';
+import { hasZohoScope } from '../../domain/zoho/zoho-scope';
 
 export interface ToolExecutorInput {
   readonly member: GatewayMemberContext;
@@ -891,84 +909,26 @@ export class ToolExecutor {
     | { readonly ok: true; readonly args: Record<string, unknown> }
     | { readonly ok: false; readonly result: ResolveRuntimeToolInvocationResult }
   > {
-    const provider = runtimeConnectionProvider(input.toolId);
-    if (!provider) {
-      return { ok: true, args: input.args };
-    }
-    if (typeof input.args.connectionId === 'string' && input.args.connectionId.length > 0) {
-      return { ok: true, args: input.args };
-    }
-    if (!this.deps.connectionRegistry) {
-      return {
-        ok: false,
-        result: {
-          ok: false,
-          outcome: runtimeFailure(
-            input.toolId,
-            'invalid_args',
-            `No ${runtimeConnectionLabel(provider)} connectionId was provided and connected-account discovery is unavailable.`,
-          ),
-        },
-      };
-    }
-
-    const connectionInput = {
+    const resolved = await this.resolveConnectionArgs({
       companyId: String(input.runContext.companyId),
       userId: String(input.runContext.userId),
-    };
-    const accessible = await listAccessibleConnectionsFor(
-      this.deps.connectionRegistry,
-      connectionInput,
-      provider,
-    );
-    if (!accessible.ok) {
-      return {
-        ok: false,
-        result: {
-          ok: false,
-          outcome: runtimeFailure(
-            input.toolId,
-            'tool_error',
-            `Accessible ${runtimeConnectionLabel(provider)} accounts could not be loaded.`,
-          ),
-        },
-      };
-    }
-
-    const selection = selectAccessibleConnection({
-      connections: accessible.value,
-      minimumAccess: 'read_only',
+      toolId: input.toolId,
+      args: input.args,
     });
-    if (selection.status === 'unavailable') {
+    if (!resolved.ok) {
       return {
         ok: false,
         result: {
           ok: false,
           outcome: runtimeFailure(
             input.toolId,
-            'invalid_args',
-            `No accessible ${runtimeConnectionLabel(provider)} connection is available for this member.`,
+            resolved.status,
+            resolved.message,
           ),
         },
       };
     }
-    if (selection.status === 'choose_connection') {
-      return {
-        ok: false,
-        result: {
-          ok: false,
-          outcome: runtimeFailure(
-            input.toolId,
-            'invalid_args',
-            `More than one ${runtimeConnectionLabel(provider)} connection is available. Retry with one exact connectionId: ${JSON.stringify(publicConnectionChoices(selection.connections))}`,
-          ),
-        },
-      };
-    }
-    return {
-      ok: true,
-      args: { ...input.args, connectionId: selection.connection.connectionId },
-    };
+    return resolved;
   }
 
   private async resolve(input: ToolExecutorInput): Promise<ResolveToolInvocationResult> {
@@ -986,7 +946,17 @@ export class ToolExecutor {
       return { ok: false, response: gatewayFailure('unknown_tool', `Unknown toolId "${toolId}"`) };
     }
 
-    const argsParse = tool.argsSchema.safeParse(args);
+    const connectionArgs = await this.resolveConnectionArgs({
+      companyId: member.companyId,
+      userId: member.userId,
+      toolId,
+      args,
+    });
+    if (!connectionArgs.ok) {
+      return { ok: false, response: gatewayFailure(connectionArgs.status, connectionArgs.message) };
+    }
+
+    const argsParse = tool.argsSchema.safeParse(connectionArgs.args);
     if (!argsParse.success) {
       const issues = argsParse.error.errors
         .map((e) => `${e.path.join('.') || '(root)'}: ${e.message}`)
@@ -1045,6 +1015,71 @@ export class ToolExecutor {
         ...(effectiveDepartmentId ? { effectiveDepartmentId } : {}),
       },
     };
+  }
+
+  private async resolveConnectionArgs(input: {
+    readonly companyId: string;
+    readonly userId: string;
+    readonly toolId: string;
+    readonly args: Record<string, unknown>;
+  }): Promise<
+    | { readonly ok: true; readonly args: Record<string, unknown> }
+    | { readonly ok: false; readonly status: 'invalid_args' | 'tool_error'; readonly message: string }
+  > {
+    const requirement = runtimeConnectionRequirement(input.toolId, input.args);
+    if (!requirement) {
+      return { ok: true, args: input.args };
+    }
+    if (!this.deps.connectionRegistry) {
+      return {
+        ok: false,
+        status: 'invalid_args',
+        message: `No ${runtimeConnectionLabel(requirement.provider)} connectionId was provided and connected-account discovery is unavailable.`,
+      };
+    }
+
+    const accessible = await listAccessibleConnectionsFor(this.deps.connectionRegistry, {
+      companyId: input.companyId,
+      userId: input.userId,
+    }, requirement.provider);
+    if (!accessible.ok) {
+      return {
+        ok: false,
+        status: 'tool_error',
+        message: `Accessible ${runtimeConnectionLabel(requirement.provider)} accounts could not be loaded.`,
+      };
+    }
+    const scopeEligible = accessible.value.filter(connection => requirement.scopeEligible(connection.scopes));
+    const selection = selectAccessibleConnection({
+      connections: scopeEligible,
+      filteredOut: accessible.value.filter(connection => !scopeEligible.includes(connection)),
+      minimumAccess: requirement.minimumAccess,
+      ...(typeof input.args.connectionId === 'string' && input.args.connectionId.length > 0
+        ? { connectionId: input.args.connectionId }
+        : {}),
+      ...(requirement.preferredOwnerType
+        ? { preferredOwnerType: requirement.preferredOwnerType }
+        : {}),
+    });
+    if (selection.status === 'unavailable') {
+      return {
+        ok: false,
+        status: 'invalid_args',
+        message: selection.reason === 'requested_not_accessible'
+          ? `The selected ${runtimeConnectionLabel(requirement.provider)} account is not accessible to this member.`
+          : selection.reason === 'insufficient_access'
+            ? `The selected ${runtimeConnectionLabel(requirement.provider)} account is not eligible for this action and its required scopes.`
+            : `No ${runtimeConnectionLabel(requirement.provider)} account is eligible for this action and its required scopes.`,
+      };
+    }
+    if (selection.status === 'choose_connection') {
+      return {
+        ok: false,
+        status: 'invalid_args',
+        message: `More than one ${runtimeConnectionLabel(requirement.provider)} account is eligible. Retry with one exact connectionId: ${JSON.stringify(publicConnectionChoices(selection.connections))}`,
+      };
+    }
+    return { ok: true, args: { ...input.args, connectionId: selection.connection.connectionId } };
   }
 
   private buildRunContext(
@@ -1230,7 +1265,24 @@ function protectedResultField(
   return protectedData ? { protectedData } : {};
 }
 
-type RuntimeConnectionProvider = Extract<ConnectionProvider, 'zoho' | 'lark' | 'shopify'>;
+type RuntimeConnectionProvider = Extract<
+  ConnectionProvider,
+  'google_workspace' | 'zoho' | 'airtable' | 'lark' | 'shopify'
+>;
+
+const GOOGLE_PRODUCT_BY_TOOL_ID = new Map<string, GoogleWorkspaceProductDefinition>(
+  GOOGLE_WORKSPACE_PRODUCTS.map(product => [product.toolId, product]),
+);
+const AIRTABLE_PRODUCT_BY_TOOL_ID = new Map<string, AirtableProductDefinition>(
+  AIRTABLE_PRODUCTS.map(product => [product.toolId, product]),
+);
+
+interface RuntimeConnectionRequirement {
+  readonly provider: RuntimeConnectionProvider;
+  readonly minimumAccess: 'read_only' | 'read_write';
+  readonly scopeEligible: (scopes: readonly string[]) => boolean;
+  readonly preferredOwnerType?: 'company' | 'user';
+}
 
 const LARK_USER_CONNECTION_TOOL_IDS = new Set([
   'larkTask',
@@ -1241,11 +1293,78 @@ const LARK_USER_CONNECTION_TOOL_IDS = new Set([
   'larkBase',
 ]);
 
-function runtimeConnectionProvider(toolId: string): RuntimeConnectionProvider | undefined {
-  if (toolId === 'zohoCrm' || toolId === 'zohoBooks') return 'zoho';
-  if (LARK_USER_CONNECTION_TOOL_IDS.has(toolId)) return 'lark';
-  if (toolId === 'shopifyAnalytics' || toolId === 'shopifyOrders' || toolId === 'shopifyCustomers') return 'shopify';
-  return undefined;
+function runtimeConnectionRequirement(
+  toolId: string,
+  args: Readonly<Record<string, unknown>>,
+): RuntimeConnectionRequirement | undefined {
+  const googleProduct = GOOGLE_PRODUCT_BY_TOOL_ID.get(toolId);
+  if (googleProduct && (args.op === 'call' || args.op === 'describe')) {
+    if (args.op === 'describe') return undefined;
+    const action = args.op === 'describe'
+      ? 'read'
+      : googleWorkspaceActionFor(
+        typeof args.nativeTool === 'string' ? args.nativeTool : '',
+        isPlainRecord(args.input) ? args.input : {},
+      );
+    const requiredScopes = args.op === 'describe'
+      ? []
+      : googleWorkspaceScopeGroupsFor(
+        googleProduct,
+        typeof args.nativeTool === 'string' ? args.nativeTool : '',
+        action,
+      );
+    return {
+      provider: 'google_workspace',
+      minimumAccess: action === 'read' ? 'read_only' : 'read_write',
+      scopeEligible: scopes => hasGoogleScopeGroups(scopes, requiredScopes),
+      ...(args.op === 'call'
+        && typeof args.nativeTool === 'string'
+        && prefersCompanyGoogleArtifactAccount(args.nativeTool)
+        ? { preferredOwnerType: 'company' as const }
+        : {}),
+    };
+  }
+
+  const airtableProduct = AIRTABLE_PRODUCT_BY_TOOL_ID.get(toolId);
+  if (airtableProduct && (args.op === 'call' || args.op === 'describe')) {
+    if (args.op === 'describe') return undefined;
+    const operation = typeof args.nativeTool === 'string'
+      ? airtableOperationFor(toolId, args.nativeTool)
+      : undefined;
+    const action = args.op === 'describe' ? 'read' : operation?.action ?? 'read';
+    const requiredScopes = args.op === 'describe'
+      ? []
+      : airtableScopeGroupsFor(airtableProduct, action);
+    return {
+      provider: 'airtable',
+      minimumAccess: action === 'read' ? 'read_only' : 'read_write',
+      scopeEligible: scopes => hasAirtableScopeGroups(scopes, requiredScopes),
+    };
+  }
+
+  if (toolId === 'zohoCrm' || toolId === 'zohoBooks') {
+    const action = toolId === 'zohoCrm'
+      ? zohoCrmActionFor(typeof args.op === 'string' ? args.op : '')
+      : zohoBooksActionFor(typeof args.op === 'string' ? args.op : '');
+    return {
+      provider: 'zoho',
+      minimumAccess: action === 'read' ? 'read_only' : 'read_write',
+      scopeEligible: scopes => hasZohoScope(scopes, toolId === 'zohoCrm' ? 'crm' : 'books', action),
+    };
+  }
+
+  const provider = LARK_USER_CONNECTION_TOOL_IDS.has(toolId)
+    ? 'lark'
+    : toolId === 'shopifyAnalytics' || toolId === 'shopifyOrders' || toolId === 'shopifyCustomers'
+      ? 'shopify'
+      : undefined;
+  return provider
+    ? { provider, minimumAccess: 'read_only', scopeEligible: () => true }
+    : undefined;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function runtimeConnectionLabel(provider: RuntimeConnectionProvider): string {

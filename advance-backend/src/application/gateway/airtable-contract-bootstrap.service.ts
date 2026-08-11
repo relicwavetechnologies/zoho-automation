@@ -1,4 +1,7 @@
-import type { ResolveAirtableMcpConnection } from '../tools/families/airtable-mcp.tool';
+import {
+  AIRTABLE_RECORD_READ_MAX_ROWS,
+  type ResolveAirtableMcpConnection,
+} from '../tools/families/airtable-mcp.tool';
 import type {
   WorkContractBootstrapPort,
   WorkContractBootstrapResult,
@@ -98,15 +101,42 @@ export class AirtableContractBootstrapService implements WorkContractBootstrapPo
         unavailableNativeTools.push(item.nativeTool);
         continue;
       }
+      const boundedDescription = contractDescription(description.name, description.description);
       contracts.push({
         toolId: item.toolId,
         nativeTool: description.name,
-        ...(description.description ? { description: description.description } : {}),
-        inputSchema: description.inputSchema,
+        ...(boundedDescription ? { description: boundedDescription } : {}),
+        inputSchema: boundedRecordReadSchema(description.name, description.inputSchema),
       });
     }
     return { contracts, unavailableNativeTools };
   }
+}
+
+function contractDescription(nativeTool: string, description?: string): string | undefined {
+  if (!['list_records_for_table', 'search_records'].includes(nativeTool)) return description;
+  return [
+    description,
+    'Divo returns record values under records[].cellValuesByFieldId, the exact filtered count at metadata.totalRecordCount, and continuation at nextCursor when present. Direct calls are previews; use the same call through divo-local for protected file pages.',
+  ].filter(Boolean).join(' ');
+}
+
+function boundedRecordReadSchema(nativeTool: string, schema: unknown): unknown {
+  const limitKey = nativeTool === 'list_records_for_table'
+    ? 'pageSize'
+    : nativeTool === 'search_records'
+      ? 'limit'
+      : null;
+  if (!limitKey || !isRecord(schema) || !isRecord(schema['properties'])) return schema;
+  const limit = schema['properties'][limitKey];
+  if (!isRecord(limit)) return schema;
+  return {
+    ...schema,
+    properties: {
+      ...schema['properties'],
+      [limitKey]: { ...limit, maximum: AIRTABLE_RECORD_READ_MAX_ROWS },
+    },
+  };
 }
 
 /**
@@ -137,4 +167,8 @@ export function suggestedAirtableNativeTools(
 
 function containsAny(value: string, needles: readonly string[]): boolean {
   return needles.some(needle => value.includes(needle));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

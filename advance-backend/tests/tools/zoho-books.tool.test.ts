@@ -11,7 +11,6 @@ import { mapZohoError } from '../../src/application/zoho/zoho-error.utils.ts';
 import { formatAmount, formatDate } from '../../src/application/zoho/zoho-format.utils.ts';
 import { normalizeStatus, parseDateFilter } from '../../src/application/zoho/zoho-filter.utils.ts';
 import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
-import { arrayToCsv } from '../../src/application/tools/shared/sandbox-runner.ts';
 import {
   ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE,
   ZOHO_BOOKS_ROW_CONTRACT,
@@ -187,7 +186,7 @@ describe('zohoBooks expanded execution', () => {
     assert.match(tool.parameterDocs, /page \(1-100\)/);
   });
 
-  it('returns 100-row pages only to the trusted local-file audience', async () => {
+  it('returns 200-row pages only to the trusted local-file audience', async () => {
     const captures: { listInput?: any } = {};
     const booksClient = {
       ...makeBooksClient(captures),
@@ -195,7 +194,7 @@ describe('zohoBooks expanded execution', () => {
         captures.listInput = input;
         return {
           organizationId: 'org-1',
-          items: Array.from({ length: 100 }, (_, index) => ({
+          items: Array.from({ length: 200 }, (_, index) => ({
             expense_id: `exp-${index + 1}`,
             total: String(index + 1),
             currency_code: 'INR',
@@ -209,15 +208,15 @@ describe('zohoBooks expanded execution', () => {
     const tool = makeTool({ booksClient });
 
     const localResult = await tool.execute(
-      { op: 'list_expenses', page: 1, limit: 100 },
+      { op: 'list_expenses', page: 1, limit: 200 },
       { ...ctx, resultAudience: 'local_file' },
     );
     assert.equal(localResult.ok, true);
-    assert.equal(captures.listInput.perPage, 100);
-    assert.equal(localResult.ok && localResult.value.preview?.rows.length, 100);
+    assert.equal(captures.listInput.perPage, 200);
+    assert.equal(localResult.ok && localResult.value.preview?.rows.length, 200);
 
     const chatResult = await tool.execute(
-      { op: 'list_expenses', page: 1, limit: 100 },
+      { op: 'list_expenses', page: 1, limit: 200 },
       ctx,
     );
     assert.equal(chatResult.ok, true);
@@ -225,8 +224,8 @@ describe('zohoBooks expanded execution', () => {
     assert.equal(chatResult.ok && chatResult.value.preview?.rows.length, 25);
   });
 
-  it('preserves 0, 1, 10, 100, and multi-page terminal fixtures without gaps', async () => {
-    for (const totalRows of [0, 1, 10, 100, 210]) {
+  it('preserves 0, 1, 10, 100, 200, and multi-page terminal fixtures without gaps', async () => {
+    for (const totalRows of [0, 1, 10, 100, 200, 410]) {
       const source = Array.from({ length: totalRows }, (_, index) => ({
         expense_id: `exp-${String(index + 1).padStart(3, '0')}`,
         total: String(index + 1),
@@ -261,7 +260,7 @@ describe('zohoBooks expanded execution', () => {
             dateFrom: '2026-04-01',
             dateTo: '2026-07-31',
             page,
-            limit: 100,
+            limit: 200,
           }, { ...ctx, resultAudience: 'local_file' });
           assert.equal(result.ok, true);
           if (!result.ok) throw result.error;
@@ -277,10 +276,10 @@ describe('zohoBooks expanded execution', () => {
       });
 
       assert.equal(proof.rows.length, totalRows);
-      assert.deepEqual(calls.map(call => call.perPage), Array(calls.length).fill(100));
+      assert.deepEqual(calls.map(call => call.perPage), Array(calls.length).fill(200));
       assert.deepEqual(calls.map(call => call.filters?.['date_start']), Array(calls.length).fill('2026-04-01'));
       assert.deepEqual(calls.map(call => call.filters?.['date_end']), Array(calls.length).fill('2026-07-31'));
-      if (totalRows === 210) assert.deepEqual(proof.pageSizes, [100, 100, 10]);
+      if (totalRows === 410) assert.deepEqual(proof.pageSizes, [200, 200, 10]);
     }
   });
 
@@ -584,7 +583,7 @@ describe('zohoBooks expanded execution', () => {
     const tool = makeTool();
     assert.match(tool.description, /Do not call this registered Pi tool for a preview first/i);
     assert.match(tool.description, /begin the local workflow and call Zoho through divo-local/i);
-    assert.match(tool.description, /Script mode is not an export or transfer contract/i);
+    assert.doesNotMatch(`${tool.description}\n${tool.parameterDocs}`, /script mode|scriptArgs|4,000-record/i);
   });
 
   /*
@@ -601,14 +600,8 @@ describe('zohoBooks expanded execution', () => {
     assert.match(tool.parameterDocs, /never produce an original-currency breakdown from UNKNOWN rows/);
     assert.match(tool.parameterDocs, /list_items gives item_id and rate/);
     assert.match(tool.parameterDocs, /never guess a tax rate or tax id/);
-    /*
-     * The normalized fields are on every list row. Nested under SCRIPT MODE
-     * they read as script-only, so deleting the skill's copy would have left
-     * `_balance_inr` looking unavailable to an ordinary list read.
-     */
     const rowFields = tool.parameterDocs.indexOf('ROW FIELDS');
-    const scriptMode = tool.parameterDocs.indexOf('SCRIPT MODE');
-    assert.ok(rowFields > 0 && rowFields < scriptMode);
+    assert.ok(rowFields > 0);
     assert.ok(tool.parameterDocs.includes(ZOHO_BOOKS_ROW_CONTRACT));
     assert.ok(tool.parameterDocs.includes(ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE));
   });
@@ -638,47 +631,9 @@ describe('zohoBooks expanded execution', () => {
     assertOpEnumMatchesDocs(makeTool());
   });
 
-  it('bounds script results inline', async () => {
-    const booksClient = {
-      listAllRecords: async () => ({
-        organizationId: 'org-1',
-        items: Array.from({ length: 30 }, (_, i) => ({
-          invoice_id: `inv-${i}`,
-          invoice_number: `INV-${i}`,
-          customer_name: `Customer ${i}`,
-          total: i + 1,
-          currency_code: 'INR',
-        })),
-        truncated: false,
-      }),
-    } as unknown as ZohoBooksPaginatedClient;
-    const tool = createZohoBooksTool({
-      booksClient,
-      financeOps: fakeFinanceOps as ZohoFinanceOps,
-    });
-
-    const result = await tool.execute({
-      op: 'list_invoices',
-      script: 'return data',
-    }, ctx);
-
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.equal((result.value.data as unknown[]).length, 10);
-    assert.match(result.value.message ?? '', /Showing first 10 inline/i);
-    assert.equal(result.value.csvLink, undefined);
-  });
 });
 
 describe('Zoho utility functions', () => {
-  it('neutralizes spreadsheet formulas in script-generated CSV cells', () => {
-    const csv = arrayToCsv(
-      ['invoice_id', 'customer_name', 'total', 'status'],
-      [{ invoice_id: '=cmd()', customer_name: '+SUM(A1)', total: '-10', status: '@paid' }],
-    ).toString('utf8');
-    assert.match(csv, /'=cmd\(\),'\+SUM\(A1\),'-10,'@paid/);
-  });
-
   it('formats amounts and dates for display', () => {
     assert.equal(formatAmount(123.45, 'USD'), '$123.45');
     assert.equal(formatAmount(7670, 'INR'), '₹7,670.00');
