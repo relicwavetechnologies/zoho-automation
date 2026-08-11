@@ -77,6 +77,9 @@ describe('system skill routes', () => {
     assert.match(router.markdown, /Current\/live answer: use `menhood-data` only to resolve a named product's\s+canonical SKU/s);
     assert.match(router.markdown, /Current\/live export or Google Sheet: load `airtable-core`,\s+`divo-python-automation`, and `google-sheets`/s);
     assert.match(router.markdown, /Page the filtered live\s+Airtable source in one local workflow, write the governed Sheet destination,\s+and read it back/s);
+    assert.match(router.markdown, /sale totals include customer-requested add-on rows/);
+    assert.match(router.markdown, /Add New Item or Added New Item along with Regular\s+Order/);
+    assert.match(router.markdown, /reship\/RSP delivered variants/);
     assert.match(router.markdown, /Do not load `create-edit-files` for Lark or Google Sheets delivery/);
     assert.doesNotMatch(router.markdown, /secure-data-export/);
   });

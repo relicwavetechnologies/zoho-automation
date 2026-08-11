@@ -58,7 +58,13 @@ Menhood live/export lifecycle:
    \`divo-python-automation\`, and \`google-sheets\`. Page the filtered live
    Airtable source in one local workflow, write the governed Sheet destination,
    and read it back before saying the export is complete.
-5. Do not load \`create-edit-files\` for Lark or Google Sheets delivery; local
+5. Live Menhood sale totals include customer-requested add-on rows such as
+   \`Order Sub Status\` = Add New Item or Added New Item along with Regular
+   Order. Do not say "Regular Order only" unless the member explicitly asks for
+   that sub-status.
+   Delivered revenue includes reship/RSP delivered variants; do not filter only
+   exact DELIVERED when Airtable has a delivered reship row.
+6. Do not load \`create-edit-files\` for Lark or Google Sheets delivery; local
    files are only for Jan desktop file deliverables. Never use the retired
    export tool, candidate, or offer flow.
 

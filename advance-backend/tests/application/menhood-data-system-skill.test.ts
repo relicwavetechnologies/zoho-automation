@@ -44,6 +44,11 @@ describe('Menhood data system skill', () => {
     assert.match(markdown, /`airtable-core`, `divo-python-automation`, and `google-sheets`/);
     assert.match(markdown, /Do not load `create-edit-files` for a Lark or Google Sheets delivery/);
     assert.match(markdown, /retired export tool, candidate, or offer flow/);
+    assert.match(markdown, /sale totals include customer-requested add-on rows/);
+    assert.match(markdown, /`Order Sub Status` = Add New Item or Added New Item along with Regular Order/);
+    assert.match(markdown, /Do not say "Regular Order only"/);
+    assert.match(markdown, /delivered after reshipment/);
+    assert.match(markdown, /order numbers ending in RSP/);
   });
 
   it('keeps durable metric, join, freshness, and privacy invariants without snapshot trivia', () => {
@@ -84,6 +89,9 @@ describe('Menhood data system skill', () => {
     assert.match(router!.markdown, /Current\/latest Menhood facts or Airtable-only operational semantics/);
     assert.match(router!.markdown, /resolve its canonical SKU/);
     assert.match(router!.markdown, /complete current\/live calculation or artifact/);
+    assert.match(router!.markdown, /sale totals include customer-requested add-on rows/);
+    assert.match(router!.markdown, /Add New Item or Added New Item along with Regular\s+Order/);
+    assert.match(router!.markdown, /reship\/RSP delivered variants/);
     assert.match(router!.markdown, /never scan the full Orders table before trying server-side filters/);
     assert.match(router!.markdown, /Ordinary Airtable records, comments, and CRUD/);
     assert.match(router!.markdown, /Interfaces, forms, and automations/);
