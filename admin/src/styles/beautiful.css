@@ -1,0 +1,284 @@
+/*
+  Chat surface token bridge.
+
+  The `/chat` primitives are ported from the Beautiful UI component set, which
+  ships its own `--ink / --surface / --line` palette. **None of those values
+  are used here.** Every token below is an alias onto a `--cur-*` token that
+  `cursor.css` already defines, so the chat surface is not themed at all — it
+  inherits the workspace's theme in both light and dark, and re-skinning the
+  admin re-skins the chat for free.
+
+  Three wrong turns on the way here, all worth recording because each looked
+  reasonable at the time.
+
+  Copying the library's greys in verbatim made the chat a cool-grey island
+  inside the admin — the same product in two colour temperatures depending on
+  the route.
+
+  Rebuilding those greys by hand was worse: hand-picked warm greys read as
+  brown at 12px, and with Cursor Orange promoted to a general accent, every
+  chip, dot and chart line picked up a tint until the surface looked sepia.
+
+  Aliasing onto the shadcn tokens in `global.css` looked like the fix and was
+  not. Those are the WARM set, kept for pages that were never designed. The
+  workspace runs on `--cur-*`, which `cursor.css` deliberately makes true
+  neutral grey — "so the one warm thing on screen is the brand". Pointing at
+  `--background` put a brown chat surface next to a `#0d0d0d` sidebar.
+
+  So: the scale is the library's — three ink weights and two hairlines, finer
+  than the shadcn set, which is what a dense trace needs. Every value is the
+  workspace's.
+
+  One rule on top: orange is the brand and it stays scarce. It is not the
+  accent here. Nothing in the chat surface is orange, because on this screen
+  every step, chip and dot would qualify and none of them are the brand.
+*/
+
+.cur {
+  /* Surfaces — the workspace's own planes, canvas → soft → surface. */
+  --bui-page: var(--cur-canvas);
+  --bui-canvas: var(--cur-canvas);
+  --bui-surface: var(--cur-surface);
+  --bui-inset: var(--cur-canvas-soft);
+  --bui-hover: var(--cur-canvas-soft);
+  --bui-hover-2: var(--cur-surface-strong);
+  --bui-field: var(--cur-surface-strong);
+
+  /* Ink. The app already defines four weights; the trace uses three of them,
+     so nothing here is a colour someone picked for this screen. */
+  --bui-ink: var(--cur-ink);
+  --bui-ink-2: var(--cur-body);
+  --bui-ink-3: var(--cur-muted);
+
+  --bui-line: var(--cur-hairline);
+  --bui-line-strong: var(--cur-hairline-strong);
+
+  /* Semantic, straight off the app's tokens. */
+  --bui-green: var(--cur-success);
+  --bui-red: var(--cur-error);
+  /* Warnings borrow the timeline's amber. It is the one warm token in the set
+     that is not the brand, which is exactly what a "look at this" dot wants. */
+  --bui-orange: var(--cur-tl-done);
+
+  /* The accent is ink, not the brand — see the note above. */
+  --bui-accent-tint: var(--cur-surface-strong);
+  --bui-accent-ink: var(--cur-ink);
+
+  /* Tooltips invert onto the app's CTA ink. */
+  --bui-tip-bg: var(--cur-cta);
+  --bui-tip-fg: var(--cur-on-cta);
+  --bui-tip-muted: var(--cur-muted-soft);
+
+  /* Depth is hairline-first, like the rest of the workspace: a ring, plus at
+     most a hint of lift.
+
+     `--cur-shadow-card` cannot be composed into these directly. It is `none`
+     in dark, and `none` inside a comma-separated `box-shadow` list makes the
+     WHOLE declaration invalid — which silently deleted every card ring on the
+     chat surface in dark mode. `--bui-lift` carries the same intent through a
+     value that is always a legal shadow. */
+  --bui-lift: 0 1px 2px rgb(38 37 30 / 0.045);
+  --bui-shadow-hairline: 0 0 0 1px var(--bui-line);
+  --bui-shadow-btn: 0 0 0 1px var(--bui-line-strong), var(--bui-lift);
+  --bui-shadow-card: 0 0 0 1px var(--bui-line), var(--bui-lift);
+  --bui-shadow-raised: 0 0 0 1px var(--bui-line-strong), var(--bui-lift);
+  --bui-shadow-overlay: 0 0 0 1px var(--bui-line-strong), var(--shadow-elevated);
+}
+
+/* The one value dark has to restate. In dark the workspace separates planes by
+   value rather than by shadow (`--cur-shadow-card: none`), so the lift goes
+   away — but as a transparent shadow, which keeps the rings above valid. */
+.dark .cur {
+  --bui-lift: 0 0 transparent;
+}
+
+/* Everything else resolves through a `--cur-*` variable that `cursor.css`
+   already flips under `.dark .cur`, so dark mode follows the app with nothing
+   to keep in sync.
+
+   Scoped to `.cur` rather than `:root` for the same reason: the `--cur-*`
+   values only exist inside it, and the chat surface always renders there. */
+
+/* ── Motion ───────────────────────────────────────────────
+   The chat surface says "I am working" with movement, not with a spinner
+   parked in the corner. These are the only keyframes it needs. */
+
+@keyframes bui-shimmer-text {
+  0% { background-position: 150%; }
+  100% { background-position: -50%; }
+}
+
+@keyframes bui-pixel-on {
+  0%, 100% { opacity: 0.15; }
+  18%, 42% { opacity: 1; }
+  62% { opacity: 0.15; }
+}
+
+@keyframes bui-fade-up {
+  0% { opacity: 0; transform: translateY(8px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes bui-fade-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+@keyframes bui-pop-in {
+  0% { opacity: 0; transform: scale(0.95); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+@keyframes bui-stream-in {
+  0% { opacity: 0; filter: blur(4px); }
+  100% { opacity: 1; filter: blur(0); }
+}
+
+@keyframes bui-spin {
+  100% { transform: rotate(1turn); }
+}
+
+@keyframes bui-grow-y {
+  0% { transform: scaleY(0); }
+  100% { transform: scaleY(1); }
+}
+
+/* The pixel loader. Written here rather than as Tailwind arbitrary values:
+   `grid-cols-[repeat(3,4px)]` and `gap-[1.5px]` do not survive the v3 JIT, and
+   what came out was a 3×3 of dots spread across forty pixels instead of a 14px
+   mark. Fixed sizes, one rule, no ambiguity. */
+.bui-pixels {
+  display: grid;
+  grid-template-columns: repeat(3, 3px);
+  gap: 1.5px;
+  flex-shrink: 0;
+}
+
+.bui-pixels i {
+  width: 3px;
+  height: 3px;
+  border-radius: 1px;
+  background: var(--bui-ink);
+  opacity: 0.15;
+  animation: bui-pixel-on 650ms ease-in-out infinite;
+}
+
+/* The composer's focus belongs to the box, not the field inside it. `.cur
+   :focus-visible` puts a grey outline on everything focused, which inside an
+   already-bordered composer draws a second rectangle and reads as broken. The
+   wrapper still shifts its border and shadow on `focus-within`, so a keyboard
+   user sees focus — it is drawn once rather than twice. */
+.bui-scope textarea:focus,
+.bui-scope textarea:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+/* The shimmering label. A gradient clipped to the glyphs, swept left — the
+   text itself reads as live rather than needing a spinner beside it. */
+.bui-shimmer {
+  background-image: linear-gradient(90deg, var(--bui-ink-3) 35%, var(--bui-ink) 50%, var(--bui-ink-3) 65%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: bui-shimmer-text 1.4s linear infinite;
+}
+
+/* Reduced motion keeps every state legible — the grid freezes dim, labels
+   stop sweeping, rows appear rather than rise. Nothing disappears. */
+@media (prefers-reduced-motion: reduce) {
+  .bui-shimmer {
+    animation: none;
+    background: none;
+    -webkit-background-clip: initial;
+    background-clip: initial;
+    color: var(--bui-ink-2);
+  }
+
+  .bui-scope *,
+  .bui-scope *::before,
+  .bui-scope *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ── Scope ────────────────────────────────────────────────
+   Everything under `.bui-scope` opts into the trace's typographic defaults:
+   14px base and tight tracking. The font stack and numeric features are the
+   app's, inherited — not restated. */
+.bui-scope {
+  color: var(--bui-ink);
+  font-size: 14px;
+  line-height: 1.5;
+  letter-spacing: -0.01em;
+}
+
+/* Brand marks are drawn with fills, but `global.css` sets a global
+   `svg { stroke-width: 2 }` for lucide. Vendor logos opt back out so their
+   traced paths keep their real weight. */
+.bui-mark svg,
+svg.bui-mark {
+  stroke-width: 0;
+}
+
+/* ── Chart chrome ─────────────────────────────────────────
+   The charts are hand-drawn SVG rather than a charting dependency, so their
+   only shared furniture is the hover cursor and the tooltip. */
+.bui-chart-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 22px;
+  width: 1px;
+  background: var(--bui-line-strong);
+  pointer-events: none;
+  transform: translateX(-0.5px);
+}
+
+.bui-chart-tip {
+  position: absolute;
+  top: 8px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 2;
+  min-width: 118px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--bui-tip-bg);
+  color: var(--bui-tip-fg);
+  box-shadow: var(--bui-shadow-overlay);
+  animation: bui-fade-in 120ms ease-out both;
+}
+
+.bui-chart-tip-time {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 10.5px;
+  color: var(--bui-tip-muted);
+}
+
+.bui-chart-tip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.bui-chart-tip-row strong {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.bui-chart-tip-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 5px;
+  border-radius: 999px;
+  vertical-align: middle;
+}
+

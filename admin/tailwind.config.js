@@ -15,7 +15,20 @@ export default {
   		borderRadius: {
   			lg: 'var(--radius)',
   			md: 'calc(var(--radius) - 2px)',
-  			sm: 'calc(var(--radius) - 4px)'
+  			sm: 'calc(var(--radius) - 4px)',
+  			/* chat surface: chip → control → card. Derived from the same
+  			   `--radius` as everything else, so the trace's corners match the
+  			   app's rather than being three more numbers to keep in step. */
+  			chip: 'calc(var(--radius) - 6px)',
+  			control: 'calc(var(--radius) - 4px)',
+  			card: 'calc(var(--radius) - 2px)'
+  		},
+  		boxShadow: {
+  			hairline: 'var(--bui-shadow-hairline)',
+  			btn: 'var(--bui-shadow-btn)',
+  			card: 'var(--bui-shadow-card)',
+  			raised: 'var(--bui-shadow-raised)',
+  			overlay: 'var(--bui-shadow-overlay)'
   		},
   		colors: {
   			background: 'hsl(var(--background))',
@@ -81,6 +94,29 @@ export default {
   				read: 'hsl(var(--tl-read))',
   				edit: 'hsl(var(--tl-edit))',
   				done: 'hsl(var(--tl-done))'
+  			},
+  			/* Chat-surface neutrals (see styles/beautiful.css). A finer scale
+  			   than the shadcn tokens: three ink weights and two hairlines, which
+  			   is what the trace/tool rows need to stay quiet. Semantic colour
+  			   still comes from the shadcn tokens above — `text-success`,
+  			   `text-destructive`, `text-primary` — so there is one green. */
+  			ink: {
+  				DEFAULT: 'var(--bui-ink)',
+  				2: 'var(--bui-ink-2)',
+  				3: 'var(--bui-ink-3)'
+  			},
+  			surface: 'var(--bui-surface)',
+  			inset: 'var(--bui-inset)',
+  			field: 'var(--bui-field)',
+  			canvas: 'var(--bui-canvas)',
+  			page: 'var(--bui-page)',
+  			line: {
+  				DEFAULT: 'var(--bui-line)',
+  				strong: 'var(--bui-line-strong)'
+  			},
+  			fill: {
+  				DEFAULT: 'var(--bui-hover)',
+  				strong: 'var(--bui-hover-2)'
   			},
   			sidebar: {
   				DEFAULT: 'hsl(var(--sidebar-background))',

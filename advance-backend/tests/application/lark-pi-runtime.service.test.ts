@@ -21,6 +21,9 @@ const runEffectReceipts = {
 function runtimeInput() {
   return {
     incoming: {
+      // The surface this turn arrived on. The lease carries it into the
+      // container, so a fixture without it is a run nobody could present.
+      channel: 'lark',
       traceId: 'trace-1',
       text: 'Do the work',
       chatId: 'chat-1',
@@ -1382,7 +1385,7 @@ test('a long message keeps its whole ask and gives up shared context instead', a
 
   await service.run({
     ...runtimeInput(),
-    incoming: { traceId: 'trace-1', text: ask },
+    incoming: { ...runtimeInput().incoming, text: ask },
     sharedContext: block('B'.repeat(30_000)),
   } as any);
 
@@ -1402,7 +1405,7 @@ test('an ask that alone fills the body is sent without shared context, not refus
 
   await service.run({
     ...runtimeInput(),
-    incoming: { traceId: 'trace-1', text: ask },
+    incoming: { ...runtimeInput().incoming, text: ask },
     sharedContext: block('room transcript'),
   } as any);
 
@@ -1454,7 +1457,7 @@ test('shared context lost to the body limit is logged, not silently dropped', as
 
   await service.run({
     ...runtimeInput(),
-    incoming: { traceId: 'trace-1', text: 'A'.repeat(60_000) },
+    incoming: { ...runtimeInput().incoming, text: 'A'.repeat(60_000) },
     sharedContext: block('B'.repeat(20_000)),
   } as any);
 
@@ -1654,4 +1657,71 @@ test('a run survives an unwritable origin, losing only the Connect card', async 
   });
 
   assert.equal((await service.run(larkIngressInput())).text, 'Finished');
+});
+
+// A web run holds a real signed-in session but has no Lark open id, and the
+// identity guard used to run before the named-session branch — so it answered
+// "Your Divo cloud session is not active" to somebody demonstrably signed in.
+test('a caller that names its session needs no Lark identity to find it', async () => {
+  let sessionQuery: Record<string, unknown> | undefined;
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async (query: Record<string, unknown>) => {
+          sessionQuery = query;
+          return { sessionId: 'session-web', expiresAt: new Date(Date.now() + 2 * 60 * 60_000) };
+        },
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317/',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: async () => new Response(JSON.stringify({ text: 'Finished' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  const base = runtimeInput();
+  const result = await service.run({
+    ...base,
+    sessionId: 'session-web',
+    incoming: { ...base.incoming, channel: 'web' },
+    runContext: {
+      companyId: 'company-1',
+      userId: 'user-1',
+      companyRole: 'MEMBER',
+      channel: 'web',
+    },
+  } as any);
+
+  assert.equal(result.text, 'Finished');
+  const where = sessionQuery?.['where'] as Record<string, unknown>;
+  assert.equal(where['sessionId'], 'session-web');
+  // Looked up by the session the caller is holding, pinned to this member —
+  // never by a Lark tenant/open-id pair a web caller does not have.
+  assert.equal('larkOpenId' in where, false);
+  assert.equal('larkTenantKey' in where, false);
+});
+
+// The lease is what carries the surface into the container, where the
+// presentation policy is built from it.
+test('a web run leases the web surface, not Lark', async () => {
+  let body: Record<string, unknown> | undefined;
+  const service = serviceCapturingBody(value => { body = value; });
+  const base = runtimeInput();
+
+  await service.run({
+    ...base,
+    sessionId: 'session-1',
+    incoming: { ...base.incoming, channel: 'web' },
+  } as any);
+
+  const lease = String(body?.['runtimeLease']);
+  const claims = JSON.parse(Buffer.from(lease.split('.')[1]!, 'base64url').toString('utf8'));
+  assert.equal(claims.channel, 'web');
 });

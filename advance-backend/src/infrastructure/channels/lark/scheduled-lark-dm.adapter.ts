@@ -10,7 +10,7 @@ import { ChannelError } from '../../../shared/errors';
 import { asMessageId } from '../../../shared/ids';
 import type { Logger } from '../../../shared/logger';
 import { err, ok, type Result } from '../../../shared/result';
-import { planFinalCards } from './lark-card.builder';
+import { planFinalCards, runTranscript } from './lark-card.builder';
 
 export interface ScheduledLarkDmClient {
   sendCardToOpenId(openId: string, cardContent: string): Promise<{ messageId: string }>;
@@ -63,11 +63,12 @@ export class ScheduledLarkDmChannelAdapter implements ChannelAdapter {
   ): Promise<Result<ReplyHandle, ChannelError>> {
     try {
       let firstMessageId = '';
+      const traceMarkdown = reply.ledger?.length ? runTranscript(reply.ledger) : undefined;
       for (const segment of planFinalCards({
         markdown: reply.text,
         ...(reply.branding ? { branding: reply.branding } : {}),
         ...(reply.actions ? { actions: reply.actions } : {}),
-        ...(reply.executionTrace ? { executionTrace: reply.executionTrace } : {}),
+        ...(traceMarkdown ? { executionTrace: traceMarkdown } : {}),
       })) {
         const sent = await this.deps.client.sendCardToOpenId(
           String(conversation.chatId),

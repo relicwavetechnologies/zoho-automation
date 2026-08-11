@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { TOOL_FAMILY_IDS } from '../../domain/tools/tool-id';
 import { CONNECTION_PROVIDER_IDS } from '../../domain/connections/connection-provider';
+import type { ChannelKey } from '../../domain/channel/incoming-message';
 
 export const GATEWAY_OPS = [
   'capabilities.get',
@@ -273,7 +274,7 @@ export interface GatewayMemberContext {
   readonly companyId: string;
   readonly userId: string;
   readonly aiRole: string;
-  readonly channel?: 'desktop' | 'lark';
+  readonly channel?: ChannelKey;
   readonly email: string | null;
   readonly larkOpenId: string | null;
   readonly larkTenantKey?: string | null;

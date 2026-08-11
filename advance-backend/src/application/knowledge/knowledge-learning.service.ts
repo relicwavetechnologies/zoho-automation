@@ -4,6 +4,8 @@ import type { Logger } from '../../shared/logger';
 import { isSafePublishedMemoryFact } from './knowledge-fact-safety';
 import type { PersonalMemoryCommandService } from './personal-memory-command.service';
 import { KnowledgeMutationError } from './knowledge-mutation.errors';
+import { asChannelKey } from '../../domain/channel/runtime-channel';
+import type { ChannelKey } from '../../domain/channel/incoming-message';
 import type {
   KnowledgeLearningExtractor,
   KnowledgeLearningObservation,
@@ -44,7 +46,7 @@ export interface CaptureKnowledgeLearningInput {
   readonly companyId: string;
   readonly userId: string;
   readonly companyRole: string;
-  readonly channel: 'desktop' | 'lark';
+  readonly channel: ChannelKey;
   readonly userMessages: readonly string[];
   readonly assistantText?: string;
 }
@@ -259,7 +261,7 @@ export class KnowledgeLearningService {
       const userMessages = z.array(z.string()).parse(job.userMessages);
       const extraction = await this.deps.extractor.extract({
         sourceId: job.sourceId,
-        channel: job.channel === 'lark' ? 'lark' : 'desktop',
+        channel: asChannelKey(job.channel),
         userMessages,
         ...(job.assistantText ? { assistantText: job.assistantText } : {}),
         existing,
@@ -295,7 +297,7 @@ export class KnowledgeLearningService {
             companyId: job.companyId,
             userId: job.userId,
             companyRole: job.companyRole,
-            channel: job.channel === 'lark' ? 'lark' : 'desktop',
+            channel: asChannelKey(job.channel),
             command: observation.operation === 'delete'
               ? {
                   action: 'delete',

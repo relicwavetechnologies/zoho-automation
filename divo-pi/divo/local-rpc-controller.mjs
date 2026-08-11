@@ -21,6 +21,7 @@ import {
 	isRuntimeModel,
 	providerForModel,
 } from "./runtime-models.mjs";
+import { isRuntimeChannel } from "./runtime-channels.mjs";
 
 const execFileAsync = promisify(execFile);
 const IMAGE = process.env.DIVO_PI_IMAGE ?? "divo-pi-local:phase0";
@@ -1435,7 +1436,7 @@ async function writeBootstrap(container, bootstrap) {
 
 async function stageRuntimeInterruption(container, bootstrap) {
 	if (
-		bootstrap.channel !== "lark"
+		!isRuntimeChannel(bootstrap.channel)
 		|| typeof bootstrap.interruptionTask !== "string"
 		|| !bootstrap.interruptionTask
 	) {
@@ -2614,7 +2615,7 @@ async function runPrompt({
 		sessionScope: normalizedSessionScope,
 		...(channel ? { channel } : {}),
 		...(nativeSkills ? { nativeSkills: true } : {}),
-		...(channel === "lark" ? { interruptionTask: message } : {}),
+		...(isRuntimeChannel(channel) ? { interruptionTask: message } : {}),
 		...(selectedModel ?? {}),
 	};
 	const binding = piProcessBinding({
@@ -2889,12 +2890,12 @@ export async function resolveRuntimeLease({ backendUrl, lease }) {
 		token: lease,
 	});
 	if (
-		session.runtime?.channel !== "lark" ||
+		!isRuntimeChannel(session.runtime?.channel) ||
 		!session.runtime.instanceId ||
 		!session.runtime.threadId ||
 		!session.runtime.runId
 	) {
-		throw new Error("Divo backend did not validate a Lark Pi runtime lease");
+		throw new Error("Divo backend did not validate a Pi runtime lease");
 	}
 	const names = runtimeIdentityNames(
 		session.companyId,

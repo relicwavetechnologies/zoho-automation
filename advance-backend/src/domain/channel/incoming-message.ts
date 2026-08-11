@@ -1,6 +1,10 @@
 import type { ChatId, CorrelationId, MessageId } from '../../shared/ids';
 
-export type ChannelKey = 'lark' | 'desktop' | 'airnote';
+/**
+ * Every surface a message or run can belong to. See `runtime-channel.ts` for the
+ * subset the backend actually drives.
+ */
+export type ChannelKey = 'lark' | 'desktop' | 'airnote' | 'web';
 export type ChatType = 'p2p' | 'group';
 export type GroupReplyMode = 'threaded' | 'inline';
 

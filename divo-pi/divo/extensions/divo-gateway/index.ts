@@ -12,6 +12,7 @@ import { Type } from "typebox";
 import { registerApprovalGate } from "./approval-gate.ts";
 import {
 	composeDivoSystemPrompt,
+	divoPromptStripReport,
 	readDepartmentPersonaContext,
 } from "./department-persona.ts";
 import { registerMemoryReviewTool } from "./memory-review.ts";
@@ -351,6 +352,13 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		systemPrompt = `${systemPrompt}\n\n${
 			localCliEnabled() ? DIVO_LOCAL_EXECUTION_PROMPT : DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT
 		}\n\n${currentRunPrompt(correlation?.threadId)}`;
+		// The Pi-prompt strip is string matching against upstream code: if a marker
+		// stops matching it does nothing, and does it silently. Anything other
+		// than all-zero here means an upgrade moved the text.
+		const stripped = divoPromptStripReport(systemPrompt);
+		if (stripped.guidelines > 0 || stripped.documentation) {
+			console.error(`[divo-prompt] pi presentation text survived: ${JSON.stringify(stripped)}`);
+		}
 		const skillSummary = nativeSkillPromptSummary(event.systemPromptOptions.skills, systemPrompt);
 		if (skillSummary.native > 0) {
 			console.error(`[divo-skills] ${JSON.stringify(skillSummary)}`);

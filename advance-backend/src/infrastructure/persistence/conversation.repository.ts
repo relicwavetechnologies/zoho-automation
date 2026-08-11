@@ -62,6 +62,29 @@ export interface ConversationTurnMetadata {
   readonly sourceMessageId?: string;
   /** Backend-issued Pi run ID used only for exact provider-erasure correlation. */
   readonly sourceRunId?: string;
+  /**
+   * Structured companion to the turn's text, for a surface that redraws the
+   * conversation from here.
+   *
+   * Lark redraws nothing — its transcript is the Lark chat, and the card holding
+   * the work log is still in it. The web has no such store, so an answer read
+   * back tomorrow would arrive stripped of everything that produced it. Same
+   * turn, same text; this is where the rest of it survives.
+   */
+  readonly contentJson?: unknown;
+  /**
+   * Applied only when this append is what creates the conversation.
+   *
+   * A conversation row appears the first time somebody speaks into it, so
+   * "whose is it" and "what is it called" have no earlier moment to be set. On
+   * an existing conversation these are ignored — a later turn must not rename a
+   * thread or transfer it.
+   */
+  readonly conversationDefaults?: {
+    readonly createdByUserId?: string;
+    readonly createdByEmail?: string;
+    readonly title?: string;
+  };
 }
 
 /**
@@ -193,6 +216,7 @@ export class ConversationRepository implements ConversationRepoPort {
         PrismaClient,
         'runtimeConversation' | 'runtimeConversationMessage'
       >) => {
+        const defaults = metadata?.conversationDefaults;
         const conv = scope
           ? await store.runtimeConversation.upsert({
             where: { companyId_channel_channelConversationKey: conversationUniqueKey(chatId, scope) },
@@ -201,6 +225,9 @@ export class ConversationRepository implements ConversationRepoPort {
               channel,
               channelConversationKey: chatId,
               rawChannelKey: chatId,
+              ...(defaults?.createdByUserId ? { createdByUserId: defaults.createdByUserId } : {}),
+              ...(defaults?.createdByEmail ? { createdByEmail: defaults.createdByEmail } : {}),
+              ...(defaults?.title ? { title: defaults.title } : {}),
             },
             update: {},
           })
@@ -236,6 +263,7 @@ export class ConversationRepository implements ConversationRepoPort {
           messageKind: turn.role === 'tool' ? 'tool_result' : 'text',
           sourceChannel: channel,
           contentText: turn.content,
+          ...(metadata?.contentJson !== undefined ? { contentJson: metadata.contentJson as object } : {}),
           ...(metadata?.dedupeKey ? { dedupeKey: metadata.dedupeKey } : {}),
           ...(metadata?.sourceMessageId ? { sourceMessageId: metadata.sourceMessageId } : {}),
           ...(metadata?.sourceRunId ? { sourceRunId: metadata.sourceRunId } : {}),

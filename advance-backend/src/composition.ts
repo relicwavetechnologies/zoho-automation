@@ -472,6 +472,12 @@ export interface Container {
   gatewayDispatcher: GatewayDispatcher;
   /** Container runtime shared by the Lark webhook and the scheduled-workflow poller. */
   larkPiRuntime: import('./application/runtime/lark-pi-runtime.service').LarkPiRuntimeService;
+  /** The same runtime, driven from the browser. Not a second agent — a second view. */
+  webRuns: import('./application/runtime/web-run.service').WebRunService;
+  /** Web runs in flight. They outlive the connection that started them. */
+  webRunRegistry: import('./application/runtime/web-run-registry').WebRunRegistry;
+  /** The reader's view of their own conversations: list, read, rename, delete. */
+  webThreads: import('./infrastructure/persistence/web-thread.repository').WebThreadRepository;
 }
 
 export interface BuildContainerOptions {
@@ -2868,6 +2874,16 @@ export async function buildContainer(
     gatewayDispatcher,
     // Container runtime, shared by the Lark webhook and the scheduler.
     larkPiRuntime,
+    webRuns: new (await import('./application/runtime/web-run.service')).WebRunService({
+      piRuntime: larkPiRuntime,
+      approvals: approvalInbox,
+      transcript: conversationRepo,
+      logger: logger.child({ service: 'web-run' }),
+    }),
+    webRunRegistry: new (await import('./application/runtime/web-run-registry')).WebRunRegistry({
+      logger: logger.child({ service: 'web-run-registry' }),
+    }),
+    webThreads: new (await import('./infrastructure/persistence/web-thread.repository')).WebThreadRepository(prisma),
     // Scheduled workflow executor
     scheduledWorkflowService: new (await import('./application/scheduling/scheduled-workflow.service')).ScheduledWorkflowService({
       prisma,

@@ -7,11 +7,12 @@ import {
 } from './lark.adapter';
 import {
   LarkPiRuntimeError,
-  type LarkPiProgressEvent,
   type LarkPiRuntimeAttachment,
   type LarkPiRuntimeSessionInput,
   type LarkPiRuntimeService,
 } from '../../../application/runtime/lark-pi-runtime.service';
+import type { RunProgressEvent } from '../../../application/runtime/run-progress';
+import { createRunTimelineReducer } from '../../../application/channels/run-timeline.reducer';
 import type {
   ChannelIdentityRepoPort,
   ResolvedUserIdentity,
@@ -121,7 +122,6 @@ import {
   withLarkGroupMode,
 } from './lark-group-mode';
 import { parseLarkFinalDeliveryEnvelope } from './lark-final-delivery';
-import { foldRepeatedRows, sanitizeRunText } from './lark-card.builder';
 import { gatewayOpPhrase, toolLabel } from '../../../domain/tools/tool-labels';
 import {
   buildSignInCard,
@@ -1271,74 +1271,6 @@ async function markDivoOwnedThread(
   });
 }
 
-function piToolStatus(toolName: string, toolId?: string): {
-  label: string;
-  liveLabel: string;
-} {
-  // A governed call is named by the tool it ran, not by the gateway it went
-  // through. Heading the row "Divo" spent its widest word on plumbing and then
-  // repeated the real name in the detail beside it; and the vendor-prefix
-  // guesses this replaced said "Google" where the tool table already knows to
-  // say "Google Drive".
-  if (toolId) {
-    const { name } = toolLabel(toolId);
-    return { label: name, liveLabel: `Working in ${name}…` };
-  }
-  if (toolName === 'bash') return { label: 'Terminal', liveLabel: 'Running a terminal command…' };
-  if (toolName === 'read') return { label: 'Files', liveLabel: 'Reading files…' };
-  if (toolName === 'write') return { label: 'Files', liveLabel: 'Writing files…' };
-  if (toolName === 'edit') return { label: 'Files', liveLabel: 'Editing files…' };
-  // Named rather than left to the humanizer below, which was rendering these
-  // as "Skill view" and "Todos" — an internal tool id spelled out with a space
-  // in it, on a card a customer reads.
-  if (toolName === 'divo_skill_view') return { label: 'Skill', liveLabel: 'Loading a Divo skill…' };
-  if (toolName === 'divo_skill_resolve') {
-    return { label: 'Skill', liveLabel: 'Finding the right Divo skill…' };
-  }
-  if (toolName === 'divo_todos') return { label: 'Plan', liveLabel: 'Planning the work…' };
-  if (toolName === 'divo_subagents') {
-    return { label: 'Subagents', liveLabel: 'Running a subagent…' };
-  }
-  if (toolName === 'divo_artifact') {
-    return { label: 'Artifact', liveLabel: 'Preparing an artifact…' };
-  }
-  if (toolName === 'divo_gateway') {
-    return { label: 'Divo', liveLabel: 'Using a company capability…' };
-  }
-  // Never a bare "Tool": the activity row exists to say what ran, and an
-  // anonymous row is a line of card height spent on nothing. Any unmapped tool
-  // is still readable once its identifier is written out as words.
-  const humanized = toolName
-    .replace(/^divo_/, '')
-    .replace(/[_-]+/g, ' ')
-    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-    .trim()
-    .toLowerCase();
-  const label = humanized ? humanized.charAt(0).toUpperCase() + humanized.slice(1) : 'Tool';
-  return { label, liveLabel: `Running ${label.toLowerCase()}…` };
-}
-
-/**
- * What a step is about, in words rather than identifiers.
- *
- * The container sends the argument that names the work, untranslated, because
- * the table that turns `omsSiteData` into "OMS Site Data" lives here — a card
- * reading `omsSiteData · tools.invoke` shows the user two internal identifiers
- * and an internal namespace. A shell command or a file name is already words
- * and is passed through as it stands.
- */
-function piCallDetail(
-  toolName: string,
-  toolId: string | undefined,
-  detail: string | undefined,
-): string | undefined {
-  if (toolName === 'divo_gateway' || toolId) return gatewayOpPhrase(detail);
-  // An older container still sends a skill's UUID here. It names nothing to a
-  // reader, and the row is labelled properly when the call returns anyway.
-  return detail && UUID_ONLY.test(detail) ? undefined : detail;
-}
-
-const UUID_ONLY = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function divoFacingRuntimeMessage(message: string): string {
   return message
@@ -1472,50 +1404,6 @@ export function createCoalescedPublisher(
   };
 }
 
-const TRANSCRIPT_MAX_CHARS = 3_000;
-const TRANSCRIPT_LINE_MAX  = 240;
-
-/**
- * The run's log, kept for after the answer has replaced it.
- *
- * The final card is an edit of the status card, so delivering the answer
- * destroys every trace of how it was reached — on a thirteen-minute run that is
- * the entire record of the work. Folded onto the answer as a trace panel, it
- * costs one closed line and is there for the person who asks "what did it
- * actually do".
- *
- * A run that called no tool gets none: its log is only the model talking, which
- * is what the answer already is.
- */
-export function runTranscript(input: readonly ChannelLedgerRow[]): string | undefined {
-  if (!input.some(row => row.kind !== 'say')) return undefined;
-
-  // Folded the same way the live card folds, so the trace is the log the user
-  // was watching rather than a second, longer account of the same run.
-  const rows = foldRepeatedRows(input);
-  const rendered = rows.map(row => row.kind === 'say'
-    ? sanitizeRunText(row.label, TRANSCRIPT_LINE_MAX)
-    : [
-        `**${row.label}**`,
-        ...(row.count > 1 ? [`×${row.count}`] : []),
-        ...(row.outcome ? [sanitizeRunText(row.outcome, TRANSCRIPT_LINE_MAX)] : []),
-      ].join('  '));
-
-  // Kept from the newest backwards, matching how the live card windows itself —
-  // the steps nearest the answer are the ones that explain it.
-  const kept: string[] = [];
-  let used = 0;
-  for (let i = rendered.length - 1; i >= 0; i -= 1) {
-    const line = rendered[i]!;
-    if (used + line.length > TRANSCRIPT_MAX_CHARS) {
-      kept.unshift(`_+${i + 1} earlier step${i === 0 ? '' : 's'}._`);
-      break;
-    }
-    kept.unshift(line);
-    used += line.length + 1;
-  }
-  return kept.length > 0 ? kept.join('\n') : undefined;
-}
 
 export async function runPiAndDeliver(input: {
   incoming: IncomingMessage;
@@ -1553,78 +1441,14 @@ export async function runPiAndDeliver(input: {
     conversationKey: runtimeThreadIdFor(incoming),
   });
   const startedAtMs = Date.now();
-  const ledger = new Map<string, ChannelLedgerRow>();
+  const run = createRunTimelineReducer({ startedAtMs });
   let statusHandle: StatusHandle | null = null;
-  let phase = 'Thinking';
-  let state: ChannelRunState = 'thinking';
-  let liveLabel = 'Thinking…';
-  let actionCount = 0;
-  let declared: ChannelDeclaredPlan | undefined;
-  /** Bumped per tool call so each stretch of talking gets its own ledger keys. */
-  let sayTurn = 0;
-
-  /**
-   * A tool that reported work underneath itself: subagents become children of
-   * the row that spawned them, and a declared checklist becomes the run's plan.
-   *
-   * The checklist is the run's, not the call's, so it outlives the tool call
-   * that declared it — otherwise the plan would vanish the moment the tool
-   * returned, which is exactly when the user starts wanting it.
-   */
-  const applyProgressDetail = (
-    callId: string,
-    detail: {
-      readonly children?: readonly { label: string; status: ChannelPlanStepStatus; detail?: string }[];
-      readonly todos?: readonly { title: string; status: ChannelPlanStepStatus }[];
-      readonly detail?: string;
-    },
-  ): void => {
-    // A call the model addressed by UUID can only be named once it returns.
-    if (detail.detail) {
-      const current = ledger.get(callId);
-      if (current) ledger.set(callId, { ...current, outcome: detail.detail });
-    }
-    if (detail.children?.length) {
-      const current = ledger.get(callId);
-      if (current) {
-        ledger.set(callId, {
-          ...current,
-          children: detail.children.map(child => ({
-            label: child.label,
-            count: 1,
-            status: child.status,
-            ...(child.detail ? { outcome: child.detail } : {}),
-          })),
-        });
-      }
-    }
-    if (detail.todos?.length) {
-      const items = detail.todos.map(todo => ({ title: todo.title, status: todo.status }));
-      const settled = items.filter(i => i.status === 'done' || i.status === 'skipped').length;
-      const current = items.find(i => i.status === 'running')?.title;
-      const next = items.find(i => i.status === 'pending')?.title;
-      declared = {
-        done: settled,
-        total: items.length,
-        ...(current ? { current } : next ? { next } : {}),
-        items,
-      };
-    }
-  };
 
   const publishStatus = async (): Promise<void> => {
     const update = {
       kind: 'status' as const,
       terminal: false,
-      timeline: {
-        phase,
-        state,
-        liveLabel,
-        actionCount,
-        startedAtMs,
-        ...(ledger.size > 0 ? { ledger: [...ledger.values()] } : {}),
-        ...(declared ? { declared } : {}),
-      },
+      timeline: run.timeline(),
     };
     const result = statusHandle
       ? await deps.adapter.editStatus(statusHandle, update)
@@ -1644,103 +1468,22 @@ export async function runPiAndDeliver(input: {
     error => log.warn('webhook.pi.status_failed', { error: String(error), correlationId }),
   );
   let nextProgressPublishAt = startedAtMs + 1_000;
-  let protectedDataUsed = false;
 
-  const queueProgressStatus = (): void => {
+  /**
+   * Fold the frame in, then decide whether it is worth a redraw yet.
+   *
+   * The reducer says how soon its own change deserves to be seen; the rate at
+   * which this channel can redraw is this file's business, not the reducer's.
+   */
+  const reportProgress = (event: RunProgressEvent): void => {
+    if (run.apply(event) === 'immediate') {
+      queueStatus();
+      return;
+    }
     const now = Date.now();
     if (now < nextProgressPublishAt) return;
     nextProgressPublishAt = now + 1_000;
     queueStatus();
-  };
-
-  const reportProgress = (event: LarkPiProgressEvent): void => {
-    const beginsProtectedRead = event.type === 'tool_start'
-      && !!event.toolId
-      && isProtectedShopifyToolId(event.toolId);
-    if (beginsProtectedRead) {
-      protectedDataUsed = true;
-      ledger.clear();
-      declared = undefined;
-      actionCount = 0;
-    }
-    if (protectedDataUsed) {
-      // Tool arguments, progress details, model narration, and declared plans
-      // may all contain customer/order data. Keep only a generic live state
-      // once a protected read starts; the final reply is transient below.
-      phase = 'Working';
-      state = 'working';
-      liveLabel = 'Working…';
-      queueStatus();
-      return;
-    }
-
-    if (event.type === 'starting') {
-      phase = 'Thinking';
-      state = 'thinking';
-      liveLabel = 'Thinking…';
-    } else if (event.type === 'working') {
-      phase = 'Thinking';
-      state = 'thinking';
-      liveLabel = 'Thinking…';
-    } else if (event.type === 'ready' || event.type === 'thinking') {
-      phase = 'Thinking';
-      state = 'thinking';
-      liveLabel = 'Thinking…';
-    } else if (event.type === 'say') {
-      phase = 'Writing';
-      state = 'writing';
-      liveLabel = 'Preparing your response…';
-      // Keyed by turn as well as block, because a block index restarts at zero
-      // in each new assistant message — without the turn, the second thing the
-      // model says would overwrite the first instead of following it.
-      ledger.set(`say:${sayTurn}:${event.index}`, {
-        kind: 'say',
-        label: event.text,
-        count: 1,
-        status: 'done',
-      });
-    } else if (event.type === 'tool_start') {
-      const tool = piToolStatus(event.toolName, event.toolId);
-      phase = 'Working';
-      state = 'working';
-      liveLabel = tool.liveLabel;
-      actionCount += 1;
-      // A tool call closes whatever the model was saying; what it says next
-      // belongs after this row, not merged into the sentence before it.
-      sayTurn += 1;
-      // The outcome starts as what the call is *about* — the command, the file,
-      // the capability — because "what it produced" is not known yet and a bare
-      // "In progress" beside a ● is the restatement the card is built to avoid.
-      const about = piCallDetail(event.toolName, event.toolId, event.detail);
-      ledger.set(event.callId, {
-        kind: 'tool',
-        label: tool.label,
-        count: 1,
-        status: 'running',
-        ...(about ? { outcome: about } : {}),
-      });
-    } else if (event.type === 'tool_progress') {
-      applyProgressDetail(event.callId, event);
-      phase = 'Working';
-      state = 'working';
-    } else if (event.type === 'tool_end') {
-      applyProgressDetail(event.callId, event);
-      const current = ledger.get(event.callId);
-      if (current) {
-        ledger.set(event.callId, {
-          ...current,
-          status: event.isError ? 'failed' : 'done',
-        });
-      }
-      phase = 'Working';
-      state = 'working';
-      liveLabel = event.isError ? 'A step failed; checking what can continue…' : 'Continuing…';
-    } else {
-      phase = 'Writing';
-      state = 'writing';
-      liveLabel = 'Preparing your response…';
-    }
-    queueProgressStatus();
   };
 
   let text: string;
@@ -1768,7 +1511,7 @@ export async function runPiAndDeliver(input: {
     });
     text = result.text;
     actions = result.actions;
-    protectedDataUsed ||= result.protectedDataUsed === true;
+    if (result.protectedDataUsed === true) run.observedProtectedData();
   } catch (error) {
     runtimeFailure = error;
     if (runtimeSignal.aborted) {
@@ -1789,7 +1532,7 @@ export async function runPiAndDeliver(input: {
     deps.adapter.cleanupAbortController(correlationId);
   }
 
-  if (runtimeFailure && deps.conversationRepo && !protectedDataUsed) {
+  if (runtimeFailure && deps.conversationRepo && !run.protectedDataUsed) {
     const conversationKey = runtimeThreadId;
     const scope = { companyId: String(runContext.companyId), channel: 'lark' as const };
     const sourceMessageId = String(incoming.messageId);
@@ -1818,15 +1561,13 @@ export async function runPiAndDeliver(input: {
     }
   }
 
-  phase = 'Writing';
-  state = 'writing';
-  liveLabel = 'Preparing your response…';
+  run.finishing();
   // Settled rather than queued: the answer goes out next, and the card should
   // not still be claiming the run is working once it has landed.
   queueStatus();
   await settleStatus();
 
-  if (protectedDataUsed && incoming.chatType === 'group') {
+  if (run.protectedDataUsed && incoming.chatType === 'group') {
     if (!deps.chatContextService) {
       throw new Error('Protected group delivery requires a chat-context erasure service');
     }
@@ -1843,14 +1584,14 @@ export async function runPiAndDeliver(input: {
     }
   }
 
-  const transcript = protectedDataUsed ? undefined : runTranscript([...ledger.values()]);
+  const ledger = run.protectedDataUsed ? undefined : run.timeline().ledger;
   const delivered = await deps.adapter.sendFinalReply(conversation, {
     kind: 'final',
     text,
     format: 'markdown',
     ...(actions?.length ? { actions } : {}),
-    ...(transcript ? { executionTrace: transcript } : {}),
-    ...(protectedDataUsed ? { retention: 'transient' as const } : {}),
+    ...(ledger?.length ? { ledger } : {}),
+    ...(run.protectedDataUsed ? { retention: 'transient' as const } : {}),
   });
   if (!delivered.ok) {
     log.error('webhook.pi.delivery_failed', {
@@ -1863,7 +1604,7 @@ export async function runPiAndDeliver(input: {
   if (input.rethrowRuntimeFailureAfterDelivery && runtimeFailure) {
     throw runtimeFailure;
   }
-  return { text, protectedDataUsed };
+  return { text, protectedDataUsed: run.protectedDataUsed };
 }
 
 /**

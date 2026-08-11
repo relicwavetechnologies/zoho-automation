@@ -26,6 +26,7 @@ import { PersonaLearningService } from '../../application/persona-learning/perso
 import type { PersonaLearningToolSummary } from '../../application/persona-learning/persona-learning.types';
 import type { KnowledgeLearningService } from '../../application/knowledge/knowledge-learning.service';
 import { isProtectedShopifyToolId } from '../../application/shopify/shopify-protected-result';
+import { RUNTIME_CHANNELS, type RuntimeChannel } from '../../domain/channel/runtime-channel';
 
 export interface TraceIngestRoutesDeps {
   prisma: PrismaClient;
@@ -99,10 +100,11 @@ const batchSchema = z.object({
   sessionId:   z.string().max(200).optional(),
   threadId:    z.string().max(200).optional(),
   agentTarget: z.string().max(200).optional(),
-  // Lark owns private-learning capture in LarkPiRuntimeService because only
-  // that boundary knows whether the source was a human-authored private turn.
-  // Trace ingest still stores the full timeline but must not learn it again.
-  runtimeChannel: z.literal('lark').optional(),
+  // A backend-driven run owns private-learning capture at its own boundary,
+  // because only that boundary knows whether the source was a human-authored
+  // private turn. Trace ingest still stores the full timeline but must not learn
+  // it again. Absent means a desktop run, which has no such boundary.
+  runtimeChannel: z.enum(RUNTIME_CHANNELS).optional(),
   usageAuthority: z.enum(['desktop', 'proxy']).default('desktop'),
   // Conservative client observation: it may only increase redaction. Exact
   // gateway tool envelopes remain the server's classification authority.
@@ -160,13 +162,13 @@ export async function resolveBackendTraceProvenance(
   identity: TraceIdentity,
   input: {
     readonly runId: string;
-    readonly runtimeChannel?: 'lark';
+    readonly runtimeChannel?: RuntimeChannel;
     readonly runtimeRunId?: string;
     readonly runtimeThreadId?: string;
     readonly threadId?: string;
   },
 ): Promise<BackendTraceProvenance | null> {
-  if (input.runtimeChannel === 'lark' && !input.runtimeRunId) return null;
+  if (input.runtimeChannel && !input.runtimeRunId) return null;
   if (input.runtimeRunId && input.runId !== input.runtimeRunId) return null;
   if (input.runtimeThreadId && input.threadId && input.runtimeThreadId !== input.threadId) return null;
 
@@ -281,7 +283,7 @@ export async function ingestTraceBatch(
         ...(batch.threadId ? { threadId: batch.threadId } : {}),
         events: batch.events,
       }),
-      capturePersonalLearning(batch.runtimeChannel === 'lark' ? undefined : knowledgeLearning, log, {
+      capturePersonalLearning(batch.runtimeChannel ? undefined : knowledgeLearning, log, {
         executionId,
         companyId: identity.companyId,
         userId: identity.userId,

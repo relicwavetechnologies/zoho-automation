@@ -155,15 +155,29 @@ test("container bootstrap accepts only known session scopes", () => {
 	);
 });
 
-test("a Lark bootstrap requires the backend-issued run identity", () => {
-	assert.doesNotThrow(() => validateBootstrap({
-		...bootstrap,
-		channel: "lark",
-		runId: "backend-run-1",
-	}));
+test("a backend-driven bootstrap requires the backend-issued run identity", () => {
+	// The requirement is "the backend launched this run", not "this is Lark" —
+	// so it must hold on every channel we drive, or a second surface would
+	// quietly get a weaker contract than the first.
+	for (const channel of ["lark", "web"]) {
+		assert.doesNotThrow(() => validateBootstrap({
+			...bootstrap,
+			channel,
+			runId: "backend-run-1",
+		}));
+		assert.throws(
+			() => validateBootstrap({ ...bootstrap, channel }),
+			/runId is required for a backend-driven run/,
+		);
+	}
+});
+
+test("a bootstrap channel we do not drive is rejected, not ignored", () => {
+	// Silently dropping it is what let anything-not-lark fall through to the
+	// desktop path with a backend-issued run id attached.
 	assert.throws(
-		() => validateBootstrap({ ...bootstrap, channel: "lark" }),
-		/runId is required for Lark/,
+		() => validateBootstrap({ ...bootstrap, channel: "slack", runId: "backend-run-1" }),
+		/channel is invalid/,
 	);
 });
 

@@ -20,7 +20,7 @@ import {
 } from "../../run-terminal.mjs";
 import { RUNTIME_MODELS } from "../../runtime-models.mjs";
 import { resolveDivoGatewayConfig } from "./gateway-client.ts";
-import { readDivoRunCorrelation } from "./run-correlation.ts";
+import { readDivoRunCorrelation, type DivoRuntimeChannel } from "./run-correlation.ts";
 
 export { classifyDivoRunTerminal };
 
@@ -54,7 +54,7 @@ type TraceEvent =
 interface RunState {
 	runId: string;
 	threadId?: string;
-	runtimeChannel?: "lark";
+	runtimeChannel?: DivoRuntimeChannel;
 	proxyOwnsUsage: boolean;
 	recoveryAttempted: boolean;
 	pendingRecoveryFailure?: DivoRunTerminal;
@@ -76,14 +76,14 @@ function asRecord(value: unknown): JsonRecord | undefined {
 async function tryReadRunCorrelation(): Promise<{
 	runId: string;
 	threadId: string;
-	channel?: "lark";
+	channel?: DivoRuntimeChannel;
 } | null> {
 	try {
 		const value = await readDivoRunCorrelation();
 		return {
 			runId: value.runId,
 			threadId: value.threadId,
-			...(value.channel === "lark" ? { channel: "lark" as const } : {}),
+			...(value.channel ? { channel: value.channel } : {}),
 		};
 	} catch {
 		return null;
@@ -127,12 +127,12 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 	const startRun = (correlation: {
 		runId: string;
 		threadId: string;
-		channel?: "lark";
+		channel?: DivoRuntimeChannel;
 	}): RunState => {
 		run = {
 			runId: correlation.runId,
 			threadId: correlation.threadId,
-			...(correlation.channel === "lark" ? { runtimeChannel: "lark" as const } : {}),
+			...(correlation.channel ? { runtimeChannel: correlation.channel } : {}),
 			proxyOwnsUsage: false,
 			recoveryAttempted: false,
 			seq: 0,

@@ -14,6 +14,7 @@ import {
 	resolveRuntimeThreadId,
 	startDivoPi,
 } from "./runtime.mjs";
+import { isRuntimeChannel } from "./runtime-channels.mjs";
 
 const DEFAULT_BOOTSTRAP_PATH = "/run/divo-auth/bootstrap.json";
 const DEFAULT_INTERRUPTION_PATH = "/run/divo-auth/interruption.json";
@@ -33,10 +34,17 @@ export function validateBootstrap(value) {
 		throw new Error("Bootstrap thread is invalid");
 	}
 	if (
-		value.channel === "lark"
+		value.channel !== undefined
+		&& !isRuntimeChannel(value.channel)
+	) {
+		throw new Error("Bootstrap channel is invalid");
+	}
+	// A backend-driven run is identified from outside; a desktop-local one is not.
+	if (
+		isRuntimeChannel(value.channel)
 		&& (typeof value.runId !== "string" || !value.runId.trim())
 	) {
-		throw new Error("Bootstrap runId is required for Lark");
+		throw new Error("Bootstrap runId is required for a backend-driven run");
 	}
 	resolveRuntimeThreadId(value.thread, value.runtimeThreadId);
 	// Absent means the durable per-thread session, which is what every caller
@@ -205,7 +213,7 @@ export async function runContainer() {
 	let interruptionRecorded = false;
 	for (const signal of ["SIGINT", "SIGTERM"]) {
 		process.once(signal, () => {
-			if (!interruptionRecorded && bootstrap.channel === "lark") {
+			if (!interruptionRecorded && isRuntimeChannel(bootstrap.channel)) {
 				interruptionRecorded = true;
 				try {
 					recordPendingInterruption();

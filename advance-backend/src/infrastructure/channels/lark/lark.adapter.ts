@@ -18,7 +18,7 @@ import {
   LarkStatusCoordinator,
   LarkStatusDrainTimeoutError,
 } from './lark-status.coordinator';
-import { buildFinalCard, planFinalCards, stripMarkdownInline } from './lark-card.builder';
+import { buildFinalCard, planFinalCards, runTranscript, stripMarkdownInline } from './lark-card.builder';
 import { buildLarkFinalDeliveryEnvelope } from './lark-final-delivery';
 
 interface LarkRunIdentity {
@@ -449,11 +449,14 @@ export class LarkChannelAdapter implements ChannelAdapter {
     const stuckCardId = coordinator?.getStatusMessageId();
 
     try {
+      // The ledger arrives structured; Lark's shape for it — folded, sanitized,
+      // and inside a character budget — is decided here and nowhere else.
+      const traceMarkdown = reply.ledger?.length ? runTranscript(reply.ledger) : undefined;
       const segments = planFinalCards({
         markdown: reply.text,
         ...(reply.branding        ? { branding:       reply.branding }        : {}),
         ...(reply.actions         ? { actions:        reply.actions  }        : {}),
-        ...(reply.executionTrace  ? { executionTrace: reply.executionTrace }  : {}),
+        ...(traceMarkdown ? { executionTrace: traceMarkdown } : {}),
       });
       const [primarySegment, ...continuationSegments] = segments;
       if (!primarySegment) {

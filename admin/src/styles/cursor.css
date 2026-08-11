@@ -127,6 +127,11 @@
 .cur .content { flex: 1; min-height: 0; overflow: hidden; }
 .cur .scroll { height: 100%; overflow-y: auto; }
 .cur .page { padding: 30px 34px 80px; max-width: 1160px; }
+/* Full-bleed surfaces (chat). No padding, no max-width, and it takes the whole
+   height so it can pin its own composer and scroll only its own thread —
+   `.scroll` above never engages, which is what stops the page scrolling
+   underneath a sticky composer. */
+.cur .page-full { height: 100%; min-height: 0; }
 
 /* ── Headers ─────────────────────────────────────────── */
 .cur .ph { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 26px; }

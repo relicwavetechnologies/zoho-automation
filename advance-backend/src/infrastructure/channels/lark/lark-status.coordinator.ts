@@ -165,7 +165,7 @@ export class LarkStatusCoordinator {
       t.liveLabel,
       t.narrationActive,
       t.ledger?.map(r => this.ledgerPreview(r)).join('|'),
-      t.plan?.map(p => `${p.status}:${p.title}:${p.subtitle ?? ''}`).join('|'),
+      t.declared?.items?.map(i => `${i.status}:${i.title}`).join('|'),
     ].filter(Boolean);
     return parts.join('\n');
   }

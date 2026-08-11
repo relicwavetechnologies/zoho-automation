@@ -1180,93 +1180,13 @@
 .cur .ws-home { max-width: 940px; margin: 0 auto; padding-bottom: 40px; }
 
 /* ── Composer ─────────────────────────────────────────
-   UI only for now — no send handler, no run is created. The disabled state is
-   real rather than cosmetic: a box that accepts text and silently drops it is
-   worse than one that says it is not ready. */
-.cur .ws-comp {
-  background: var(--cur-surface); border: 1px solid var(--cur-hairline-strong);
-  border-radius: 14px; padding: 14px 14px 10px;
-  box-shadow: var(--cur-shadow-card);
-  transition: border-color .15s ease, box-shadow .15s ease;
-}
-/* Focus is the one place the brand orange earns its keep on this screen, and a
-   ring rather than a fill keeps it to a hint. */
-.cur .ws-comp:focus-within {
-  border-color: var(--cur-primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cur-primary) 16%, transparent);
-}
-/* The preview state.
-   Squat and left-hugging before: two lines of prose and a row of dead chips in
-   a 940px box, so most of it was empty and the whole thing read as a
-   notification bar wedged where the product's main control should be. Now it is
-   one row — mark, two lines, state — on the same grid as every other card on
-   the page, and the chips are gone rather than sitting there un-pressable. */
-.cur .ws-comp[data-preview="true"] {
-  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center; gap: 14px; padding: 16px 18px;
-  /* A whisper of the brand, top-left, so the panel is not a flat grey slab —
-     the same trick the featured onboarding card uses, at a quarter the volume. */
-  background:
-    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--cur-primary) 5%, transparent), transparent 60%),
-    var(--cur-surface);
-}
-/* Nothing inside takes focus while this is a preview, so the orange ring would
-   never fire — and if it ever did it would promise an input that is not there. */
-.cur .ws-comp[data-preview="true"]:focus-within {
-  border-color: var(--cur-hairline-strong); box-shadow: var(--cur-shadow-card);
-}
-.cur .ws-comp-ic {
-  width: 34px; height: 34px; border-radius: 9px; flex-shrink: 0;
-  display: grid; place-items: center;
-  background: var(--cur-surface-strong); border: 1px solid var(--cur-hairline);
-  color: var(--cur-muted);
-}
-.cur .ws-comp-say { min-width: 0; }
-.cur .ws-comp-say b {
-  display: block; font-size: 13.5px; font-weight: 500; color: var(--cur-ink);
-}
-.cur .ws-comp-say p {
-  margin: 2px 0 0; max-width: 72ch;
-  font-size: 12.5px; line-height: 1.5; color: var(--cur-muted);
-}
+   Home no longer draws its own composer. It renders the SAME component
+   `/chat` does (see `pages/workspace/chat/parts.tsx`), so the box you type
+   into is identical on both sides of the handoff — one control, one set of
+   keybindings, one place to change it. All this rule does is give it the
+   breathing room the old panel had. */
+.cur .ws-comp-slot { margin-bottom: 26px; }
 
-.cur .ws-comp textarea {
-  width: 100%; border: 0; background: none; resize: none; outline: none;
-  font-family: inherit; font-size: 14px; line-height: 1.55; color: var(--cur-ink);
-  /* Two rows, not four. The old box reserved height for a paragraph nobody
-     types, which left the primary control on the page reading as empty. */
-  min-height: 42px;
-}
-.cur .ws-comp textarea::placeholder { color: var(--cur-muted); }
-.cur .ws-comp-foot { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-.cur .ws-comp-sp { flex: 1; }
-/* Outlined, because these are controls. Sitting flat on the composer's surface
-   made them read as caption text, so the two settings that travel with every
-   message looked like a footnote about the box rather than part of it. */
-.cur .ws-comp-chip {
-  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px;
-  border-radius: 999px; border: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft);
-  font-family: inherit; font-size: 12.5px; color: var(--cur-body); cursor: pointer;
-  transition: border-color .15s ease, color .15s ease, background .15s ease;
-}
-.cur .ws-comp-chip svg { color: var(--cur-muted); }
-.cur .ws-comp-chip:hover { background: var(--cur-surface-strong); border-color: var(--cur-hairline-strong); color: var(--cur-ink); }
-/* These two are set elsewhere and only reported here, so they never light up
-   on hover — the outline says "control", the flat hover says "not this one". */
-.cur .ws-comp-chip:disabled { cursor: default; }
-.cur .ws-comp-chip:disabled:hover { background: var(--cur-canvas-soft); border-color: var(--cur-hairline); color: var(--cur-body); }
-.cur .ws-comp-send {
-  width: 34px; height: 34px; border-radius: 999px; border: 0; flex-shrink: 0;
-  background: var(--cur-cta); color: var(--cur-on-cta); display: grid; place-items: center; cursor: pointer;
-  transition: background .15s ease;
-}
-.cur .ws-comp-send:hover { background: var(--cur-cta-hover); }
-/* Dimmed rather than greyed flat: the button is waiting on a feature, not
-   broken, and the notice underneath is what explains which. */
-.cur .ws-comp-send:disabled {
-  background: var(--cur-surface-strong); color: var(--cur-muted-soft);
-  cursor: default; opacity: .75;
-}
 /* ── Connected apps ───────────────────────────────────
    A grid of cards rather than a list of rows. Seven full-width rows all the
    same height read as a settings table, and the question this page is opened
@@ -1408,20 +1328,6 @@
   font-weight: 600; letter-spacing: -0.01em;
 }
 
-/* Where the send button will be. Quiet on purpose: it is a label, not a control
-   waiting to be pressed, so it takes the chips' height and none of their
-   outline — a bordered pill beside two bordered chips reads as a third button. */
-/* An outlined pill, not bare text. Floating at the right edge of a wide card it
-   read as a stray word; a border makes it a badge and gives the row an end.
-   `--cur-muted-soft` measured 3.22:1 — under the floor, and the wrong place to
-   save a shade when this is the only word saying the composer is not live. */
-.cur .ws-comp-pill {
-  display: inline-flex; align-items: center; height: 24px; padding: 0 10px; flex-shrink: 0;
-  border: 1px solid var(--cur-hairline); border-radius: 999px;
-  background: var(--cur-canvas-soft);
-  font-size: 11.5px; letter-spacing: 0.02em; color: var(--cur-muted);
-}
-
 /* ── Section header ───────────────────────────────────
    Title + subtitle left, controls right. Used by every band on Home. */
 .cur .ws-band { margin-top: 34px; }
@@ -1499,6 +1405,14 @@
 .cur .ws-recent-item:hover {
   background: var(--cur-surface-strong); border-color: var(--cur-hairline);
 }
+/* These rows are links now, not buttons — a chat is somewhere you go, so it
+   opens in a new tab on a middle click like anything else with an address. The
+   underline an anchor brings with it is the only thing that has to be undone,
+   and the chat you are reading is marked so the rail says where you are. */
+.cur a.ws-recent-item { text-decoration: none; }
+.cur .ws-recent-item.active {
+  background: var(--cur-surface-strong); border-color: var(--cur-hairline);
+}
 .cur .ws-recent-item b {
   display: block; font-size: 13px; line-height: 1.35; font-weight: 400; color: var(--cur-ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -1515,6 +1429,48 @@
 .cur .ws-recent-item span[data-state="err"] .ws-recent-dot { background: var(--cur-error); }
 .cur .ws-recent-item span[data-state="run"] .ws-recent-dot { background: var(--cur-primary); }
 .cur .ws-recent-empty { padding: 4px 10px; font-size: 12px; color: var(--cur-muted-soft); line-height: 1.5; }
+
+/* A chat's own controls, on the chat.
+   Hidden at rest: this rail is scanned, not operated, and a delete control
+   sitting on every row is a list you read carefully instead of quickly. The
+   button stays visible while its menu is open, or the thing you just clicked
+   disappears from under the cursor. */
+.cur .ws-recent-row { position: relative; }
+.cur .ws-recent-row .ws-recent-item b { padding-right: 22px; }
+.cur .ws-recent-more {
+  position: absolute; top: 6px; right: 6px; display: grid; place-items: center;
+  width: 22px; height: 22px; border: 0; border-radius: 6px; cursor: pointer;
+  background: transparent; color: var(--cur-muted); opacity: 0;
+  transition: opacity .12s ease, background .12s ease, color .12s ease;
+}
+.cur .ws-recent-row:hover .ws-recent-more,
+.cur .ws-recent-more:focus-visible,
+.cur .ws-recent-more[aria-expanded="true"] { opacity: 1; }
+.cur .ws-recent-more:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+
+.cur .ws-recent-menu {
+  position: absolute; top: 28px; right: 6px; z-index: 30; min-width: 140px;
+  display: flex; flex-direction: column; padding: 4px;
+  border: 1px solid var(--cur-hairline); border-radius: 10px;
+  background: var(--cur-surface); box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+}
+.cur .ws-recent-menu button {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 8px;
+  border: 0; border-radius: 6px; background: transparent; cursor: pointer;
+  font-family: inherit; font-size: 12.5px; text-align: left; color: var(--cur-body);
+}
+.cur .ws-recent-menu button:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+.cur .ws-recent-menu button[data-danger] { color: var(--cur-error); }
+.cur .ws-recent-menu button[data-danger]:hover { color: var(--cur-error); }
+
+/* Renaming happens in place. A dialog for one short string would take the
+   reader off the list they are naming something in. */
+.cur .ws-recent-rename {
+  display: block; width: 100%; padding: 8px 10px; margin-bottom: 4px;
+  border: 1px solid var(--cur-primary); border-radius: 10px;
+  background: var(--cur-canvas-soft); color: var(--cur-ink);
+  font-family: inherit; font-size: 13px; line-height: 1.35; outline: none;
+}
 
 .cur .ws-onb {
   flex-shrink: 0; margin: 12px 2px 0; padding: 12px;

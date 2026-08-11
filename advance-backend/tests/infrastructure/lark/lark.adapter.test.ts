@@ -955,6 +955,38 @@ describe('LarkChannelAdapter delivery timing', () => {
 });
 
 describe('LarkChannelAdapter.sendFinalReply', () => {
+  // The ledger crosses the port as rows now, so the card's trace panel exists
+  // only if this adapter still renders them. Losing it would be invisible:
+  // delivery succeeds either way, just without the record of the work.
+  it('renders the structured ledger into the card trace panel', async () => {
+    let sent: string | undefined;
+    const adapter = new LarkChannelAdapter({
+      env: fakeEnv,
+      logger: noopLogger,
+      botOpenId: 'ou_bot',
+    });
+    (adapter as any).messagingClient = {
+      sendMessage: async (_receiveId: string, content: string) => {
+        sent ??= content;
+        return { messageId: 'om_sent' };
+      },
+      updateMessage: async () => undefined,
+      addReaction: async () => undefined,
+    };
+
+    const result = await adapter.sendFinalReply(makeConversation(), {
+      ...makeReply('All done.'),
+      ledger: [
+        { kind: 'say', label: 'Checking the bases.', count: 1, status: 'done' },
+        { kind: 'tool', label: 'Terminal', count: 1, status: 'done', outcome: 'airtable list-bases' },
+      ],
+    });
+
+    assert.equal(result.ok, true);
+    assert.match(sent ?? '', /airtable list-bases/);
+    assert.match(sent ?? '', /Checking the bases\./);
+  });
+
   it('stores the immutable target with a resumable reply', async () => {
     let reserved: Record<string, unknown> | undefined;
     const adapter = new LarkChannelAdapter({

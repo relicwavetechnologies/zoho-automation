@@ -151,7 +151,12 @@ describe("Divo Pi runtime boundary", () => {
 		const toolAllowlist = args[args.indexOf("--tools") + 1];
 		assert.ok(!toolAllowlist.split(",").includes("divo_artifact"));
 		const systemPrompt = args[args.indexOf("--append-system-prompt") + 1];
-		assert.match(systemPrompt, /complete user-facing result in chat/i);
+		// Whether a file can reach the reader is a property of the surface now,
+		// stated by the generated presentation policy. The workspace prompt used
+		// to hard-code "Lark cannot deliver artifacts", which made a channel gap
+		// change what Divo decided to produce rather than only how it was shown.
+		assert.doesNotMatch(systemPrompt, /Lark cannot deliver/i);
+		assert.match(systemPrompt, /a property of the surface/i);
 		assert.doesNotMatch(systemPrompt, /DIVO_ARTIFACTS_DIR|divo_artifact/i);
 	});
 

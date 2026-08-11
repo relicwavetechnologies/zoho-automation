@@ -287,7 +287,9 @@ export async function executeKnowledgeReview(
 		const reviewedContent = preparedFile
 			? await (deps.stageFile ?? stagePreparedFile)(config, preparedFile)
 			: request.content;
-		if (correlation.channel === "lark") {
+		// The backend owns the review UI on every channel it drives; only a
+		// desktop-local run has to render one itself.
+		if (correlation.channel) {
 			const requestId = `knowledge:${createHash("sha256").update(JSON.stringify({
 				kind: request.kind,
 				action: request.action,

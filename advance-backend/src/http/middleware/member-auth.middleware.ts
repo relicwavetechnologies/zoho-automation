@@ -14,7 +14,8 @@
  *   res.locals.authProvider (string — how the session was issued;
  *                            "scheduled_workflow" marks a machine-issued run)
  *   res.locals.email      (string | null)
- *   res.locals.channel    ("desktop" | "lark", trusted from the signed token)
+ *   res.locals.channel    ("desktop" | a RuntimeChannel, trusted from the signed
+ *                          token — never from anything the caller can set)
  *   res.locals.runtimeContextAudience ("private" | "shared" for Pi leases)
  */
 
@@ -26,6 +27,8 @@ import {
   isPiRuntimeLeaseClaims,
   PI_RUNTIME_AUDIENCE,
 } from '../../application/runtime/pi-runtime-lease';
+import { isRuntimeChannel } from '../../domain/channel/runtime-channel';
+import type { ChannelKey } from '../../domain/channel/incoming-message';
 
 /**
  * One lifetime for every member session, whichever surface created it.
@@ -119,7 +122,7 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
     const hasRuntimeClaims = payload.aud !== undefined
       || payload.instanceId !== undefined
       || payload.threadId !== undefined
-      || payload.channel === 'lark';
+      || isRuntimeChannel(payload.channel);
     if (hasRuntimeClaims && !isPiRuntimeLeaseClaims(payload as unknown as Record<string, unknown>)) {
       res.status(401).json({ error: 'Invalid Pi runtime lease' });
       return;
@@ -200,7 +203,11 @@ export function createMemberAuthMiddleware(deps: MemberAuthMiddlewareDeps) {
       // runtime owns delivery for those runs and sends it to the creator alone.
       res.locals['authProvider'] = session.authProvider;
       res.locals['email']      = session.user?.email ?? null;
-      res.locals['channel']    = hasRuntimeClaims ? 'lark' : 'desktop';
+      // A runtime lease says which surface it was issued for; anything else is
+      // a person at their own machine. `isPiRuntimeLeaseClaims` has already
+      // rejected a lease whose channel is not one we drive, so this cannot widen
+      // past the union.
+      res.locals['channel'] = (hasRuntimeClaims ? payload.channel : 'desktop') as ChannelKey;
       res.locals['isPiRuntimeLease'] = hasRuntimeClaims;
 
       // Slide the expiry for a person who is actually using Divo. Skipped for a

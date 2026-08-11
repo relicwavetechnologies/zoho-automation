@@ -17,21 +17,6 @@ export interface ChannelBranding {
 
 export type ChannelPlanStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
 
-export type ChannelToolFamily =
-  | 'zoho'
-  | 'lark'
-  | 'google'
-  | 'context'
-  | 'orchestration'
-  | 'other';
-
-export interface ChannelPlanStep {
-  readonly status:     ChannelPlanStepStatus;
-  readonly title:      string;
-  readonly subtitle?:  string;
-  readonly toolFamily?: ChannelToolFamily;
-}
-
 /**
  * One row of the run's activity list: a tool call, or a group of consecutive
  * calls to the same tool.
@@ -60,6 +45,23 @@ export interface ChannelLedgerRow {
   readonly outcome?:  string;
   readonly status:    ChannelPlanStepStatus;
   readonly children?: ReadonlyArray<ChannelLedgerRow>;
+  /**
+   * Who was called, in the wire's own words rather than the reader's.
+   *
+   * `label` is English — "Google Gmail", "Terminal" — and English is a one-way
+   * street: a surface that wants to draw the Gmail mark beside that row has to
+   * parse a sentence back into a vendor, and gets it wrong the moment the
+   * wording changes. The reducer is handed both of these at `tool_start` and
+   * used to drop them on the floor.
+   *
+   * `toolId` is a `CANONICAL_TOOL_IDS` entry (`googleGmail`, `zohoBooks`) for a
+   * governed call; `toolName` is the container's own tool (`bash`, `read`,
+   * `divo_gateway`) and is all there is for an ungoverned one. A surface that
+   * only prints text ignores both — Lark does — and one that draws marks keys
+   * off them exactly as the desktop work log does.
+   */
+  readonly toolId?:   string;
+  readonly toolName?: string;
 }
 
 /**
@@ -118,7 +120,6 @@ export interface ChannelTimeline {
   readonly declared?:      ChannelDeclaredPlan;
   /** Full run ledger, grouped by tool family. */
   readonly ledger?:        ReadonlyArray<ChannelLedgerRow>;
-  readonly plan?:           ReadonlyArray<ChannelPlanStep>;
   readonly liveLabel?:      string;
   /** Rolling live sentences from model stream (max 3 committed). */
   readonly narration?:      ReadonlyArray<string>;
@@ -141,7 +142,14 @@ export interface FinalReply {
   readonly branding?:       ChannelBranding;
   readonly actions?:        readonly InteractiveAction[];
   readonly attachments?:    readonly { url: string; label?: string }[];
-  readonly executionTrace?: string;
+  /**
+   * The run's activity log, structured.
+   *
+   * Sent as rows rather than as pre-rendered text: a Lark card folds it into a
+   * collapsible panel under a character budget, a browser draws it as steps.
+   * Flattening it here would have made the first renderer's shape everyone's.
+   */
+  readonly ledger?: ReadonlyArray<ChannelLedgerRow>;
   /** Protected replies may be delivered but must never be retained for replay. */
   readonly retention?: 'transient';
 }
