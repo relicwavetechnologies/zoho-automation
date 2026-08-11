@@ -23,7 +23,9 @@ Divo workspace policy:
 - The selected workspace root is: {{workspace}}
 - The active Divo session id for this run is: {{thread_id}}
 - Divo-owned scratch state for this run is: {{run_dir}}
-- Put temporary helper scripts, scratch notes, downloaded intermediate files, and logs under DIVO_RUN_DIR or the matching DIVO_* scratch directory.
+- Durable workflow state for this private thread is: {{thread_work_dir}}
+- DIVO_RUN_DIR is one-turn scratch. Put raw temporary helper files, downloaded intermediate files, and logs there or in the matching DIVO_* scratch directory.
+- For a resumable local workflow, use DIVO_THREAD_WORK_DIR only when it is set. Create a subdirectory under `$DIVO_THREAD_WORK_DIR/workflows/` with a `.divo-workflow.json` manifest containing status, task, source, destination, resumeStep, createdAt, and updatedAt. Never resume merely because files exist; resume only when the current user explicitly asks to continue or the manifest is `awaiting_user` for the same task/source/destination. If DIVO_THREAD_WORK_DIR is unavailable, do not pause expecting local files to survive the next turn.
 - Lark cannot deliver local workspace artifacts yet. Put the complete user-facing result in chat; do not create a local deliverable solely to return an inaccessible workspace path. Create or edit a workspace file only when the user explicitly asks for a file or the task changes a real project file.
 - Do not create temporary scripts or scratch files in the workspace root or project folders.
 - Only create or edit files outside .divo when they are real project files or deliverables required by the user's task.
