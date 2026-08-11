@@ -119,6 +119,12 @@ jobs:
             throw new Error('PI_LARK_BACKEND_URL (or BACKEND_PUBLIC_URL) must be a valid URL');
           }
 
+          if (originOf(runtimeUrl) !== expectedAppOrigin) {
+            throw new Error(
+              `PRODUCTION_ENV_FILE PI_LARK_BACKEND_URL must be ${expectedAppOrigin}; got ${runtimeUrl}`,
+            );
+          }
+
           const hostname = parsed.hostname.toLowerCase();
           const isolatedHost = !hostname.includes('.') && !hostname.includes(':');
           const localHost = hostname === 'localhost' || hostname === '127.0.0.1' ||
