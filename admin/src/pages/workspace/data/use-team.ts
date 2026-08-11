@@ -1,12 +1,9 @@
 /**
- * The manager's view of one department.
+ * The desktop view of one department.
  *
- * Everything here already existed on the backend and nothing called it. The
- * permission snapshot in particular is richer than the mock assumed: it reports
- * what was *configured*, where that came from, what the member can *actually*
- * do, and — when those two disagree — which company-level rule is holding it
- * down. That last part is the thing a manager needs and almost no RBAC UI has,
- * so it is modelled here rather than flattened into a boolean.
+ * The team page writes through manager-only routes. Company views may also read
+ * the same snapshot, so the agent map can show every team without re-deriving
+ * permissions in the browser.
  *
  * These routers answer with their payload bare rather than the usual
  * { success, data }, hence `raw` on every call.
@@ -143,8 +140,8 @@ export function useDepartment(departmentId?: string) {
       setRefused(false)
     } catch (e) {
       if (generation.current !== gen) return
-      // The route refuses anyone who does not manage this department, which is
-      // a meaningful answer rather than a failure — say so plainly.
+      // A refusal is a meaningful answer rather than a failure: the viewer may
+      // not manage or administer this department.
       setError(e instanceof Error ? e.message : 'Could not load this department.')
       setRefused(e instanceof ApiError && (e.status === 403 || e.status === 401))
       setSnapshot(null)

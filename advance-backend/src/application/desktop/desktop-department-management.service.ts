@@ -94,13 +94,15 @@ type DepartmentManagerServiceDeps = {
   logger: Logger;
 };
 
+const COMPANY_ADMIN_ROLES = new Set(['COMPANY_ADMIN', 'SUPER_ADMIN']);
+
 /**
  * Desktop-facing department team management.
  *
- * This facade deliberately accepts only an authenticated member actor and
- * re-checks that actor's live MANAGER membership for the exact department on
- * every read and immediately before every write. Company administrators keep
- * using the existing admin surface for department and Manager-role changes.
+ * This facade deliberately accepts only an authenticated member actor. Company
+ * admins may read department snapshots for company views; every manager edit
+ * still re-checks live MANAGER membership for the exact department immediately
+ * before writing.
  */
 export class DesktopDepartmentManagementService {
   private readonly log: Logger;
@@ -127,6 +129,15 @@ export class DesktopDepartmentManagementService {
       select: { id: true },
     });
     return Boolean(managerMembership);
+  }
+
+  private async canReadDepartment(actor: DesktopDepartmentActor, departmentId: string): Promise<boolean> {
+    const companyMembership = await this.deps.prisma.adminMembership.findFirst({
+      where: { userId: actor.userId, companyId: actor.companyId, isActive: true },
+      select: { role: true },
+    });
+    if (COMPANY_ADMIN_ROLES.has(companyMembership?.role ?? '')) return true;
+    return this.isLiveManager(actor, departmentId);
   }
 
   private async requireManager(actor: DesktopDepartmentActor, departmentId: string): Promise<void> {
@@ -197,7 +208,9 @@ export class DesktopDepartmentManagementService {
   }
 
   async snapshot(actor: DesktopDepartmentActor, departmentId: string): Promise<DepartmentManagementSnapshot> {
-    await this.requireManager(actor, departmentId);
+    if (!await this.canReadDepartment(actor, departmentId)) {
+      throw new DesktopDepartmentManagementError('forbidden', 'Current membership is not authorised to read this department');
+    }
     const result = await this.deps.departmentAdminService.getDepartmentDetail(departmentId, actor.companyId, ['overview', 'roles', 'members']);
     if (!result.ok) this.throwResultError(result);
     return { department: result.value.department, roles: result.value.roles, memberships: result.value.memberships };

@@ -520,6 +520,43 @@ describe('desktop trace terminal status', () => {
       assistantText: 'I will keep future summaries short.',
       sourceId: 'desktop:execution-1',
     }]);
+    assert.deepEqual(test.completions, [[
+      'execution-1',
+      'I prefer short summaries.',
+    ]]);
+  });
+
+  it('uses a short first user message as the run title when Pi gives no summary', async () => {
+    const test = harness();
+
+    await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'run-title-fallback',
+        runtimeChannel: 'lark',
+        usageAuthority: 'proxy',
+        events: [
+          {
+            kind: 'learning_context',
+            seq: 1,
+            userMessages: ['  Check   the Q3 invoices\nfor duplicates  '],
+            toolSummary: [],
+          },
+          { kind: 'run_end', seq: 2, status: 'ok' },
+        ],
+      },
+      undefined,
+      undefined,
+      provenance('run-title-fallback'),
+    );
+
+    assert.deepEqual(test.completions, [[
+      'execution-1',
+      'Check the Q3 invoices for duplicates',
+    ]]);
   });
 
   it('does not duplicate personal learning from a Lark trace already owned by the Lark runtime', async () => {
