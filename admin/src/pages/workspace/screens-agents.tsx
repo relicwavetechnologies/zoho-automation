@@ -143,14 +143,14 @@ export function AgentMap({ replay, toast }: Props) {
   /*
    * Open on a team this viewer can actually read.
    *
-   * The map is built on manager-scoped endpoints — `/departments/:id/manage`
-   * and `/:id/tools` — which refuse for any team you do not manage. Opening on
-   * whichever department sorted first therefore greeted most people with
-   * "forbidden" on a page whose whole job is to answer a question, and a
-   * company admin with three teams could read exactly one of them.
+   * The map is built on the same desktop permission snapshots the Team page
+   * uses. Company admins may read every team; managers can read their own. Open
+   * on a team this viewer is likely allowed to read, so the first paint is a
+   * map rather than a refusal.
    *
-   * Your own team first, then any team with members, then whatever exists. The
-   * others stay in the picker and say plainly why they cannot be shown.
+   * Your own managed team first, then any team with members, then whatever
+   * exists. The others stay in the picker and say plainly why they cannot be
+   * shown.
    */
   const activeDepartment = departmentId
     || managed.department?.id
@@ -344,8 +344,8 @@ export function AgentMap({ replay, toast }: Props) {
               icon={CircleSlash}
               title="This team is not yours to read"
               body={managed.department
-                ? `The map reads each team through its manager, and you manage ${managed.department.name}. Pick that one above to see it.`
-                : 'The map reads each team through its manager, and you do not manage this one.'}
+                ? `You can read ${managed.department.name}. Pick that one above to see it.`
+                : 'You do not manage or administer this team.'}
             />
           ) : graph.error ? (
             <Empty icon={CircleSlash} title="Could not read this team’s permissions" body={graph.error} />
@@ -388,7 +388,7 @@ export function AgentMap({ replay, toast }: Props) {
                above already explains that one, and calling it "nobody in it"
                would be a second wrong answer. */
             : graph.refused
-              ? 'Pick a team you manage to see its map.'
+              ? 'Pick a team you manage or administer to see its map.'
               : graph.people.length === 0 && !graph.loading
                 ? 'This team has nobody in it, so there is no one to ask about. Pick another team above.'
                 : 'Choose a person above. Until then nothing is lit, because “what can this person do” has no answer yet.'}
@@ -907,7 +907,7 @@ function AgentDrawer({ agent, catalogue, personName, hasPerson, onClose, toast }
 
         <div className="ws-drawer-f">
           <button type="button" className="btn" onClick={onClose}>Close</button>
-          <button type="button" className="btn primary" disabled={!dirty} onClick={save}>Save</button>
+          <button type="button" className="btn primary" disabled={!dirty} onClick={save}>Save on this device</button>
         </div>
       </aside>
     </>

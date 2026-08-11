@@ -44,7 +44,7 @@ function respondError(res: Response, error: unknown): void {
   res.status(500).json({ error: 'internal_error', message: 'Unable to manage this department' });
 }
 
-/** Member-authenticated, department-manager-only team and custom-role routes. */
+/** Member-authenticated team routes. Writes stay department-manager-only. */
 export function createDesktopDepartmentRoutes(deps: DesktopDepartmentRoutesDeps): Router {
   const router = Router();
   const memberAuth = createMemberAuthMiddleware({ prisma: deps.prisma, jwtSecret: deps.memberJwtSecret, logger: deps.logger });

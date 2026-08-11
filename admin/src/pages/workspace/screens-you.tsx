@@ -12,7 +12,7 @@ import {
   Sparkles, Trash2, TriangleAlert, Users, X,
 } from 'lucide-react'
 import {
-  CONNECTORS, MEMORIES, SKILLS, toolById,
+  CONNECTORS, MEMORIES, toolById,
   type Memory, type Persona, type Provider,
 } from './fixtures'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -28,6 +28,7 @@ import {
   useShopifyCompanyStatus, useShopifyConnect, type ShopifyCompanyConnection, type ShopifyCompanyStatus,
 } from './data/use-company-connections'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
+import { useMySkills } from './data/use-my-skills'
 import {
   useZohoSelfClientConnect,
   ZOHO_DATA_CENTRES,
@@ -1737,52 +1738,92 @@ export function YouApprovals({ replay, toast }: ScreenProps) {
 }
 
 /* ══ Skills ════════════════════════════════════════════ */
-export function YouSkills({ replay, toast }: ScreenProps) {
+/**
+ * What Divo can already do for you, and what is waiting on a tool you lack.
+ *
+ * This listed a fixture until the endpoint behind it existed: invented names,
+ * invented scopes, invented run counts. It is the real registry now, resolved
+ * per person by the same services a run asks, so a skill shown here is a skill
+ * that would actually load.
+ *
+ * There is no "Private" filter any more, because there is no such thing — a
+ * skill reaches you company-wide or through a team, and both are named. The
+ * split that matters is whether you can run it.
+ */
+export function YouSkills({ replay }: ScreenProps) {
   const [r1] = useStaged([300], replay)
-  const [scope, setScope] = useState<'all' | 'Private' | 'Finance' | 'Company'>('all')
-  const list = useMemo(() => SKILLS.filter((s) => scope === 'all' || s.scope === scope), [scope])
+  const [scope, setScope] = useState<'all' | 'ready' | 'blocked'>('all')
+  const { skills, loading, error } = useMySkills()
+
+  const blockedCount = useMemo(() => skills.filter((s) => s.missingTools.length > 0).length, [skills])
+  const list = useMemo(() => skills.filter((s) =>
+    scope === 'all'
+    || (scope === 'ready' ? s.missingTools.length === 0 : s.missingTools.length > 0)), [skills, scope])
+
+  const ready = r1 && !loading
 
   return (
     <>
       <PageHeader
         eyebrow="Your workspace"
         title="Skills"
-        description="Saved ways of working that Divo can repeat. Yours stay private until you share them."
-        actions={<button type="button" className="btn primary" onClick={() => toast('Teach opens in the desktop app')}><Plus size={14} />Teach a skill</button>}
+        description="Ways of working Divo already knows here. Each one is shared with you by your company or your team, and runs only if you can use every tool it needs."
+        actions={ready && skills.length > 0
+          ? <span className="ws-tag">{skills.length} shared with you</span>
+          : undefined}
       />
-      <div className="filters">
-        <Seg
-          value={scope}
-          onChange={setScope}
-          options={[
-            { value: 'all', label: 'All' },
-            { value: 'Private', label: 'Private' },
-            { value: 'Finance', label: 'Finance' },
-            { value: 'Company', label: 'Company' },
-          ]}
-        />
-      </div>
+      {/* Only when there is a division to make. Two filters that both mean
+          "everything" is a control that does nothing. */}
+      {ready && blockedCount > 0 ? (
+        <div className="filters">
+          <Seg
+            value={scope}
+            onChange={setScope}
+            options={[
+              { value: 'all', label: `All ${skills.length}` },
+              { value: 'ready', label: `Ready ${skills.length - blockedCount}` },
+              { value: 'blocked', label: `Needs a tool ${blockedCount}` },
+            ]}
+          />
+        </div>
+      ) : null}
       <Panel source="skills">
-        {!r1 ? <SkelRows n={4} /> : (
+        {!ready ? <SkelRows n={5} /> : error ? (
+          <Empty icon={Ban} title="Could not load your skills" body={error} />
+        ) : skills.length === 0 ? (
+          <Empty
+            icon={Sparkles}
+            title="Nothing shared with you yet"
+            body="Skills are written once and shared with a team or the whole company. When one reaches you it appears here."
+          />
+        ) : (
           <Fade>
             <div className="ws-rows">
               {list.map((s) => (
                 <div className="ws-row" key={s.id}>
-                  <span className="ws-ic" data-tone={s.blockedBy ? 'warn' : undefined}>
-                    {s.blockedBy ? <Ban size={14} /> : <Sparkles size={14} />}
+                  <span className="ws-ic" data-tone={s.missingTools.length ? 'warn' : undefined}>
+                    {s.missingTools.length ? <Ban size={14} /> : <Sparkles size={14} />}
                   </span>
                   <div className="ws-row-main">
                     <b>
                       {s.name}
-                      <span className="ws-tag">{s.scope}</span>
+                      {/* Where it came from, which is also who to ask about it. */}
+                      <span className="ws-tag">{s.departmentName ?? 'Company-wide'}</span>
                     </b>
                     <p>
-                      {s.blurb} {s.blockedBy ? <span style={{ color: 'var(--ws-warning)' }}>· Needs {toolById(s.blockedBy)?.name}</span> : null}
+                      {s.description}
+                      {s.missingTools.length ? (
+                        <span style={{ color: 'var(--ws-warning)' }}>
+                          {' · Needs '}
+                          {listPhrase(s.missingTools.map((t) => toolById(t)?.name ?? t))}
+                        </span>
+                      ) : null}
                     </p>
                   </div>
                   <div className="ws-row-act">
-                    <span className="ws-sub">{s.runs30d} runs</span>
-                    <span className="ws-sub">{s.updated}</span>
+                    <span className="ws-sub">
+                      {s.toolIds.length} {s.toolIds.length === 1 ? 'tool' : 'tools'}
+                    </span>
                   </div>
                 </div>
               ))}

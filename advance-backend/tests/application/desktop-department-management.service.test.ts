@@ -25,12 +25,12 @@ function detail(overrides: any = {}) {
   };
 }
 
-function makeService(options: { managedDepartment?: string; revokeOnSecondCheck?: boolean; targetRole?: string; targetStatus?: string; approvalJson?: unknown } = {}) {
+function makeService(options: { companyRole?: string; managedDepartment?: string; revokeOnSecondCheck?: boolean; targetRole?: string; targetStatus?: string; approvalJson?: unknown } = {}) {
   let managerChecks = 0;
   const audits: any[] = [];
   const calls: any[] = [];
   const prisma = {
-    adminMembership: { findFirst: async () => ({ id: 'workspace-membership' }) },
+    adminMembership: { findFirst: async () => ({ id: 'workspace-membership', role: options.companyRole ?? 'MEMBER' }) },
     departmentMembership: {
       findFirst: async ({ where }: any) => {
         if (!where.role?.slug) {
@@ -76,6 +76,11 @@ describe('DesktopDepartmentManagementService', () => {
       () => service.snapshot(actor, 'sales'),
       (error: unknown) => error instanceof DesktopDepartmentManagementError && error.code === 'forbidden',
     );
+  });
+
+  it('lets a company admin read a department they do not personally manage', async () => {
+    const { service } = makeService({ companyRole: 'COMPANY_ADMIN', managedDepartment: 'finance' });
+    await service.snapshot(actor, 'sales');
   });
 
   it('returns unavailable directory candidates with their eligibility context intact', async () => {

@@ -1877,6 +1877,28 @@
   overflow-wrap: anywhere;
 }
 .cur .dt-row-v { min-width: 0; text-align: right; }
+
+/* One branch of a routing rule. Stacked rather than a two-column row: the
+   condition is a sentence and the destination is an address, and the row grid
+   gave the sentence about 150px to wrap in — sixty words down a thin ribbon
+   with the address stranded beside it. */
+.cur .dt-route { padding: 9px 0; }
+.cur .dt-route + .dt-route { border-top: 1px solid var(--cur-hairline-soft); }
+.cur .dt-route-when {
+  font-size: 12.5px; line-height: 1.5; color: var(--cur-body);
+  overflow-wrap: anywhere;
+}
+/* The destination reads as the consequence of the line above it, so it is
+   indented under the sentence rather than aligned to the rail edge. */
+.cur .dt-route-to {
+  display: flex; align-items: center; gap: 6px; margin-top: 7px; padding-left: 13px;
+  position: relative;
+}
+.cur .dt-route-to::before {
+  content: '↳'; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  color: var(--cur-muted-soft); font-size: 12px; line-height: 1;
+}
+.cur .dt-route-to .dt-chip { justify-content: flex-start; }
 .cur .dt-chip {
   display: inline-flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px;
   max-width: 100%; min-width: 0; padding: 4px 9px; border-radius: 6px;

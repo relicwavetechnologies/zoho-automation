@@ -5,8 +5,8 @@
  *
  * The graph's *shape* is real. Departments, people, roles, which tools exist and
  * exactly which actions a given person may run come from live routes — the same
- * ones the Team permission matrix already uses, so this screen and that one can
- * never disagree. If an edge is lit here, the backend really would let that
+ * permission snapshot the Team matrix uses, with company-admin reads enabled for
+ * company views. If an edge is lit here, the backend really would let that
  * person run that agent today.
  *
  * The graph's *agent configuration* is invented. System prompt, model, container

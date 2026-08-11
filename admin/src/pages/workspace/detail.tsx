@@ -87,6 +87,31 @@ export function RailRow({ label, children }: { label: string; children: ReactNod
 }
 
 /**
+ * One branch of a routing rule: what it matches, and where that goes.
+ *
+ * Not a `RailRow`. That is a grid of `0.8fr / 1.2fr` built for a short label
+ * beside a short value, and a routing branch is neither — the left side is a
+ * sentence describing a category ("an invoice, a bill, a payment reminder, a
+ * receipt, or anything about money owed or paid") and the right side is one
+ * address. Fed through the row grid, sixty words were squeezed into about a
+ * hundred and fifty pixels and fell down the rail as a tall thin ribbon of
+ * text, with the address stranded at the top of an empty column beside it.
+ *
+ * Stacked instead, because the two parts are a sentence in sequence rather
+ * than a pair: this is what it catches, and then this is where it goes. The
+ * condition gets the full width to read at, and the destination sits under it
+ * where the eye already is.
+ */
+export function RailRoute({ when, children }: { when: string; children: ReactNode }) {
+  return (
+    <div className="dt-route">
+      <p className="dt-route-when">{when}</p>
+      <div className="dt-route-to">{children}</div>
+    </div>
+  )
+}
+
+/**
  * The rail's read-only value treatment — a chip, matching the reference.
  *
  * `tone="plain"` drops the chip for values that are prose rather than a
