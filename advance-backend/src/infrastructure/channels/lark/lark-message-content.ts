@@ -66,13 +66,38 @@ function collectCardText(
   if (tag === 'div' || tag === 'button' || tag === 'confirm') {
     collectCardText(record['text'], state, depth + 1);
   }
+  if (tag === 'table') {
+    collectCardText(record['columns'], state, depth + 1);
+    collectTableRows(record['rows'], state, depth + 1);
+    return;
+  }
 
   for (const key of [
     'header', 'title', 'body', 'elements', 'fields', 'columns',
-    'extra', 'confirm', 'actions',
+    'rows', 'cells', 'extra', 'confirm', 'actions', 'config', 'summary',
+    'text_tag_list',
   ] as const) {
     collectCardText(record[key], state, depth + 1);
     if (state.stopped) break;
+  }
+
+  addText(state, record['display_name']);
+}
+
+function collectTableRows(value: unknown, state: CardTextState, depth: number): void {
+  if (!Array.isArray(value)) return;
+  for (const row of value) {
+    if (state.stopped) break;
+    const record = recordValue(row);
+    if (!record) continue;
+    for (const cell of Object.values(record)) {
+      if (state.stopped) break;
+      if (typeof cell === 'string' || typeof cell === 'number' || typeof cell === 'boolean') {
+        addText(state, String(cell));
+        continue;
+      }
+      collectCardText(cell, state, depth + 1);
+    }
   }
 }
 
