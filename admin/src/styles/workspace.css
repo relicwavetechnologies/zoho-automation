@@ -2536,6 +2536,21 @@
 
 .cur .agm-canvas { height: 560px; position: relative; background: var(--cur-canvas-soft); }
 .cur .agm-loading { height: 100%; display: grid; place-items: center; }
+/* Divo in the middle, agents around it — the layout the real map uses, so the
+   placeholder is the same picture unfilled rather than a bar in a void. */
+.cur .agm-skel-ring { position: relative; width: 460px; height: 340px; }
+.cur .agm-skel-hub {
+  position: absolute; left: 50%; top: 50%; width: 178px; height: 42px;
+  transform: translate(-50%, -50%); border-radius: 10px;
+}
+.cur .agm-skel-node {
+  position: absolute; left: 50%; top: 50%; width: 178px; height: 42px; border-radius: 10px;
+  /* Six seats on the ring, same as the layout's first orbit. */
+  transform:
+    translate(-50%, -50%)
+    rotate(calc(var(--i) * 60deg)) translate(196px) rotate(calc(var(--i) * -60deg));
+  opacity: .55;
+}
 .cur .agm-bg { color: var(--cur-hairline); }
 
 /* React Flow ships its own chrome. Only the surfaces we actually show are

@@ -29,6 +29,7 @@ import {
 import '@xyflow/react/dist/style.css'
 import { Bot, Boxes, Brain, CircleSlash, Cpu, ShieldCheck, Sparkles, Trash2, Wrench } from 'lucide-react'
 import { useCompanyDepartments } from './data/use-company'
+import { useManagedDepartments } from './data/use-team'
 import { useMyModelOptions } from './data/use-my-activity'
 import {
   CONTAINER_LABEL, MEMORY_SCOPE_LABEL, PROVENANCE_LABEL,
@@ -132,15 +133,30 @@ const NODE_TYPES = { orchestrator: OrchestratorNode, agent: AgentNodeView }
 export function AgentMap({ replay, toast }: Props) {
   const [r1] = useStaged([260], replay)
   const departments = useCompanyDepartments()
+  const managed = useManagedDepartments()
   const [departmentId, setDepartmentId] = useState<string>('')
   const [userId, setUserId] = useState<string>('')
   const [showUnreachable, setShowUnreachable] = useState(true)
   const [openId, setOpenId] = useState<string | null>(null)
   const [draft, setDraft] = useState<AgentDefinition | null>(null)
 
-  // First department wins until somebody chooses. A map of nothing is not a
-  // useful first impression, and every admin has at least one.
-  const activeDepartment = departmentId || departments.data[0]?.id || ''
+  /*
+   * Open on a team this viewer can actually read.
+   *
+   * The map is built on manager-scoped endpoints — `/departments/:id/manage`
+   * and `/:id/tools` — which refuse for any team you do not manage. Opening on
+   * whichever department sorted first therefore greeted most people with
+   * "forbidden" on a page whose whole job is to answer a question, and a
+   * company admin with three teams could read exactly one of them.
+   *
+   * Your own team first, then any team with members, then whatever exists. The
+   * others stay in the picker and say plainly why they cannot be shown.
+   */
+  const activeDepartment = departmentId
+    || managed.department?.id
+    || departments.data.find((d) => d.memberCount > 0)?.id
+    || departments.data[0]?.id
+    || ''
   const graph = useAgentGraph(activeDepartment || undefined, userId || undefined)
 
   const openAgent = useCallback((id: string) => setOpenId(id), [])
@@ -245,14 +261,32 @@ export function AgentMap({ replay, toast }: Props) {
               value={activeDepartment}
               onChange={(e) => { setDepartmentId(e.target.value); setUserId('') }}
             >
-              {departments.data.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+              {/* The size is the part that decides whether this team can
+                  answer anything, so it travels with the name rather than
+                  being discovered by picking one and finding it empty. */}
+              {departments.data.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}{d.memberCount === 0 ? ' — nobody in it' : ` · ${d.memberCount}`}
+                </option>
+              ))}
             </select>
           </label>
 
           <label className="agm-field">
             <span>Person</span>
-            <select className="select" value={userId} onChange={(e) => setUserId(e.target.value)}>
-              <option value="">Nobody selected</option>
+            <select
+              className="select"
+              value={userId}
+              onChange={(e) => setUserId(e.target.value)}
+              // Nothing to choose is not the same as choosing nothing. Left
+              // enabled it was a control that opened onto one dead entry.
+              disabled={!graph.loading && graph.people.length === 0}
+            >
+              <option value="">
+                {graph.loading
+                  ? 'Loading…'
+                  : graph.people.length === 0 ? 'Nobody in this team' : 'Nobody selected'}
+              </option>
               {graph.people.map((p) => (
                 <option key={p.userId} value={p.userId}>{p.name ?? p.email}</option>
               ))}
@@ -280,7 +314,39 @@ export function AgentMap({ replay, toast }: Props) {
 
         <div className="agm-canvas">
           {!r1 || graph.loading ? (
-            <div className="agm-loading"><span className="ws-skel line" style={{ width: 180, height: 11 }} /></div>
+            /*
+             * The shape of a graph, not a stray line.
+             *
+             * A single 180×11 bar sat in the middle of a 560px canvas, which
+             * read as a broken page rather than a loading one — nothing about
+             * it suggested a map was coming. These are the real node width and
+             * the real ring the layout uses, so the arrival is a fill rather
+             * than a jump.
+             */
+            <div className="agm-loading" aria-label="Loading the map">
+              <div className="agm-skel-ring">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <span key={i} className="ws-skel block agm-skel-node" style={{ ['--i' as string]: i }} />
+                ))}
+                <span className="ws-skel block agm-skel-hub" />
+              </div>
+            </div>
+          ) : graph.refused ? (
+            /*
+             * A refusal is an answer, and it was arriving as the bare word
+             * "forbidden" under a generic title — the backend's vocabulary
+             * printed at somebody who then has to guess whether the team is
+             * empty, broken, or none of their business. Worse, a blank map
+             * beside it reads as "this person can do nothing", which is the
+             * opposite of "we could not look".
+             */
+            <Empty
+              icon={CircleSlash}
+              title="This team is not yours to read"
+              body={managed.department
+                ? `The map reads each team through its manager, and you manage ${managed.department.name}. Pick that one above to see it.`
+                : 'The map reads each team through its manager, and you do not manage this one.'}
+            />
           ) : graph.error ? (
             <Empty icon={CircleSlash} title="Could not read this team’s permissions" body={graph.error} />
           ) : graph.agents.length === 0 ? (
@@ -315,7 +381,17 @@ export function AgentMap({ replay, toast }: Props) {
         <div className="ws-panel-foot">
           {userId
             ? 'Lit edges are permissions the backend would really grant today. Everything editable in a drawer is stored in this browser only.'
-            : 'Choose a person above. Until then nothing is lit, because “what can this person do” has no answer yet.'}
+            /* "Choose a person above" was pointing at an empty list whenever
+               the team had nobody in it — an instruction the reader could not
+               follow, which reads as the page being broken rather than the
+               team being empty. Refused is kept apart from empty: the canvas
+               above already explains that one, and calling it "nobody in it"
+               would be a second wrong answer. */
+            : graph.refused
+              ? 'Pick a team you manage to see its map.'
+              : graph.people.length === 0 && !graph.loading
+                ? 'This team has nobody in it, so there is no one to ask about. Pick another team above.'
+                : 'Choose a person above. Until then nothing is lit, because “what can this person do” has no answer yet.'}
         </div>
       </Panel>
 
