@@ -5,9 +5,10 @@ function record(value) {
 }
 
 /**
- * `divo-local invoke` is a programming interface, so it exposes the native
- * operation result directly instead of making generated Python understand the
- * gateway executor's internal `{ toolId, action, result }` envelope.
+ * `divo-local call`, `describe`, and legacy `invoke` are programming
+ * interfaces, so they expose the native operation result directly instead of
+ * making generated Python understand the gateway executor's internal
+ * `{ toolId, action, result }` envelope.
  *
  * Discovery through `divo-local request` remains raw for diagnostics and
  * backwards compatibility.

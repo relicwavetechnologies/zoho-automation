@@ -97,15 +97,23 @@ including when an older conversation or cached recipe mentions it.
 ## Calling Divo from Python
 
 Use \`subprocess\` with \`divo-local\`. It exposes no member token or SaaS
-credential. For generated or substantial arguments, write an adjacent JSON
-file and pass \`--args-file\`.
+credential. For native MCP-style provider operations, write only the native
+\`input\` object to an adjacent JSON file and call
+\`divo-local call <toolId>.<nativeTool> --input-file <path>\`. The command name
+carries the tool and operation; do not put \`op\`, \`nativeTool\`, \`toolId\`,
+\`args\`, or \`skillId\` inside that input file. Use
+\`divo-local describe <toolId>.<nativeTool>\` only when a genuinely required
+native operation schema was not already loaded. Use legacy
+\`divo-local invoke --tool <toolId> --args-file <path>\` only for non-native or
+special operations with no \`<toolId>.<nativeTool>\` call surface.
 
-Every \`divo-local invoke\` automatically writes its successful governed
-response to a new protected JSON file inside \`DIVO_RUN_DIR\` and prints only a
-small path/byte-count/trace summary. Read the returned path in Python, then copy
-only normalized rows/checkpoints you truly need into the workflow directory.
-Never print or \`cat\` the saved response; print only counts, aggregates,
-validation errors, and IDs the user needs. A failed call creates no result file.
+Every native \`divo-local call\` or legacy \`invoke\` automatically writes its
+successful governed response to a new protected JSON file inside \`DIVO_RUN_DIR\`
+and prints only a small path/byte-count/trace summary. Read the returned path in
+Python, then copy only normalized rows/checkpoints you truly need into the
+workflow directory. Never print or \`cat\` the saved response; print only counts,
+aggregates, validation errors, and IDs the user needs. A failed call creates no
+result file.
 
 The saved JSON is \`{ ok, status, data, meta, ... }\`; \`data\` is the provider
 result, not necessarily a row array. Never use \`len(data)\` as a record count.
@@ -118,7 +126,8 @@ rate limits. When the source schema requires an ID, use an exact current-run ID;
 never guess, copy an old ID, or retry several IDs.
 
 The source skill and current work bootstrap already provide the backend
-\`toolId\`, argument contract, and continuation fields. Use those exact values.
+\`toolId\`, native operation name, input contract, and continuation fields. Use
+those exact values.
 Do not call \`tools.list\`, run \`divo-local --help\`, or probe the tool merely to
 rediscover a loaded contract. If an exact contract is genuinely missing, stop
 and report that contract gap instead of inventing a second discovery workflow.
@@ -148,20 +157,22 @@ class DivoCallError(RuntimeError):
         super().__init__(f"{status}: {message}")
 
 
-def divo_invoke(tool_id, args, label, args_name):
-    args_path = WORKFLOW_DIR / args_name
-    args_path.write_text(json.dumps(args, ensure_ascii=False), encoding="utf-8")
+def divo_call(operation, input_obj, label, input_name, connection_id=None):
+    input_path = WORKFLOW_DIR / input_name
+    input_path.write_text(json.dumps(input_obj, ensure_ascii=False), encoding="utf-8")
+    command = [
+        "divo-local",
+        "call",
+        operation,
+        "--input-file",
+        str(input_path),
+        "--label",
+        label,
+    ]
+    if connection_id:
+        command.extend(["--connection-id", connection_id])
     completed = subprocess.run(
-        [
-            "divo-local",
-            "invoke",
-            "--tool",
-            tool_id,
-            "--args-file",
-            str(args_path),
-            "--label",
-            label,
-        ],
+        command,
         capture_output=True,
         text=True,
         check=False,

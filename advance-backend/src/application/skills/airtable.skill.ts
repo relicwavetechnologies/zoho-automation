@@ -69,7 +69,7 @@ DATE WINDOWS:
 
 DIRECT PREVIEWS AND FILE-BACKED READS:
 - Ordinary direct \`op: "call"\` record reads return a byte-safe preview and hide continuation cursors.
-- For a complete artifact or calculation, make the exact same native \`op: "call"\` through \`divo-local\`. Its raw page and cursor are written to a protected local file instead of model context.
+- For a complete artifact or calculation, make the same native operation through \`divo-local call airtableRecords.<nativeTool> --input-file <path>\`. The JSON file contains only the native \`input\`; the client constructs \`op\`, \`nativeTool\`, and result-file transport internally. Its raw page and cursor are written to a protected local file instead of model context.
 - Filter at Airtable first with the native structured \`filters\`, request only required \`fieldIds\`, and preserve any sort. Pass each returned cursor into the next call and stop only when the provider reports no page remains.
 - Estimate the scope before an unfiltered scan. If it will be materially large or slow, ask the member before starting it.
 - The response still carries \`metadata.totalRecordCount\`, which is the server's exact count of every record matching the filter, not the number of rows previewed. When the member asked how many, that number IS the answer: filter precisely, read totalRecordCount, and report it. Send \`pageSize: 1\` when only the count is wanted.

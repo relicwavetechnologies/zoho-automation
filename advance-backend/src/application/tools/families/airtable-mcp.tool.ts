@@ -171,7 +171,7 @@ function createProductTool(
       'op: describe|call. Prefer the exact schema already loaded in bootstrap.nativeContracts. Use describe once only for a required operation whose schema is absent.',
       `nativeTool: one of ${nativeToolNames.join('|')}.`,
       `input: exact object accepted by the described MCP tool. ${AIRTABLE_MCP_AUTH_CONTRACT.agentGuidance}`,
-      'Ordinary record calls are capped to a byte-safe preview of at most 200 rows and do not expose continuation cursors. The exact same op=call through divo-local returns the raw MCP page and cursor into a protected local file. Filter at Airtable with the native structured filters, request only required fields, pass each returned cursor into the next call, and stop when the provider says no page remains. Before a materially large unfiltered scan, estimate the scope and ask the user.',
+      'Ordinary record calls are capped to a byte-safe preview of at most 200 rows and do not expose continuation cursors. For a local workflow, use divo-local call <toolId>.<nativeTool> --input-file <path>; that file contains only the native input object, and the raw MCP page plus cursor goes into a protected local file. Filter at Airtable with the native structured filters, request only required fields, pass each returned cursor into the next call, and stop when the provider says no page remains. Before a materially large unfiltered scan, estimate the scope and ask the user.',
     ].join(' '),
 
     permissionCheck(args, permission) {
