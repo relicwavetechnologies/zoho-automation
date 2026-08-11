@@ -32,6 +32,7 @@ import { createMailAutomationsRoutes } from './http/mail/mail-automations.routes
 import { createMailGovernanceRoutes } from './http/mail/mail-governance.routes';
 import { createDesktopDepartmentRoutes } from './http/desktop/desktop-departments.routes';
 import { createDesktopApprovalRoutes } from './http/desktop/desktop-approvals.routes';
+import { createDesktopSkillRoutes } from './http/desktop/desktop-skills.routes';
 import { createDesktopActivityRoutes, createDesktopTeamActivityRoutes } from './http/desktop/desktop-activity.routes';
 import { createDepartmentRoutes } from './http/admin/departments.routes';
 import { createSkillRegistryRoutes } from './http/admin/skill-registry.routes';
@@ -633,6 +634,21 @@ export const createServer = (c: Container): DivoServerApplication => {
       memberJwtSecret: c.env.MEMBER_JWT_SECRET,
       logger:          c.logger,
       inbox:           c.approvalInbox,
+    }),
+  );
+
+  // The skills a member can actually run, resolved by the same two services
+  // the Pi runtime asks. Until this existed the web app had no way to answer
+  // the question and showed an invented list instead.
+  app.use(
+    '/api/desktop',
+    createDesktopSkillRoutes({
+      prisma:                 c.prisma,
+      memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
+      logger:                 c.logger,
+      skillCatalog:           c.skillCatalog,
+      skillAccessEnforcement: c.skillAccessEnforcement,
+      permissions:            c.permissions,
     }),
   );
 

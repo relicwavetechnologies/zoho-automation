@@ -48,7 +48,7 @@ import {
 import { useConnections } from './data/use-connections'
 import { ago } from './data/use-approvals'
 import { GmailMark, LarkMark } from './brand'
-import { DetailPage, RailChip, RailEmpty, RailRow, RailSection } from './detail'
+import { DetailPage, RailChip, RailEmpty, RailRoute, RailRow, RailSection } from './detail'
 import { Confirm, DataNote, Empty, Fade, PageHeader, Panel, RowMenu, Seg, SkelRows, useStaged } from './ui'
 import type { Persona } from './fixtures'
 import type { Toast } from './ui'
@@ -1074,17 +1074,17 @@ function RuleRail({ rule, mailbox }: { rule: MailRule; mailbox: MailboxHealth | 
       {routed ? (
         <RailSection title="Divo sorts it" defaultOpen>
           {routed.routes.map((route) => (
-            <RailRow key={route.key} label={route.when || '(not described)'}>
+            <RailRoute key={route.key} when={route.when || '(not described)'}>
               <RailChip tone="plain">{route.destination.label}</RailChip>
-            </RailRow>
+            </RailRoute>
           ))}
-          <RailRow label="Anything else">
+          <RailRoute when="Anything else">
             <RailChip tone="plain">
               {routed.otherwise
                 ? routed.otherwise.label
                 : 'Held back and shown to you'}
             </RailChip>
-          </RailRow>
+          </RailRoute>
         </RailSection>
       ) : null}
 
