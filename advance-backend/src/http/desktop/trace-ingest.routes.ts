@@ -255,6 +255,7 @@ export async function ingestTraceBatch(
     ...(batch.agentTarget !== undefined ? { agentTarget: batch.agentTarget } : {}),
     ...(batch.threadId    !== undefined ? { threadId:    batch.threadId }    : {}),
   };
+  const fallbackRunSummary = firstUserMessageTitle(batch.events);
 
   const results = await Promise.allSettled(
     batch.events.map((ev) => persistEvent(
@@ -264,6 +265,7 @@ export async function ingestTraceBatch(
       ctx,
       batch.usageAuthority,
       containsProtectedShopifyData,
+      fallbackRunSummary,
     )),
   );
   const failed = results.filter((r) => r.status === 'rejected').length;
@@ -338,6 +340,7 @@ async function persistEvent(
   ctx: { executionId: string; companyId: string; userId: string; agentTarget?: string; threadId?: string },
   usageAuthority: 'desktop' | 'proxy',
   protectedRun: boolean,
+  fallbackRunSummary?: string,
 ): Promise<void> {
   if (ev.kind === 'tool') {
       const success = ev.isError !== true;
@@ -469,7 +472,7 @@ async function persistEvent(
       } else {
         await runs.complete(
           ctx.executionId,
-          protectedRun ? 'Protected Shopify run completed; details redacted' : ev.summary,
+          protectedRun ? 'Protected Shopify run completed; details redacted' : ev.summary ?? fallbackRunSummary,
         );
       }
     }
@@ -561,6 +564,15 @@ function findLast<T>(items: readonly T[], predicate: (item: T) => boolean): T | 
     if (predicate(item)) return item;
   }
   return undefined;
+}
+
+function firstUserMessageTitle(events: readonly TraceEvent[]): string | undefined {
+  const context = events.find((event): event is Extract<TraceEvent, { kind: 'learning_context' }> =>
+    event.kind === 'learning_context');
+  const message = context?.userMessages.find(entry => entry.trim().length > 0);
+  if (!message) return undefined;
+  const oneLine = message.replace(/\s+/g, ' ').trim();
+  return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
 }
 
 // ─── Router ─────────────────────────────────────────────────────────────────
