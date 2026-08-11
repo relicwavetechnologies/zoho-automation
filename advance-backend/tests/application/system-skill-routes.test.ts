@@ -120,7 +120,8 @@ describe('system skill routes', () => {
   it('keeps direct Airtable reads bounded while using one native contract for file-backed pages', () => {
     assert.match(airtableCoreSkill.instructions, /Ordinary direct `op: "call"` record reads return a byte-safe preview/);
     assert.doesNotMatch(airtableCoreSkill.instructions, /`op: "page"`/);
-    assert.match(airtableCoreSkill.instructions, /exact same native `op: "call"` through `divo-local`/);
+    assert.match(airtableCoreSkill.instructions, /divo-local call airtableRecords\.<nativeTool> --input-file <path>/);
+    assert.match(airtableCoreSkill.instructions, /JSON file contains only the native `input`/);
     assert.match(airtableCoreSkill.instructions, /Pass each returned cursor into the next call/);
     assert.match(airtableCoreSkill.instructions, /`metadata\.totalRecordCount`/);
     assert.match(airtableCoreSkill.instructions, /values under `cellValuesByFieldId`, not `fields`/);

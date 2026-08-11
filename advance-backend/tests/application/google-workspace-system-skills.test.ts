@@ -79,7 +79,7 @@ describe('Google Workspace system skills', () => {
     const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((skill) => skill.slug === 'google-sheets')!;
     assert.match(sheets.markdown, /manage_sheet_data_validation/);
     assert.match(sheets.markdown, /frozen_row_count/);
-    assert.match(sheets.markdown, /Include `connectionId` only after an explicit account choice/);
+    assert.match(sheets.markdown, /Include `--connection-id` only after an explicit account choice/);
     // A write that acknowledges without `updatedRows` must not become a
     // zero-row claim. Matched on the concept, not the sentence.
     assert.match(sheets.markdown, /acknowledgement under `data\.result`/);

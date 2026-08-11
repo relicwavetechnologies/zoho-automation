@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -338,6 +338,7 @@ describe("Divo local broker protocol", () => {
 		});
 		delete process.env.DIVO_MEMBER_TOKEN;
 		const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+		const gatewayRequests: GatewayRequestBody[] = [];
 		const resultModes: unknown[] = [];
 		let rateAttempts = 0;
 		registerLocalDivoBroker({
@@ -350,6 +351,7 @@ describe("Divo local broker protocol", () => {
 			resolveConfig: () => config,
 			readCorrelation: async () => correlation,
 			executeGateway: async (_resolved, request, _actionId, ctx) => {
+				gatewayRequests.push(request);
 				if (request.op === "tools.invoke") resultModes.push(ctx.resultMode);
 				const toolId = request.op === "tools.invoke"
 					? (request.payload as { toolId?: string })?.toolId
@@ -412,7 +414,65 @@ describe("Divo local broker protocol", () => {
 				assert.match(error.stdout ?? "", /invalid_args/);
 				return true;
 			});
+			await assert.rejects(execFileAsync("divo-local", [
+				"call", "airtableRecords", "--input-json", "{}",
+			], { env: process.env }), (error: { stderr?: string }) => {
+				assert.match(error.stderr ?? "", /<toolId>\.<nativeTool>/);
+				return true;
+			});
 			await assert.rejects(access(join(runDir, "page.json")), { code: "ENOENT" });
+			const nativeInputPath = join(runDir, "native-input.json");
+			await writeFile(nativeInputPath, JSON.stringify({
+				baseId: "app_1",
+				tableId: "tbl_1",
+				pageSize: 200,
+			}));
+			const nativeResult = await execFileAsync("divo-local", [
+				"call",
+				"airtableRecords.list_records_for_table",
+				"--input-file",
+				nativeInputPath,
+				"--connection-id",
+				"11111111-1111-4111-8111-111111111111",
+				"--output",
+				"native-page.json",
+			], { env: process.env });
+			assert.equal(JSON.parse(nativeResult.stdout).output, join(runDir, "native-page.json"));
+			const nativeRequest = gatewayRequests.find(request =>
+				request.op === "tools.invoke"
+				&& (request.payload as { toolId?: string })?.toolId === "airtableRecords",
+			);
+			assert.deepEqual(nativeRequest?.payload, {
+				toolId: "airtableRecords",
+				args: {
+					connectionId: "11111111-1111-4111-8111-111111111111",
+					op: "call",
+					nativeTool: "list_records_for_table",
+					input: {
+						baseId: "app_1",
+						tableId: "tbl_1",
+						pageSize: 200,
+					},
+				},
+			});
+			const describeResult = await execFileAsync("divo-local", [
+				"describe",
+				"googleSheets.create_spreadsheet",
+				"--output",
+				"describe.json",
+			], { env: process.env });
+			assert.equal(JSON.parse(describeResult.stdout).output, join(runDir, "describe.json"));
+			const describeRequest = gatewayRequests.find(request =>
+				request.op === "tools.invoke"
+				&& (request.payload as { toolId?: string })?.toolId === "googleSheets",
+			);
+			assert.deepEqual(describeRequest?.payload, {
+				toolId: "googleSheets",
+				args: {
+					op: "describe",
+					nativeTool: "create_spreadsheet",
+				},
+			});
 			const fileResult = await execFileAsync("divo-local", [
 				"invoke", "--tool", "zohoBooks", "--args-json", "{}",
 			], { env: process.env });
@@ -430,7 +490,8 @@ describe("Divo local broker protocol", () => {
 			assert.equal(JSON.parse(retriedResult.stdout).output, join(runDir, "retried.json"));
 			assert.match(retriedResult.stderr, /retrying this exact call once in 1s/i);
 			assert.equal(rateAttempts, 2);
-			assert.deepEqual(resultModes, ["local-file", "local-file", "local-file", "local-file", "local-file"]);
+			assert.equal(resultModes.length, 7);
+			assert.equal(resultModes.every(mode => mode === "local-file"), true);
 			await handlers.get("tool_execution_end")?.[0]?.({
 				toolName: "bash",
 				toolCallId: "bash-cli",

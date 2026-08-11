@@ -10,6 +10,7 @@ import {
 	buildPiArguments,
 	buildPiArgumentsWithResources,
 	buildPiLaunch,
+	buildRuntimeEnvironmentPatch,
 	buildRunCorrelationContext,
 	deleteDurablePiSession,
 	imagePolicyFor,
@@ -23,6 +24,8 @@ import {
 	runtimeContextForSession,
 	sweepAbandonedRunSessions,
 	sweepExpiredPendingAttachments,
+	sweepStaleThreadWorkflows,
+	THREAD_WORKFLOW_MANIFEST_FILE,
 } from "../runtime.mjs";
 import { thinkingLevelForModel } from "../runtime-models.mjs";
 
@@ -48,6 +51,7 @@ const values = {
 	sessionDir: "/tmp/sessions",
 	sessionPath: "/tmp/sessions/pi-session.jsonl",
 	thread: "thread-1",
+	threadWorkDir: "/tmp/workspace/.divo/threads/thread-1/work",
 	token: "member-token",
 	workspace: "/tmp/workspace",
 };
@@ -119,6 +123,15 @@ describe("Divo Pi runtime boundary", () => {
 		assert.equal(environment.DIVO_BACKEND_URL, "https://divo.example.com");
 		assert.equal(environment.DIVO_LOCAL_CLI_DISABLED, undefined);
 		assert.equal(environment.PATH, "/usr/bin");
+	});
+
+	it("injects durable workflow state only for private thread-scoped runs", () => {
+		const environment = buildChildEnvironment({}, values);
+		assert.equal(environment.DIVO_THREAD_WORK_DIR, "/tmp/workspace/.divo/threads/thread-1/work");
+
+		const groupValues = { ...values, isRunScoped: true };
+		assert.equal(buildChildEnvironment({}, groupValues).DIVO_THREAD_WORK_DIR, undefined);
+		assert.equal(buildRuntimeEnvironmentPatch(groupValues).DIVO_THREAD_WORK_DIR, null);
 	});
 
 	it("pins Divo provider, model, extensions, skills, tools, and session", () => {
@@ -289,6 +302,84 @@ describe("Pi session scope", () => {
 			["old-run-a", "old-run-b"],
 		);
 		assert.deepEqual(fs.readdirSync(runsRoot), ["current-run"]);
+	});
+
+	it("keeps private thread workflow state while rotating one-turn Lark run dirs", () => {
+		const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "divo-thread-work-"));
+		const workspace = path.join(stateRoot, "workspace");
+		const thread = "lark-thread-work";
+		const oldRun = path.join(workspace, ".divo", "threads", thread, "runs", "old-run");
+		const workflow = path.join(workspace, ".divo", "threads", thread, "work", "workflows", "export-abc");
+		fs.mkdirSync(oldRun, { recursive: true });
+		fs.mkdirSync(workflow, { recursive: true });
+		fs.writeFileSync(
+			path.join(workflow, THREAD_WORKFLOW_MANIFEST_FILE),
+			`${JSON.stringify({
+				status: "awaiting_user",
+				task: "export",
+				source: "airtable",
+				destination: "google-sheets",
+				resumeStep: "write-sheet",
+				createdAt: "2026-08-11T00:00:00.000Z",
+				updatedAt: "2026-08-11T00:00:00.000Z",
+			})}\n`,
+		);
+
+		const prepared = prepareDivoPiRun({
+			backendUrl: "https://divo.example.com",
+			token: "member-token",
+			stateRoot,
+			workspace,
+			thread,
+			runId: "new-run",
+			channel: "lark",
+		});
+
+		assert.equal(fs.existsSync(oldRun), false);
+		assert.equal(fs.existsSync(workflow), true);
+		assert.equal(
+			prepared.values.threadWorkDir,
+			path.join(workspace, ".divo", "threads", thread, "work"),
+		);
+		fs.rmSync(stateRoot, { recursive: true, force: true });
+	});
+
+	it("sweeps only manifested stale thread workflows", () => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "divo-workflow-sweep-"));
+		const workDir = path.join(root, "work");
+		const workflowsRoot = path.join(workDir, "workflows");
+		const makeWorkflow = (name, manifest) => {
+			const directory = path.join(workflowsRoot, name);
+			fs.mkdirSync(directory, { recursive: true });
+			if (manifest) {
+				fs.writeFileSync(
+					path.join(directory, THREAD_WORKFLOW_MANIFEST_FILE),
+					`${JSON.stringify(manifest)}\n`,
+				);
+			}
+			return directory;
+		};
+		makeWorkflow("old-complete", {
+			status: "completed",
+			updatedAt: "2026-07-01T00:00:00.000Z",
+		});
+		makeWorkflow("fresh-complete", {
+			status: "completed",
+			updatedAt: "2026-08-10T00:00:00.000Z",
+		});
+		makeWorkflow("legacy-no-manifest", null);
+
+		assert.deepEqual(
+			sweepStaleThreadWorkflows(
+				workDir,
+				new Date("2026-08-11T00:00:00.000Z").getTime(),
+			),
+			["old-complete"],
+		);
+		assert.equal(fs.existsSync(path.join(workflowsRoot, "old-complete")), false);
+		assert.equal(fs.existsSync(path.join(workflowsRoot, "fresh-complete")), true);
+		assert.equal(fs.existsSync(path.join(workflowsRoot, "legacy-no-manifest")), true);
+		fs.rmSync(root, { recursive: true, force: true });
 	});
 
 	it("gives two runs of one thread separate sessions", () => {

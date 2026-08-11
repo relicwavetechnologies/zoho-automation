@@ -54,11 +54,11 @@ describe("Divo normal-session routing policy", () => {
 	it("routes an ordinary current-information comparison directly to webSearch", () => {
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /read the exact Web Search skill from Pi's available_skills/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /missing guidance as permission denial/i);
-		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /then call webSearch/i);
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /then call the registered webSearch tool directly/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /Do not run fuzzy discovery/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /cheapest.*do not by themselves/i);
 		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /only when the user explicitly requests thorough/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /call webSearch directly/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /call the registered webSearch tool directly/i);
 		assert.doesNotMatch(
 			DIVO_COMPANY_PERSONA_PROMPT,
 			/For public web search or deep research, use backend skills/i,
@@ -127,20 +127,26 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /do not probe a registered provider tool first/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Keep all connected reads, writes, and verification.*inside the file through divo-local/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /automatically saves.*DIVO_RUN_DIR.*never print or cat rows/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /DIVO_THREAD_WORK_DIR.*\.divo-workflow\.json/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /do not pause expecting files to survive the next turn/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /read the exact source recipe and the native divo-python-automation skill in this turn/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /a tool schema is not a source recipe/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /Do not write or run until those reads succeed/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /ask one short clarifying question instead of guessing a provider contract/i);
-		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local invoke --tool <toolId> --args-file <path>/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local call <toolId>\.<nativeTool> --input-file <path>/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /client constructs the governed selector internally/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local describe <toolId>\.<nativeTool>/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /legacy divo-local invoke --tool <toolId> --args-file <path> only for non-native/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /provider result is under data.*Never count keys/is);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never print preview or row values/i);
-		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /provider schema describe also runs once inside this same file through divo-local/i);
-		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never call the registered provider tool first and then rediscover the same schema/i);
+		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /genuinely required native operation schema was not already loaded/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local owns one safe exact retry/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never add sleeps or retry rate_limited yourself/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /retired divo_python_automation tool is unavailable/i);
 		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /use one divo_python_automation call/i);
-		assert.match(ROUTER_SKILL, /Create one descriptive `.py` file/i);
+		assert.match(ROUTER_SKILL, /create one descriptive `.py` file/i);
+		assert.match(ROUTER_SKILL, /DIVO_THREAD_WORK_DIR.*\.divo-workflow\.json/is);
+		assert.match(ROUTER_SKILL, /Never resume merely because files exist/i);
 		assert.match(ROUTER_SKILL, /patch the same `.py` file with `edit`/i);
 		assert.match(ROUTER_SKILL, /Gmail\/CRM → Sheets is always this local-workflow path/i);
 		assert.match(ROUTER_SKILL, /explicit request for Python, terminal, a script, or a file-backed workflow selects this path before the first connected call/i);
@@ -196,7 +202,7 @@ describe("Divo normal-session routing policy", () => {
 			/summaryForChat/i,
 		);
 		// Searching remains a direct capability; research words alone do not force an artifact.
-		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /then call webSearch/i);
+		assert.match(DIVO_DIRECT_WEB_SEARCH_POLICY, /then call the registered webSearch tool directly/i);
 		assert.match(
 			DIVO_DIRECT_WEB_SEARCH_POLICY,
 			/do not by themselves make a request a specialized workflow/i,

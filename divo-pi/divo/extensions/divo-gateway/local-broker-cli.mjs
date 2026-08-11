@@ -10,6 +10,8 @@ function usage(message) {
 	process.stderr.write([
 		"Divo governed company-call client",
 		"",
+		"  divo-local call <toolId>.<nativeTool> (--input-json <json> | --input-file <path>) [--connection-id <uuid>] [--output <run-path>] [--label <text>]",
+		"  divo-local describe <toolId>.<nativeTool> [--connection-id <uuid>] [--output <run-path>] [--label <text>]",
 		"  divo-local invoke --tool <toolId> (--args-json <json> | --args-file <path>) [--output <run-path>] [--label <text>]",
 		"  divo-local request --op <connections.list|tools.list> (--payload-json <json> | --payload-file <path>)",
 		"",
@@ -29,6 +31,16 @@ function parseOptions(values) {
 	return options;
 }
 
+function parseNativeSpec(value) {
+	if (!value || value.startsWith("--")) usage("Expected <toolId>.<nativeTool>.");
+	const parts = value.split(".");
+	if (parts.length !== 2 || !parts[0] || !parts[1]) usage("Use <toolId>.<nativeTool>, for example googleSheets.create_spreadsheet.");
+	const [toolId, nativeTool] = parts;
+	if (!/^[A-Za-z][A-Za-z0-9]*$/.test(toolId)) usage(`Invalid toolId in ${value}.`);
+	if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(nativeTool)) usage(`Invalid nativeTool in ${value}.`);
+	return { toolId, nativeTool };
+}
+
 async function readJson(options, inlineKey, fileKey, fallback) {
 	const inline = options[inlineKey];
 	const file = options[fileKey];
@@ -43,10 +55,42 @@ async function readJson(options, inlineKey, fileKey, fallback) {
 }
 
 const [command, ...rest] = process.argv.slice(2);
-if (!command || !["invoke", "request"].includes(command)) usage();
-const options = parseOptions(rest);
+if (!command || !["call", "describe", "invoke", "request"].includes(command)) usage();
+const nativeSpec = command === "call" || command === "describe" ? parseNativeSpec(rest[0]) : undefined;
+const options = parseOptions(nativeSpec ? rest.slice(1) : rest);
 let request;
-if (command === "invoke") {
+if (command === "call") {
+	if (options["args-json"] || options["args-file"] || options.tool || options.op) {
+		usage("call uses --input-json or --input-file with <toolId>.<nativeTool>; do not pass --tool, --op, or --args-file.");
+	}
+	request = {
+		op: "tools.invoke",
+		payload: {
+			toolId: nativeSpec.toolId,
+			args: {
+				...(options["connection-id"] ? { connectionId: options["connection-id"] } : {}),
+				op: "call",
+				nativeTool: nativeSpec.nativeTool,
+				input: await readJson(options, "input-json", "input-file", {}),
+			},
+		},
+	};
+} else if (command === "describe") {
+	if (options["args-json"] || options["args-file"] || options["input-json"] || options["input-file"] || options.tool || options.op) {
+		usage("describe takes only <toolId>.<nativeTool>, optional --connection-id, --output, and --label.");
+	}
+	request = {
+		op: "tools.invoke",
+		payload: {
+			toolId: nativeSpec.toolId,
+			args: {
+				...(options["connection-id"] ? { connectionId: options["connection-id"] } : {}),
+				op: "describe",
+				nativeTool: nativeSpec.nativeTool,
+			},
+		},
+	};
+} else if (command === "invoke") {
 	if (!options.tool) usage("--tool is required for invoke.");
 	request = {
 		op: "tools.invoke",
@@ -66,16 +110,20 @@ if (command === "invoke") {
 		payload: await readJson(options, "payload-json", "payload-file", {}),
 	};
 }
-if (options.output && command !== "invoke") usage("--output is available only for invoke.");
+const invokesTool = ["call", "describe", "invoke"].includes(command);
+if (options.output && !invokesTool) usage("--output is available only for call, describe, or invoke.");
 if (options["department-id"]) request.departmentId = options["department-id"];
 
 let outputPath;
-if (command === "invoke") {
+if (invokesTool) {
 	const runRoot = process.env.DIVO_RUN_DIR;
-	if (!runRoot) usage("DIVO_RUN_DIR is required for invoke.");
+	if (!runRoot) usage(`DIVO_RUN_DIR is required for ${command}.`);
 	const root = resolve(runRoot);
+	const outputBase = nativeSpec
+		? `${nativeSpec.toolId}-${nativeSpec.nativeTool}`
+		: options.tool;
 	const requestedOutput = options.output
-		?? `divo-${options.tool.replaceAll(/[^a-zA-Z0-9_-]/g, "-")}-${randomUUID()}.json`;
+		?? `divo-${outputBase.replaceAll(/[^a-zA-Z0-9_-]/g, "-")}-${randomUUID()}.json`;
 	outputPath = isAbsolute(requestedOutput) ? resolve(requestedOutput) : resolve(root, requestedOutput);
 	const child = relative(root, outputPath);
 	if (!child || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) {
@@ -88,11 +136,11 @@ if (!socketPath) usage("The Divo local broker is not available in this shell.");
 const MAX_AUTOMATIC_RATE_LIMIT_RETRY_SECONDS = 60;
 const envelope = {
 	version: 1,
-	...(options.label ? { label: options.label } : {}),
-	...(command === "invoke" ? { resultMode: "local-file" } : {}),
+	...(options.label ? { label: options.label } : nativeSpec ? { label: `${nativeSpec.toolId}.${nativeSpec.nativeTool}` } : {}),
+	...(invokesTool ? { resultMode: "local-file" } : {}),
 	request,
 };
-process.stderr.write(`[Divo] ${options.label ?? (command === "invoke" ? options.tool : options.op)}\n`);
+process.stderr.write(`[Divo] ${options.label ?? (nativeSpec ? `${nativeSpec.toolId}.${nativeSpec.nativeTool}` : command === "invoke" ? options.tool : options.op)}\n`);
 
 const abortController = new AbortController();
 process.once("SIGINT", () => abortController.abort());
@@ -126,13 +174,13 @@ try {
 }
 
 function normalizeResponse(rawResponse) {
-	return command === "invoke"
+	return invokesTool
 		? normalizeLocalInvokeResponse(rawResponse)
 		: rawResponse;
 }
 
 function automaticRetryDelay(response) {
-	if (command !== "invoke" || response?.status !== "rate_limited") return undefined;
+	if (!invokesTool || response?.status !== "rate_limited") return undefined;
 	const seconds = response?.error?.retryAfterSeconds;
 	return Number.isInteger(seconds)
 		&& seconds >= 1
