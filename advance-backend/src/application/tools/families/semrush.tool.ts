@@ -106,13 +106,6 @@ export const createSemrushTool = (deps: {
       ? ok('read' as ToolActionGroup)
       : err(new PermissionError({ toolId: 'semrush', action: 'read', reason: 'not_allowed' }));
   },
-  async preflight(args: SemrushToolArgs): Promise<Result<Record<string, unknown>, ToolError>> {
-    try {
-      return ok(await deps.service.preflight(args));
-    } catch (error) {
-      return err(toToolError(error));
-    }
-  },
   async execute(args: SemrushToolArgs, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     const startedAt = Date.now();
     try {
