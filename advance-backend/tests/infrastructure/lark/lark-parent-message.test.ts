@@ -39,12 +39,14 @@ function sdkClient(
   response: unknown,
   imageBytes: Buffer = Buffer.from('image'),
   onImageDownload?: () => void,
+  onMessageGet?: (input: unknown) => void,
 ): LarkSdkClient {
   return {
     im: {
       v1: {
         message: {
-          get: async () => {
+          get: async (input: unknown) => {
+            onMessageGet?.(input);
             if (response instanceof Error) throw response;
             return response;
           },
@@ -69,6 +71,7 @@ function fetchWith(
   options: {
     imageBytes?: Buffer;
     onImageDownload?: () => void;
+    onMessageGet?: (input: unknown) => void;
     includeContent?: boolean;
   } = {},
 ) {
@@ -85,7 +88,12 @@ function fetchWith(
     ...(options.includeContent !== undefined
       ? { includeContent: options.includeContent }
       : {}),
-    sdkClient: sdkClient(response, options.imageBytes, options.onImageDownload),
+    sdkClient: sdkClient(
+      response,
+      options.imageBytes,
+      options.onImageDownload,
+      options.onMessageGet,
+    ),
   });
 }
 
@@ -117,6 +125,33 @@ describe('Lark parent message references', () => {
       buildParentContextPrefix(result),
       '[Referenced message from Alice: "Please review this."]',
     );
+  });
+
+  it('asks Lark for the original interactive-card JSON when hydrating a quote', async () => {
+    const calls: unknown[] = [];
+
+    await fetchWith({
+      code: 0,
+      data: {
+        items: [{
+          chat_id: 'oc_expected',
+          msg_type: 'interactive',
+          sender: { id: 'ou_alice' },
+          body: { content: JSON.stringify({ schema: '2.0', body: { elements: [] } }) },
+        }],
+      },
+    }, {
+      onMessageGet: input => calls.push(input),
+    });
+
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0], {
+      path: { message_id: 'om_parent' },
+      params: {
+        user_id_type: 'open_id',
+        card_msg_content_type: 'user_card_content',
+      },
+    });
   });
 
   it('can verify parent authorship without reading or downloading its content', async () => {
