@@ -223,4 +223,29 @@ describe('desktop skills routes', () => {
     assert.ok(calls.filter(call => call.departmentId).every(call =>
       call.grantedSkillIds?.has('skill-menhood') && call.grantedSkillIds?.has('skill-company')));
   });
+
+  it('only resolves skills through active memberships in active departments', async () => {
+    let membershipWhere: unknown;
+    const deps = makeDeps({
+      prisma: {
+        departmentMembership: {
+          findMany: async (args: any) => {
+            membershipWhere = args.where;
+            return [];
+          },
+        },
+      },
+    });
+
+    const result = await callRoute(createDesktopSkillRoutes(deps), '/skills', {
+      locals: { companyId: 'company-1', userId: 'user-1', aiRole: 'MEMBER' },
+    });
+
+    assert.equal(result.status, 200);
+    assert.deepEqual(membershipWhere, {
+      userId: 'user-1',
+      status: 'active',
+      department: { companyId: 'company-1', status: 'active' },
+    });
+  });
 });

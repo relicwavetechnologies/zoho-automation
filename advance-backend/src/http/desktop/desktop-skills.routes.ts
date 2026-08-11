@@ -66,7 +66,11 @@ export function createDesktopSkillRoutes(deps: DesktopSkillRoutesDeps): Router {
 
     try {
       const memberships = await deps.prisma.departmentMembership.findMany({
-        where: { userId, department: { companyId } },
+        where: {
+          userId,
+          status: 'active',
+          department: { companyId, status: 'active' },
+        },
         select: { department: { select: { id: true, name: true } } },
       });
 
