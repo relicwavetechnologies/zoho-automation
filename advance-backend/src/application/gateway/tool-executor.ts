@@ -1298,27 +1298,23 @@ function runtimeConnectionRequirement(
   args: Readonly<Record<string, unknown>>,
 ): RuntimeConnectionRequirement | undefined {
   const googleProduct = GOOGLE_PRODUCT_BY_TOOL_ID.get(toolId);
-  if (googleProduct && (args.op === 'call' || args.op === 'describe')) {
+  if (googleProduct) {
     if (args.op === 'describe') return undefined;
-    const action = args.op === 'describe'
-      ? 'read'
-      : googleWorkspaceActionFor(
-        typeof args.nativeTool === 'string' ? args.nativeTool : '',
-        isPlainRecord(args.input) ? args.input : {},
-      );
-    const requiredScopes = args.op === 'describe'
-      ? []
-      : googleWorkspaceScopeGroupsFor(
-        googleProduct,
-        typeof args.nativeTool === 'string' ? args.nativeTool : '',
-        action,
-      );
+    if (args.op !== 'call') return undefined;
+    const action = googleWorkspaceActionFor(
+      typeof args.nativeTool === 'string' ? args.nativeTool : '',
+      isPlainRecord(args.input) ? args.input : {},
+    );
+    const requiredScopes = googleWorkspaceScopeGroupsFor(
+      googleProduct,
+      typeof args.nativeTool === 'string' ? args.nativeTool : '',
+      action,
+    );
     return {
       provider: 'google_workspace',
       minimumAccess: action === 'read' ? 'read_only' : 'read_write',
       scopeEligible: scopes => hasGoogleScopeGroups(scopes, requiredScopes),
-      ...(args.op === 'call'
-        && typeof args.nativeTool === 'string'
+      ...(typeof args.nativeTool === 'string'
         && prefersCompanyGoogleArtifactAccount(args.nativeTool)
         ? { preferredOwnerType: 'company' as const }
         : {}),
@@ -1326,15 +1322,14 @@ function runtimeConnectionRequirement(
   }
 
   const airtableProduct = AIRTABLE_PRODUCT_BY_TOOL_ID.get(toolId);
-  if (airtableProduct && (args.op === 'call' || args.op === 'describe')) {
+  if (airtableProduct) {
     if (args.op === 'describe') return undefined;
+    if (args.op !== 'call') return undefined;
     const operation = typeof args.nativeTool === 'string'
       ? airtableOperationFor(toolId, args.nativeTool)
       : undefined;
-    const action = args.op === 'describe' ? 'read' : operation?.action ?? 'read';
-    const requiredScopes = args.op === 'describe'
-      ? []
-      : airtableScopeGroupsFor(airtableProduct, action);
+    const action = operation?.action ?? 'read';
+    const requiredScopes = airtableScopeGroupsFor(airtableProduct, action);
     return {
       provider: 'airtable',
       minimumAccess: action === 'read' ? 'read_only' : 'read_write',
