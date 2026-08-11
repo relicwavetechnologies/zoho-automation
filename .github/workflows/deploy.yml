@@ -31,7 +31,8 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAMESPACE: relicwavetechnologies/zoho-automation
   DEPLOY_DIR: /opt/divo-main
-  DIVO_MAIN_DOMAIN: app.103.172.92.187.sslip.io
+  DIVO_MAIN_DOMAIN: divo.outreachdeal.com
+  DIVO_MAIN_APP_ORIGIN: https://divo.outreachdeal.com
   DIVO_MAIN_HOST: 103.172.92.187
   DIVO_MAIN_USER: deploy
 
@@ -43,7 +44,7 @@ jobs:
       - name: Require the main branch
         run: test "${GITHUB_REF}" = refs/heads/main
 
-      - name: Validate isolated Pi runtime URL
+      - name: Validate main public URLs
         env:
           PRODUCTION_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
         run: |
@@ -60,6 +61,54 @@ jobs:
               value = value.slice(1, -1);
             }
             values.set(match[1], value);
+          }
+
+          const expectedAppOrigin = process.env.DIVO_MAIN_APP_ORIGIN;
+          if (!expectedAppOrigin) {
+            throw new Error('DIVO_MAIN_APP_ORIGIN must be configured for main deploys');
+          }
+
+          const expected = new URL(expectedAppOrigin);
+          const deployDomain = process.env.DIVO_MAIN_DOMAIN;
+          if (deployDomain !== expected.hostname) {
+            throw new Error(
+              `DIVO_MAIN_DOMAIN (${deployDomain}) must match DIVO_MAIN_APP_ORIGIN hostname (${expected.hostname})`,
+            );
+          }
+
+          const originOf = value => {
+            try {
+              const url = new URL(value);
+              return `${url.protocol}//${url.host}`;
+            } catch {
+              return null;
+            }
+          };
+
+          const appBaseUrl = values.get('APP_BASE_URL');
+          if (originOf(appBaseUrl) !== expectedAppOrigin) {
+            throw new Error(
+              `PRODUCTION_ENV_FILE APP_BASE_URL must be ${expectedAppOrigin}; got ${appBaseUrl || '<missing>'}`,
+            );
+          }
+
+          const publicUrl = values.get('DIVO_PUBLIC_URL');
+          if (publicUrl && originOf(publicUrl) !== expectedAppOrigin) {
+            throw new Error(
+              `PRODUCTION_ENV_FILE DIVO_PUBLIC_URL must be ${expectedAppOrigin}; got ${publicUrl}`,
+            );
+          }
+
+          const allowlist = (values.get('BACKEND_PUBLIC_URL_ALLOWLIST') || '')
+            .split(',')
+            .map(value => value.trim())
+            .filter(Boolean)
+            .map(originOf)
+            .filter(Boolean);
+          if (!allowlist.includes(expectedAppOrigin)) {
+            throw new Error(
+              `PRODUCTION_ENV_FILE BACKEND_PUBLIC_URL_ALLOWLIST must include ${expectedAppOrigin}`,
+            );
           }
 
           const runtimeUrl = values.get('PI_LARK_BACKEND_URL') || values.get('BACKEND_PUBLIC_URL');
