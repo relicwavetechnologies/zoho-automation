@@ -211,7 +211,15 @@ async function fetchLarkMessage(
   log: Logger,
 ): Promise<ParentFetchResult> {
   try {
-    const response = await client.im.v1.message.get({ path: { message_id: messageId } });
+    const response = await client.im.v1.message.get({
+      path: { message_id: messageId },
+      params: {
+        user_id_type: 'open_id',
+        // Lark's default interactive-card response is a lossy received-card
+        // shell. Quote context needs the card JSON Divo or another app sent.
+        card_msg_content_type: 'user_card_content',
+      },
+    });
     if (response.code !== undefined && response.code !== 0) {
       log.warn('parent_message.fetch_failed', { code: response.code, message: response.msg });
       return { status: classifyParentFetchFailure(response.code) };
