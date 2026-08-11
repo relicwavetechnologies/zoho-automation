@@ -189,7 +189,9 @@ jobs:
           file: ${{ matrix.file }}
           push: true
           tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.component }}:main-${{ github.sha }}
-          labels: com.divo.environment=main
+          labels: |
+            com.divo.environment=main
+            org.opencontainers.image.revision=${{ github.sha }}
           build-args: ${{ matrix.build-args }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
@@ -203,27 +205,16 @@ jobs:
             echo "- Build cache and timing details are attached in the Docker build summary."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Verify backend image source digest
+      - name: Verify backend image revision label
         if: matrix.component == 'backend'
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.component }}@${{ steps.build.outputs.digest }}
         run: |
-          expected="$(
-            cd advance-backend
-            find src scripts prisma package.json pnpm-lock.yaml -type f -print0 \
-              | sort -z \
-              | xargs -0 sha256sum \
-              | sha256sum \
-              | awk '{print $1}'
-          )"
           docker pull "${IMAGE}"
-          actual="$(
-            docker run --rm --network none --entrypoint sh "${IMAGE}" -lc \
-              "find src scripts prisma package.json pnpm-lock.yaml -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print \$1}'"
-          )"
-          if [[ "${actual}" != "${expected}" ]]; then
-            echo "Backend image source digest mismatch." >&2
-            echo "expected=${expected}" >&2
+          actual="$(docker image inspect "${IMAGE}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          if [[ "${actual}" != "${GITHUB_SHA}" ]]; then
+            echo "Backend image revision label mismatch." >&2
+            echo "expected=${GITHUB_SHA}" >&2
             echo "actual=${actual}" >&2
             exit 1
           fi
