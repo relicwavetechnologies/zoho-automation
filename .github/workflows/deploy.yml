@@ -458,7 +458,7 @@ jobs:
 
           docker compose --env-file .env.production.local pull
           docker pull "${DIVO_PI_IMAGE}"
-          docker compose --env-file .env.production.local up -d --wait \
+          docker compose --env-file .env.production.local up -d --wait --wait-timeout 180 \
             divo-postgres divo-redis-queue divo-redis-cache divo-redis-memory
 
           if [[ "${RETIRE_DATA_EXPORT_STORAGE}" == "true" ]]; then
@@ -515,7 +515,7 @@ jobs:
           fi
 
           docker compose --env-file .env.production.local up -d --no-build --remove-orphans
-          docker compose --env-file .env.production.local up -d --wait --no-build \
+          docker compose --env-file .env.production.local up -d --wait --wait-timeout 240 --no-build \
             --force-recreate --no-deps divo-pi-controller divo-backend divo-admin
           REMOTE
 

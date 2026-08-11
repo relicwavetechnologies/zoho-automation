@@ -615,7 +615,7 @@ jobs:
           export DIVO_DEV_PI_CONTROLLER_IMAGE="${PI_CONTROLLER_IMAGE}"
 
           docker compose --env-file .env.development.local pull divo-dev-backend
-          docker compose --env-file .env.development.local up -d --wait \
+          docker compose --env-file .env.development.local up -d --wait --wait-timeout 180 \
             divo-dev-postgres divo-dev-redis-queue
           needs_retirement=0
           docker compose --env-file .env.development.local run --rm --no-deps \
@@ -662,7 +662,7 @@ jobs:
              DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
              DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
              DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
-             docker compose --env-file .env.development.local up -d --wait divo-dev-postgres divo-dev-redis-queue divo-dev-redis-cache divo-dev-redis-memory && \
+             docker compose --env-file .env.development.local up -d --wait --wait-timeout 180 divo-dev-postgres divo-dev-redis-queue divo-dev-redis-cache divo-dev-redis-memory && \
              DIVO_DEV_ENV_FILE=.env.development.local \
              DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
              DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
