@@ -46,6 +46,22 @@ Choose the smallest specialist set that proves the requested result.
 - Bases, tables, fields, schemas, and views → \`airtable-schema-ops\`.
 - Interfaces, forms, and automations → \`airtable-automation-ops\`.
 
+Menhood live/export lifecycle:
+
+1. Route from the full Lark prompt, including any hydrated quoted message or
+   card text. A bare follow-up like "excel" or "send it to sheet" inherits the
+   quoted/requested Menhood context.
+2. Settled historical answer in chat: load \`menhood-data\` and stop there.
+3. Current/live answer: use \`menhood-data\` only to resolve a named product's
+   canonical SKU when needed, then answer from filtered live Airtable.
+4. Current/live export or Google Sheet: load \`airtable-core\`,
+   \`divo-python-automation\`, and \`google-sheets\`. Page the filtered live
+   Airtable source in one local workflow, write the governed Sheet destination,
+   and read it back before saying the export is complete.
+5. Do not load \`create-edit-files\` for Lark or Google Sheets delivery; local
+   files are only for Jan desktop file deliverables. Never use the retired
+   export tool, candidate, or offer flow.
+
 Airtable MCP is the one live record contract for previews and protected
 file-backed pages. Prefer server-side filters and selected fields. Use the
 company-managed reporting source for settled SQL analysis, not as a fallback

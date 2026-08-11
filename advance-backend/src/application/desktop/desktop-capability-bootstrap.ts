@@ -229,7 +229,7 @@ export function buildDesktopCapabilityBootstrap(input: {
     const menhoodHint = viaSkill(
       'menhoodData',
       'Menhood orders, customers, products, delivered sales, RTO, COD, campaign, or pincode analysis',
-      'use menhoodData for settled analysis. For current/latest or Airtable-only operational fields, follow airtable-router and use the live filtered Airtable path instead.',
+      'use menhoodData for settled analysis. For current/latest or Airtable-only operational fields, follow airtable-router and use the live filtered Airtable path instead. For complete live exports or Sheets, resolve through airtable-router so the source, divo-python-automation, and google-sheets recipes load together.',
     );
     if (menhoodHint) routingHints.push(menhoodHint);
   }

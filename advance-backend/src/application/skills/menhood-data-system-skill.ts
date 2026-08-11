@@ -25,6 +25,7 @@ Use this for settled analytical questions over the company-managed Menhood repor
 - Airtable-only fields such as Regular Order, \`Order Status (Team)\`, \`Order Sub Status\`, and Duplicate/TEST/Testing always use the live route.
 - For a current/live request naming a product, first resolve the catalog row here and take its canonical \`product_sku\`; then filter Airtable's SKU field. Airtable Product Name is only a display label and may contain aliases or duplicate choices. Ask only if the catalog produces multiple distinct SKUs.
 - For that live route, query only the needed \`menhood_products.product_name\` and \`product_sku\`; do not probe \`menhood_orders\`, because live Airtable supplies the requested order facts.
+- For a complete live/current export or Google Sheet, this skill is only the SKU resolver when needed. Then load \`airtable-core\`, \`divo-python-automation\`, and \`google-sheets\`: page the live Airtable Orders source through one local workflow, write the governed Sheet destination, and read it back. Do not load \`create-edit-files\` for a Lark or Google Sheets delivery, and never use the retired export tool, candidate, or offer flow.
 
 ## Query discipline
 

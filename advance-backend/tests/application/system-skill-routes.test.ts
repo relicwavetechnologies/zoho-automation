@@ -68,6 +68,19 @@ describe('system skill routes', () => {
     assert.doesNotMatch(router.markdown, /exportCandidate|dataExport|secure-data-export/);
   });
 
+  it('gives Menhood live exports one lifecycle without local-file detours', () => {
+    const router = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'airtable-router')!;
+
+    assert.match(router.markdown, /Menhood live\/export lifecycle/);
+    assert.match(router.markdown, /hydrated quoted message or\s+card text/s);
+    assert.match(router.markdown, /Settled historical answer in chat: load `menhood-data` and stop there/);
+    assert.match(router.markdown, /Current\/live answer: use `menhood-data` only to resolve a named product's\s+canonical SKU/s);
+    assert.match(router.markdown, /Current\/live export or Google Sheet: load `airtable-core`,\s+`divo-python-automation`, and `google-sheets`/s);
+    assert.match(router.markdown, /Page the filtered live\s+Airtable source in one local workflow, write the governed Sheet destination,\s+and read it back/s);
+    assert.match(router.markdown, /Do not load `create-edit-files` for Lark or Google Sheets delivery/);
+    assert.doesNotMatch(router.markdown, /secure-data-export/);
+  });
+
   it('sends each Airtable job to its own registered tool, without a gateway envelope', () => {
     /*
      * These three skills taught the divo_gateway wrapper — root

@@ -205,7 +205,8 @@ describe('desktop capability bootstrap', () => {
     assert.ok(bootstrap.routingHints.some(hint =>
       hint.includes('follow the native menhood-data recipe')
       && hint.includes('use menhoodData for settled analysis')
-      && hint.includes('current/latest or Airtable-only operational fields')));
+      && hint.includes('current/latest or Airtable-only operational fields')
+      && hint.includes('source, divo-python-automation, and google-sheets recipes load together')));
   });
 
   it('routes a permitted tool through the skill that declares it', () => {

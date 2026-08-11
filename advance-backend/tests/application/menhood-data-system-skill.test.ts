@@ -40,6 +40,10 @@ describe('Menhood data system skill', () => {
     assert.match(markdown, /Product Name is only a display label/);
     assert.match(markdown, /multiple distinct SKUs/);
     assert.match(markdown, /do not probe `menhood_orders`/);
+    assert.match(markdown, /complete live\/current export or Google Sheet/);
+    assert.match(markdown, /`airtable-core`, `divo-python-automation`, and `google-sheets`/);
+    assert.match(markdown, /Do not load `create-edit-files` for a Lark or Google Sheets delivery/);
+    assert.match(markdown, /retired export tool, candidate, or offer flow/);
   });
 
   it('keeps durable metric, join, freshness, and privacy invariants without snapshot trivia', () => {
