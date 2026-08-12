@@ -144,9 +144,10 @@ export class GoogleOAuthService {
   // ── Consent URL ──────────────────────────────────────────────────────────
 
   getAuthorizeUrl(input: {
-    state:        string;
-    redirectUri?: string;
-    scopes?:      string[];
+    state:                 string;
+    redirectUri?:          string;
+    scopes?:               string[];
+    includeGrantedScopes?: boolean;
   }): string {
     const uri = (input.redirectUri?.trim() || this.redirectUri).trim();
     if (!this.clientId || !this.clientSecret || !uri) {
@@ -160,7 +161,7 @@ export class GoogleOAuthService {
     url.searchParams.set('response_type',          'code');
     url.searchParams.set('access_type',            'offline');
     url.searchParams.set('prompt',                 'consent');
-    url.searchParams.set('include_granted_scopes', 'true');
+    url.searchParams.set('include_granted_scopes', input.includeGrantedScopes === false ? 'false' : 'true');
     url.searchParams.set('scope',                  scopes);
     url.searchParams.set('state',                  input.state);
     return url.toString();
