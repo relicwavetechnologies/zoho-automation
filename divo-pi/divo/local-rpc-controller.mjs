@@ -24,6 +24,19 @@ import {
 	validateNativeSkillBootstrap,
 } from "./native-skills.mjs";
 import {
+	MAX_RUNTIME_ATTACHMENT_BYTES,
+	MAX_RUNTIME_ATTACHMENTS,
+	MAX_RUNTIME_REQUEST_BYTES,
+	attachmentManifestBlock,
+	decodeAttachmentFileName,
+	normalizeMimeType,
+	resolveStagedAttachments,
+	safeAttachmentFileName,
+	stagedAttachmentPath,
+	validateAttachmentFileId,
+	validateAttachmentRequestId,
+} from "./runtime-attachments.mjs";
+import {
 	classifyDivoRunTerminal,
 	isTransientDivoRunFailure,
 } from "./run-terminal.mjs";
@@ -59,6 +72,20 @@ export {
 	validateNativeSkillBootstrap,
 } from "./native-skills.mjs";
 
+export {
+	MAX_RUNTIME_ATTACHMENT_BYTES,
+	MAX_RUNTIME_ATTACHMENTS,
+	MAX_RUNTIME_REQUEST_BYTES,
+	attachmentManifestBlock,
+	decodeAttachmentFileName,
+	normalizeMimeType,
+	resolveStagedAttachments,
+	safeAttachmentFileName,
+	stagedAttachmentPath,
+	validateAttachmentFileId,
+	validateAttachmentRequestId,
+} from "./runtime-attachments.mjs";
+
 const execFileAsync = promisify(execFile);
 const IMAGE = process.env.DIVO_PI_IMAGE ?? "divo-pi-local:phase0";
 const KEYCHAIN_SERVICE = "dev.divo-pi.local";
@@ -93,11 +120,7 @@ let tokenReadTail = Promise.resolve();
  * bytes and metadata, and gets back a descriptor. That asymmetry is the whole
  * isolation guarantee, so nothing below may accept a caller-supplied path.
  */
-const INBOX_CONTAINER_ROOT = "/data/workspace/.divo/inbox";
 const WORKSPACE_UID_GID = "10001:10001";
-export const MAX_RUNTIME_ATTACHMENTS = 4;
-export const MAX_RUNTIME_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-export const MAX_RUNTIME_REQUEST_BYTES = 50 * 1024 * 1024;
 
 export function validateProfileName(value) {
 	const profile = value?.trim().toLowerCase();
@@ -219,128 +242,6 @@ export function trustedRuntimeSession(session) {
 				}))
 			: [],
 	};
-}
-
-export function validateAttachmentRequestId(value) {
-	if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9-]{7,63}$/.test(value)) {
-		throw new Error("Attachment request id is invalid");
-	}
-	return value;
-}
-
-export function validateAttachmentFileId(value) {
-	if (typeof value !== "string" || !/^file-[1-9][0-9]?$/.test(value)) {
-		throw new Error("Attachment file id is invalid");
-	}
-	return value;
-}
-
-/**
- * Reduce a chat-supplied filename to something that can only ever name a file,
- * never a place. Directory separators, traversal, control characters, shell
- * metacharacters and leading dots are all removed rather than rejected: the
- * user picked this name in Lark and should not get an error because their
- * invoice had a quote in it.
- */
-export function safeAttachmentFileName(value) {
-	const base = path
-		.basename(String(value ?? "").replace(/\\/g, "/"))
-		.normalize("NFC")
-		.replace(/[\u0000-\u001f\u007f]/g, "");
-	const cleaned = base
-		.replace(/[^A-Za-z0-9._ ()-]/g, "_")
-		.replace(/\s+/g, " ")
-		.replace(/^[.\s]+/, "")
-		.trim();
-	if (!cleaned) return "attachment";
-	if (cleaned.length <= 120) return cleaned;
-	const extension = path.extname(cleaned).slice(0, 16);
-	return `${cleaned.slice(0, 120 - extension.length)}${extension}`;
-}
-
-export function decodeAttachmentFileName(encoded) {
-	return safeAttachmentFileName(
-		Buffer.from(String(encoded ?? ""), "base64url").toString("utf8"),
-	);
-}
-
-/**
- * Build the one path an attachment is allowed to occupy.
- *
- * Composed from validated parts, so traversal cannot be expressed — the
- * containment check below is a second lock on a door that has no handle.
- * `fileId` gets its own directory level because two files in one message are
- * routinely called the same thing.
- */
-export function stagedAttachmentPath(requestId, fileId, fileName) {
-	const target = path.posix.join(
-		INBOX_CONTAINER_ROOT,
-		validateAttachmentRequestId(requestId),
-		validateAttachmentFileId(fileId),
-		safeAttachmentFileName(fileName),
-	);
-	if (!target.startsWith(`${INBOX_CONTAINER_ROOT}/`) || target.split("/").includes("..")) {
-		throw new Error("Refusing an attachment path outside the workspace inbox");
-	}
-	return target;
-}
-
-/**
- * Descriptors arrive back from the backend on the run request. Every field is
- * re-validated and the path is *recomputed* rather than read, so a compromised
- * or buggy backend cannot point a run at another user's file.
- */
-export function resolveStagedAttachments(value) {
-	if (value === undefined || value === null) return [];
-	if (!Array.isArray(value)) throw new Error("attachments must be an array");
-	if (value.length > MAX_RUNTIME_ATTACHMENTS) {
-		throw new Error(`At most ${MAX_RUNTIME_ATTACHMENTS} attachments are allowed per run`);
-	}
-	return value.map((item) => {
-		if (!item || typeof item !== "object") throw new Error("attachment must be an object");
-		const name = safeAttachmentFileName(item.fileName);
-		return {
-			name,
-			kind: item.kind === "image" ? "image" : "file",
-			mimeType: normalizeMimeType(item.mimeType),
-			bytes: Number.isSafeInteger(item.bytes) && item.bytes >= 0 ? item.bytes : 0,
-			path: stagedAttachmentPath(item.requestId, item.fileId, name),
-		};
-	});
-}
-
-export function normalizeMimeType(value) {
-	// `content-type` legitimately carries parameters ("application/pdf;
-	// charset=utf-8"). Matching the whole header would drop those types to
-	// octet-stream and cost the agent the one hint it has about the file.
-	const essence = String(value ?? "").split(";")[0].trim().toLowerCase();
-	return /^[a-z0-9!#$&^_.+-]{1,127}\/[a-z0-9!#$&^_.+-]{1,127}$/.test(essence)
-		? essence
-		: "application/octet-stream";
-}
-
-/**
- * The manifest is the only thing the model is told about an attachment: a
- * path, not the bytes. Everything else — reading, OCR, conversion — happens
- * through the agent's own tools against its own filesystem.
- */
-export function attachmentManifestBlock(attachments) {
-	if (!attachments || attachments.length === 0) return "";
-	const manifest = attachments.map((attachment) => ({
-		path: attachment.path,
-		name: attachment.name,
-		kind: attachment.kind,
-		mimeType: attachment.mimeType,
-		bytes: attachment.bytes,
-	}));
-	return [
-		"[ATTACHED_FILES]",
-		JSON.stringify(manifest, null, 2),
-		"[/ATTACHED_FILES]",
-		"These files are already saved in your workspace at the paths above. Read and process them from there; never ask the sender to upload them again.",
-		"",
-		"",
-	].join("\n");
 }
 
 function shellQuote(value) {

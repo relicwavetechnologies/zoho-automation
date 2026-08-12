@@ -340,6 +340,21 @@ Required outcome: one canonical package plus small cloud/desktop adapters for
 transport or UI differences. Do not copy one tree over the other; inventory
 intentional differences first and preserve them through explicit interfaces.
 
+Cross-check update (2026-08-13, confidence 92%): the trees are currently two
+different runtime contracts, not ordinary duplicated source. Desktop's Rust
+host recognizes protected Shopify use only from `divo_gateway`'s
+`tools.invoke` envelope; its approval interception is envelope-specific; and
+Teach clarification is a run-bound Desktop UI protocol. Cloud instead exposes
+typed tools, intercepts typed knowledge operations, and has no Teach UI.
+
+Therefore the migration unit is not a directory copy and will not use a
+temporary runtime selector. Desktop typed-tool registration, Rust allowlist,
+protected-data classification, approval/result rendering, native-skill access,
+and the Teach adapter must change together behind characterization tests. The
+current Jan implementation remains active until that vertical slice is proven.
+Creating a shared package for the two byte-identical files was rejected: the
+extra packaging boundary would add more indirection than duplication removed.
+
 ### F6 — PARTIALLY RESOLVED 2026-08-13 — Controller ownership is too broad
 
 Severity: **Medium-high**
@@ -355,11 +370,15 @@ Two cohesive, behavior-preserving seams are now extracted:
 - `native-skills.mjs` owns native-skill validation, rendering, authenticated
   bootstrap fetch, scope digesting, lifecycle telemetry, and atomic isolated
   Docker staging.
+- `runtime-attachments.mjs` owns attachment identifiers, filename sanitation,
+  confined path derivation, descriptor validation, MIME normalization, size
+  limits, and the model-facing path-only manifest.
 
 The controller remains the compatibility façade and process/container owner.
-Its public RPC contract and existing imports remain unchanged. The remaining
-controller still owns about 2,590 lines, so lifecycle, attachment, lease, and
-resource extraction remain active work rather than a completed gate.
+Its public RPC contract and existing imports remain unchanged. Docker byte
+staging deliberately remains with process orchestration for the next seam.
+Lifecycle, staging, lease, and resource extraction remain active work rather
+than a completed gate.
 
 The behavior has substantial tests and useful safety checks, but the file is
 too broad for predictable change review.
@@ -568,6 +587,12 @@ Desktop preservation boundary:
 - The canonical business-tool catalogue and governed backend executor must be
   shared; Desktop UI/Teach behavior must remain an adapter concern. A directory
   copy from cloud to Jan is not an acceptable migration.
+- Desktop migration must update its Rust protected-data parser at the same time
+  as typed Shopify tools; otherwise protected use would stop triggering
+  session cleanup.
+- No Pi/legacy gateway selector will be introduced. Characterization tests and
+  small commits provide rollback through Git, without shipping two production
+  behavior paths.
 
 ### Phase 4 — Reduce model tax without reducing capability
 
@@ -738,10 +763,13 @@ provide.
    SSE backpressure, reconnect compaction, and an actual controller-to-SSE
    early-delta regression test.
 6. [x] Extract pure runtime progress projection and native-skill bootstrap /
-   staging from the process controller without changing its public contract.
+   staging plus pure attachment policy from the process controller without
+   changing its public contract.
 7. Define typed Desktop Teach/control contracts and characterization tests,
    then consolidate the shared business gateway behind cloud and Desktop
-   adapters. Removal of the active Jan mega-tool happens only after that proof.
+   adapters as one vertical slice with the Rust allowlist, protected-data
+   classifier, and approval/result UI. Removal of the active Jan mega-tool
+   happens only after that proof; do not add a runtime selector.
 8. Continue controller extraction by lifecycle boundary, then run the clean
    checkout, built-image, DeepSeek, Luna, denial, and representative provider
    promotion gates.
