@@ -88,6 +88,58 @@ describe('SemrushService', () => {
     });
   }
 
+  it('uses the static fallback when n8n keeps serving the same rejected key', async () => {
+    const provider = createSemrushKeyProvider({
+      environmentApiKey: 'env-key',
+      webhookUrl: 'https://example.invalid/key',
+      timeoutMs: 1_000,
+      fetchImpl: async () => new Response(JSON.stringify({ api_key: 'bad-n8n-key', status: 'active' }), { status: 200 }),
+    });
+    const seen: string[] = [];
+    const service = new SemrushService(
+      {
+        fetch: async ({ apiKey }: any) => {
+          seen.push(apiKey);
+          if (apiKey === 'bad-n8n-key') throw new SemrushServiceError('provider_auth_failed', 'refused');
+          return complete;
+        },
+      } as any,
+      provider,
+      logger,
+    );
+
+    const result = await service.execute(overview);
+
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(seen, ['bad-n8n-key', 'env-key']);
+  });
+
+  it('fails honestly when both n8n and static fallback keys are rejected', async () => {
+    const provider = createSemrushKeyProvider({
+      environmentApiKey: 'env-key',
+      webhookUrl: 'https://example.invalid/key',
+      timeoutMs: 1_000,
+      fetchImpl: async () => new Response(JSON.stringify({ api_key: 'bad-n8n-key', status: 'active' }), { status: 200 }),
+    });
+    const seen: string[] = [];
+    const service = new SemrushService(
+      {
+        fetch: async ({ apiKey }: any) => {
+          seen.push(apiKey);
+          throw new SemrushServiceError('provider_auth_failed', 'refused');
+        },
+      } as any,
+      provider,
+      logger,
+    );
+
+    await assert.rejects(
+      () => service.execute(overview),
+      (error: unknown) => error instanceof SemrushServiceError && error.code === 'provider_auth_failed',
+    );
+    assert.deepEqual(seen, ['bad-n8n-key', 'env-key']);
+  });
+
   it('does not rotate for throttling, which the same key recovers from', async () => {
     const provider = poolProvider(['only-key', 'never-used']);
     const service = new SemrushService(
@@ -187,6 +239,43 @@ describe('createSemrushKeyProvider', () => {
       fetchImpl: async () => new Response('nope', { status: 500 }),
     });
     assert.equal(await provider.resolve(), 'env-key');
+  });
+
+  it('skips an n8n key that Semrush has already rejected and tries the static fallback', async () => {
+    let calls = 0;
+    const provider = createSemrushKeyProvider({
+      environmentApiKey: 'env-key',
+      webhookUrl: 'https://example.invalid/key',
+      timeoutMs: 1_000,
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response(JSON.stringify({ api_key: 'bad-n8n-key', status: 'active' }), { status: 200 });
+      },
+    });
+
+    assert.equal(await provider.resolve(), 'bad-n8n-key');
+    provider.invalidate('bad-n8n-key');
+    assert.equal(await provider.resolve(), 'env-key');
+    assert.equal(await provider.resolve(), 'env-key');
+    assert.equal(calls, 2, 'the fallback is cached briefly instead of rechecking n8n on every turn');
+  });
+
+  it('reports exhaustion once every configured key has been rejected', async () => {
+    const provider = createSemrushKeyProvider({
+      environmentApiKey: 'env-key',
+      webhookUrl: 'https://example.invalid/key',
+      timeoutMs: 1_000,
+      fetchImpl: async () => new Response(JSON.stringify({ api_key: 'bad-n8n-key', status: 'active' }), { status: 200 }),
+    });
+
+    assert.equal(await provider.resolve(), 'bad-n8n-key');
+    provider.invalidate('bad-n8n-key');
+    assert.equal(await provider.resolve(), 'env-key');
+    provider.invalidate('env-key');
+    await assert.rejects(
+      () => provider.resolve(),
+      (error: unknown) => error instanceof SemrushServiceError && error.code === 'provider_auth_failed',
+    );
   });
 
   it('rejects a webhook key that is not marked active', async () => {
