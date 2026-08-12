@@ -79,6 +79,17 @@ export type Beat =
       ms: number
       lines: StepLine[]
       done: string
+      /**
+       * The call is still open.
+       *
+       * Which row shimmers used to be decided by position — the last beat in
+       * the list was the live one — and position is not the same fact. A run
+       * that narrates after starting a tool pushes a `say` on the end, and the
+       * tool that is genuinely still working goes quiet while a finished
+       * sentence takes its place. The stream reports each call's own status, so
+       * that is what this carries.
+       */
+      running?: boolean
     }
   /** Blocks the run until a person answers. Nothing after it has happened. */
   | {
@@ -91,8 +102,16 @@ export type Beat =
       /** What the run reports if the reader declines. */
       declined: string
     }
-  /** One paragraph of the streamed answer. */
-  | { t: 'say'; text: string }
+  /**
+   * Prose the model wrote.
+   *
+   * `narration` marks the kind that arrived *during* the work — an aside, not
+   * a reply — which the thread files inside the work log rather than printing
+   * beside the answer. Without the mark the two are indistinguishable by the
+   * time they reach a component, and the surface prints the run's thinking-out-
+   * loud and its conclusion at identical weight, one after the other.
+   */
+  | { t: 'say'; text: string; narration?: boolean }
   /** A result rendered under the answer. */
   | { t: 'block'; block: Block }
 

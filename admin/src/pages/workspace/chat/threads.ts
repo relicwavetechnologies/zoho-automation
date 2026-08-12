@@ -86,6 +86,73 @@ export function onThreadsChanged(listener: () => void): () => void {
   return () => { listeners.delete(listener) }
 }
 
+/**
+ * A chat that exists here before it exists anywhere.
+ *
+ * Pressing Enter starts a run, and the run creates the thread — so for the
+ * second or two either side of that round trip the server has never heard of
+ * the conversation the reader is already in, and the rail could only show it by
+ * guessing. It showed nothing instead: you asked Divo something and the list of
+ * chats carried on as though you had not, until the answer came back.
+ *
+ * So the send says so, here, and the rail draws the row from this until the
+ * server's own list catches up. This is a *claim*, not a cache: it holds the
+ * one thing the browser genuinely knows that the server does not yet, and the
+ * moment the server knows it too, the server's version wins.
+ */
+export type StartedThread = { threadId: string; title: string; startedAt: number }
+
+const startedHere = new Map<string, StartedThread>()
+
+/** A run has been asked for on this thread. `title` is the ask, for now. */
+export function threadStarted(threadId: string, title: string): void {
+  startedHere.set(threadId, { threadId, title, startedAt: Date.now() })
+  threadsChanged()
+}
+
+/** The run ended, so the server has the thread and everything about it. */
+export function threadSettled(threadId: string): void {
+  startedHere.delete(threadId)
+  threadsChanged()
+}
+
+export function startedThreads(): StartedThread[] {
+  return [...startedHere.values()]
+}
+
+/**
+ * The rail's list, with the chats the server has not caught up on.
+ *
+ * A claim is only drawn while the server has nothing to say about that thread.
+ * The moment its own row appears, that row is used unchanged — including its
+ * `running` flag, which is the authority on whether work is still going and the
+ * only one that survives a reload. Overriding it from here would keep a chat
+ * marked as working long after it finished, on the strength of a browser tab
+ * remembering that it once pressed send.
+ */
+export function withStartedThreads(
+  threads: readonly ThreadSummary[],
+  started: readonly StartedThread[],
+): ThreadSummary[] {
+  const known = new Set(threads.map(thread => thread.threadId))
+  const pending = started
+    .filter(claim => !known.has(claim.threadId))
+    .sort((a, b) => b.startedAt - a.startedAt)
+    .map(claim => {
+      const at = new Date(claim.startedAt).toISOString()
+      return {
+        threadId: claim.threadId,
+        title: claim.title,
+        createdAt: at,
+        updatedAt: at,
+        preview: '',
+        messageCount: 1,
+        running: true,
+      }
+    })
+  return [...pending, ...threads]
+}
+
 async function call<T>(
   path: string,
   token: string,

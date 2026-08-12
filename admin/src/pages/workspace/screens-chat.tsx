@@ -25,14 +25,20 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useParams } from 'react-router-dom'
-import { Sparkles } from 'lucide-react'
+import { Diamond } from 'lucide-react'
 import { Chart } from './chat/charts'
 import {
-  Approval, Artifact, Composer, PixelGrid, Preview, Say, Shimmer, Step,
+  Approval, Artifact, Composer, Narration, Preview, Say, Step,
 } from './chat/parts'
+import { PixelGrid, Shimmer } from './chat/loader'
 import { elapsedLabel } from './chat/player'
+import { groupBeats } from './chat/log'
+import { PinSpacer } from './chat/pin'
 import { useThreadRun, type Exchange } from './chat/live'
-import { isThreadId, newThreadId } from './chat/threads'
+import {
+  isThreadId, newThreadId, renameThread, threadStarted, threadsChanged,
+} from './chat/threads'
+import { generateThreadTitle } from './chat/title'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { TRANSCRIPTS } from './chat/transcripts'
 import { ToolMark } from './chat/tools'
@@ -92,6 +98,7 @@ function ChatThread({ threadId }: { threadId: string }) {
      drawn only when something is genuinely passing under it. */
   const [scrolled, setScrolled] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
+  const column = useRef<HTMLDivElement>(null)
 
   const live = useThreadRun({ threadId, token })
   /* `send` is rebuilt whenever the run's state changes, so depending on it
@@ -106,20 +113,91 @@ function ChatThread({ threadId }: { threadId: string }) {
      Waits for `token` and for the thread's history, because the run cannot
      start without one and must not start before the other — sending mid-load
      would have the reply land under a transcript that arrives after it. */
+  /* Set by a send, read by the effect that pins. A flag rather than a guess at
+     which exchange looks new: a thread joined mid-run also grows an exchange
+     the moment its history lands, and pinning that one would yank the scroll
+     of somebody who has merely reopened the page. This is only ever true
+     because a person on this screen pressed send. */
+  const pinNext = useRef(false)
+
+  /* The name this chat gets written the moment it is started, replacing the
+     truncated first message the server derives. Held here rather than read back
+     from the thread so the rail and this bar change at the same time. */
+  const [named, setNamed] = useState<string | null>(null)
+  const namedOnce = useRef(false)
+  const titleAbort = useRef<AbortController | null>(null)
+  useEffect(() => () => titleAbort.current?.abort(), [])
+
+  /**
+   * Name the conversation from its opening ask.
+   *
+   * Only on the first thing said in a thread, and only once. The desktop guards
+   * the same moment with two metadata flags because its send path can be
+   * re-entered; this one cannot, so "there was nothing here before" is the whole
+   * condition. A later rename is therefore never overwritten — nothing runs to
+   * overwrite it.
+   */
+  const nameThread = (text: string) => {
+    if (namedOnce.current || live.exchanges.length > 0 || !token) return
+    namedOnce.current = true
+    const controller = new AbortController()
+    titleAbort.current = controller
+    void generateThreadTitle({ threadId, prompt: text, token, signal: controller.signal })
+      .then(title => {
+        if (!title || controller.signal.aborted) return
+        setNamed(title)
+        /* Written through to the server so the name outlives this tab, and
+           announced so the rail stops showing the truncated one. A failed write
+           costs the stored name, not the one on screen. */
+        void renameThread(threadId, title, token).then(threadsChanged)
+      })
+  }
+
+  const begin = (text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    // Armed only if a run genuinely started. A send declined because one is
+    // already open would otherwise leave the pin armed, to fire against
+    // whatever exchange happens to appear next.
+    const started = sendRef.current(trimmed)
+    pinNext.current = started
+    if (!started) return
+    nameThread(trimmed)
+    /* The chat now exists, whatever the server thinks. It is created by the run
+       that was just asked for, so for the length of that round trip this is the
+       only place that knows — and the rail is where a person looks to see that
+       their question landed somewhere. Named with the ask until the real name
+       arrives, which is the same thing the server would derive anyway. */
+    threadStarted(threadId, trimmed)
+  }
+
   const handedOff = useRef(false)
   useEffect(() => {
     if (handedOff.current || !handoff || !token || live.loading) return
     handedOff.current = true
     clearHandoff()
-    sendRef.current(handoff)
+    /* Through the same door as a send typed here, so a prompt carried over from
+       Home pins exactly as it would have if it had been typed on this page. */
+    begin(handoff)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handoff, token, live.loading])
 
   const start = (text: string) => {
-    const trimmed = text.trim()
-    if (!trimmed) return
+    if (!text.trim()) return
     setDraft('')
-    live.send(trimmed)
+    begin(text)
   }
+
+  /* Which message is held at the top, and the send that put it there.
+     The id is taken from the exchange once it exists rather than minted at send
+     time, so the pin can never name something that is not on screen. */
+  const [pin, setPin] = useState<{ id: string; nonce: number }>({ id: '', nonce: 0 })
+  const lastExchangeId = live.exchanges[live.exchanges.length - 1]?.id ?? ''
+  useEffect(() => {
+    if (!pinNext.current || !lastExchangeId) return
+    pinNext.current = false
+    setPin(current => ({ id: lastExchangeId, nonce: current.nonce + 1 }))
+  }, [lastExchangeId])
 
   /* Follow the run down the page while it works, and only then. Scrolling a
      reader who has deliberately gone back up to re-read something is the most
@@ -132,7 +210,11 @@ function ChatThread({ threadId }: { threadId: string }) {
     if (node) node.scrollTop = node.scrollHeight
   }, [live.exchanges])
 
-  const title = live.exchanges[0]?.prompt || 'New chat'
+  /* The name we just wrote wins, then the server's, then the opening ask —
+     which is the last resort rather than the default it used to be. Printing
+     the raw ask put a whole sentence in the bar, and a bar wide enough for a
+     sentence is a bar that reads as a heading for the page. */
+  const title = named || live.title || live.exchanges[0]?.prompt || 'New chat'
   const empty = !live.loading && live.exchanges.length === 0
 
   return (
@@ -147,7 +229,7 @@ function ChatThread({ threadId }: { threadId: string }) {
         }}
       >
         <Header title={title} scrolled={scrolled} />
-        <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-5 pb-6">
+        <div ref={column} className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-5 pb-6">
           {empty ? (
             <Welcome onPick={start} />
           ) : (
@@ -162,6 +244,13 @@ function ChatThread({ threadId }: { threadId: string }) {
             ))
           )}
         </div>
+        {/* After the column, not in it — see `pin.tsx`. */}
+        <PinSpacer
+          scroller={scroller}
+          column={column}
+          pinId={pin.id || null}
+          nonce={pin.nonce}
+        />
       </div>
 
       <div className="shrink-0 bg-page">
@@ -218,9 +307,18 @@ function Header({ title, scrolled }: { title: string; scrolled: boolean }) {
         scrolled ? 'border-b border-line' : 'border-b border-transparent'
       }`}
     >
-      <div className="mx-auto flex w-full max-w-[720px] items-center gap-3 px-5 py-2.5">
+      {/* Flush to the pane, not to the thread. The bar used to borrow the
+          conversation's own 720px column, which centred the name in the window
+          and left it floating in the middle of the screen with nothing under
+          it — on a wide display it read as a caption for whatever happened to
+          be beneath it. A title belongs in the corner of the thing it names. */}
+      <div className="flex w-full items-center gap-3 px-5 py-2.5">
+        {/* Capped, not just truncated. `flex-1` alone let a name run the full
+            width of a 27" display, at which point it stops reading as a label
+            on a chat and starts reading as the page's heading. A name that
+            needs more than this much room is not a name. */}
         <span
-          className={`min-w-0 flex-1 truncate text-[13px] font-medium text-ink transition-opacity duration-200 ${
+          className={`min-w-0 max-w-[46ch] truncate text-[13px] font-medium text-ink transition-opacity duration-200 ${
             scrolled ? 'opacity-100' : 'opacity-0'
           }`}
         >
@@ -297,35 +395,15 @@ function Exchanged({
   }, [state.finished])
 
   const seen = new Set(state.played)
-
-  /* A beat is on screen if it has played or is playing. Nothing is rendered
-     ahead of the run — the reader never sees a result before it arrived. */
-  const shown = beats
-    .map((beat, index) => ({ beat, index }))
-    .filter(({ index }) => seen.has(index) || state.live === index || state.gate === index)
-
-  /* Grouped, not sorted by kind.
-     Splitting the beats into "all steps" then "everything else" was wrong: the
-     invoice run produces its ageing chart BEFORE it asks to send anything, and
-     that layout printed the chart underneath the approval it was meant to
-     inform. So consecutive steps collapse into one work-log block and every
-     other beat stays exactly where the run put it. */
-  const groups: ({ kind: 'log'; items: typeof shown } | { kind: 'beat'; item: typeof shown[number] })[] = []
-  for (const item of shown) {
-    if (item.beat.t === 'step') {
-      const tail = groups[groups.length - 1]
-      if (tail?.kind === 'log') tail.items.push(item)
-      else groups.push({ kind: 'log', items: [item] })
-    } else {
-      groups.push({ kind: 'beat', item })
-    }
-  }
+  const groups = groupBeats(beats)
 
   const working = !state.finished && !state.declined
-  const toolCount = shown.filter((s) => s.beat.t === 'step').length
+  const toolCount = beats.filter((beat) => beat.t === 'step').length
 
   return (
-    <div className="flex flex-col gap-5">
+    /* The id is what a just-sent prompt is pinned by. It has to sit on a direct
+       child of the thread column, because that is where the spacer looks. */
+    <div data-exchange-id={exchange.id} className="flex flex-col gap-5">
       {prompt && (
         <div className="flex justify-end pl-16">
           <p className="rounded-card bg-field px-3 py-2 text-[13.5px] leading-[1.5] text-ink">
@@ -356,7 +434,13 @@ function Exchanged({
             </>
           ) : (
             <>
-              <Sparkles size={14} className="text-ink-3" />
+              {/* Divo's own mark, not a generic sparkle. This row is the
+                  product reporting on what it just did, and a sparkle says
+                  "AI happened here" — a sticker the whole industry wears,
+                  claiming novelty rather than authorship. The diamond is the
+                  mark in the corner of the sidebar; the same thing signs the
+                  work it did. */}
+              <Diamond size={11} fill="currentColor" strokeWidth={0} className="text-ink-3" />
               <span className="text-[13px] font-medium text-ink-2">
                 {state.declined
                   ? `Stopped after ${elapsedLabel(state.elapsed)}`
@@ -387,7 +471,13 @@ function Exchanged({
                   <div className="flex flex-col gap-0.5">
                     {group.items.map(({ beat, index }) =>
                       beat.t === 'step' ? (
-                        <Step key={index} beat={beat} live={state.live === index} />
+                        /* The run says which of its calls are still open, and a
+                           settled exchange has none whatever its last snapshot
+                           claimed — a stopped run can leave a row reading as
+                           running forever, shimmering under an answer. */
+                        <Step key={index} beat={beat} live={working && beat.running === true} />
+                      ) : beat.t === 'say' ? (
+                        <Narration key={index} text={beat.text} />
                       ) : null,
                     )}
                   </div>

@@ -19,36 +19,12 @@ import { ArrowUp, ArrowUpRight, Check, ChevronDown, Plus, X } from 'lucide-react
 import { ToolMark, tool, type ToolKey } from './tools'
 import type { ArtifactBlock, Beat, StepLine, TableBlock } from './transcripts'
 
-/* ── Loader ───────────────────────────────────────────────
-   A 3×3 pixel grid with a chevron wavefront running through it. The cycle is
-   shorter than the sweep, so two fronts are always in flight and the thing
-   never appears to stall — which is the whole job of a loader on a run that
-   can legitimately take thirty seconds. */
-const WAVE = Array.from({ length: 9 }, (_, i) => {
-  const row = Math.floor(i / 3)
-  const col = i % 3
-  return (col + Math.abs(row - 1)) * 90
-})
-
-export function PixelGrid() {
-  return (
-    <span aria-hidden className="bui-pixels">
-      {WAVE.map((delay, i) => (
-        <i key={i} style={{ animationDelay: `${delay}ms` }} />
-      ))}
-    </span>
-  )
-}
-
-/** The label that says work is happening — the text itself shimmers. */
-export function Shimmer({ children }: { children: React.ReactNode }) {
-  return <span className="bui-shimmer text-[13px] font-medium whitespace-nowrap">{children}</span>
-}
-
 /* ── Step ─────────────────────────────────────────────────
-   Three states, one component. Live: open, lines streaming, a ring turning.
+   Two states, one shape. Live: open, lines streaming, the label shimmering.
    Settled: one line, foldable back open by anyone who wants the detail.
-   Both carry the vendor mark, which is how the row is identified at a glance. */
+   Both carry the vendor mark, in the same slot at the same size — it is how the
+   row is identified at a glance, and identity should not depend on whether the
+   work has finished yet. */
 
 function Line({ line, index }: { line: StepLine; index: number }) {
   const tone =
@@ -89,18 +65,27 @@ export function Step({
         onClick={() => setPinned(!open)}
         className="-mx-1.5 flex w-[calc(100%+12px)] items-center gap-2 rounded-control px-1.5 py-1 text-left transition-colors duration-100 hover:bg-fill-strong"
       >
+        {/* A running step keeps its own mark rather than turning into a
+            spinner. The spinner was on screen at exactly the moment somebody is
+            watching the log, so the one thing they could not see was which
+            system Divo was in — the marks only appeared once the work was over
+            and the answer had made them redundant. The desktop settled this the
+            same way: a running Gmail call should look like Gmail.
+
+            The label carries "in flight" instead, so the row keeps its shape
+            when it settles and only the shimmer falls away. Swapping the glyph
+            made every step twitch sideways as it finished. */}
         <span className="relative flex size-4 shrink-0 items-center justify-center">
-          {live ? (
-            <span
-              className="size-3.5 rounded-full border-[1.5px] border-line-strong border-t-ink-2"
-              style={{ animation: 'bui-spin 700ms linear infinite' }}
-            />
-          ) : (
-            <ToolMark name={beat.tool} size={14} />
-          )}
+          <ToolMark name={beat.tool} size={14} />
         </span>
 
-        <span className="shrink-0 text-[12.5px] font-medium text-ink">{beat.title}</span>
+        {/* The shimmer is a class on the row's own label rather than the
+            `Shimmer` component, which carries its own type size — borrowing it
+            here would resize the title as the step settled, which is the twitch
+            the mark was just stopped from causing. */}
+        <span className={`shrink-0 text-[12.5px] font-medium text-ink ${live ? 'bui-shimmer' : ''}`}>
+          {beat.title}
+        </span>
 
         {/* Live: the chip carries the real target — the query, the file, the
             sheet name. Settled: the chip gives way to the one-line result,
@@ -249,6 +234,31 @@ export function Say({ text }: { text: string }) {
   return (
     <div
       className="text-[13.5px] leading-[1.7] text-ink"
+      style={{ animation: 'bui-stream-in 420ms cubic-bezier(0.23,1,0.32,1) both' }}
+    >
+      <Markdown>{text}</Markdown>
+    </div>
+  )
+}
+
+/**
+ * What the model said *while* it was working.
+ *
+ * "Let me check the invoices first" is not an answer, it is the run explaining
+ * itself, and it belongs with the rest of the run — inside the work log, which
+ * folds away the moment there is a real answer to read. It used to render out
+ * here at full answer weight, so a run that narrated three times handed back
+ * four paragraphs stacked in one column and the reader had to work out which of
+ * them was the reply. The desktop has always drawn it this way.
+ *
+ * Same renderer as the answer, one weight down: the model writes markdown
+ * whatever it is doing, and prose that reads as a broken list because it landed
+ * in a log is prose the log has damaged.
+ */
+export function Narration({ text }: { text: string }) {
+  return (
+    <div
+      className="py-1 text-[13px] leading-[1.65] text-ink-2"
       style={{ animation: 'bui-stream-in 420ms cubic-bezier(0.23,1,0.32,1) both' }}
     >
       <Markdown>{text}</Markdown>

@@ -20,7 +20,7 @@ import {
   ask, decideApproval, stop, watch,
   type LedgerRow, type PendingApproval, type RunEvent, type Timeline,
 } from './stream'
-import { getThread, threadsChanged, type ThreadRunRecord, type ThreadTurn } from './threads'
+import { getThread, threadSettled, type ThreadRunRecord, type ThreadTurn } from './threads'
 import type { RunState } from './player'
 
 function stepBeat(row: LedgerRow): Beat {
@@ -29,6 +29,11 @@ function stepBeat(row: LedgerRow): Beat {
     tool: toolMarkFor(row),
     title: row.count > 1 ? `${row.label} ×${row.count}` : row.label,
     ...(row.outcome ? { chip: row.outcome } : {}),
+    // Straight off the row. The run knows which of its calls are still open —
+    // it can have two — and reading that from the row rather than from where
+    // the row happens to sit in the list is what lets a step keep shimmering
+    // while the model narrates over the top of it.
+    ...(row.status === 'running' ? { running: true } : {}),
     // The stream decides when a step ends, so its duration is never guessed.
     ms: 0,
     lines: (row.children ?? []).map(child => ({
@@ -66,16 +71,19 @@ function sayBeats(text: string): Beat[] {
  *
  * Only the trailing ones are dropped. A `say` before a tool call is narration
  * the answer does not repeat — "let me check the invoices first" — and losing it
- * would make the run look like it worked in silence. On Lark the question never
- * arises: the log is a card and the answer is a separate message, so the two
- * never sit in one column.
+ * would make the run look like it worked in silence. What survives is marked as
+ * narration, which is how the thread knows to file it with the work rather than
+ * beside the answer. On Lark the question never arises: the log is a card and
+ * the answer is a separate message, so the two never sit in one column.
  */
 function ledgerBeats(ledger: readonly LedgerRow[], answered: boolean): Beat[] {
   const rows = [...ledger]
   if (answered) {
     while (rows.length > 0 && rows[rows.length - 1]!.kind === 'say') rows.pop()
   }
-  return rows.map(row => row.kind === 'say' ? { t: 'say', text: row.label } : stepBeat(row))
+  return rows.map(row => row.kind === 'say'
+    ? { t: 'say', text: row.label, narration: true }
+    : stepBeat(row))
 }
 
 /**
@@ -138,10 +146,23 @@ export type Exchange = {
   error?: string
 }
 
+/**
+ * The identity of an exchange this reader started, live and afterwards alike.
+ *
+ * A run used to be called `live` while it streamed and `${prompt}:${startedAt}`
+ * once it settled, which made finishing look like a different exchange arriving:
+ * React tore the element down and built a new one at the exact moment the answer
+ * appeared, and anything anchored to the exchange — a scroll position, a pinned
+ * prompt — was anchored to something that no longer existed. The run's start is
+ * the one thing true of it from the first frame to the last.
+ */
+export function runExchangeId(startedAtMs: number): string {
+  return `run:${startedAtMs}`
+}
+
 function settledState(beats: Beat[], elapsed: number): RunState {
   return {
     played: beats.map((_, index) => index),
-    live: null,
     gate: null,
     declined: null,
     finished: true,
@@ -195,6 +216,14 @@ export function exchangesFrom(turns: readonly ThreadTurn[]): Exchange[] {
 export type ThreadRun = {
   /** Every exchange in the thread, oldest first. */
   exchanges: Exchange[]
+  /**
+   * What the conversation is called, once the server has one to give.
+   *
+   * Null on a thread that has not been spoken in yet — it does not exist server
+   * side until then, and calling it anything before that would be naming
+   * something that is not there.
+   */
+  title: string | null
   /** True until the thread's history has been read back. */
   loading: boolean
   /**
@@ -212,7 +241,15 @@ export type ThreadRun = {
   decline: () => void
   /** Ask the run to stop. The reply still arrives on the open stream. */
   stopRun: () => void
-  send: (text: string, files?: readonly File[]) => void
+  /**
+   * Start a run, reporting whether one actually started.
+   *
+   * It declines while a run is already open, and a caller that assumed
+   * otherwise would act on a send that never happened — the screen pins the
+   * newest exchange to the top of the window on send, and a pin armed by a
+   * declined send fires later, against whatever exchange appears next.
+   */
+  send: (text: string, files?: readonly File[]) => boolean
   error: string | null
 }
 
@@ -221,6 +258,7 @@ export function useThreadRun(input: {
   token: string | null
 }): ThreadRun {
   const [settled, setSettled] = useState<Exchange[]>([])
+  const [title, setTitle] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [prompt, setPrompt] = useState<string | null>(null)
   const [timeline, setTimeline] = useState<Timeline | null>(null)
@@ -298,6 +336,7 @@ export function useThreadRun(input: {
     abort.current?.abort()
     abort.current = controller
     setSettled([])
+    setTitle(null)
     setPrompt(null)
     setTimeline(null)
     setFinal(null)
@@ -322,6 +361,7 @@ export function useThreadRun(input: {
       if (live && last && last.beats.length === 0) history.pop()
 
       setSettled(history)
+      setTitle(found?.thread.title?.trim() || null)
       setLoading(false)
       return live ? { prompt: live.prompt || last?.prompt || '', startedAt: live.startedAt } : null
     }
@@ -364,7 +404,7 @@ export function useThreadRun(input: {
     if (!final && !error) return
     const beats = beatsFrom(timeline, final)
     setSettled(previous => [...previous, {
-      id: `${prompt}:${startedAt.current}`,
+      id: runExchangeId(startedAt.current),
       prompt,
       beats,
       state: { ...settledState(beats, elapsed), declined },
@@ -377,16 +417,18 @@ export function useThreadRun(input: {
     setDeclined(null)
     setAnswered(false)
     // A finished run is the moment a new thread acquires its name and stops
-    // being marked as working, and neither is visible from the sidebar.
-    threadsChanged()
+    // being marked as working, and neither is visible from the sidebar. It is
+    // also the moment the rail's own claim on this thread expires: the server
+    // has the conversation now, so it is the one that should be describing it.
+    threadSettled(input.threadId)
     // Intentionally keyed on the run ending: the values it reads are all
     // settled by then, and re-running on every frame would duplicate the
     // exchange.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running, final, error])
 
-  const send = useCallback((text: string, files?: readonly File[]) => {
-    if (!input.token || running) return
+  const send = useCallback((text: string, files?: readonly File[]): boolean => {
+    if (!input.token || running) return false
     const controller = new AbortController()
     abort.current?.abort()
     abort.current = controller
@@ -407,6 +449,7 @@ export function useThreadRun(input: {
       token: input.token,
       signal: controller.signal,
     }), controller)
+    return true
   }, [input.threadId, input.token, running, consume])
 
   const stopRun = useCallback(() => {
@@ -431,16 +474,14 @@ export function useThreadRun(input: {
     void decideApproval(pendingApproval.id, 'rejected', input.token)
   }, [pendingApproval, input.token])
 
-  /* Everything before the gate has happened; the gate itself has not. A live
-     beat only exists while the run is still going, and it is always the last
-     one — the stream has no way to report a step that started before an earlier
-     one finished, because the ledger is ordered by when each began. */
-  const played = liveBeats
-    .map((_, index) => index)
-    .filter(index => gate === null || index !== gate)
+  /* Everything the ledger holds has happened, except the gate — which is the
+     one beat that is waiting rather than done. The timeline is a snapshot of
+     work already reported, so there is nothing here to reveal on a cursor; each
+     step says for itself whether it is still open. */
   const liveState: RunState = {
-    played: running && liveBeats.length > 0 ? played.slice(0, -1) : played,
-    live: running && liveBeats.length > 0 && gate === null ? liveBeats.length - 1 : null,
+    played: liveBeats
+      .map((_, index) => index)
+      .filter(index => index !== gate),
     gate,
     declined,
     finished: !running,
@@ -450,7 +491,7 @@ export function useThreadRun(input: {
   const exchanges = prompt === null
     ? settled
     : [...settled, {
-      id: 'live',
+      id: runExchangeId(startedAt.current),
       prompt,
       beats: liveBeats,
       state: liveState,
@@ -459,6 +500,7 @@ export function useThreadRun(input: {
 
   return {
     exchanges,
+    title,
     loading,
     liveLabel: running ? timeline?.liveLabel ?? null : null,
     running,

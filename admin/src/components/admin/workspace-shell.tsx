@@ -26,8 +26,10 @@ import { notify } from '@/lib/notify'
 import { useManagedDepartments } from '@/pages/workspace/data/use-team'
 import { useOnboarding } from '@/pages/workspace/data/use-onboarding'
 import {
-  deleteThread, listThreads, onThreadsChanged, renameThread, type ThreadSummary,
+  deleteThread, listThreads, onThreadsChanged, renameThread, startedThreads,
+  withStartedThreads, type ThreadSummary,
 } from '@/pages/workspace/chat/threads'
+import { PixelGrid } from '@/pages/workspace/chat/loader'
 import { Avatar } from '@/pages/workspace/ui'
 import { RAIL } from '@/components/admin/settings-shell'
 import { RoleProvider } from '@/cursor/role-context'
@@ -371,13 +373,27 @@ function shortAgo(iso: string): string {
 function RecentChats({ onSearch }: { onSearch: () => void }) {
   const { token } = useAdminAuth()
   const [chats, setChats] = useState<ThreadSummary[]>([])
-  const [loaded, setLoaded] = useState(false)
+  /* The last list the server gave, kept so a claim can be drawn over it without
+     waiting for a fresh one. */
+  const known = useRef<ThreadSummary[]>([])
 
   const refresh = useCallback(() => {
+    /* Drawn in two passes, and the first one is the point. A chat that has just
+       been asked for is painted from the browser's own claim on this frame; the
+       server's list follows a round trip later and replaces it. Waiting for the
+       fetch left a gap of a second or two after pressing Enter where the rail
+       said nothing had happened — which is exactly when somebody looks at it.
+
+       With no claim to add there is nothing to paint early, and painting anyway
+       is actively wrong: a run ending drops its claim and then refreshes, so the
+       first pass would remove the row and the second would put it back a fetch
+       later. The chat would blink out of the rail at the moment it finished. */
+    const claims = startedThreads()
+    if (claims.length > 0) setChats(withStartedThreads(known.current, claims).slice(0, 8))
     if (!token) return
     void listThreads(token).then((threads) => {
-      setChats(threads.slice(0, 8))
-      setLoaded(true)
+      known.current = threads
+      setChats(withStartedThreads(threads, startedThreads()).slice(0, 8))
     })
   }, [token])
 
@@ -388,7 +404,7 @@ function RecentChats({ onSearch }: { onSearch: () => void }) {
 
   // Nothing at all is not worth a heading. A person who has never asked Divo
   // anything is served by the Getting started card below, not by an empty list.
-  if (!loaded || chats.length === 0) return null
+  if (chats.length === 0) return null
 
   return (
     <div className="ws-recent">
@@ -501,10 +517,16 @@ function ChatRow({
             what somebody scanning this rail wants — "22h" reads the same
             whether Divo is still working in there or finished hours ago, and a
             live one is the entry they would have wanted to notice.
+
+            While it is working the pair changes to say so outright: the thread
+            view's own loader, and the word rather than a timestamp. "now" was
+            technically true of a run that started this second and read as an
+            age like any other, so the one row on this rail with something
+            happening in it looked exactly like the four that did not.
           */}
           <span data-state={chat.running ? 'run' : 'ok'}>
-            <i className="ws-recent-dot" />
-            {shortAgo(chat.updatedAt)}
+            {chat.running ? <PixelGrid /> : <i className="ws-recent-dot" />}
+            {chat.running ? 'Working' : shortAgo(chat.updatedAt)}
           </span>
         </NavLink>
       )}
