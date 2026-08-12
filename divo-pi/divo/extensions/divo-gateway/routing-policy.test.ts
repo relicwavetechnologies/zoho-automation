@@ -74,6 +74,17 @@ describe("Divo normal-session routing policy", () => {
 		assert.doesNotMatch(ROUTER_SKILL, /before planning every meaningful company task/i);
 		assert.doesNotMatch(ROUTER_SKILL, /For every meaningful .*call `divo_skill_resolve`/i);
 		assert.doesNotMatch(ROUTER_SKILL, /resolve\/fetch the backend `research` skill/i);
+		for (const rawOp of [
+			"work.resolve",
+			"tools.list",
+			"skills.list",
+			"skills.search",
+			"skills.get",
+			"connections.list",
+			"capabilities.get",
+		]) {
+			assert.doesNotMatch(ROUTER_SKILL, new RegExp(rawOp.replace(".", "\\.")));
+		}
 		assert.match(ROUTER_SKILL, /drive\.google\.com\/file\/d/);
 		assert.match(ROUTER_SKILL, /Never derive a Google ID, request a download URL, or call `import_to_google_sheets` directly/i);
 		assert.match(ROUTER_SKILL, /backend delivers the confirmation card and owns creation/i);
