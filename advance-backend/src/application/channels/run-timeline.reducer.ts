@@ -163,6 +163,21 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
         count: 1,
         status: 'done',
       });
+    } else if (event.type === 'thought') {
+      phase = 'Thinking';
+      state = 'thinking';
+      liveLabel = 'Thinking…';
+      // Keyed the same way a `say` is, and in the same turn space, so a run that
+      // thinks and then talks keeps them in the order it produced them. The two
+      // must not share a key prefix: a thought and a sentence can carry the same
+      // block index within one message, and one would silently replace the
+      // other.
+      ledger.set(`thought:${sayTurn}:${event.index}`, {
+        kind: 'thought',
+        label: event.text,
+        count: 1,
+        status: 'done',
+      });
     } else if (event.type === 'tool_start') {
       const tool = toolRowLabels(event.toolName, event.toolId);
       phase = 'Working';

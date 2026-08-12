@@ -42,6 +42,14 @@ export type RunProgressEvent =
   | { readonly type: 'ready' | 'thinking' | 'working' | 'writing' }
   /** A whole sentence the model finished saying between its tool calls. */
   | { readonly type: 'say'; readonly index: number; readonly text: string }
+  /**
+   * A whole sentence of the model's reasoning.
+   *
+   * Separate from `say` because the two are read differently and one of them is
+   * not shown at all on a card read by a whole chat. Same shape, same cap, same
+   * sentence-cutting — the difference is who it was addressed to.
+   */
+  | { readonly type: 'thought'; readonly index: number; readonly text: string }
   | {
       readonly type: 'tool_start';
       readonly callId: string;

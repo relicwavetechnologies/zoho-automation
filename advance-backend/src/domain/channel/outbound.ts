@@ -32,14 +32,19 @@ export type ChannelPlanStepStatus = 'pending' | 'running' | 'done' | 'failed' | 
 /**
  * One entry in the run's log, in the order it happened.
  *
- * `say` is something the model told the user; `tool` is something it did. They
- * share a list because they share a timeline — a run that only shows its tool
- * calls reads as a machine grinding, and one that only shows its talking hides
- * the work. Interleaved, the two explain each other.
+ * `say` is something the model told the user; `tool` is something it did;
+ * `thought` is the model reasoning to itself on the way. They share a list
+ * because they share a timeline — a run that only shows its tool calls reads as
+ * a machine grinding, and one that only shows its talking hides the work.
+ * Interleaved, the three explain each other.
+ *
+ * Not every surface prints all three. A `thought` is the model addressing
+ * itself, and a Lark card is read by a whole chat, so that surface drops them —
+ * a decision about who is looking at the card, made where the card is built.
  */
 export interface ChannelLedgerRow {
   /** Defaults to `tool`; rows written before this field existed are tool rows. */
-  readonly kind?:     'tool' | 'say';
+  readonly kind?:     'tool' | 'say' | 'thought';
   readonly label:     string;
   readonly count:     number;
   readonly outcome?:  string;

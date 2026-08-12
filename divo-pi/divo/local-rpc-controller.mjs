@@ -1525,6 +1525,18 @@ const PROGRESS_TODOS_MAX = 12;
 
 const PROGRESS_DETAIL_MAX = 64;
 const PROGRESS_SAY_MAX = 200;
+/**
+ * Reasoning gets far more room than a sentence, because it is not one.
+ *
+ * 200 was the right bound for a `say`: a Lark card shows a line of what the
+ * model told you, and more would take the card over. A thought is neither of
+ * those things — it is not on a card at all, and it is routinely a paragraph.
+ * Held to 200 it froze at its first two sentences and then never changed again,
+ * because the text is accumulated from the start and truncated from the front:
+ * a window built to let you watch the model think would have shown two static
+ * lines for the length of the run.
+ */
+const PROGRESS_THOUGHT_MAX = 1200;
 
 function progressLabel(value, maxLength = PROGRESS_LABEL_MAX) {
 	if (typeof value !== "string") return undefined;
@@ -1592,6 +1604,27 @@ function assistantBlockText(assistantMessageEvent) {
 	const content = assistantMessageEvent?.partial?.content;
 	const block = Array.isArray(content) ? content[assistantMessageEvent.contentIndex] : undefined;
 	return block?.type === "text" && typeof block.text === "string" ? block.text : undefined;
+}
+
+/**
+ * The reasoning block the model is working through right now.
+ *
+ * `ThinkingContent` in `packages/ai/src/types.ts` — `{ type: "thinking",
+ * thinking: string }`, addressed by the delta's own `contentIndex`, which is
+ * why the block is looked up rather than searched for: a message holds text and
+ * reasoning side by side, and taking the wrong one would print the model's
+ * private working as though it had been said to the reader.
+ *
+ * A redacted block is skipped outright. Its content was removed by the
+ * provider's safety filters and what remains is an opaque payload kept only so
+ * the conversation can continue — there is nothing in it for a person to read,
+ * and forwarding it would put a row on screen that says nothing.
+ */
+export function assistantThinkingText(assistantMessageEvent) {
+	const content = assistantMessageEvent?.partial?.content;
+	const block = Array.isArray(content) ? content[assistantMessageEvent.contentIndex] : undefined;
+	if (block?.type !== "thinking" || block.redacted === true) return undefined;
+	return typeof block.thinking === "string" ? block.thinking : undefined;
 }
 
 /**
@@ -1757,9 +1790,39 @@ export function projectRuntimeProgress(event) {
 			text: said,
 		};
 	}
-	// Reasoning stays inside the container. `thinking_delta` is the model
-	// talking to itself, not to the room, and a status card is read by everyone
-	// in the chat.
+	if (
+		event.type === "message_update"
+		&& event.assistantMessageEvent?.type === "thinking_delta"
+	) {
+		/*
+		 * Reasoning, forwarded — and it did not used to be.
+		 *
+		 * The rule here was "reasoning stays inside the container", on the
+		 * grounds that `thinking_delta` is the model talking to itself and a
+		 * Lark status card is read by everyone in the chat. The second half of
+		 * that is still true and is still enforced, but it is a fact about a
+		 * *card*, not about the run — and it was being enforced at the wrong
+		 * end. Withholding it here withheld it from the web thread as well,
+		 * which is one person reading their own conversation, and where the
+		 * reasoning is most of what makes a long run legible rather than a
+		 * silent thirty seconds.
+		 *
+		 * So it leaves as its own event kind, capped and sentence-cut exactly
+		 * like `say`, and each surface decides. The Lark card drops it.
+		 */
+		const thought = progressLabel(
+			settledSentences(assistantThinkingText(event.assistantMessageEvent)),
+			PROGRESS_THOUGHT_MAX,
+		);
+		if (!thought) return { type: "thinking" };
+		return {
+			type: "thought",
+			index: Number.isInteger(event.assistantMessageEvent.contentIndex)
+				? event.assistantMessageEvent.contentIndex
+				: 0,
+			text: thought,
+		};
+	}
 	return undefined;
 }
 

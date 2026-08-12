@@ -300,7 +300,28 @@ const TRANSCRIPT_LINE_MAX  = 240;
  * A run that called no tool gets none: its log is only the model talking, which
  * is what the answer already is.
  */
-export function runTranscript(input: readonly ChannelLedgerRow[]): string | undefined {
+/**
+ * The log, minus the model's reasoning.
+ *
+ * A `thought` row is the model addressing itself, and this card is read by
+ * whoever is in the chat — which on Lark is a room, not a person. The runtime
+ * forwards reasoning so the web thread (one reader, their own conversation) can
+ * show it; the decision not to put it on a card belongs here, where the card is
+ * built and where "who can see this" is actually known.
+ *
+ * Applied at both places the ledger enters this file rather than inside the
+ * line renderer: a filter that runs after folding and windowing would let
+ * reasoning occupy a card's five visible rows and then vanish, which is how a
+ * card ends up saying "+9 earlier steps" above two lines.
+ */
+export function shownOnCard(
+  rows: readonly ChannelLedgerRow[],
+): readonly ChannelLedgerRow[] {
+  return rows.filter(row => row.kind !== 'thought');
+}
+
+export function runTranscript(raw: readonly ChannelLedgerRow[]): string | undefined {
+  const input = shownOnCard(raw);
   if (!input.some(row => row.kind !== 'say')) return undefined;
 
   // Folded the same way the live card folds, so the trace is the log the user
@@ -367,7 +388,9 @@ export function foldRepeatedRows(
  * card that admits it is showing the last five things.
  */
 function activityMarkdown(timeline: ChannelTimeline): string | undefined {
-  const rows = timeline.ledger?.length ? foldRepeatedRows(timeline.ledger) : undefined;
+  const rows = timeline.ledger?.length
+    ? foldRepeatedRows(shownOnCard(timeline.ledger))
+    : undefined;
   if (!rows?.length) return undefined;
 
   const hidden  = Math.max(0, rows.length - ACTIVITY_VISIBLE_ROWS);

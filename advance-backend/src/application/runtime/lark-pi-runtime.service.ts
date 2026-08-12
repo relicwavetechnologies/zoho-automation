@@ -1606,8 +1606,12 @@ export function parseProgressEvent(value: unknown): RunProgressEvent | undefined
   // Free text the model wrote, so it is capped and flattened here the same way
   // every other string crossing this boundary is — the container is trusted to
   // run the work, not to decide how much of a chat card it may occupy.
-  if (type === 'say') {
-    const text = safeProgressString(event['text'], 200);
+  if (type === 'say' || type === 'thought') {
+    /* Reasoning is a paragraph, not a sentence, and it is not on a card — so it
+       keeps the container's own larger bound. Capping it at a `say`'s 200 here
+       would undo that on the way in and freeze the row at its first two
+       sentences, which is the failure this pair of numbers exists to avoid. */
+    const text = safeProgressString(event['text'], type === 'thought' ? 1_200 : 200);
     if (!text) return undefined;
     const rawIndex = event['index'];
     return {
