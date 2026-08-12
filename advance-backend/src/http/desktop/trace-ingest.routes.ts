@@ -27,6 +27,7 @@ import type { PersonaLearningToolSummary } from '../../application/persona-learn
 import type { KnowledgeLearningService } from '../../application/knowledge/knowledge-learning.service';
 import { isProtectedShopifyToolId } from '../../application/shopify/shopify-protected-result';
 import { RUNTIME_CHANNELS, type RuntimeChannel } from '../../domain/channel/runtime-channel';
+import { canonicalToolIdForToolName } from '../../domain/tools/tool-id';
 
 export interface TraceIngestRoutesDeps {
   prisma: PrismaClient;
@@ -482,13 +483,27 @@ async function persistEvent(
 
 /**
  * Desktop traces are client-authored diagnostics, not an authority for data
- * classification. Recognize only the closed gateway envelope and let the
- * backend tool ID decide whether result content must be suppressed.
+ * classification. Recognize only the closed legacy gateway envelope or exact
+ * backend-registered typed tool names, then let the backend tool ID decide
+ * whether result content must be suppressed.
  */
 function protectedShopifyTraceMetadata(
   event: TraceEvent,
 ): { readonly provider: 'shopify'; readonly toolId: string; readonly operation: string | null; readonly connectionId: string | null } | null {
-  if (event.kind !== 'tool' || event.toolName !== 'divo_gateway') return null;
+  if (event.kind !== 'tool') return null;
+
+  if (event.toolName !== 'divo_gateway') {
+    const toolId = canonicalToolIdForToolName(event.toolName);
+    if (!toolId || !isProtectedShopifyToolId(toolId)) return null;
+    const args = asRecord(event.input);
+    return {
+      provider: 'shopify',
+      toolId,
+      operation: typeof args?.['operation'] === 'string' ? args['operation'] : null,
+      connectionId: typeof args?.['connectionId'] === 'string' ? args['connectionId'] : null,
+    };
+  }
+
   const input = asRecord(event.input);
   if (input?.['op'] !== 'tools.invoke') return null;
   const payload = asRecord(input['payload']);

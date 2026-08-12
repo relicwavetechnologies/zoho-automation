@@ -282,6 +282,54 @@ describe('desktop trace terminal status', () => {
     assert.deepEqual(personalCaptured, []);
   });
 
+  it('redacts protected Shopify typed tool I/O after mega-tool removal', async () => {
+    const test = harness();
+
+    await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'run-protected-shopify-typed',
+        usageAuthority: 'desktop',
+        events: [{
+          kind: 'tool',
+          seq: 1,
+          toolName: 'divo_shopify_customers',
+          input: {
+            operation: 'search_customers',
+            connectionId: '11111111-1111-4111-8111-111111111111',
+            query: 'private@example.test',
+          },
+          output: { data: [{ email: 'private@example.test', phone: '+15555550123' }] },
+          summary: 'Found private@example.test',
+        }],
+      },
+      undefined,
+      undefined,
+      provenance('run-protected-shopify-typed'),
+    );
+
+    const event = test.events[0] as Record<string, any>;
+    assert.deepEqual(event.payload, {
+      input: {
+        provider: 'shopify',
+        toolId: 'shopifyCustomers',
+        operation: 'search_customers',
+        connectionId: '11111111-1111-4111-8111-111111111111',
+      },
+      output: '[REDACTED: governed Shopify protected-data result]',
+      isError: false,
+    });
+    assert.equal(event.summary, 'Protected Shopify result redacted');
+    assert.deepEqual((test.stepResults[0] as Record<string, any>).rawOutput.output, '[REDACTED: governed Shopify protected-data result]');
+    assert.deepEqual(test.protectedObservations, [true]);
+    const persisted = JSON.stringify({ events: test.events, stepResults: test.stepResults });
+    assert.equal(persisted.includes('private@example.test'), false);
+    assert.equal(persisted.includes('+15555550123'), false);
+  });
+
   it('keeps later trace batches protected after the tool batch was flushed and the marker is omitted', async () => {
     const test = harness();
     const personaCaptured: unknown[] = [];
