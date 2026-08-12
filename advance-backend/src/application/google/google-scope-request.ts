@@ -10,9 +10,9 @@
  * The scope groups per product already existed in the MCP manifest and nothing
  * consulted them when building an authorization. This module is that missing
  * step: given the tools a blocked run wanted, it returns the smallest set of
- * scopes that unblocks it. Google's `include_granted_scopes` then makes each
- * later grant additive, so a member accumulates access as they ask for things
- * rather than surrendering it all before they have asked for anything.
+ * scopes that unblocks it. Narrow requests are sent without Google's
+ * incremental scope merge, so an account that previously granted Drive does
+ * not see Drive again while connecting Mailer.
  */
 import { GOOGLE_SCOPE } from '../../domain/google/google-workspace-scope';
 import { GOOGLE_WORKSPACE_PRODUCTS } from './google-workspace-mcp-manifest';

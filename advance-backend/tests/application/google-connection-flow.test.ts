@@ -106,6 +106,7 @@ describe('GoogleConnectionAuthorizationService', () => {
         'https://www.googleapis.com/auth/gmail.send',
         'https://www.googleapis.com/auth/gmail.labels',
       ],
+      includeGrantedScopes: false,
     });
     // The point of the whole change: somebody who asked for a mail rule is
     // never shown Drive, Calendar or Apps Script on the consent screen.
