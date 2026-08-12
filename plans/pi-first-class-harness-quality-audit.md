@@ -594,6 +594,14 @@ Desktop preservation boundary:
   small commits provide rollback through Git, without shipping two production
   behavior paths.
 
+Preparatory protection seam completed: Jan's structured protected-run
+classifier now recognizes both the active `divo_gateway` Shopify envelope and
+the future `divo_shopify_orders` / `divo_shopify_customers` typed calls, with a
+Rust regression covering successful metadata and failed attempts. The typed
+names are not yet allowlisted or registered on Desktop, so this changes no
+current model surface; it closes a security-sensitive prerequisite before the
+cutover.
+
 ### Phase 4 — Reduce model tax without reducing capability
 
 Goal: let Pi spend tokens on the user's work, not Divo plumbing.
