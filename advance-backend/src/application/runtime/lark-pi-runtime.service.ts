@@ -8,6 +8,7 @@ import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
 import { isRuntimeChannel, type RuntimeChannel } from '../../domain/channel/runtime-channel';
 import { webThreadTitle } from '../../domain/channel/web-thread';
+import { canonicalToolIdForToolName } from '../../domain/tools/tool-id';
 import type { RunOrigin, RunOriginStore } from '../connections/run-origin.store';
 import type { KnowledgeLearningService } from '../knowledge/knowledge-learning.service';
 import type { Turn } from '../../domain/conversation/turn';
@@ -1582,7 +1583,14 @@ function safeProgressDetail(event: Record<string, unknown>): RunProgressDetail {
   };
 }
 
-function parseProgressEvent(value: unknown): RunProgressEvent | undefined {
+/**
+ * One frame from the container, in the vocabulary the timeline reducer reads.
+ *
+ * Exported for its tests: this is where a run's identity is established, and
+ * everything downstream — the product name on the row, the vendor mark beside
+ * it — is only as good as what this function recovers.
+ */
+export function parseProgressEvent(value: unknown): RunProgressEvent | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const event = value as Record<string, unknown>;
   const type = event['type'];
@@ -1613,9 +1621,15 @@ function parseProgressEvent(value: unknown): RunProgressEvent | undefined {
   if (type === 'tool_start') {
     const callId = safeProgressString(event['callId'], 100);
     const toolName = safeProgressString(event['toolName'], 80);
-    const toolId = safeProgressString(event['toolId'], 80);
     const detail = safeProgressString(event['detail'], 64);
     if (!callId || !toolName) return undefined;
+    // A governed call is identified by the tool it ran. The container sends the
+    // id explicitly only when its arguments carry one; typed tools do not, and
+    // carry it in the name instead — so the name is resolved against the
+    // canonical table here rather than left for each surface to parse out of
+    // the English label further downstream.
+    const toolId = safeProgressString(event['toolId'], 80)
+      ?? canonicalToolIdForToolName(toolName);
     return {
       type, callId, toolName,
       ...(toolId ? { toolId } : {}),

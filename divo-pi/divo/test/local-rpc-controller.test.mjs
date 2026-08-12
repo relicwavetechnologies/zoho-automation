@@ -24,6 +24,7 @@ import {
 	finalizeRuntimeLifecycle,
 	fetchNativeSkillBootstrap,
 	fetchNativeSkillBootstrapOrEmpty,
+	governedOperation,
 	loadToken,
 	logCompletedRun,
 	nativeSkillBootstrapDigest,
@@ -1238,4 +1239,35 @@ test("a named model carries the provider that serves it", () => {
 test("a model this runtime does not carry is refused by name", () => {
 	assert.throws(() => validateRuntimeModel("gpt-4o"), /must be one of/);
 	assert.throws(() => validateRuntimeModel({ model: "gpt-5.6-luna" }), /must be one of/);
+});
+
+// Every governed Gmail step in a real run reached the reader captioned "call",
+// beside a row that had already said Gmail. `op` is the plumbing in the
+// MCP-backed families; the operation a person would recognise is the native
+// tool the call names.
+test("a governed step is named by the operation, not by the call", () => {
+	assert.equal(
+		governedOperation({ op: "call", nativeTool: "search_gmail_messages", input: {} }),
+		"search_gmail_messages",
+	);
+	assert.equal(
+		governedOperation({ op: "call_resolved_sheet", nativeTool: "append_sheet_values" }),
+		"append_sheet_values",
+	);
+});
+
+// The flat families have no native tool: their operation is what `op` holds.
+test("a flat family keeps the operation it was called with", () => {
+	assert.equal(governedOperation({ op: "list_invoices" }), "list_invoices");
+	assert.equal(governedOperation({ operation: "apply" }), "apply");
+	assert.equal(governedOperation({}), undefined);
+});
+
+// Asking a tool for its schema is not performing the operation described. A row
+// that borrowed the native tool's name here would report work that never ran.
+test("a schema lookup is not reported as the operation it describes", () => {
+	assert.equal(
+		governedOperation({ op: "describe", nativeTool: "send_gmail_message" }),
+		"describe",
+	);
 });

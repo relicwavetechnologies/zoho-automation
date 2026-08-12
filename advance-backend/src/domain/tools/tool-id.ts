@@ -193,6 +193,45 @@ export const CANONICAL_TOOL_IDS = Object.freeze(
   Object.keys(TOOL_CAPABILITY_DEFINITIONS) as CanonicalToolId[],
 );
 
+/**
+ * The name a canonical tool is registered under inside the container.
+ *
+ * Mirrors `typedToolName` in divo-pi: every governed tool is its own typed Pi
+ * tool, and the id is lowercased on the way in because a provider's tool names
+ * may not carry case. The transform is lossy, which is why the reverse lookup
+ * below is a table of the ids we actually have rather than an attempt to undo
+ * it — an inverted guess would confidently name a tool that does not exist.
+ */
+export function typedToolNameFor(toolId: string): string {
+  const snake = toolId
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .toLowerCase()
+    .replace(/^_+|_+$/g, '');
+  return `divo_${snake}`;
+}
+
+const CANONICAL_TOOL_ID_BY_TYPED_NAME: ReadonlyMap<string, CanonicalToolId> = new Map(
+  CANONICAL_TOOL_IDS.map(toolId => [typedToolNameFor(toolId), toolId] as const),
+);
+
+/**
+ * Which governed capability a container tool call was, or nothing.
+ *
+ * The container reports the tool it ran — `divo_google_gmail` — and that is all
+ * the identity a run has now that the single `divo_gateway` tool is gone. Left
+ * unresolved, every governed call reached the reader as its own name spelled
+ * out with spaces in it ("Google gmail") and lost its vendor mark, because the
+ * table that knows the product name is keyed by canonical id and never saw one.
+ *
+ * A miss returns undefined rather than a derived guess: an unknown `divo_*`
+ * tool is a tool this backend does not govern, and naming it anyway would put
+ * a Gmail mark beside something that is not Gmail.
+ */
+export function canonicalToolIdForToolName(toolName: string): CanonicalToolId | undefined {
+  return CANONICAL_TOOL_ID_BY_TYPED_NAME.get(toolName);
+}
+
 function mapCapabilities<Value>(
   select: (definition: typeof TOOL_CAPABILITY_DEFINITIONS[CanonicalToolId]) => Value,
 ): Record<CanonicalToolId, Value> {

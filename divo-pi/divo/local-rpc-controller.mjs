@@ -1557,8 +1557,34 @@ function progressToolDetail(toolName, args) {
 	// The tool id already travels as its own field, and the backend holds the
 	// table that turns it into a product name — so only the operation goes here.
 	// Sending the raw id too would print it twice, untranslated.
-	if (isGovernedDivoTool(toolName)) return progressLabel(args.op ?? args.operation, PROGRESS_DETAIL_MAX);
+	if (isGovernedDivoTool(toolName)) return progressLabel(governedOperation(args), PROGRESS_DETAIL_MAX);
 	return undefined;
+}
+
+/**
+ * Operations that are plumbing rather than work.
+ *
+ * An MCP-backed family takes `{ op: 'call', nativeTool, input }`, so `op` says
+ * only that a native tool was called — which is true of nearly every row and
+ * was reaching the reader as a step literally captioned "call".
+ */
+const NATIVE_CALL_OPS = new Set(["call", "call_resolved_sheet"]);
+
+/**
+ * Which of a governed call's arguments names what it is doing.
+ *
+ * `nativeTool` for the MCP-backed families, because that is the operation a
+ * person would recognise; `op` for the flat ones, where the operation is
+ * already what `op` holds. `describe` keeps its own name on purpose: asking a
+ * tool for its schema is not performing the operation it describes, and a row
+ * that claimed otherwise would be reporting work that never happened.
+ */
+export function governedOperation(args) {
+	const op = typeof args?.op === "string" ? args.op : undefined;
+	const operation = typeof args?.operation === "string" ? args.operation : undefined;
+	const nativeTool = typeof args?.nativeTool === "string" ? args.nativeTool : undefined;
+	if (op && NATIVE_CALL_OPS.has(op) && nativeTool) return nativeTool;
+	return op ?? operation;
 }
 
 /** The text block the model is writing right now, out of the accumulated message. */
