@@ -373,13 +373,14 @@ function readAutomationPlan(value: unknown): {
 } | null {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return null;
 	const record = value as Record<string, unknown>;
-	const isPlanStatus = typeof record.status === "string" && (
-		record.status.includes("approval")
-		|| ["approved", "executing", "completed", "rejected", "failed", "expired"].includes(record.status)
+	const status = typeof record.status === "string" ? record.status : undefined;
+	const isPlanStatus = status !== undefined && (
+		status.includes("approval")
+		|| ["approved", "executing", "completed", "rejected", "failed", "expired"].includes(status)
 	);
 	if (!isPlanStatus) return null;
 	return {
-		status: record.status,
+		status,
 		...(typeof record.planId === "string" ? { planId: record.planId } : {}),
 		...(typeof record.title === "string" ? { title: record.title } : {}),
 		...(typeof record.invocationCount === "number" ? { invocationCount: record.invocationCount } : {}),

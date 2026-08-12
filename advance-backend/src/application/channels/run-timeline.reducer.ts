@@ -115,6 +115,10 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
   };
 
   const apply = (event: RunProgressEvent): TimelineUrgency => {
+    // Live answer prose has its own web stream. It is not a timeline row: the
+    // sentence-sized `say` projection below remains the readable work-log and
+    // Lark-card representation of the same model output.
+    if (event.type === 'answer_delta' || event.type === 'answer_reset') return 'throttled';
     const beginsProtectedRead = event.type === 'tool_start'
       && !!event.toolId
       && isProtectedShopifyToolId(event.toolId);

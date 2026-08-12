@@ -28,7 +28,6 @@ export const serializeToolArgsSchema = zodToJsonSchema as unknown as (
 
 export type WorkBootstrapAdvisory = {
   readonly code:
-    | 'contracts_loaded'
     | 'native_contracts_loaded'
     | 'native_contracts_unavailable'
     | 'connections_loaded'
@@ -56,9 +55,12 @@ export interface WorkBootstrapDeps {
 }
 
 /**
- * Builds the discovery context a resolved workflow needs before it runs: the
- * exact tool contracts, the accounts the member may actually use, and the
- * native operation schemas those tools expect.
+ * Builds the run context a resolved workflow needs before it runs: the
+ * reachable tool identities, the accounts the member may actually use, and
+ * provider-owned nested operation schemas when those are needed.
+ *
+ * Model-facing outer tool contracts are compiled into the Pi extension. They
+ * are deliberately not copied into this response.
  *
  * This is discovery context, not execution authority: each later invocation
  * still resolves RBAC, connection policy, approval, and rate limits through
@@ -97,10 +99,7 @@ export class WorkBootstrapService {
       .map(tool => ({
         id: tool.id,
         family: tool.family,
-        description: tool.description,
         allowedActions: [...(discoveryPerm.allowedActionsByTool.get(asToolId(tool.id)) ?? [])],
-        parameterDocs: tool.parameterDocs,
-        argsSchema: serializeToolArgsSchema(tool.argsSchema, { $refStrategy: 'none' }),
       }));
 
     const providers = new Set(connectionProvidersForToolIds(tools.map(tool => String(tool.id))));
@@ -109,14 +108,6 @@ export class WorkBootstrapService {
       if (provider) providers.add(provider);
     }
     const advisories: WorkBootstrapAdvisory[] = [];
-    if (tools.length > 0) {
-      advisories.push({
-        code: 'contracts_loaded',
-        level: 'required',
-        instruction: 'Exact tool contracts for this work are already loaded below. Do not call tools.list again for these tools during this run.',
-      });
-    }
-
     const connections: AccessibleConnection[] = [];
     if (providers.size > 0 && !this.deps.connectionRegistry) {
       advisories.push({

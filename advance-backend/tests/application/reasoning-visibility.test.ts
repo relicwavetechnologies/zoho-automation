@@ -40,6 +40,28 @@ describe('reasoning on the way in', () => {
   });
 });
 
+describe('live answer deltas on the way in', () => {
+  it('preserves exact Markdown whitespace', () => {
+    assert.deepEqual(
+      parseProgressEvent({ type: 'answer_delta', index: 1, delta: ' **there**\n' }),
+      { type: 'answer_delta', index: 1, delta: ' **there**\n' },
+    );
+  });
+
+  it('carries an explicit retry reset without turning it into a timeline row', () => {
+    assert.deepEqual(parseProgressEvent({ type: 'answer_reset' }), { type: 'answer_reset' });
+    const run = createRunTimelineReducer({ startedAtMs: 1_700_000_000_000 });
+    run.apply({ type: 'answer_reset' });
+    assert.equal(run.timeline().ledger, undefined);
+  });
+
+  it('does not add answer prose to the neutral timeline', () => {
+    const run = createRunTimelineReducer({ startedAtMs: 1_700_000_000_000 });
+    run.apply({ type: 'answer_delta', index: 0, delta: 'Hello' });
+    assert.equal(run.timeline().ledger, undefined);
+  });
+});
+
 describe('reasoning in the run log', () => {
   it('keeps thinking and talking apart, in the order they happened', () => {
     const run = createRunTimelineReducer({ startedAtMs: 1_700_000_000_000 });

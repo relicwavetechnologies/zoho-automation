@@ -316,7 +316,7 @@ export function parseMemoryReviewResponse(
 }
 
 async function presentMemoryReview(
-	ctx: Pick<ExtensionContext, "ui">,
+	ctx: Pick<ExtensionContext, "ui" | "signal">,
 	request: MemoryReviewPayloadV1,
 	runCorrelation: DivoRunCorrelationV1,
 ): Promise<MemoryReviewResponseV1> {
@@ -398,7 +398,7 @@ async function publishApprovedMemory(
 		intentId = await approvePreparedDivoIntent(toolCallId, prepared.body.data, {
 			ui: ctx.ui,
 			cwd: process.cwd(),
-			...(ctx.signal ? { signal: ctx.signal } : {}),
+			signal: ctx.signal,
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);

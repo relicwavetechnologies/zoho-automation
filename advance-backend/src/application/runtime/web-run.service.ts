@@ -4,8 +4,10 @@ import type { RunContext } from '../../domain/orchestration/run-context';
 import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { ChannelLedgerRow, ChannelTimeline, InteractiveAction } from '../../domain/channel/outbound';
 import { WEB_RUN_CONTENT_KIND, webThreadTitle, type WebThreadRunRecord } from '../../domain/channel/web-thread';
-import { asChatId, asCorrelationId, asMessageId } from '../../shared/ids';
+import { asChatId, asCorrelationId, asDepartmentId, asMessageId } from '../../shared/ids';
 import { createRunTimelineReducer } from '../channels/run-timeline.reducer';
+import type { ChannelIdentityRepoPort } from '../../infrastructure/persistence/channel-identity.repository';
+import type { DepartmentRepoPort } from '../../infrastructure/persistence/department.repository';
 import type {
   ApprovalInboxItem,
   ApprovalInboxService,
@@ -32,6 +34,12 @@ import { LarkPiRuntimeError } from './lark-pi-runtime.service';
 export type WebRunEvent =
   /** The run's neutral timeline, as it stands. Sent whenever it changes. */
   | { readonly type: 'timeline'; readonly timeline: ChannelTimeline }
+  /** A reconnect snapshot of the assistant answer accumulated so far. */
+  | { readonly type: 'answer'; readonly text: string }
+  /** One exact fragment received from the model. */
+  | { readonly type: 'answer_delta'; readonly delta: string }
+  /** The preceding prose became pre-tool narration, not the final answer. */
+  | { readonly type: 'answer_reset' }
   /** The answer. Terminal. */
   | {
       readonly type: 'final';
@@ -75,6 +83,10 @@ export interface WebRunInput {
 export interface WebRunServiceDeps {
   readonly piRuntime: Pick<LarkPiRuntimeService, 'run'>;
   readonly logger: Logger;
+  /** Resolves the same backend-owned active department used by Lark turns. */
+  readonly identity?: Pick<ChannelIdentityRepoPort, 'resolveByUserId'>;
+  /** Rejects a stale preference before it can be minted into a runtime lease. */
+  readonly departments?: Pick<DepartmentRepoPort, 'getMembership'>;
   /** Optional: without it the run still answers, it just cannot show buttons. */
   readonly approvals?: Pick<ApprovalInboxService, 'list'>;
   /**
@@ -155,16 +167,18 @@ export class WebRunService {
     // reader watches an empty stream and cannot tell "starting" from "broken".
     push({ type: 'timeline', timeline: timeline.timeline() });
 
+    const runContext = await this.resolveRunContext(input.runContext, log);
     const incoming = webIncomingMessage({
       runId,
       threadId: input.threadId,
       text: input.text,
       userExternalId: input.userExternalId,
     });
+    let answerStarted = false;
 
     const settled = this.deps.piRuntime.run({
       incoming,
-      runContext: input.runContext,
+      runContext,
       conversation: {
         channel: 'web',
         chatId: incoming.chatId,
@@ -176,6 +190,23 @@ export class WebRunService {
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       onProgress: event => {
+        if (event.type === 'answer_delta') {
+          answerStarted = true;
+          push({ type: 'answer_delta', delta: event.delta });
+          return;
+        }
+        if (event.type === 'answer_reset') {
+          answerStarted = false;
+          push({ type: 'answer_reset' });
+          return;
+        }
+        // Text before a tool call was narration, not the terminal answer. It
+        // remains in the sentence-sized timeline `say` row; clear the live
+        // answer lane so the next assistant turn starts from an honest blank.
+        if (event.type === 'tool_start' && answerStarted) {
+          answerStarted = false;
+          push({ type: 'answer_reset' });
+        }
         publishTimeline(timeline.apply(event) === 'immediate');
       },
       // Asked for at the moment the answer is written down, so the work log a
@@ -229,6 +260,49 @@ export class WebRunService {
       ...(awaitingApproval.length ? { awaitingApproval } : {}),
       timeline: timeline.timeline(),
     };
+  }
+
+  /**
+   * A human member token deliberately has no runtime department claim. Resolve
+   * the person's backend-owned preference here, before the short-lived Pi lease
+   * is issued, and confirm it is still an active membership. This keeps the web
+   * and Lark surfaces on one department authority without trusting browser
+   * input or teaching Pi how memberships work.
+   */
+  private async resolveRunContext(runContext: RunContext, log: Logger): Promise<RunContext> {
+    if (runContext.departmentId || !this.deps.identity || !this.deps.departments) {
+      return runContext;
+    }
+
+    const identity = await this.deps.identity.resolveByUserId(
+      String(runContext.userId),
+      String(runContext.companyId),
+    );
+    if (!identity.ok) {
+      log.warn('web_run.department_identity_failed', { error: identity.error.message });
+      return runContext;
+    }
+    const departmentId = identity.value?.activeDepartmentId;
+    if (!departmentId) return runContext;
+
+    const membership = await this.deps.departments.getMembership(
+      String(runContext.userId),
+      String(runContext.companyId),
+      departmentId,
+    );
+    if (!membership.ok) {
+      log.warn('web_run.department_membership_failed', {
+        departmentId,
+        error: membership.error.message,
+      });
+      return runContext;
+    }
+    if (!membership.value) {
+      log.warn('web_run.department_preference_stale', { departmentId });
+      return runContext;
+    }
+
+    return { ...runContext, departmentId: asDepartmentId(departmentId) };
   }
 
   /**

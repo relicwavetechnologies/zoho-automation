@@ -424,7 +424,13 @@ function Exchanged({
             )
           }
           if (beat.t === 'say') {
-            return <Say key={index} text={beat.text} reveal={exchange.fresh === true} />
+            return (
+              <Say
+                key={index}
+                text={beat.text}
+                streaming={!state.finished && beat.narration !== true}
+              />
+            )
           }
           if (beat.t === 'block') {
             const { block } = beat

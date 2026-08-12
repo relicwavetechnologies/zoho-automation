@@ -157,11 +157,12 @@ export async function executeLocalBrokerRequest(
 		// A script reaching the backend through this socket has no more authority
 		// than the model. Ignore any caller-supplied legacy skill provenance; the
 		// backend checks identity, RBAC, schema, connection access, and approval.
-		const payload = asRecord(input.request.payload);
-		let trustedPayload = input.request.payload;
-		if (input.request.op === "tools.invoke" && payload) {
-			trustedPayload = { ...payload };
-			delete trustedPayload.skillId;
+			const payload = asRecord(input.request.payload);
+			let trustedPayload = input.request.payload;
+			if (input.request.op === "tools.invoke" && payload) {
+				const sanitizedPayload = { ...payload };
+				delete sanitizedPayload.skillId;
+				trustedPayload = sanitizedPayload;
 		}
 		if (
 			input.request.op === "tools.invoke"

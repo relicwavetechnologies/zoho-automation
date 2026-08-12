@@ -26,6 +26,7 @@ import {
 	fetchNativeSkillBootstrapOrEmpty,
 	assistantThinkingText,
 	governedOperation,
+	projectRuntimeAnswerDelta,
 	projectRuntimeProgress,
 	loadToken,
 	logCompletedRun,
@@ -1338,6 +1339,25 @@ test("a long thought keeps growing past a sentence's worth", () => {
 	assert.equal(long.type, "thought");
 	assert.ok(long.text.length > short.text.length, "a longer thought must say more");
 	assert.ok(long.text.length > 200, "200 is a say's bound, not a thought's");
+});
+
+test("the provider's exact answer delta leaves on a separate live stream", () => {
+	const event = {
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "text_delta",
+			contentIndex: 2,
+			delta: "| 48 |\n",
+			partial: { content: [{ type: "text", text: "ignored" }] },
+		},
+	};
+	assert.deepEqual(projectRuntimeAnswerDelta(event), {
+		type: "answer_delta",
+		index: 2,
+		delta: "| 48 |\n",
+	});
+	// The card-oriented projection remains independent and sentence-sized.
+	assert.deepEqual(projectRuntimeProgress(event), { type: "writing" });
 });
 
 /* Redacted reasoning has had its content removed by the provider; what is left

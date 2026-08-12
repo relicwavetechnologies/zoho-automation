@@ -51,6 +51,12 @@ type TraceEvent =
 		toolSummary: Array<{ toolName: string; isError: boolean }>;
 	};
 
+type TraceEventInput = TraceEvent extends infer Event
+	? Event extends TraceEvent
+		? Omit<Event, "seq" | "ts">
+		: never
+	: never;
+
 interface RunState {
 	runId: string;
 	threadId?: string;
@@ -150,7 +156,7 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 		return run;
 	};
 
-	const push = (ev: Omit<Extract<TraceEvent, { kind: string }>, "seq" | "ts">): void => {
+	const push = (ev: TraceEventInput): void => {
 		const r = ensureRun();
 		r.buffer.push({ ...(ev as TraceEvent), seq: r.seq++, ts: Date.now() });
 		if (r.buffer.length > MAX_BUFFER) r.buffer.splice(0, r.buffer.length - MAX_BUFFER);
@@ -248,7 +254,7 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 	// run. The proxy keeps authoritative token usage while this extension owns
 	// the detailed local tool/model timeline.
 	pi.on("before_provider_request", async (event, ctx) => {
-		if (!DIVO_PROXY_PROVIDERS.has(ctx.model?.provider)) return undefined;
+			if (!ctx.model || !DIVO_PROXY_PROVIDERS.has(ctx.model.provider)) return undefined;
 		if (process.env.DIVO_LLM_PROXY_ACTIVE !== "1") return undefined;
 		if ("error" in resolveDivoGatewayConfig()) return undefined;
 		const correlation = await tryReadRunCorrelation();
@@ -327,7 +333,7 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 
 	pi.on("agent_end", (event) => {
 		guard(() => {
-			const terminal = classifyDivoRunTerminal(event.messages);
+			const terminal = classifyDivoRunTerminal(event.messages) as DivoRunTerminal;
 			if (
 				terminal.status === "error"
 				&& (

@@ -330,7 +330,7 @@ export async function executeMemoryRecall(
 }
 
 export function registerMemoryRecallTool(pi: ExtensionAPI) {
-	pi.registerTool({
+	pi.registerTool<typeof MEMORY_RECALL_PARAMS, unknown>({
 		name: "divo_memory_recall",
 		label: "Recall company memory",
 		description:

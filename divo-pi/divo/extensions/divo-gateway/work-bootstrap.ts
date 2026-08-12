@@ -5,10 +5,7 @@ export interface WorkBootstrap {
 	tools: Array<{
 		id: string;
 		family: string;
-		description: string;
 		allowedActions: string[];
-		parameterDocs: string;
-		argsSchema: unknown;
 	}>;
 	nativeContracts: Array<{
 		toolId: string;
@@ -54,16 +51,11 @@ export function parseWorkBootstrap(value: unknown): WorkBootstrap | undefined {
 		const tool = record(value);
 		const id = string(tool?.id);
 		const family = string(tool?.family);
-		const description = string(tool?.description);
-		const parameterDocs = string(tool?.parameterDocs);
-		if (!tool || !id || !family || !description || !parameterDocs || !Array.isArray(tool.allowedActions)) return [];
+		if (!tool || !id || !family || !Array.isArray(tool.allowedActions)) return [];
 		return [{
 			id,
 			family,
-			description,
-			parameterDocs,
 			allowedActions: tool.allowedActions.filter((item): item is string => typeof item === "string"),
-			argsSchema: tool.argsSchema,
 		}];
 	}) : [];
 	const nativeContracts = Array.isArray(raw.nativeContracts)
@@ -126,17 +118,16 @@ export function parseWorkBootstrap(value: unknown): WorkBootstrap | undefined {
 
 export function formatWorkBootstrap(bootstrap: WorkBootstrap): string[] {
 	const lines = ["Run bootstrap (already loaded; do not rediscover these items):"];
-	// Only the tool's identity and reach belong here. Its description, parameter
-	// documentation, and JSON Schema now arrive as a registered typed tool, so
-	// repeating them in prose would cost the same tokens twice and let the two
-	// copies drift apart.
+	// Only the tool's identity and current reach belong here. Its description,
+	// guidance, and outer JSON Schema are compiled into the permanent Pi-native
+	// definition, so repeating them in prose would cost tokens twice and let the
+	// two copies drift apart.
 	for (const tool of bootstrap.tools) {
 		lines.push(`- Tool ${tool.id} [${tool.allowedActions.join(", ") || "no allowed actions"}]`);
 	}
 	for (const contract of bootstrap.nativeContracts) {
 		lines.push(`- Native contract ${contract.toolId}.${contract.nativeTool}`);
 		if (contract.description) lines.push(`  ${contract.description}`);
-		lines.push(`  input schema: ${JSON.stringify(contract.inputSchema)}`);
 	}
 	for (const connection of bootstrap.connections) {
 		const account = connection.accountEmail ?? connection.accountName ?? connection.label;

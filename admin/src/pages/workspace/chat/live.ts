@@ -105,8 +105,9 @@ function ledgerBeats(ledger: readonly LedgerRow[], answered: boolean): Beat[] {
 export function beatsFrom(
   timeline: Timeline | null,
   final: { text: string; awaitingApproval?: PendingApproval[] } | null,
+  liveAnswer = '',
 ): Beat[] {
-  const answer = final?.text?.trim() ?? ''
+  const answer = final?.text?.trim() ?? liveAnswer
   const beats = ledgerBeats(timeline?.ledger ?? [], answer.length > 0)
 
   for (const approval of final?.awaitingApproval ?? []) {
@@ -151,16 +152,6 @@ export type Exchange = {
   prompt: string
   beats: Beat[]
   state: RunState
-  /**
-   * This answer arrived while the reader was here.
-   *
-   * The one thing that separates a reply landing from a reply being read back,
-   * and the answer streams a word at a time only for the first. Without it,
-   * scrolling up through a thread would set yesterday's answers typing
-   * themselves out again — a performance of work that finished a day ago, and
-   * on a long thread, several of them at once.
-   */
-  fresh?: boolean
   /** Set when the run ended without an answer. */
   error?: string
 }
@@ -281,6 +272,7 @@ export function useThreadRun(input: {
   const [loading, setLoading] = useState(true)
   const [prompt, setPrompt] = useState<string | null>(null)
   const [timeline, setTimeline] = useState<Timeline | null>(null)
+  const [liveAnswer, setLiveAnswer] = useState('')
   const [final, setFinal] = useState<{ text: string; awaitingApproval?: PendingApproval[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
@@ -322,6 +314,9 @@ export function useThreadRun(input: {
       for await (const event of events) {
         if (controller.signal.aborted) return answered
         if (event.type === 'timeline') setTimeline(event.timeline)
+        if (event.type === 'answer') setLiveAnswer(event.text)
+        if (event.type === 'answer_delta') setLiveAnswer(current => current + event.delta)
+        if (event.type === 'answer_reset') setLiveAnswer('')
         if (event.type === 'error') { setError(event.message); answered = true }
         if (event.type === 'final') {
           answered = true
@@ -358,6 +353,7 @@ export function useThreadRun(input: {
     setTitle(null)
     setPrompt(null)
     setTimeline(null)
+    setLiveAnswer('')
     setFinal(null)
     setError(null)
     setRunning(false)
@@ -427,11 +423,11 @@ export function useThreadRun(input: {
       prompt,
       beats,
       state: { ...settledState(beats, elapsed), declined },
-      fresh: true,
       ...(error ? { error } : {}),
     }])
     setPrompt(null)
     setTimeline(null)
+    setLiveAnswer('')
     setFinal(null)
     setError(null)
     setDeclined(null)
@@ -455,6 +451,7 @@ export function useThreadRun(input: {
     startedAt.current = Date.now()
     setPrompt(text)
     setTimeline(null)
+    setLiveAnswer('')
     setFinal(null)
     setError(null)
     setDeclined(null)
@@ -477,7 +474,7 @@ export function useThreadRun(input: {
     void stop(input.threadId, input.token)
   }, [input.threadId, input.token, running])
 
-  const liveBeats = prompt === null ? [] : beatsFrom(timeline, final)
+  const liveBeats = prompt === null ? [] : beatsFrom(timeline, final, liveAnswer)
   const gateIndex = liveBeats.findIndex(beat => beat.t === 'approve')
   const gate = !answered && !declined && gateIndex !== -1 ? gateIndex : null
   const pendingApproval = final?.awaitingApproval?.[0]
@@ -515,7 +512,6 @@ export function useThreadRun(input: {
       prompt,
       beats: liveBeats,
       state: liveState,
-      fresh: true,
       ...(error ? { error } : {}),
     }]
 

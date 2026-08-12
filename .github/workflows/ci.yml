@@ -73,9 +73,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        # Three divo-pi files below, because three backend tests reach across
-        # into the Pi runtime to check the two halves still agree — the model
-        # catalogue, the governed tool allowlist, and capability finalization.
+        # The selected divo-pi runtime files below let backend tests check that
+        # the compiled model catalogue, governed allowlist, and capability
+        # finalization still agree across the container/backend boundary.
         # They are static imports, so a missing file is not a skipped test but a
         # suite that cannot load: `advance-backend` has been red on main and dev
         # since the allowlist parity test arrived without the two paths it reads.
@@ -85,6 +85,9 @@ jobs:
             divo-pi/divo/runtime-models.mjs
             divo-pi/divo/runtime-manifest.json
             divo-pi/divo/extensions/divo-gateway/typed-tools.ts
+            divo-pi/divo/extensions/divo-gateway/native-tools/catalogue-contract.ts
+            divo-pi/divo/extensions/divo-gateway/native-tools/generated
+            divo-pi/divo/extensions/divo-gateway/native-tools/semrush-contract.ts
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -106,6 +109,9 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Verify compiled Pi-native tool catalogue
+        run: pnpm check:pi-native-tools
 
       - name: Test
         # Live integration suites auto-skip when service credentials are absent.
@@ -169,8 +175,8 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Test Divo runtime and controller
-        run: npm run divo:test
+      - name: Check Divo runtime, controller, and extensions
+        run: npm run divo:check
 
   verify-development-source:
     name: verify-development-source
@@ -394,7 +400,7 @@ jobs:
         run: |
           docker pull "${IMAGE}"
           if [[ "${{ matrix.component }}" == "pi" ]]; then
-            docker run --rm --network none --entrypoint npm "${IMAGE}" run divo:test
+            docker run --rm --network none --entrypoint npm "${IMAGE}" run divo:check
             docker run --rm --network none --tmpfs /data:rw,uid=10001,gid=10001 \
               --entrypoint /app/node_modules/.bin/tsx "${IMAGE}" \
               packages/coding-agent/src/cli.ts --version

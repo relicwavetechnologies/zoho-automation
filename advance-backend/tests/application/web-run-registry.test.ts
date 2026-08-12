@@ -77,6 +77,25 @@ describe('web run registry', () => {
     run.end();
   });
 
+  it('replays both the latest timeline and live answer to a late reader', async () => {
+    const runs = registry();
+    const run = controlled();
+    runs.start({
+      runId: 'r1', threadId: 'web_t1', userId: 'u1', prompt: 'hi',
+      controller: new AbortController(), events: run.events,
+    });
+    run.push(timeline('working'));
+    run.push({ type: 'answer_delta', delta: 'Half of ' });
+    run.push({ type: 'answer_delta', delta: 'the answer' });
+    await settle();
+
+    assert.deepEqual(await collect(runs.attach('u1', 'web_t1'), 2), [
+      timeline('working'),
+      { type: 'answer', text: 'Half of the answer' },
+    ]);
+    run.end();
+  });
+
   it('replays the answer to a reader who was away when it landed', async () => {
     const runs = registry();
     const run = controlled();

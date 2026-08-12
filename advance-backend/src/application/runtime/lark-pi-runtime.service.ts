@@ -1594,7 +1594,24 @@ export function parseProgressEvent(value: unknown): RunProgressEvent | undefined
   if (!value || typeof value !== 'object') return undefined;
   const event = value as Record<string, unknown>;
   const type = event['type'];
-  if (type === 'ready' || type === 'thinking' || type === 'working' || type === 'writing') return { type };
+  if (
+    type === 'ready' || type === 'thinking' || type === 'working'
+    || type === 'writing' || type === 'answer_reset'
+  ) return { type };
+  if (type === 'answer_delta') {
+    const delta = event['delta'];
+    if (typeof delta !== 'string' || delta.length === 0 || delta.length > 8_192) return undefined;
+    const rawIndex = event['index'];
+    return {
+      type,
+      index: typeof rawIndex === 'number' && Number.isInteger(rawIndex) && rawIndex >= 0
+        ? rawIndex
+        : 0,
+      // Whitespace is content in Markdown. Unlike status labels, an answer
+      // delta must not be trimmed or flattened while crossing this boundary.
+      delta,
+    };
+  }
   if (type === 'starting') {
     const stage = event['stage'];
     const label = safeProgressString(event['label']);

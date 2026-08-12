@@ -1476,6 +1476,10 @@ export async function runPiAndDeliver(input: {
    * which this channel can redraw is this file's business, not the reducer's.
    */
   const reportProgress = (event: RunProgressEvent): void => {
+    // Pi emits token deltas for web's live answer. Lark keeps the existing
+    // sentence-sized `say` events so one answer cannot cause hundreds of card
+    // edits.
+    if (event.type === 'answer_delta' || event.type === 'answer_reset') return;
     if (run.apply(event) === 'immediate') {
       queueStatus();
       return;

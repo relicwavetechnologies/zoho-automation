@@ -1826,6 +1826,33 @@ export function projectRuntimeProgress(event) {
 	return undefined;
 }
 
+/**
+ * The exact answer fragment the model just produced.
+ *
+ * `projectRuntimeProgress` deliberately sentence-batches prose because a Lark
+ * status card must not be edited for every token. That projection is useful
+ * for a work log and fundamentally wrong for a browser answer: once the raw
+ * delta is discarded, the only remaining option is to receive the completed
+ * answer and pretend to stream it locally. Keep the two lanes separate. The
+ * shared runtime still emits its low-frequency status projection, while a
+ * surface capable of rendering live prose can consume these ordered deltas.
+ */
+export function projectRuntimeAnswerDelta(event) {
+	if (
+		event?.type !== "message_update"
+		|| event.assistantMessageEvent?.type !== "text_delta"
+		|| typeof event.assistantMessageEvent.delta !== "string"
+		|| event.assistantMessageEvent.delta.length === 0
+	) return undefined;
+	return {
+		type: "answer_delta",
+		index: Number.isInteger(event.assistantMessageEvent.contentIndex)
+			? event.assistantMessageEvent.contentIndex
+			: 0,
+		delta: event.assistantMessageEvent.delta,
+	};
+}
+
 export function collectRunAssistantText(messages) {
 	if (!Array.isArray(messages)) return "";
 	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
@@ -2114,6 +2141,12 @@ export class JsonlRpc {
 		const waiters = this.waiters.get(value.type) ?? [];
 		this.waiters.delete(value.type);
 		for (const waiter of waiters) waiter.resolve(value);
+		// Preserve the provider's real answer stream before projecting the same
+		// Pi event into sentence-sized status updates. These are intentionally two
+		// events: collapsing either one into the other makes one of the web answer
+		// or the Lark card behave badly.
+		const answerDelta = projectRuntimeAnswerDelta(value);
+		if (answerDelta) emitRuntimeProgress(this.onProgress, answerDelta);
 		const progress = projectRuntimeProgress(value);
 		if (progress && !(progress.type === "writing" && this.writingStarted)) {
 			if (progress.type === "writing") this.writingStarted = true;
@@ -2888,6 +2921,10 @@ async function runPrompt({
 				console.error(
 					`Transient model failure; retrying continuation ${attempt}/${maxRetries}: ${summary}`,
 				);
+				// Any prose emitted by the failed provider stream is not part of the
+				// continuation that will eventually be returned. A live web reader may
+				// already have seen it, so retract that prefix before the retry starts.
+				emitRuntimeProgress(onProgress, { type: "answer_reset" });
 				emitRuntimeProgress(onProgress, { type: "thinking" });
 			},
 		});

@@ -40,6 +40,14 @@ export type RunProgressEvent =
       readonly label: string;
     }
   | { readonly type: 'ready' | 'thinking' | 'working' | 'writing' }
+  /** One ordered fragment of assistant prose, exactly as the model emitted it. */
+  | {
+      readonly type: 'answer_delta';
+      readonly index: number;
+      readonly delta: string;
+    }
+  /** Discard an abandoned assistant prefix before a retry continues. */
+  | { readonly type: 'answer_reset' }
   /** A whole sentence the model finished saying between its tool calls. */
   | { readonly type: 'say'; readonly index: number; readonly text: string }
   /**

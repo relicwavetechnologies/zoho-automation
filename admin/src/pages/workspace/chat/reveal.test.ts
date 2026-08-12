@@ -12,10 +12,13 @@ type Node = { type?: string; tagName?: string; value?: string; children?: Node[]
 /** Every word element in the tree, in reading order. */
 function words(tree: Node): { index: number | null; text: string }[] {
   const out: { index: number | null; text: string }[] = []
+  const content = (node: Node): string => node.type === 'text'
+    ? node.value ?? ''
+    : (node.children ?? []).map(content).join('')
   const walk = (node: Node) => {
     for (const child of node.children ?? []) {
       const index = wordIndexOf(child.properties)
-      if (index !== null) out.push({ index, text: String(child.children?.[0]?.value ?? '') })
+      if (index !== null) out.push({ index, text: content(child) })
       else walk(child)
     }
   }

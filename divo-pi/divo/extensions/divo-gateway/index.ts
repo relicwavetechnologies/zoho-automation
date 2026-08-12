@@ -1,5 +1,5 @@
 /**
- * Divo gateway — single Pi tool for backend-owned company capabilities.
+ * Divo gateway — native Pi tools for backend-governed company capabilities.
  *
  * Config is captured from the trusted runtime launcher at startup, then the member
  * token is removed from the environment before local shells can inherit it.
@@ -29,13 +29,18 @@ import { executeGatewayRequest } from "./gateway-execution.ts";
 import {
 	createGatewayPlatformInvoker,
 	createGatewayTypedToolInvoker,
-	inactiveRegisteredTools,
-	registerEagerTypedTools,
-	registerTypedTools,
+	fetchNativeContractBootstrap,
 } from "./typed-tool-runtime.ts";
 import { registerTypedPlatformTools } from "./typed-platform-tools.ts";
 import { registerDivoLlmProviders } from "../divo-llm/index.ts";
 import { registerLocalDivoBroker, localCliEnabled } from "./local-broker.ts";
+import {
+	enrichGeneratedNativeToolCatalogue,
+	providerNativeContractToolIds,
+	registerGeneratedNativeToolCatalogue,
+	type NativeContractCache,
+} from "./native-tools/catalogue.ts";
+import { registerNativeSemrushTool } from "./native-tools/semrush.ts";
 import {
 	formatSkillResolveResult,
 	resolveDivoSkills,
@@ -230,17 +235,14 @@ Do not mention resolver, routing, gateway, backend, OAuth tokens, local credenti
 </divo_company_persona>`;
 
 
-/**
- * Typed tools registered so far in this session. Pi keys tools by name, so a
- * second work resolution must not silently replace a tool that is already live.
- */
-const typedToolRegistry = new Set<string>();
 const typedToolInvoker = createGatewayTypedToolInvoker();
+const nativeContractCache: NativeContractCache = new Map();
 
-function reportInactiveTypedTools(pi: ExtensionAPI, registered: readonly string[]): void {
-	const inactive = inactiveRegisteredTools(registered, pi.getActiveTools());
+function reportInactiveNativeTools(pi: ExtensionAPI, registered: readonly string[]): void {
+	const activeNames = new Set(pi.getActiveTools());
+	const inactive = registered.filter(name => !activeNames.has(name));
 	if (inactive.length > 0) {
-		console.error(`[divo-typed-tools] registered tools missing from allowlist: ${inactive.join(",")}`);
+		console.error(`[divo-native-tools] registered tools missing from allowlist: ${inactive.join(",")}`);
 	}
 }
 
@@ -251,6 +253,12 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	registerPersonalMemoryTool(pi);
 	registerMemoryReviewTool(pi);
 	registerKnowledgeReviewTool(pi);
+	// Permanent Divo tools are registered from Pi-owned contracts at process
+	// start. Backend bootstrap data may enrich a provider-owned nested input
+	// schema, but it can never define or remove an outer Pi tool.
+	const semrushToolName = registerNativeSemrushTool(pi, typedToolInvoker);
+	const nativeCatalogue = registerGeneratedNativeToolCatalogue(pi, typedToolInvoker);
+	const nativeToolNames = [semrushToolName, ...nativeCatalogue.registered];
 	// Capabilities that are not a governed tool call and would otherwise vanish
 	// with the mega-tool: connected accounts, and reading an attached image.
 	registerTypedPlatformTools(pi, createGatewayPlatformInvoker());
@@ -285,14 +293,17 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				limit: params.limit,
 				actionId: toolCallId,
 			});
-			// The bootstrap already carries each tool's real JSON Schema. Register it
-			// as a typed Pi tool at the same moment it would otherwise only be
-			// stringified into the prompt, so Pi can validate the next call.
+			// Outer tools are permanent Pi source. A work resolution may add exact
+			// provider-native input schemas to Google/Airtable wrapper branches.
 			if (result.bootstrap) {
-				const typed = registerTypedTools(pi, result.bootstrap, typedToolInvoker, typedToolRegistry);
-				reportInactiveTypedTools(pi, typed.registered);
-				if (typed.registered.length > 0 || typed.rejected.length > 0) {
-					console.error(`[divo-typed-tools] ${JSON.stringify(typed)}`);
+				const refreshed = enrichGeneratedNativeToolCatalogue(
+					pi,
+					typedToolInvoker,
+					result.bootstrap.nativeContracts,
+					nativeContractCache,
+				);
+				if (refreshed.length > 0) {
+					console.error(`[divo-native-tools] enriched ${refreshed.join(",")}`);
 				}
 			}
 			return {
@@ -306,32 +317,38 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event, ctx) => {
 		refreshDivoRuntime(pi);
 		const correlation = await readDivoRunCorrelation().catch(() => undefined);
-		// Most runs never resolve work, so registering typed tools only from a
-		// work bootstrap would leave an ordinary request with no governed tools.
-		// The run context already names every reachable tool; fetch their
-		// contracts once and make the typed surface live from the first turn.
+		reportInactiveNativeTools(pi, nativeToolNames);
+		// The complete outer catalogue is already live. Fetch only to preload
+		// prompt-relevant provider-native input schemas for reachable Google and
+		// Airtable tools; failure leaves their safe describe-then-call contract.
 		const departmentContext = await readDepartmentPersonaContext();
-		const reachableToolIds = departmentContext?.capabilityBootstrap?.availableTools
-			?.map((tool) => tool.toolId) ?? [];
+		const reachableToolIds = providerNativeContractToolIds(
+			departmentContext?.capabilityBootstrap?.availableTools
+				?.map((tool) => tool.toolId) ?? [],
+		);
 		if (reachableToolIds.length > 0) {
 			try {
-				const typed = await registerEagerTypedTools(
-					pi,
+				const fetched = await fetchNativeContractBootstrap(
 					reachableToolIds,
+					"native-inputs-eager",
 					event.prompt,
-					typedToolInvoker,
-					typedToolRegistry,
 				);
-				reportInactiveTypedTools(pi, typed.registered);
-				console.error(`[divo-typed-tools] ${JSON.stringify({
-					registered: typed.registered.length,
-					rejected: typed.rejected,
-					failed: typed.failed,
+				const refreshed = fetched.bootstrap
+					? enrichGeneratedNativeToolCatalogue(
+						pi,
+						typedToolInvoker,
+						fetched.bootstrap.nativeContracts,
+						nativeContractCache,
+					)
+					: [];
+				console.error(`[divo-native-tools] ${JSON.stringify({
+					refreshed: refreshed.length,
+					failed: fetched.failed,
 				})}`);
 			} catch (error) {
-				// An incomplete typed surface is recoverable; a run that cannot
-				// start is not. A failed tool still reports the backend's own error.
-				console.error(`[divo-typed-tools] eager registration failed: ${String(error)}`);
+				// An absent nested preload is recoverable: describe remains available
+				// and the backend still validates the native input before execution.
+				console.error(`[divo-native-tools] input enrichment failed: ${String(error)}`);
 			}
 		}
 		// Inspect both Pi's structured resources and the live prompt it will send.

@@ -181,10 +181,11 @@ describe("department persona", () => {
 		);
 		assert.match(prompt, /Skill registry revision: 14/);
 		assert.match(prompt, /Daily Report \[skillId=skill-daily-report; revision=3\]/);
-		// Tool ids and actions reach the model as registered typed tools. Listing
-		// them here too was a second, weaker copy of the same facts.
+		// Possible operations live in permanent Pi-native definitions. This prompt
+		// stays compact and makes clear that visibility is not permission.
 		assert.doesNotMatch(prompt, /googleSheets: read, update/);
-		assert.match(prompt, /registered divo_\* tools are the capability list/);
+		assert.match(prompt, /Permanent divo_\* tools describe what Divo can attempt/);
+		assert.match(prompt, /not that this member is permitted to use it/);
 		assert.match(prompt, /Use divo_skill_resolve only when a specialized company workflow is likely/);
 
 		const nativePrompt = composeDivoSystemPrompt(
@@ -292,11 +293,11 @@ describe("department persona", () => {
 		assert.match(prompt, /Airtable \[family=airtable; connection=member_selectable via airtable; skill=optional\]/);
 		// The family header survives because a tool definition cannot express which
 		// connection provider the family needs or whether it requires a skill. The
-		// leaf tools do not, because each is a registered typed tool already.
+		// leaf tools do not, because each is a permanent Pi-native tool already.
 		assert.doesNotMatch(prompt, /Airtable Schema \[toolId=airtableSchema; actions=read\]/);
 		assert.doesNotMatch(prompt, /actions=read, delete/);
-		assert.match(prompt, /describe permitted operations only from the actions named on each registered divo_\* tool/);
-		assert.match(prompt, /never claim an operation mentioned by a skill/);
+		assert.match(prompt, /prove that a capability exists, not that this member is permitted to use it/);
+		assert.match(prompt, /backend's invocation result is the final permission decision/);
 		assert.match(prompt, /Airtable Core \[skillId=airtable-core-id; mode=optional\]/);
 		assert.doesNotMatch(prompt, /Delete every record/);
 		assert.doesNotMatch(prompt, /toolId=airtable;/);

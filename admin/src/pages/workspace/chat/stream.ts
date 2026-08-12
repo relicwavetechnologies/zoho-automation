@@ -72,6 +72,9 @@ export type PendingApproval = {
 
 export type RunEvent =
   | { type: 'timeline'; timeline: Timeline }
+  | { type: 'answer'; text: string }
+  | { type: 'answer_delta'; delta: string }
+  | { type: 'answer_reset' }
   | { type: 'final'; text: string; timeline: Timeline; awaitingApproval?: PendingApproval[] }
   | { type: 'error'; message: string; code: string }
 
@@ -211,7 +214,9 @@ function parseFrame(frame: string): RunEvent | null {
   try {
     const parsed = JSON.parse(data) as RunEvent & { type?: string }
     // `open` is a handshake frame, not part of the run.
-    return parsed.type === 'timeline' || parsed.type === 'final' || parsed.type === 'error'
+    return parsed.type === 'timeline' || parsed.type === 'answer'
+      || parsed.type === 'answer_delta' || parsed.type === 'answer_reset'
+      || parsed.type === 'final' || parsed.type === 'error'
       ? parsed
       : null
   } catch {

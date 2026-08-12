@@ -71,6 +71,61 @@ describe('web run', () => {
     assert.equal(input['threadId'], 'web:thread-1');
   });
 
+  it('carries the validated backend-owned active department into the shared runtime', async () => {
+    const { piRuntime, seen } = fakeRuntime({});
+    const service = new WebRunService({
+      piRuntime,
+      logger: noopLogger,
+      identity: {
+        resolveByUserId: async () => ({
+          ok: true,
+          value: {
+            userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER', channel: 'internal',
+            activeDepartmentId: 'department-1',
+          },
+        }),
+      },
+      departments: {
+        getMembership: async () => ({
+          ok: true,
+          value: {
+            userId: 'user-1', departmentId: 'department-1', roleId: 'role-1',
+            roleSlug: 'MEMBER', roleName: 'Member', departmentName: 'Finance',
+            departmentCompanyId: 'company-1', zohoReadScope: 'all',
+          },
+        }),
+      },
+    } as never);
+
+    await collect(service.run(ask));
+
+    const context = seen[0]!['runContext'] as Record<string, unknown>;
+    assert.equal(context['departmentId'], 'department-1');
+  });
+
+  it('does not mint a stale active-department preference into the runtime lease', async () => {
+    const { piRuntime, seen } = fakeRuntime({});
+    const service = new WebRunService({
+      piRuntime,
+      logger: noopLogger,
+      identity: {
+        resolveByUserId: async () => ({
+          ok: true,
+          value: {
+            userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER', channel: 'internal',
+            activeDepartmentId: 'stale-department',
+          },
+        }),
+      },
+      departments: { getMembership: async () => ({ ok: true, value: null }) },
+    } as never);
+
+    await collect(service.run(ask));
+
+    const context = seen[0]!['runContext'] as Record<string, unknown>;
+    assert.equal('departmentId' in context, false);
+  });
+
 // A cold container emits nothing while it boots. Without a frame up front the
   // reader watches an empty stream and cannot tell starting from broken.
   it('acknowledges the run before the runtime has produced anything', async () => {
@@ -102,6 +157,71 @@ describe('web run', () => {
     assert.deepEqual(
       final.type === 'final' ? final.timeline.ledger?.map(r => `${r.label}:${r.status}`) : [],
       ['Terminal:done'],
+    );
+  });
+
+  it('streams real model deltas before the completed answer', async () => {
+    const { piRuntime } = fakeRuntime({
+      emit: async report => {
+        report({ type: 'answer_delta', index: 0, delta: 'Hello' } as never);
+        // Whitespace must survive: it is part of the Markdown source.
+        report({ type: 'answer_delta', index: 0, delta: ' **there**' } as never);
+      },
+      result: { text: 'Hello **there**' },
+    });
+    const service = new WebRunService({ piRuntime, logger: noopLogger });
+
+    const events = await collect(service.run(ask));
+    assert.deepEqual(
+      events.filter((event): event is Extract<WebRunEvent, { type: 'answer_delta' }> => event.type === 'answer_delta')
+        .map(event => event.delta),
+      ['Hello', ' **there**'],
+    );
+    assert.equal(events.at(-1)?.type, 'final');
+  });
+
+  it('clears pre-tool narration before streaming the terminal answer turn', async () => {
+    const { piRuntime } = fakeRuntime({
+      emit: async report => {
+        report({ type: 'answer_delta', index: 0, delta: 'Let me check.' } as never);
+        report({ type: 'tool_start', callId: 'c1', toolName: 'divo_semrush' } as never);
+        report({ type: 'tool_end', callId: 'c1', toolName: 'divo_semrush', isError: false } as never);
+        report({ type: 'answer_delta', index: 0, delta: 'Done.' } as never);
+      },
+      result: { text: 'Done.' },
+    });
+    const service = new WebRunService({ piRuntime, logger: noopLogger });
+
+    const events = await collect(service.run(ask));
+    assert.deepEqual(
+      events.filter(event => event.type === 'answer_delta' || event.type === 'answer_reset'),
+      [
+        { type: 'answer_delta', delta: 'Let me check.' },
+        { type: 'answer_reset' },
+        { type: 'answer_delta', delta: 'Done.' },
+      ],
+    );
+  });
+
+  it('clears a partial answer when the runtime retries its provider stream', async () => {
+    const { piRuntime } = fakeRuntime({
+      emit: async report => {
+        report({ type: 'answer_delta', index: 0, delta: 'Abandoned partial' } as never);
+        report({ type: 'answer_reset' } as never);
+        report({ type: 'answer_delta', index: 0, delta: 'Recovered answer' } as never);
+      },
+      result: { text: 'Recovered answer' },
+    });
+    const service = new WebRunService({ piRuntime, logger: noopLogger });
+
+    const events = await collect(service.run(ask));
+    assert.deepEqual(
+      events.filter(event => event.type === 'answer_delta' || event.type === 'answer_reset'),
+      [
+        { type: 'answer_delta', delta: 'Abandoned partial' },
+        { type: 'answer_reset' },
+        { type: 'answer_delta', delta: 'Recovered answer' },
+      ],
     );
   });
 

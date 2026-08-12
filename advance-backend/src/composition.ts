@@ -2876,6 +2876,8 @@ export async function buildContainer(
     larkPiRuntime,
     webRuns: new (await import('./application/runtime/web-run.service')).WebRunService({
       piRuntime: larkPiRuntime,
+      identity: channelIdentityRepo,
+      departments: deptRepo,
       approvals: approvalInbox,
       transcript: conversationRepo,
       logger: logger.child({ service: 'web-run' }),

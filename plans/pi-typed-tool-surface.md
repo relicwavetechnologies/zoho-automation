@@ -1,6 +1,9 @@
 # Pi typed tool surface
 
-> Status: **Typed outer tools and prompt-relevant nested provider contracts are live in Cloud Pi; `divo_gateway` is deleted. The broader Phase 3 measurement matrix remains pending.**
+> Status: **Historical typed-bootstrap delivery record. The permanent
+> source-owned migration now continues in
+> `pi-first-class-harness-quality-audit.md`; Semrush is the first Pi-native
+> vertical slice.**
 >
 > Last updated: **2026-08-10**
 >

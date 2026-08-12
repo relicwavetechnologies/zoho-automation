@@ -294,9 +294,9 @@ function formatCapabilityBootstrap(
 	const lines = [
 		CAPABILITY_BOOTSTRAP_OPEN_TAG,
 		nativeSkills
-			? "This is a compact backend-generated, RBAC-filtered account and routing catalogue. Your registered divo_* tools are the capability list, and Pi's available_skills list is the skill index. This catalogue is guidance, not a permission grant; the backend validates every invocation against current policy."
-			: "This is a compact backend-generated, RBAC-filtered account and routing catalogue. Your registered divo_* tools are the capability list. It is guidance, not a permission grant; the backend validates every invocation against current policy.",
-		"AUTHORITATIVE CAPABILITY-REPORTING RULE: describe permitted operations only from the actions named on each registered divo_* tool. Skill names and descriptions explain workflows, not permissions; never claim an operation mentioned by a skill when that operation is absent from the tool's actions.",
+			? "This is a compact backend-generated, RBAC-filtered account and routing catalogue. Permanent divo_* tools describe what Divo can attempt, and Pi's available_skills list is the skill index. This catalogue is guidance, not a permission grant; the backend validates every invocation against current policy."
+			: "This is a compact backend-generated, RBAC-filtered account and routing catalogue. Permanent divo_* tools describe what Divo can attempt. This catalogue is guidance, not a permission grant; the backend validates every invocation against current policy.",
+		"AUTHORITATIVE CAPABILITY-REPORTING RULE: a permanent divo_* tool and its operations prove that a capability exists, not that this member is permitted to use it. The RBAC-filtered families below are current routing context, and the backend's invocation result is the final permission decision. Skill names and descriptions explain workflows, not permissions.",
 		`Department function: ${safeInline(bootstrap.departmentFunction)}`,
 		`Company role: ${safeInline(bootstrap.companyRole)}`,
 		`Department role: ${safeInline(bootstrap.departmentRole)}`,
@@ -314,12 +314,11 @@ function formatCapabilityBootstrap(
 		}
 	}
 
-	// Each tool's id, description, and permitted actions now reach the model as a
-	// registered typed tool, which is the channel the provider constrains
-	// generation against. Repeating them here spent tokens on a second, weaker
-	// copy of the same three facts. What survives is what a tool definition
-	// cannot express: which connection provider a family needs, whether it
-	// benefits from specialist guidance, and the finance routing prior.
+	// Each tool's identity, description, and possible operations reach the model
+	// through its permanent Pi-native definition. Repeating them here would be a
+	// second, weaker copy. The RBAC-filtered family list supplies what that static
+	// definition cannot: current reachability, connection requirements,
+	// specialist guidance, and the finance routing prior.
 	if (bootstrap.families?.length) {
 		lines.push("", "Governed capability families (connection and skill requirements):");
 		for (const family of bootstrap.families) {
@@ -543,8 +542,9 @@ function parseCapabilityBootstrap(candidate: unknown): DivoCapabilityBootstrap |
 						: [];
 				})
 				: [];
-			// The leaf tools are no longer rendered — each is a registered typed tool
-			// — but they still decide whether the family is listed at all. A family
+			// Leaf definitions are permanent Pi-native tools and are not repeated in
+			// this prompt, but their RBAC-filtered actions still decide whether the family
+			// is listed at all. A family
 			// whose every tool was filtered out by RBAC is one this member cannot
 			// reach, so it must not appear as an available capability.
 			if (tools.length === 0) return [];

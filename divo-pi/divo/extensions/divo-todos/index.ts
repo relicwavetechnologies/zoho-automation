@@ -119,7 +119,7 @@ export function summarizeTodos(details: DivoTodosDetails): string {
 }
 
 export default function divoTodosExtension(pi: ExtensionAPI) {
-	pi.registerTool({
+	pi.registerTool<typeof TodosParams, unknown>({
 		name: DIVO_TODOS_TOOL_NAME,
 		label: "Divo checklist",
 		description:

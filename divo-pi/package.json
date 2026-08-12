@@ -13,7 +13,10 @@
 	"scripts": {
 		"divo:login": "node divo/cli.mjs login",
 		"divo:start": "node divo/cli.mjs run",
+		"divo:types": "tsc --project divo/tsconfig.json",
 		"divo:test": "node --test divo/test/*.test.mjs",
+		"divo:test:extensions": "npm --prefix divo/extensions/divo-artifact test && npm --prefix divo/extensions/divo-chat-history test && npm --prefix divo/extensions/divo-gateway test && node --import tsx --test divo/extensions/divo-llm/index.test.ts && npm --prefix divo/extensions/divo-subagents test && npm --prefix divo/extensions/divo-todos test",
+		"divo:check": "npm run divo:types && npm run divo:test && npm run divo:test:extensions",
 		"clean": "npm run clean --workspaces",
 		"build": "cd packages/tui && npm run build && cd ../ai && npm run build && cd ../agent && npm run build && cd ../coding-agent && npm run build && cd ../orchestrator && npm run build",
 		"check": "biome check --write --error-on-warnings . && npm run check:pinned-deps && npm run check:ts-imports && npm run check:shrinkwrap && npm run check:install-lock:coding-agent && tsgo --noEmit && npm run check:browser-smoke",
