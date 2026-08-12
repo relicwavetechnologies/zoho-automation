@@ -174,6 +174,62 @@
   box-shadow: none;
 }
 
+/* `dot-wave` — the work log's own dots, for a row with no mark of its own.
+   Brightness travels the diagonal rather than row by row, which says "busy"
+   without claiming progress — the honest reading for a step that may sit
+   unchanged for a minute.
+
+   The contrast range is deliberately wide (0.12 → 1). An earlier pass on the
+   desktop used 0.18 → 1 at this size and the animation was invisible: the grid
+   read as a static glyph. Do not narrow it without also growing the dots. */
+@keyframes bui-dot-wave {
+  0%, 100% { opacity: 0.12; }
+  40%      { opacity: 1; }
+}
+
+.bui-dot {
+  animation: bui-dot-wave 1.05s ease-in-out infinite;
+}
+
+/* Held mid-sweep rather than stopped: someone who has asked for less motion
+   still needs to see that the row is live, and a frozen dot grid is
+   indistinguishable from a settled one. */
+@media (prefers-reduced-motion: reduce) {
+  .bui-dot { animation: none; opacity: 0.65; }
+  .bui-pixels i { animation: none; opacity: 0.65; }
+}
+
+/* One word of an answer, resolving out of blur as it lands.
+   No `will-change`: the pattern this is ported from names filter and opacity
+   there, which is right for the twenty-five words it animates and wrong here —
+   a five-hundred-word answer would ask the compositor for five hundred layers
+   to draw text that is static a third of a second later. */
+.bui-word {
+  animation: bui-stream-in 420ms cubic-bezier(0.22, 0.61, 0.25, 1) both;
+}
+
+/* Where the text has got to. Steady rather than blinking: it is already moving
+   several times a second, and a blink on top reads as two things happening. */
+.bui-caret {
+  display: inline-block;
+  width: 2px;
+  height: 0.85em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  border-radius: 1px;
+  background: currentColor;
+  animation: bui-fade-in 150ms ease-out both;
+}
+
+/* A block nobody has reached yet is not drawn at all.
+   Unrevealed words render as nothing, so a table whose turn has not come would
+   otherwise stand there as an empty grid of borders, and a heading as a blank
+   line — the document's furniture arriving before any of its content. `:has`
+   asks the only question that matters: is there a revealed word in here yet. */
+.bui-stream > *:not(:has([data-word])) {
+  display: none;
+}
+
 /* The shimmering label. A gradient clipped to the glyphs, swept left — the
    text itself reads as live rather than needing a spinner beside it. */
 .bui-shimmer {

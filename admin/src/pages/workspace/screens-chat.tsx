@@ -25,14 +25,10 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useParams } from 'react-router-dom'
-import { Diamond } from 'lucide-react'
 import { Chart } from './chat/charts'
-import {
-  Approval, Artifact, Composer, Narration, Preview, Say, Step,
-} from './chat/parts'
-import { PixelGrid, Shimmer } from './chat/loader'
-import { elapsedLabel } from './chat/player'
-import { groupBeats } from './chat/log'
+import { Approval, Artifact, Composer, Preview, Say } from './chat/parts'
+import { splitTrace } from './chat/lifecycle'
+import { PiTraceTimeline } from './chat/trace'
 import { PinSpacer } from './chat/pin'
 import { useThreadRun, type Exchange } from './chat/live'
 import {
@@ -303,7 +299,7 @@ function ChatThread({ threadId }: { threadId: string }) {
 function Header({ title, scrolled }: { title: string; scrolled: boolean }) {
   return (
     <header
-      className={`sticky top-0 z-10 shrink-0 bg-page/70 backdrop-blur-md transition-[border-color] duration-200 ${
+      className={`ws-chat-head sticky top-0 z-10 shrink-0 bg-page/70 backdrop-blur-md transition-[border-color] duration-200 ${
         scrolled ? 'border-b border-line' : 'border-b border-transparent'
       }`}
     >
@@ -367,9 +363,12 @@ function Welcome({ onPick }: { onPick: (prompt: string) => void }) {
 }
 
 /* ── Exchange ─────────────────────────────────────────────
-   One ask and everything that came of it. The steps live in a collapsible work
-   log above the answer; the answer and its results sit below, in the order the
-   run produced them.
+   One ask and everything that came of it, in two parts and no more: the run's
+   own trace, and what it handed back. `PiTraceTimeline` owns the first and this
+   knows nothing about what is inside it — which is the whole point of the port.
+   The arrangement of steps used to be decided here, and separately again inside
+   the log, and the two disagreed: a burst ended up nested inside the log's own
+   fold, so reading one tool call meant opening two disclosures.
 
    A thread is a list of these, which is the change that made this a chat. It
    used to draw exactly one, and sending a follow-up overwrote it — so the
@@ -385,20 +384,10 @@ function Exchanged({
   onDecline: () => void
 }) {
   const { prompt, beats, state } = exchange
-  /* A finished run folds its work log away. While it is going the log is the
-     interesting part of the screen; once there is an answer, the answer is. */
-  const [logOpen, setLogOpen] = useState(!state.finished)
-  const wasFinished = useRef(state.finished)
-  useEffect(() => {
-    if (!wasFinished.current && state.finished) setLogOpen(false)
-    wasFinished.current = state.finished
-  }, [state.finished])
-
   const seen = new Set(state.played)
-  const groups = groupBeats(beats)
-
-  const working = !state.finished && !state.declined
-  const toolCount = beats.filter((beat) => beat.t === 'step').length
+  /* Everything that happened on the way is the trace; everything else stays in
+     the conversation, in the order the run put it there. */
+  const { trace, rest } = splitTrace(beats)
 
   return (
     /* The id is what a just-sent prompt is pinned by. It has to sit on a direct
@@ -413,80 +402,16 @@ function Exchanged({
       )}
 
       <div className="flex flex-col gap-3">
-        {/* Run header — the one place that says whether work is happening. */}
-        <button
-          type="button"
-          aria-expanded={logOpen}
-          onClick={() => setLogOpen((v) => !v)}
-          className="-mx-1.5 flex w-fit items-center gap-2.5 rounded-control px-1.5 py-1 transition-colors duration-100 hover:bg-fill-strong"
-        >
-          {working ? (
-            <>
-              <PixelGrid />
-              {/* The run's own words for what it is doing, falling back to a
-                  generic verb only before the first frame arrives. */}
-              <Shimmer>
-                {state.gate !== null ? 'Waiting on you' : liveLabel || 'Working'}
-              </Shimmer>
-              <span className="font-mono text-[12px] text-ink-3 tabular-nums">
-                {elapsedLabel(state.elapsed)}
-              </span>
-            </>
-          ) : (
-            <>
-              {/* Divo's own mark, not a generic sparkle. This row is the
-                  product reporting on what it just did, and a sparkle says
-                  "AI happened here" — a sticker the whole industry wears,
-                  claiming novelty rather than authorship. The diamond is the
-                  mark in the corner of the sidebar; the same thing signs the
-                  work it did. */}
-              <Diamond size={11} fill="currentColor" strokeWidth={0} className="text-ink-3" />
-              <span className="text-[13px] font-medium text-ink-2">
-                {state.declined
-                  ? `Stopped after ${elapsedLabel(state.elapsed)}`
-                  : `Worked for ${elapsedLabel(state.elapsed)}`}
-              </span>
-              {toolCount > 0 && (
-                <span className="text-[12px] text-ink-3 tabular-nums">
-                  {toolCount} {toolCount === 1 ? 'step' : 'steps'}
-                </span>
-              )}
-            </>
-          )}
-        </button>
+        <PiTraceTimeline
+          steps={trace}
+          streaming={!state.finished}
+          awaitingApproval={state.gate !== null}
+          elapsed={state.elapsed}
+          declined={state.declined !== null}
+          liveLabel={liveLabel}
+        />
 
-        {groups.map((group) => {
-          if (group.kind === 'log') {
-            return (
-              <div
-                key={`log:${group.items[0].index}`}
-                className="grid transition-[grid-template-rows,opacity] duration-400"
-                style={{
-                  gridTemplateRows: logOpen ? '1fr' : '0fr',
-                  opacity: logOpen ? 1 : 0,
-                  transitionTimingFunction: 'cubic-bezier(0.23, 1, 0.32, 1)',
-                }}
-              >
-                <div className="min-h-0 overflow-hidden">
-                  <div className="flex flex-col gap-0.5">
-                    {group.items.map(({ beat, index }) =>
-                      beat.t === 'step' ? (
-                        /* The run says which of its calls are still open, and a
-                           settled exchange has none whatever its last snapshot
-                           claimed — a stopped run can leave a row reading as
-                           running forever, shimmering under an answer. */
-                        <Step key={index} beat={beat} live={working && beat.running === true} />
-                      ) : beat.t === 'say' ? (
-                        <Narration key={index} text={beat.text} />
-                      ) : null,
-                    )}
-                  </div>
-                </div>
-              </div>
-            )
-          }
-
-          const { beat, index } = group.item
+        {rest.map(({ beat, index }) => {
           if (beat.t === 'approve') {
             return (
               <Approval
@@ -498,7 +423,9 @@ function Exchanged({
               />
             )
           }
-          if (beat.t === 'say') return <Say key={index} text={beat.text} />
+          if (beat.t === 'say') {
+            return <Say key={index} text={beat.text} reveal={exchange.fresh === true} />
+          }
           if (beat.t === 'block') {
             const { block } = beat
             if (block.kind === 'table') return <Preview key={index} block={block} />

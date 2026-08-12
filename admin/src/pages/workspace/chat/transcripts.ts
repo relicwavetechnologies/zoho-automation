@@ -112,6 +112,14 @@ export type Beat =
    * loud and its conclusion at identical weight, one after the other.
    */
   | { t: 'say'; text: string; narration?: boolean }
+  /**
+   * The model reasoning to itself, not addressing anyone.
+   *
+   * Its own kind rather than another flag on `say`, because the two are read
+   * differently: a thought folds to the single word "Thought" and a sentence
+   * does not, and one of them never leaves the container's own surface.
+   */
+  | { t: 'think'; text: string; running?: boolean }
   /** A result rendered under the answer. */
   | { t: 'block'; block: Block }
 

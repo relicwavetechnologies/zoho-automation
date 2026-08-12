@@ -81,9 +81,18 @@ function ledgerBeats(ledger: readonly LedgerRow[], answered: boolean): Beat[] {
   if (answered) {
     while (rows.length > 0 && rows[rows.length - 1]!.kind === 'say') rows.pop()
   }
-  return rows.map(row => row.kind === 'say'
-    ? { t: 'say', text: row.label, narration: true }
-    : stepBeat(row))
+  return rows.map((row, index) => {
+    if (row.kind === 'say') return { t: 'say', text: row.label, narration: true }
+    /* Unlike a tool call, a thought has no end event — the model stops thinking
+       by doing something else. So it counts as still going while it is the
+       newest thing in the ledger, which is what earns it the scrolling window
+       rather than the folded line. The caller still has to agree the run itself
+       is open; the last row of a finished run is not thinking. */
+    if (row.kind === 'thought') {
+      return { t: 'think', text: row.label, running: index === rows.length - 1 }
+    }
+    return stepBeat(row)
+  })
 }
 
 /**
@@ -142,6 +151,16 @@ export type Exchange = {
   prompt: string
   beats: Beat[]
   state: RunState
+  /**
+   * This answer arrived while the reader was here.
+   *
+   * The one thing that separates a reply landing from a reply being read back,
+   * and the answer streams a word at a time only for the first. Without it,
+   * scrolling up through a thread would set yesterday's answers typing
+   * themselves out again — a performance of work that finished a day ago, and
+   * on a long thread, several of them at once.
+   */
+  fresh?: boolean
   /** Set when the run ended without an answer. */
   error?: string
 }
@@ -408,6 +427,7 @@ export function useThreadRun(input: {
       prompt,
       beats,
       state: { ...settledState(beats, elapsed), declined },
+      fresh: true,
       ...(error ? { error } : {}),
     }])
     setPrompt(null)
@@ -495,6 +515,7 @@ export function useThreadRun(input: {
       prompt,
       beats: liveBeats,
       state: liveState,
+      fresh: true,
       ...(error ? { error } : {}),
     }]
 

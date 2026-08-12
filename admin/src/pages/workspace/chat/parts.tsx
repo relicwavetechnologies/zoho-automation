@@ -12,11 +12,12 @@
  * corner, no badge that says "running". The live row simply looks alive and
  * the settled ones do not.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowUp, ArrowUpRight, Check, ChevronDown, Plus, X } from 'lucide-react'
+import { ArrowUp, ArrowUpRight, Check, ChevronDown, ChevronRight, Plus, X } from 'lucide-react'
 import { ToolMark, tool, type ToolKey } from './tools'
+import { WORD_MS, rehypeWords, wordIndexOf } from './reveal'
 import type { ArtifactBlock, Beat, StepLine, TableBlock } from './transcripts'
 
 /* ── Step ─────────────────────────────────────────────────
@@ -63,7 +64,7 @@ export function Step({
         type="button"
         aria-expanded={open}
         onClick={() => setPinned(!open)}
-        className="-mx-1.5 flex w-[calc(100%+12px)] items-center gap-2 rounded-control px-1.5 py-1 text-left transition-colors duration-100 hover:bg-fill-strong"
+        className="group flex w-full items-center gap-2.5 py-0.5 text-left text-[13px] text-ink-2 transition-colors duration-100 hover:text-ink"
       >
         {/* A running step keeps its own mark rather than turning into a
             spinner. The spinner was on screen at exactly the moment somebody is
@@ -74,16 +75,22 @@ export function Step({
 
             The label carries "in flight" instead, so the row keeps its shape
             when it settles and only the shimmer falls away. Swapping the glyph
-            made every step twitch sideways as it finished. */}
+            made every step twitch sideways as it finished.
+
+            Held back while settled and full while running, so the mark of the
+            call actually in flight is the brightest thing in the log. */}
         <span className="relative flex size-4 shrink-0 items-center justify-center">
-          <ToolMark name={beat.tool} size={14} />
+          <ToolMark name={beat.tool} size={14} dim={!live} />
         </span>
 
         {/* The shimmer is a class on the row's own label rather than the
             `Shimmer` component, which carries its own type size — borrowing it
             here would resize the title as the step settled, which is the twitch
-            the mark was just stopped from causing. */}
-        <span className={`shrink-0 text-[12.5px] font-medium text-ink ${live ? 'bui-shimmer' : ''}`}>
+            the mark was just stopped from causing.
+
+            No colour of its own: the row owns the weight, so hovering brightens
+            label and detail together instead of half the line. */}
+        <span className={`shrink-0 ${live ? 'bui-shimmer' : ''}`}>
           {beat.title}
         </span>
 
@@ -91,27 +98,25 @@ export function Step({
             sheet name. Settled: the chip gives way to the one-line result,
             because what it did now matters more than what it was aimed at.
 
-            The chip hugs its text rather than filling the row. Stretched to the
-            full 720px it stopped reading as a label on the step and started
-            reading as an empty input field sitting in the trace. */}
-        {live ? (
-          beat.chip ? (
-            <span
-              className={`inline-flex h-[20px] max-w-[52%] items-center truncate rounded-chip bg-fill-strong px-1.5 text-[11.5px] text-ink-2 ${beat.mono ? 'font-mono' : ''}`}
-            >
-              {beat.chip}
-            </span>
-          ) : null
-        ) : (
-          <span className="min-w-0 truncate text-[12px] text-ink-3">{beat.done}</span>
-        )}
-        <span className="flex-1" />
+            Both sit a weight below the label and are never title-cased: a query,
+            a path or a command is verbatim, and tidying it corrupts what it
+            says. */}
+        <span
+          className={`min-w-0 truncate text-ink-3 transition-colors duration-100 group-hover:text-ink-2 ${beat.mono ? 'font-mono text-[12px]' : ''}`}
+        >
+          {live ? beat.chip : beat.done}
+        </span>
 
-        <ChevronDown
-          size={13}
-          className="shrink-0 text-ink-3 transition-transform duration-200"
-          style={{ transform: open ? 'rotate(0deg)' : 'rotate(-90deg)' }}
-        />
+        {/* Trails, and only on hover. Drawn at rest on every row it made the log
+            a column of chevrons — structure to decode rather than read — and the
+            marks it competed with are the thing worth seeing. A running row has
+            none at all: it is already open, and there is nothing to offer. */}
+        {!live && (
+          <ChevronRight
+            size={13}
+            className={`shrink-0 text-ink-3 opacity-0 transition-all duration-150 group-hover:opacity-100 ${open ? 'rotate-90 opacity-100' : ''}`}
+          />
+        )}
       </button>
 
       <div
@@ -230,39 +235,111 @@ export function Approval({
    is not doing anything unusual: bold, lists and GFM tables are how it says
    "here are your results", and a surface that prints them literally is refusing
    to listen. */
-export function Say({ text }: { text: string }) {
-  return (
-    <div
-      className="text-[13.5px] leading-[1.7] text-ink"
-      style={{ animation: 'bui-stream-in 420ms cubic-bezier(0.23,1,0.32,1) both' }}
+export function Say({ text, reveal }: { text: string; reveal?: boolean }) {
+  /* An answer read back from history is already old news, so it is simply
+     there. Re-typing yesterday's reply every time the thread is scrolled past
+     would be a performance of work that finished a day ago. */
+  if (!reveal) {
+    return (
+      <div
+        className="text-[13.5px] leading-[1.7] text-ink"
+        style={{ animation: 'bui-stream-in 420ms cubic-bezier(0.23,1,0.32,1) both' }}
+      >
+        <Markdown>{text}</Markdown>
+      </div>
+    )
+  }
+  return <StreamedSay text={text} />
+}
+
+/**
+ * The answer arriving a word at a time.
+ *
+ * The document is parsed once and in full — see `reveal.ts` for why — so what
+ * moves here is only a cursor over words that already exist. Every word past it
+ * renders as nothing, which is what makes the paragraph grow rather than fade
+ * up out of a block that was already the right size.
+ */
+function StreamedSay({ text }: { text: string }) {
+  const [shown, setShown] = useState(0)
+  /* Counted off the same split the parser uses, so the cursor and the indices
+     it is compared against can never disagree about what a word is. */
+  const total = useMemo(
+    () => text.split(/(\s+)/).filter(part => part.trim().length > 0).length,
+    [text],
+  )
+
+  /* Only a *different* answer starts over. While a run is live the same answer
+     arrives again and again, each time a little longer, and treating every
+     arrival as new text would drag the cursor back to zero and replay the
+     whole reveal several times a second. */
+  const revealing = useRef(text)
+  useEffect(() => {
+    if (!text.startsWith(revealing.current)) setShown(0)
+    revealing.current = text
+  }, [text])
+
+  useEffect(() => {
+    if (shown >= total) return
+    const tick = window.setTimeout(() => setShown(count => count + 1), WORD_MS)
+    return () => window.clearTimeout(tick)
+  }, [shown, total])
+
+  /* The document is built once per answer and handed down unchanged, so moving
+     the cursor re-renders the words and nothing else. Rebuilt every tick it
+     would be re-parsed every tick — and, far worse, every word would be a new
+     element and would mount again from the start of its own animation. */
+  const document = useMemo(() => (
+    <ReactMarkdown
+      remarkPlugins={REMARK_PLUGINS}
+      rehypePlugins={REVEAL_PLUGINS}
+      components={REVEAL_COMPONENTS}
     >
-      <Markdown>{text}</Markdown>
+      {text}
+    </ReactMarkdown>
+  ), [text])
+
+  const cursor = useMemo(() => ({ shown, streaming: shown < total }), [shown, total])
+
+  return (
+    <div className="bui-stream text-[13.5px] leading-[1.7] text-ink">
+      <RevealCursor.Provider value={cursor}>{document}</RevealCursor.Provider>
     </div>
   )
 }
 
 /**
- * What the model said *while* it was working.
+ * How far the reveal has got.
  *
- * "Let me check the invoices first" is not an answer, it is the run explaining
- * itself, and it belongs with the rest of the run — inside the work log, which
- * folds away the moment there is a real answer to read. It used to render out
- * here at full answer weight, so a run that narrated three times handed back
- * four paragraphs stacked in one column and the reader had to work out which of
- * them was the reply. The desktop has always drawn it this way.
- *
- * Same renderer as the answer, one weight down: the model writes markdown
- * whatever it is doing, and prose that reads as a broken list because it landed
- * in a log is prose the log has damaged.
+ * It travels by context so that the component drawing a word can be written
+ * once, at module scope. Passing the cursor the obvious way — rebuilding the
+ * `components` map each tick, closing over `shown` — hands react-markdown a
+ * brand new function for `span` eighteen times a second, and a new function is
+ * a new element type: React throws away every word and mounts it again. Each
+ * remount restarts `bui-stream-in`, so the answer sat permanently in the
+ * blurred, transparent first frame of its own arrival and never finished
+ * arriving.
  */
-export function Narration({ text }: { text: string }) {
+const RevealCursor = createContext({ shown: Number.POSITIVE_INFINITY, streaming: false })
+
+const RevealWord: Components['span'] = ({ node, children, ...rest }) => {
+  const { shown, streaming } = useContext(RevealCursor)
+  const index = wordIndexOf(node?.properties)
+  // Not one of ours — a span the model's own markdown asked for.
+  if (index === null) return <span {...rest}>{children}</span>
+  if (index >= shown) return null
   return (
-    <div
-      className="py-1 text-[13px] leading-[1.65] text-ink-2"
-      style={{ animation: 'bui-stream-in 420ms cubic-bezier(0.23,1,0.32,1) both' }}
+    <span
+      data-word={index}
+      className="bui-word"
+      /* The caret rides inside the newest word rather than at the end of the
+         document, so it sits where the text actually stops. Parked after the
+         container it would land under the answer, on its own line, wherever
+         the last block happened to end. */
     >
-      <Markdown>{text}</Markdown>
-    </div>
+      {children}
+      {streaming && index === shown - 1 && <i className="bui-caret" />}
+    </span>
   )
 }
 
@@ -338,6 +415,12 @@ const MARKDOWN_COMPONENTS: Components = {
 }
 
 const REMARK_PLUGINS = [remarkGfm]
+/* Runs after the markdown is already a tree, so numbering the words cannot
+   change what the document means. */
+const REVEAL_PLUGINS = [rehypeWords]
+/* One map, made once. Its identity is what keeps a word's element — and so the
+   animation that word is part-way through — alive from one tick to the next. */
+const REVEAL_COMPONENTS: Components = { ...MARKDOWN_COMPONENTS, span: RevealWord }
 
 export function Markdown({ children }: { children: string }) {
   return (

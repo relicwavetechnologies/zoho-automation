@@ -1417,17 +1417,28 @@
   display: block; font-size: 13px; line-height: 1.35; font-weight: 400; color: var(--cur-ink);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.cur .ws-recent-item span {
+/* Named, not `span`.
+   It was written as a bare descendant selector, which was fine while the only
+   span in a row was this one — and stopped being fine the moment the row could
+   hold a loader. `.cur .ws-recent-item span` (0,2,1) outweighs `.bui-pixels`
+   (0,1,0), so it reached past the meta line into the pixel grid itself and
+   replaced its `display: grid` with `flex` and its 1.5px gap with 6px: the 3×3
+   square unrolled into 75×3px, a flat row of nine dots straggling across the
+   row. Measured, not guessed.
+   The lesson is the selector, not the loader. A rule that styles "whatever
+   happens to be in here" will do this again to whatever arrives next. */
+/* The name, behind whatever is leading it.
+   `min-width: 0` on both, or the title stops being allowed to shrink: a flex
+   item's floor is its content width, so a long name pushes the row wider than
+   the rail instead of ellipsing inside it. */
+.cur .ws-recent-head {
+  display: flex; align-items: center; gap: 7px; min-width: 0;
+}
+.cur .ws-recent-head b { min-width: 0; }
+.cur .ws-recent-meta {
   display: flex; align-items: center; gap: 6px; margin-top: 3px;
   font-size: 11.5px; line-height: 1.25; color: var(--cur-muted);
 }
-.cur .ws-recent-dot {
-  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
-  background: var(--cur-muted-soft);
-}
-.cur .ws-recent-item span[data-state="ok"] .ws-recent-dot { background: var(--cur-success); }
-.cur .ws-recent-item span[data-state="err"] .ws-recent-dot { background: var(--cur-error); }
-.cur .ws-recent-item span[data-state="run"] .ws-recent-dot { background: var(--cur-primary); }
 .cur .ws-recent-empty { padding: 4px 10px; font-size: 12px; color: var(--cur-muted-soft); line-height: 1.5; }
 
 /* A chat's own controls, on the chat.
@@ -1519,6 +1530,223 @@
   border: 0; background: none; color: var(--cur-muted); cursor: pointer; margin-top: 8px;
 }
 .cur .ws-recent-ic:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+
+/* ══════════════════════════════════════════════════════
+   WORKSPACE SIDEBAR
+
+   The product rail follows the supplied compact navigation reference: one
+   workspace identity row, a real search affordance, one promoted creation
+   action, grouped links, and a shared moving selection surface. These rules
+   are intentionally scoped to `.workspace-sidebar`; Mail uses the same base
+   shell primitives but is a separate, smaller product surface.
+   ══════════════════════════════════════════════════════ */
+.cur.workspace-app { height: 100dvh; }
+
+.cur .workspace-sidebar {
+  width: 240px; padding: 8px; overflow: hidden;
+  background: var(--cur-sidebar); border-right-color: var(--cur-hairline);
+}
+
+/* Workspace identity — the reference's 32px initial tile and two-line label,
+   backed by the real scope switcher rather than local selection state. */
+.cur .workspace-sidebar .ws-workspace { margin: 0 0 8px; }
+.cur .workspace-sidebar .ws-workspace .ws-scope-btn {
+  height: 44px; padding: 6px; gap: 10px; border-radius: 8px;
+  transition: background-color .1s ease, transform .1s ease;
+}
+.cur .workspace-sidebar .ws-workspace .ws-scope-btn:active { transform: scale(.98); }
+.cur .workspace-sidebar .ws-workspace .ws-scope-btn[data-static="true"]:active { transform: none; }
+.cur .workspace-sidebar .ws-workspace .ws-scope-ic {
+  width: 32px; height: 32px; border-radius: 8px;
+}
+/* The reference's orange was too loud at real sidebar scale: three separate
+   orange elements became the first thing on the page. Divo's identity stays
+   in the diamond; the tile itself joins the rail's neutral ink system. */
+.cur .workspace-sidebar .ws-workspace .ws-scope-ic[data-tone="brand"] {
+  background: var(--cur-surface-strong); color: var(--cur-ink);
+  box-shadow: inset 0 0 0 1px var(--cur-hairline);
+}
+.cur .workspace-sidebar .ws-scope-opt .ck { color: var(--cur-ink); }
+.cur .workspace-sidebar .ws-workspace .avatar { flex: 0 0 32px; }
+.cur .workspace-sidebar .ws-workspace .ws-scope-txt { flex: 1; }
+.cur .workspace-sidebar .ws-workspace .ws-scope-txt b {
+  font-size: 13px; line-height: 1.2; font-weight: 500;
+}
+.cur .workspace-sidebar .ws-workspace .ws-scope-txt span {
+  margin-top: 2px; font-size: 11px; line-height: 1.2;
+}
+.cur .workspace-sidebar .ws-scope-menu { top: calc(100% + 4px); }
+
+/* Quick search is the existing route palette, now placed where the reference
+   puts it. Slash joins Cmd/Ctrl+K, but is ignored while a field is editable. */
+.cur .ws-quick-search {
+  width: 100%; height: 32px; display: flex; align-items: center; gap: 8px;
+  padding: 0 9px; border: 0; border-radius: 8px;
+  background: var(--cur-canvas-soft); color: var(--cur-muted);
+  box-shadow: inset 0 0 0 1px var(--cur-hairline);
+  font: inherit; font-size: 12.5px; text-align: left; cursor: pointer;
+  transition: background-color .1s ease, box-shadow .1s ease;
+}
+.cur .ws-quick-search:hover {
+  background: var(--cur-surface); color: var(--cur-body);
+  box-shadow: inset 0 0 0 1px var(--cur-hairline-strong);
+}
+.cur .ws-quick-search > span { flex: 1; }
+.cur .ws-quick-search kbd {
+  width: 18px; height: 18px; display: grid; place-items: center;
+  border-radius: 5px; background: var(--cur-surface); color: var(--cur-muted);
+  box-shadow: inset 0 0 0 1px var(--cur-hairline);
+  font: 10px/1 "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+
+/* One promoted action, copied from the reference but mapped to the route that
+   mints a real thread. Weight and placement promote it; color stays neutral so
+   it does not overpower the route the reader is currently on. */
+.cur .ws-new-chat {
+  width: 100%; height: 32px; display: flex; align-items: center; gap: 8px;
+  margin: 4px 0 6px; padding: 0 8px; border: 0; border-radius: 8px;
+  background: transparent; color: var(--cur-ink); cursor: pointer;
+  font: inherit; font-size: 13px; font-weight: 500; text-align: left;
+  transition: background-color .1s ease, transform .1s ease;
+}
+.cur .ws-new-chat:hover { background: var(--cur-surface-strong); }
+.cur .ws-new-chat:active { transform: scale(.98); }
+.cur .ws-new-chat > span:first-child { flex: 1; }
+.cur .ws-new-chat-plus {
+  width: 18px; height: 18px; flex: 0 0 18px; display: grid; place-items: center;
+  border-radius: 999px; background: var(--cur-surface-strong); color: var(--cur-ink);
+  box-shadow: inset 0 0 0 1px var(--cur-hairline);
+}
+
+/* The moving pill belongs to the nav, underneath every link. Hover borrows it;
+   mouse-out returns it to the route that is actually active. */
+.cur .workspace-sidebar .ws-nav-reference {
+  position: relative; display: flex; flex: 0 0 auto; flex-direction: column;
+  gap: 8px; margin: 0; padding: 0;
+}
+.cur .workspace-sidebar .ws-nav-highlight {
+  position: absolute; z-index: 0; left: 0; right: 0;
+  border-radius: 7px; background: var(--cur-surface-strong); pointer-events: none;
+  transition: top 220ms cubic-bezier(.23, 1, .32, 1),
+    height 220ms cubic-bezier(.23, 1, .32, 1), opacity 150ms ease;
+}
+.cur .workspace-sidebar .ws-nav-group { position: relative; z-index: 1; }
+.cur .workspace-sidebar .ws-nav-items { display: flex; flex-direction: column; gap: 1px; }
+.cur .workspace-sidebar .nav-label,
+.cur .workspace-sidebar .ws-recent-hd .nav-label {
+  padding: 5px 8px 4px; color: var(--cur-muted);
+  font-size: 10.5px; font-weight: 500; line-height: 1.4;
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.cur .workspace-sidebar .nav-item {
+  position: relative; z-index: 1; height: 30px; gap: 8px; padding: 0 8px;
+  border-radius: 7px; background: transparent; color: var(--cur-body);
+  transition: color .15s ease, transform .15s ease;
+}
+.cur .workspace-sidebar .nav-item:hover { background: transparent; color: var(--cur-ink); }
+.cur .workspace-sidebar .nav-item:active { transform: scale(.98); }
+.cur .workspace-sidebar .nav-item.active {
+  background: transparent; color: var(--cur-ink); font-weight: 500;
+}
+.cur .workspace-sidebar .nav-item.active::before { display: none; }
+.cur .workspace-sidebar .nav-item .g {
+  width: 14px; color: var(--cur-muted); opacity: 1;
+  transition: color .15s ease;
+}
+.cur .workspace-sidebar .nav-item:hover .g,
+.cur .workspace-sidebar .nav-item.active .g { color: var(--cur-ink); }
+.cur .workspace-sidebar .ws-nav-text {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Recent conversations remain the elastic middle of the rail, but shed the
+   stack of cards. They now share the reference's flat 7px rows. */
+.cur .workspace-sidebar .ws-recent {
+  margin-top: 6px; padding: 0; overflow-x: hidden;
+}
+.cur .workspace-sidebar .ws-recent-hd { min-height: 28px; }
+.cur .workspace-sidebar .ws-recent-hd .nav-label { align-self: end; }
+.cur .workspace-sidebar .ws-recent-item {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  min-height: 30px; margin: 0 0 1px; padding: 6px 8px;
+  border: 0; border-radius: 7px; background: transparent;
+}
+.cur .workspace-sidebar .ws-recent-item:hover,
+.cur .workspace-sidebar .ws-recent-item.active {
+  background: var(--cur-surface-strong); border-color: transparent;
+}
+.cur .workspace-sidebar .ws-recent-item b {
+  min-width: 0; padding: 0; font-size: 12.5px; line-height: 1.4;
+}
+.cur .workspace-sidebar .ws-recent-meta {
+  margin: 0 20px 0 0; gap: 5px; font-size: 10.5px; white-space: nowrap;
+  transition: opacity .1s ease;
+}
+.cur .workspace-sidebar .ws-recent-row:hover .ws-recent-meta { opacity: 0; }
+.cur .workspace-sidebar .ws-recent-more { top: 4px; right: 4px; }
+.cur .workspace-sidebar .ws-recent-rename {
+  min-height: 30px; margin: 0 0 1px; padding: 5px 8px; border-radius: 7px;
+  border-color: var(--cur-accent);
+}
+
+/* The live onboarding state stays, but as quiet rail furniture rather than a
+   card nested inside the sidebar. */
+.cur .workspace-sidebar .ws-onb {
+  margin: 8px 0 0; padding: 10px 8px 8px;
+  border-width: 1px 0 0; border-radius: 0; background: transparent;
+}
+.cur .workspace-sidebar .ws-onb-hd b { font-size: 12.5px; }
+.cur .workspace-sidebar .ws-onb-tog { background: transparent; }
+.cur .workspace-sidebar .sidebar-foot {
+  margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--cur-hairline);
+}
+.cur .workspace-sidebar .sidebar-foot .nav-item { border-radius: 7px; }
+
+/* Off-canvas only when the rail would otherwise consume most of the viewport.
+   Desktop keeps the reference's fixed 240px root column. */
+.cur .ws-sidebar-trigger,
+.cur .ws-sidebar-backdrop { display: none; }
+
+@media (max-width: 760px) {
+  .cur.workspace-app .workspace-sidebar {
+    position: fixed; inset: 0 auto 0 0; z-index: 60;
+    width: min(280px, calc(100vw - 24px));
+    transform: translateX(-102%);
+    border-right: 1px solid var(--cur-hairline-strong);
+    box-shadow: var(--ws-float);
+    transition: transform 220ms cubic-bezier(.23, 1, .32, 1);
+  }
+  .cur.workspace-app[data-sidebar-open="true"] .workspace-sidebar { transform: translateX(0); }
+
+  .cur .ws-sidebar-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 55;
+    border: 0; padding: 0; background: var(--ws-scrim);
+    opacity: 0; visibility: hidden; pointer-events: none;
+    transition: opacity .18s ease, visibility .18s ease;
+  }
+  .cur.workspace-app[data-sidebar-open="true"] .ws-sidebar-backdrop {
+    opacity: 1; visibility: visible; pointer-events: auto;
+  }
+  .cur .ws-sidebar-trigger {
+    display: grid; place-items: center; position: fixed; top: 8px; left: 8px; z-index: 45;
+    width: 30px; height: 30px; padding: 0;
+    border: 1px solid var(--cur-hairline); border-radius: 8px;
+    background: color-mix(in srgb, var(--cur-canvas) 84%, transparent);
+    color: var(--cur-body); backdrop-filter: blur(10px); cursor: pointer;
+  }
+  .cur .ws-sidebar-trigger:hover { color: var(--cur-ink); border-color: var(--cur-hairline-strong); }
+  .cur.workspace-app[data-sidebar-open="true"] .ws-sidebar-trigger { visibility: hidden; }
+
+  .cur.workspace-app .topbar { padding-left: 50px; }
+  .cur.workspace-app .ws-chat-head > div { padding-left: 50px; }
+  .cur.workspace-app .page { padding-right: 20px; padding-left: 20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cur .workspace-sidebar .ws-nav-highlight,
+  .cur.workspace-app .workspace-sidebar,
+  .cur .ws-sidebar-backdrop { transition: none; }
+}
 
 /* Page title where the reference puts one — small, quiet, no breadcrumb. */
 .cur .ws-crumb-now { font-size: 13.5px; font-weight: 400; color: var(--cur-body); }

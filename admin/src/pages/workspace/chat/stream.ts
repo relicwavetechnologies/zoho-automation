@@ -17,7 +17,13 @@ export const API_BASE_URL =
 
 /** One row of the run's activity log, as the backend sends it. */
 export type LedgerRow = {
-  kind?: 'tool' | 'say'
+  /**
+   * `tool` is something Divo did, `say` is something it told you, `thought` is
+   * it reasoning to itself on the way. Lark drops the last kind — a card is
+   * read by a whole chat — which is why this arrives marked rather than
+   * pre-filtered.
+   */
+  kind?: 'tool' | 'say' | 'thought'
   label: string
   count: number
   outcome?: string

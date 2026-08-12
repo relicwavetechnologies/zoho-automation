@@ -116,13 +116,31 @@ export function tool(key: ToolKey) {
  * `stroke-width`; Divo's own glyphs inherit `currentColor` so they sit in
  * whatever ink weight the row around them is using.
  */
-export function ToolMark({ name, size = 14 }: { name: ToolKey; size?: number }) {
+export function ToolMark({
+  name, size = 14, dim,
+}: {
+  name: ToolKey
+  size?: number
+  /**
+   * Hold the mark back until the row is pointed at.
+   *
+   * Only vendor marks take it. Divo's own glyphs are drawn in `currentColor`,
+   * so a row that dims its text dims them already — fading those a second time
+   * leaves a smudge where a settled log row's leading mark should be.
+   */
+  dim?: boolean
+}) {
   const { Mark, own, aspect } = TOOLS[name] ?? TOOLS.tool
+  const held = dim && !own
   return (
     <Mark
       width={aspect ? Math.round(size * aspect) : size}
       height={size}
-      className={own ? 'shrink-0' : 'bui-mark shrink-0'}
+      className={[
+        own ? '' : 'bui-mark',
+        'shrink-0',
+        held ? 'opacity-70 transition-opacity duration-100 group-hover:opacity-100' : '',
+      ].filter(Boolean).join(' ')}
       aria-hidden
     />
   )
