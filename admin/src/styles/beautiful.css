@@ -235,6 +235,43 @@
   display: none;
 }
 
+/* ── The answer's data table ──────────────────────────────
+   It owns its type, spacing and alignment in CSS rather than in utility
+   classes, because the admin has table defaults — `.cur thead th` and
+   `.cur tbody td`, 18px padding and uppercase headers — and those selectors
+   outweigh a single class. A table inside a chat answer was being drawn as a
+   settings-page grid: headers upper-cased and left-aligned over figures that
+   were right-aligned, with an acre of padding between them.
+
+   Alignment travels as an attribute rather than a class for the same reason:
+   whether a column is numeric is a fact about the column, and it needs to
+   reach both the header and every cell in one statement. */
+/* `max-content`, not `auto`. A table with `width: auto` here still resolves to
+   the full width of the message column, which puts a void between a row's name
+   and its number for the eye to cross on every line. At max-content every
+   column hugs its own data and the wrapper scrolls when the table is genuinely
+   too wide, which is the only time sideways scrolling is honest. */
+.cur .bui-data { width: max-content; border-collapse: collapse; font-size: 12px; }
+.cur .bui-data thead th {
+  padding: 7px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+  color: var(--bui-ink-3);
+}
+.cur .bui-data tbody td {
+  padding: 7px 12px;
+  border-top: 1px solid var(--bui-line);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.cur .bui-data tbody tr:first-child td { border-top: 0; }
+.cur .bui-data [data-numeric="true"] { text-align: right; font-variant-numeric: tabular-nums; }
+
 /* The shimmering label. A gradient clipped to the glyphs, swept left — the
    text itself reads as live rather than needing a spinner beside it. */
 .bui-shimmer {

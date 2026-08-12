@@ -43,21 +43,19 @@ export function DataTable({
       /* Carries the reveal index so the container can tell a block that has
          arrived from one whose turn has not come. */
       data-word={properties?.['data-word'] as string | undefined}
-      className="my-3 overflow-hidden rounded-control bg-surface shadow-hairline"
+      /* Sized to its own data, not to the message column. Stretched to full
+         width a three-column table puts a void between the name and the
+         number, and the eye has to cross it on every row. */
+      className="my-3 w-fit max-w-full overflow-hidden rounded-control bg-surface shadow-hairline"
       style={{ animation: 'bui-fade-up 380ms cubic-bezier(0.23,1,0.32,1) both' }}
     >
       {charted && plot ? <PlotView plot={plot} /> : (
         <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-[12px]">
+          <table className="bui-data">
             <thead>
               <tr>
                 {columns.map(column => (
-                  <th
-                    key={column.name}
-                    className={`whitespace-nowrap border-b border-line px-2.5 py-[7px] font-medium text-ink-3 ${
-                      column.numeric ? 'text-right' : 'text-left'
-                    }`}
-                  >
+                  <th key={column.name} data-numeric={column.numeric} className="border-b border-line">
                     {column.name}
                   </th>
                 ))}
@@ -74,7 +72,6 @@ export function DataTable({
                       column={columns[ci]}
                       row={ri}
                       first={ci === 0}
-                      ruled={ri > 0}
                     />
                   ))}
                 </tr>
@@ -142,14 +139,13 @@ function Toggle({ on, onClick, children }: { on: boolean; onClick: () => void; c
  * get the number alone — a bar chart of one row is a rectangle.
  */
 function Cell({
-  text, href, column, row, first, ruled,
+  text, href, column, row, first,
 }: {
   text: string
   href: string | null
   column: Column | undefined
   row: number
   first: boolean
-  ruled: boolean
 }) {
   const figure = column?.figures[row] ?? null
   const bar =
@@ -160,17 +156,16 @@ function Cell({
 
   return (
     <td
-      className={`relative whitespace-nowrap px-2.5 py-[7px] ${ruled ? 'border-t border-line' : ''} ${
-        column?.numeric
-          ? 'text-right tabular-nums text-ink'
-          : first ? 'font-medium text-ink' : 'text-ink-2'
+      data-numeric={column?.numeric}
+      className={`relative ${
+        column?.numeric ? 'text-ink' : first ? 'font-medium text-ink' : 'text-ink-2'
       }`}
     >
       {href ? <SourceLink href={href} text={text} /> : text || <span className="text-ink-3">—</span>}
       {bar && (
         <span
           aria-hidden
-          className="absolute bottom-[3px] right-2.5 h-[2px] rounded-full bg-[var(--bui-line-strong)]"
+          className="absolute bottom-[3px] right-3 h-[2px] rounded-full bg-[var(--bui-line-strong)]"
           style={{ width: `${Math.max(2, (Math.abs(figure.value) / column!.max) * 42)}px` }}
         />
       )}
