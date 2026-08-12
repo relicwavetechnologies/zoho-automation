@@ -43,10 +43,7 @@ export function DataTable({
       /* Carries the reveal index so the container can tell a block that has
          arrived from one whose turn has not come. */
       data-word={properties?.['data-word'] as string | undefined}
-      /* Sized to its own data, not to the message column. Stretched to full
-         width a three-column table puts a void between the name and the
-         number, and the eye has to cross it on every row. */
-      className="my-3 w-fit max-w-full overflow-hidden rounded-control bg-surface shadow-hairline"
+      className="my-3 overflow-hidden rounded-control bg-surface shadow-hairline"
       style={{ animation: 'bui-fade-up 380ms cubic-bezier(0.23,1,0.32,1) both' }}
     >
       {charted && plot ? <PlotView plot={plot} /> : (

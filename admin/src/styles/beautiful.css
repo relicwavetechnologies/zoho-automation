@@ -246,12 +246,7 @@
    Alignment travels as an attribute rather than a class for the same reason:
    whether a column is numeric is a fact about the column, and it needs to
    reach both the header and every cell in one statement. */
-/* `max-content`, not `auto`. A table with `width: auto` here still resolves to
-   the full width of the message column, which puts a void between a row's name
-   and its number for the eye to cross on every line. At max-content every
-   column hugs its own data and the wrapper scrolls when the table is genuinely
-   too wide, which is the only time sideways scrolling is honest. */
-.cur .bui-data { width: max-content; border-collapse: collapse; font-size: 12px; }
+.cur .bui-data { width: 100%; border-collapse: collapse; font-size: 12px; }
 .cur .bui-data thead th {
   padding: 7px 12px;
   font-size: 11px;
@@ -271,6 +266,11 @@
 }
 .cur .bui-data tbody tr:first-child td { border-top: 0; }
 .cur .bui-data [data-numeric="true"] { text-align: right; font-variant-numeric: tabular-nums; }
+/* The table spans the message column, but the figures inside it hug their own
+   width and the label column absorbs everything left over. Left to distribute
+   the slack evenly, a three-column table parks each number in the middle of
+   its own empty third and the eye has to find it there. */
+.cur .bui-data thead th[data-numeric="true"] { width: 1%; }
 
 /* The shimmering label. A gradient clipped to the glyphs, swept left — the
    text itself reads as live rather than needing a spinner beside it. */
