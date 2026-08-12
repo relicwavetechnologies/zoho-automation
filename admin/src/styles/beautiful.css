@@ -222,11 +222,16 @@
 }
 
 /* A block nobody has reached yet is not drawn at all.
-   Unrevealed words render as nothing, so a table whose turn has not come would
-   otherwise stand there as an empty grid of borders, and a heading as a blank
-   line — the document's furniture arriving before any of its content. `:has`
-   asks the only question that matters: is there a revealed word in here yet. */
-.bui-stream > *:not(:has([data-word])) {
+   Unrevealed words render as nothing, so a heading whose turn has not come
+   would otherwise stand there as a blank line — the document's furniture
+   arriving before any of its content. `:has` asks the only question that
+   matters: is there a revealed word in here yet.
+
+   A table answers that question about itself. It is drawn from its own data
+   rather than out of words, so it carries one index on the element instead of
+   many inside it, and a rule that only looked at descendants would hide the
+   very blocks that had arrived. */
+.bui-stream > *:not([data-word]):not(:has([data-word])) {
   display: none;
 }
 

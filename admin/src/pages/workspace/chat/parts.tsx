@@ -12,12 +12,16 @@
  * corner, no badge that says "running". The live row simply looks alive and
  * the settled ones do not.
  */
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowUp, ArrowUpRight, Check, ChevronDown, ChevronRight, Plus, X } from 'lucide-react'
 import { ToolMark, tool, type ToolKey } from './tools'
-import { WORD_MS, rehypeWords, wordIndexOf } from './reveal'
+import { RevealCursor, firstWordIn, rehypeWords, wordIndexOf } from './reveal'
+import { DataTable } from './answer/table.view'
+import { parseDrawnTable, readGrid, textOf } from './answer/table'
+import { Sources, SourceLink } from './answer/links.view'
+import { sourcesIn } from './answer/links'
 import type { ArtifactBlock, Beat, StepLine, TableBlock } from './transcripts'
 
 /* ── Step ─────────────────────────────────────────────────
@@ -225,70 +229,44 @@ export function Approval({
 }
 
 /* ── Answer ───────────────────────────────────────────────
-   Paragraphs arrive whole and blur in, rather than typing character by
-   character. A run that took twenty seconds to think has already made the
-   reader wait; making them watch it type is a second tax on the same result.
+   A live answer grows only when another model delta reaches the browser. Each
+   newly arrived word resolves out of blur and the caret sits at the true wire
+   boundary; there is no timer replaying a response the client already owns.
 
-   Markdown, because the model writes markdown. It was rendered as plain text,
-   so a table of ten emails arrived as a wall of pipes and hyphens and every
-   heading kept its asterisks — the answer was there, and unreadable. The model
-   is not doing anything unusual: bold, lists and GFM tables are how it says
-   "here are your results", and a surface that prints them literally is refusing
-   to listen. */
-export function Say({ text, reveal }: { text: string; reveal?: boolean }) {
-  /* An answer read back from history is already old news, so it is simply
-     there. Re-typing yesterday's reply every time the thread is scrolled past
-     would be a performance of work that finished a day ago. */
-  if (!reveal) {
-    return (
-      <div
-        className="text-[13.5px] leading-[1.7] text-ink"
-        style={{ animation: 'bui-stream-in 420ms cubic-bezier(0.23,1,0.32,1) both' }}
-      >
-        <Markdown>{text}</Markdown>
-      </div>
-    )
-  }
-  return <StreamedSay text={text} />
+   Markdown, because the model writes markdown. A completed or historical
+   answer is simply present — it is never typed again after the run finishes. */
+export function Say({ text, streaming }: { text: string; streaming?: boolean }) {
+  /* Provenance, and only once there is a whole answer to have provenance for.
+     A count that climbs while the answer is still being written is a second
+     thing moving on the screen, and it is the least urgent thing on it. */
+  const sources = useMemo(() => (streaming ? [] : sourcesIn(text)), [text, streaming])
+
+  if (streaming) return <LiveSay text={text} />
+
+  return (
+    <div
+      className="text-[13.5px] leading-[1.7] text-ink"
+      style={{ animation: 'bui-stream-in 420ms cubic-bezier(0.23,1,0.32,1) both' }}
+    >
+      <Markdown>{text}</Markdown>
+      <Sources sources={sources} />
+    </div>
+  )
 }
 
 /**
- * The answer arriving a word at a time.
+ * The answer accumulated from real provider deltas so far.
  *
- * The document is parsed once and in full — see `reveal.ts` for why — so what
- * moves here is only a cursor over words that already exist. Every word past it
- * renders as nothing, which is what makes the paragraph grow rather than fade
- * up out of a block that was already the right size.
+ * The current prefix is reparsed because the remainder does not exist in the
+ * browser yet. `rehypeWords` gives newly arrived words the existing resolving
+ * animation, while the cursor exposes every word actually received and no word
+ * beyond it.
  */
-function StreamedSay({ text }: { text: string }) {
-  const [shown, setShown] = useState(0)
-  /* Counted off the same split the parser uses, so the cursor and the indices
-     it is compared against can never disagree about what a word is. */
+function LiveSay({ text }: { text: string }) {
   const total = useMemo(
     () => text.split(/(\s+)/).filter(part => part.trim().length > 0).length,
     [text],
   )
-
-  /* Only a *different* answer starts over. While a run is live the same answer
-     arrives again and again, each time a little longer, and treating every
-     arrival as new text would drag the cursor back to zero and replay the
-     whole reveal several times a second. */
-  const revealing = useRef(text)
-  useEffect(() => {
-    if (!text.startsWith(revealing.current)) setShown(0)
-    revealing.current = text
-  }, [text])
-
-  useEffect(() => {
-    if (shown >= total) return
-    const tick = window.setTimeout(() => setShown(count => count + 1), WORD_MS)
-    return () => window.clearTimeout(tick)
-  }, [shown, total])
-
-  /* The document is built once per answer and handed down unchanged, so moving
-     the cursor re-renders the words and nothing else. Rebuilt every tick it
-     would be re-parsed every tick — and, far worse, every word would be a new
-     element and would mount again from the start of its own animation. */
   const document = useMemo(() => (
     <ReactMarkdown
       remarkPlugins={REMARK_PLUGINS}
@@ -299,7 +277,7 @@ function StreamedSay({ text }: { text: string }) {
     </ReactMarkdown>
   ), [text])
 
-  const cursor = useMemo(() => ({ shown, streaming: shown < total }), [shown, total])
+  const cursor = useMemo(() => ({ shown: total, streaming: true }), [total])
 
   return (
     <div className="bui-stream text-[13.5px] leading-[1.7] text-ink">
@@ -309,19 +287,13 @@ function StreamedSay({ text }: { text: string }) {
 }
 
 /**
- * How far the reveal has got.
+ * How far the wire has got.
  *
- * It travels by context so that the component drawing a word can be written
- * once, at module scope. Passing the cursor the obvious way — rebuilding the
- * `components` map each tick, closing over `shown` — hands react-markdown a
- * brand new function for `span` eighteen times a second, and a new function is
- * a new element type: React throws away every word and mounts it again. Each
- * remount restarts `bui-stream-in`, so the answer sat permanently in the
- * blurred, transparent first frame of its own arrival and never finished
- * arriving.
+ * It travels by context so the component drawing a word can stay at module
+ * scope while each real answer snapshot supplies the received word count.
+ * Keeping the components map stable also lets React preserve already-arrived
+ * words while it mounts the new tail with the stream-in animation.
  */
-const RevealCursor = createContext({ shown: Number.POSITIVE_INFINITY, streaming: false })
-
 const RevealWord: Components['span'] = ({ node, children, ...rest }) => {
   const { shown, streaming } = useContext(RevealCursor)
   const index = wordIndexOf(node?.properties)
@@ -370,15 +342,13 @@ const MARKDOWN_COMPONENTS: Components = {
   ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-5 first:mt-0 last:mb-0">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 list-decimal space-y-1 pl-5 first:mt-0 last:mb-0">{children}</ol>,
   li: ({ children }) => <li className="pl-0.5 marker:text-ink-3">{children}</li>,
-  a: ({ children, href }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer noopener"
-      className="underline decoration-line underline-offset-2 transition-colors hover:decoration-ink-2"
-    >
+  /* A link whose text is its own address becomes a source chip; one the model
+     wrote words for keeps them. `SourceLink` owns that judgement so a link in a
+     table cell and a link in a sentence cannot end up disagreeing about it. */
+  a: ({ children, href, node }) => (
+    <SourceLink href={href ?? ''} text={textOf(node)} word={firstWordIn(node)}>
       {children}
-    </a>
+    </SourceLink>
   ),
   blockquote: ({ children }) => (
     <blockquote className="my-2.5 border-l-2 border-line pl-3 text-ink-2">{children}</blockquote>
@@ -397,14 +367,32 @@ const MARKDOWN_COMPONENTS: Components = {
       </code>
     )
   },
-  pre: ({ children }) => (
-    <pre className="my-2.5 overflow-x-auto rounded-control bg-inset p-3 shadow-hairline">{children}</pre>
-  ),
-  table: ({ children }) => (
-    <div className="my-3 overflow-x-auto rounded-control bg-surface shadow-hairline">
-      <table className="w-full border-collapse text-[12px]">{children}</table>
-    </div>
-  ),
+  /* Divo does not always write GFM. Asked for a list it will happily print a
+     fenced block of pipes with a row of dashes under the header — a table by
+     every measure except the one the parser uses, arriving as a wall of
+     monospace. If the block is that shape it is read back out and drawn as the
+     table it is; anything else is left as the code it claims to be. */
+  pre: ({ children, node }) => {
+    const drawn = parseDrawnTable(textOf(node))
+    if (drawn) {
+      return <DataTable table={{ ...drawn, hrefs: [] }} properties={node?.properties} />
+    }
+    return (
+      <pre className="my-2.5 overflow-x-auto rounded-control bg-inset p-3 shadow-hairline">{children}</pre>
+    )
+  },
+  /* Drawn from the table's own data rather than by decorating cells, because
+     alignment, folding and the chart are all decisions about a column and a
+     `<td>` renderer only ever sees one cell. */
+  table: ({ children, node }) => {
+    const grid = readGrid(node)
+    if (grid) return <DataTable table={grid} properties={node?.properties} />
+    return (
+      <div className="my-3 overflow-x-auto rounded-control bg-surface shadow-hairline">
+        <table className="w-full border-collapse text-[12px]">{children}</table>
+      </div>
+    )
+  },
   thead: ({ children }) => <thead className="border-b border-line">{children}</thead>,
   th: ({ children }) => (
     <th className="whitespace-nowrap px-2.5 py-1.5 text-left font-medium text-ink-2">{children}</th>
