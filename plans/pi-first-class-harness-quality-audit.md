@@ -8,6 +8,11 @@
 > first-class tool, skill, model, security, performance, and code-quality
 > requirements to Pi and judge it by objective gates.**
 >
+> Execution checkpoint: **The native catalogue and true-streaming foundation
+> are committed. Phase 3 modularization is active; Desktop consolidation is
+> deliberately fenced until its Teach-only behavior has typed replacement
+> contracts.**
+>
 > Supersedes the implementation direction in
 > [`codex-v2-parallel-runtime-plan.md`](codex-v2-parallel-runtime-plan.md).
 >
@@ -335,13 +340,26 @@ Required outcome: one canonical package plus small cloud/desktop adapters for
 transport or UI differences. Do not copy one tree over the other; inventory
 intentional differences first and preserve them through explicit interfaces.
 
-### F6 — Controller ownership is too broad
+### F6 — PARTIALLY RESOLVED 2026-08-13 — Controller ownership is too broad
 
 Severity: **Medium-high**
 
-`local-rpc-controller.mjs` is 3,114 lines and owns Docker resources, leases,
-admission, native skill staging, attachments, warm processes, stream handling,
-workspace policy, cleanup, and more.
+`local-rpc-controller.mjs` originally exceeded 3,100 lines and owned Docker
+resources, leases, admission, native skill staging, attachments, warm
+processes, stream handling, workspace policy, cleanup, and more.
+
+Two cohesive, behavior-preserving seams are now extracted:
+
+- `runtime-progress.mjs` owns pure Pi-event projection, answer deltas, bounded
+  reasoning, and governed-operation labels.
+- `native-skills.mjs` owns native-skill validation, rendering, authenticated
+  bootstrap fetch, scope digesting, lifecycle telemetry, and atomic isolated
+  Docker staging.
+
+The controller remains the compatibility façade and process/container owner.
+Its public RPC contract and existing imports remain unchanged. The remaining
+controller still owns about 2,590 lines, so lifecycle, attachment, lease, and
+resource extraction remain active work rather than a completed gate.
 
 The behavior has substantial tests and useful safety checks, but the file is
 too broad for predictable change review.
@@ -519,6 +537,10 @@ promotion.
 
 ### Phase 3 — Collapse duplicate integration code
 
+Implementation status: **In progress. Stream projection and native-skill
+bootstrap/staging have been extracted from the controller. Cloud/Desktop
+gateway consolidation has an explicit preservation boundary.**
+
 Goal: one predictable Divo–Pi implementation.
 
 - Inventory cloud-only, desktop-only, and shared gateway behavior.
@@ -530,6 +552,19 @@ Goal: one predictable Divo–Pi implementation.
 
 Exit gate: no copied gateway implementation; dependency direction is clear;
 controller modules have bounded responsibilities and focused tests.
+
+Desktop preservation boundary:
+
+- The Jan extension is still an active release input, not dead code.
+- Its generic `divo_gateway` path also carries Desktop-only skill view,
+  teaching clarification/profile behavior, local approval interaction, and
+  `teach.context.get` / `teach.learning.apply` operations.
+- Therefore consolidation must first define typed control tools or a thin
+  Desktop adapter for those behaviors. Only then may the old Jan mega-tool
+  registration be removed.
+- The canonical business-tool catalogue and governed backend executor must be
+  shared; Desktop UI/Teach behavior must remain an adapter concern. A directory
+  copy from cloud to Jan is not an acceptable migration.
 
 ### Phase 4 — Reduce model tax without reducing capability
 
@@ -696,8 +731,17 @@ provide.
    bypass type-check or CI.
 4. [x] Implement the complete 38-tool native catalogue, full-visibility policy,
    governed dispatch, deterministic parity, and obsolete dynamic-path cleanup.
-5. Consolidate cloud/desktop only after parity tests describe their intentional
-   differences.
+5. [x] Harden the live answer path with bounded/coalesced Pi NDJSON, backend
+   SSE backpressure, reconnect compaction, and an actual controller-to-SSE
+   early-delta regression test.
+6. [x] Extract pure runtime progress projection and native-skill bootstrap /
+   staging from the process controller without changing its public contract.
+7. Define typed Desktop Teach/control contracts and characterization tests,
+   then consolidate the shared business gateway behind cloud and Desktop
+   adapters. Removal of the active Jan mega-tool happens only after that proof.
+8. Continue controller extraction by lifecycle boundary, then run the clean
+   checkout, built-image, DeepSeek, Luna, denial, and representative provider
+   promotion gates.
 
 ## 12. Evidence snapshot
 
