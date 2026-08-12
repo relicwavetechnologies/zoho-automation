@@ -32,7 +32,6 @@ import {
 	logCompletedRun,
 	nativeSkillBootstrapDigest,
 	nativeSkillLifecycleEvent,
-	nativeDbSkillsEnabled,
 	piProcessBindingMismatchReason,
 	piProcessBindingMatches,
 	RUNTIME_IDLE_TIMEOUT_MS,
@@ -501,11 +500,9 @@ test("soft abort refuses to retain a runtime that is still active", async () => 
 });
 
 test("Pi process reuse is limited to compatible private thread runs", () => {
-	assert.equal(canReusePiProcess({ sessionScope: "thread" }), true);
-	assert.equal(canReusePiProcess({ sessionScope: "thread", nativeSkills: true }), false);
+	assert.equal(canReusePiProcess({ sessionScope: "thread" }), false);
 	assert.equal(canReusePiProcess({
 		sessionScope: "thread",
-		nativeSkills: true,
 		nativeSkillDigest: "a".repeat(64),
 	}), true);
 	assert.equal(canReusePiProcess({ sessionScope: "run" }), false);
@@ -545,13 +542,7 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 	);
 });
 
-test("native DB skills are on by default with an explicit rollback switch", () => {
-	assert.equal(nativeDbSkillsEnabled(undefined), true);
-	assert.equal(nativeDbSkillsEnabled(""), true);
-	assert.equal(nativeDbSkillsEnabled("true"), true);
-	assert.equal(nativeDbSkillsEnabled("false"), false);
-	assert.equal(nativeDbSkillsEnabled("1"), false);
-
+test("native DB skill bootstrap accepts a valid governed catalogue", () => {
 	const bootstrap = validateNativeSkillBootstrap({
 		registryRevision: 7,
 		skills: [{

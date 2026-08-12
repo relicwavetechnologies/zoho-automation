@@ -391,10 +391,13 @@ catalogue/schema size, routing behavior, and model-loop decisions.
 Severity: **Medium**
 
 There is no Pi/Codex runtime switch, which satisfies the current decision.
-There are still multiple runtime behavior flags, including native DB skills,
-source/compiled entry mode, keepalive, host gateway, and local CLI disablement.
-Some are legitimate deployment configuration; at least one is explicitly
-documented as a rollback switch.
+The transitional native DB skill rollback flag has been removed: Cloud-Pi now
+has one permanent native-skill path. Authorization failures remain fatal and a
+transient backend failure produces the same path's explicit empty-catalogue
+degraded result instead of entering a second operating mode. Remaining flags
+cover source versus compiled development entry, keepalive, host-gateway
+networking, and local CLI exposure; each still needs a named operational-purpose
+audit before this finding can close.
 
 Required outcome: classify every flag as permanent operational configuration,
 test-only override, or expired migration switch. Delete expired switches and

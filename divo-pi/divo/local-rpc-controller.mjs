@@ -1740,21 +1740,12 @@ const warmPiProcesses = new Map();
 export function canReusePiProcess({
 	enabled = process.env.DIVO_PI_KEEPALIVE !== "false",
 	ephemeral = false,
-	nativeSkills = false,
 	nativeSkillDigest = "",
 	sessionScope = "thread",
 	lifecycle,
 } = {}) {
-	const nativeSkillsCompatible = !nativeSkills || /^[a-f0-9]{64}$/.test(nativeSkillDigest);
-	return enabled && !ephemeral && nativeSkillsCompatible
+	return enabled && !ephemeral && /^[a-f0-9]{64}$/.test(nativeSkillDigest)
 		&& sessionScope === "thread" && lifecycle === undefined;
-}
-
-export function nativeDbSkillsEnabled(value = process.env.DIVO_PI_NATIVE_DB_SKILLS) {
-	// Native DB skills are the Cloud-Pi architecture, not an experimental path.
-	// Keep one explicit rollback switch without making every launcher remember a
-	// hidden opt-in; unknown values still fail closed.
-	return value === undefined || value === "" || value === "true";
 }
 
 function piProcessBinding({
@@ -2135,7 +2126,6 @@ async function runPrompt({
 	lifecycle,
 }) {
 	const normalizedSessionScope = validateSessionScope(sessionScope);
-	const nativeSkills = nativeDbSkillsEnabled();
 	if (lifecycle !== undefined) validateSessionLifecycleOperation(lifecycle);
 	if (lifecycle !== undefined && normalizedSessionScope !== "thread") {
 		throw new Error("Session lifecycle operations require a thread-scoped session");
@@ -2147,17 +2137,16 @@ async function runPrompt({
 	let resources = resourcesFor(profile);
 	const selectedModel = validateRuntimeModel(model);
 	const nativeSkillFetchStartedAt = Date.now();
-	const nativeSkillBootstrap = nativeSkills
-		? await fetchNativeSkillBootstrapOrEmpty({ backendUrl, token, departmentId })
-		: undefined;
+	const nativeSkillBootstrap = await fetchNativeSkillBootstrapOrEmpty({
+		backendUrl,
+		token,
+		departmentId,
+	});
 	const nativeSkillFetchMs = Date.now() - nativeSkillFetchStartedAt;
 	const nativeSkillScope = { companyId, userId, departmentId, channel };
-	const nativeSkillDigest = nativeSkillBootstrap
-		? nativeSkillBootstrapDigest(nativeSkillBootstrap, nativeSkillScope)
-		: "";
+	const nativeSkillDigest = nativeSkillBootstrapDigest(nativeSkillBootstrap, nativeSkillScope);
 	const piKeepAlive = canReusePiProcess({
 		ephemeral,
-		nativeSkills,
 		nativeSkillDigest,
 		sessionScope: normalizedSessionScope,
 		lifecycle,
@@ -2175,7 +2164,7 @@ async function runPrompt({
 		departmentId,
 		sessionScope: normalizedSessionScope,
 		...(channel ? { channel } : {}),
-		...(nativeSkills ? { nativeSkills: true } : {}),
+		nativeSkills: true,
 		...(isRuntimeChannel(channel) ? { interruptionTask: message } : {}),
 		...(selectedModel ?? {}),
 	};
@@ -2256,24 +2245,22 @@ async function runPrompt({
 	try {
 		const runtime = await ensureRuntime(profile, { ephemeral });
 		resources = runtime.resources;
-		if (nativeSkillBootstrap) {
-			const nativeSkillStageStartedAt = Date.now();
-			const stage = await stageNativeSkillBootstrap(
-				resources.skillsVolume,
-				nativeSkillBootstrap,
-				nativeSkillScope,
-				{ force: runtime.created },
-			);
-			console.error(`[Pi] ${JSON.stringify(nativeSkillLifecycleEvent({
-				bootstrap: nativeSkillBootstrap,
-				digest: stage.digest,
-				staged: stage.staged,
-				fetchMs: nativeSkillFetchMs,
-				stageMs: Date.now() - nativeSkillStageStartedAt,
-				ephemeral,
-				sessionScope: normalizedSessionScope,
-			}))}`);
-		}
+		const nativeSkillStageStartedAt = Date.now();
+		const stage = await stageNativeSkillBootstrap(
+			resources.skillsVolume,
+			nativeSkillBootstrap,
+			nativeSkillScope,
+			{ force: runtime.created },
+		);
+		console.error(`[Pi] ${JSON.stringify(nativeSkillLifecycleEvent({
+			bootstrap: nativeSkillBootstrap,
+			digest: stage.digest,
+			staged: stage.staged,
+			fetchMs: nativeSkillFetchMs,
+			stageMs: Date.now() - nativeSkillStageStartedAt,
+			ephemeral,
+			sessionScope: normalizedSessionScope,
+		}))}`);
 		for (const progress of runtimeStartupProgress(runtime)) {
 			emitRuntimeProgress(onProgress, progress);
 		}

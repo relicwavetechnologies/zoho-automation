@@ -87,9 +87,9 @@ cd advance-backend
 pnpm dev
 ```
 
-Native backend skills are the default. `DIVO_PI_NATIVE_DB_SKILLS=false` is a
-rollback switch, not a normal test setting; a native-skills test must show a
-`native_skills.ready` controller event before Pi starts.
+Native backend skills are permanent. A native-skills test must show a
+`native_skills.ready` controller event before Pi starts; a missing bootstrap is
+a runtime failure to diagnose, not a reason to enter a second operating mode.
 
 Preflight before every prompt:
 

@@ -465,8 +465,9 @@ Skill Markdown is application data, not a Prisma schema migration.
   system definition as a new version.
 - Do not overwrite a non-system/custom skill with the same slug. Provisioning
   intentionally skips it; record the collision and ask for a decision.
-- `DIVO_PI_NATIVE_DB_SKILLS=false` is an emergency runtime rollback, not a
-  normal skills-content rollback.
+- Revert the runtime commit if the native bootstrap mechanism itself must be
+  rolled back. There is no environment switch that creates a second
+  skill-loading mode.
 
 ## 11. Test map
 
