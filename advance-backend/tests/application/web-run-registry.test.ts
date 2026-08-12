@@ -130,6 +130,31 @@ describe('web run registry', () => {
     run.end();
   });
 
+  it('coalesces a token burst for a slow view instead of growing its queue per token', async () => {
+    const runs = registry();
+    const run = controlled();
+    runs.start({
+      runId: 'r1', threadId: 'web_t1', userId: 'u1', prompt: 'hi',
+      controller: new AbortController(), events: run.events,
+    });
+
+    const view = runs.attach('u1', 'web_t1');
+    const first = view.next();
+    run.push({ type: 'answer_delta', delta: '0' });
+    await settle();
+    for (let index = 1; index < 1_000; index += 1) {
+      run.push({ type: 'answer_delta', delta: String(index % 10) });
+    }
+    await settle();
+
+    assert.deepEqual((await first).value, { type: 'answer_delta', delta: '0' });
+    const coalesced = await view.next();
+    assert.equal(coalesced.value?.type, 'answer_delta');
+    assert.equal(coalesced.value?.type === 'answer_delta' && coalesced.value.delta.length, 999);
+    await view.return(undefined);
+    run.end();
+  });
+
   it('refuses a second run on a thread that already has one', async () => {
     const runs = registry();
     const run = controlled();

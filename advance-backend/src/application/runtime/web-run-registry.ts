@@ -24,6 +24,8 @@ import type { WebRunEvent } from './web-run.service';
 
 /** How long a finished run stays visible after it settles. */
 const SETTLED_GRACE_MS = 120_000;
+/** Partial prose is disposable; the terminal event remains authoritative. */
+const MAX_RECONNECT_ANSWER_CHARS = 256 * 1_024;
 
 export interface WebRunHandle {
   readonly runId: string;
@@ -45,6 +47,7 @@ interface Entry {
    */
   latestTimeline: Extract<WebRunEvent, { type: 'timeline' }> | undefined;
   latestAnswer: Extract<WebRunEvent, { type: 'answer' }> | undefined;
+  answerOverflowed: boolean;
   terminal: WebRunEvent | undefined;
   readonly listeners: Set<(event: WebRunEvent) => void>;
   sweepAt: ReturnType<typeof setTimeout> | undefined;
@@ -116,6 +119,7 @@ export class WebRunRegistry {
       controller: input.controller,
       latestTimeline: undefined,
       latestAnswer: undefined,
+      answerOverflowed: false,
       terminal: undefined,
       listeners: new Set(),
       sweepAt: undefined,
@@ -133,19 +137,40 @@ export class WebRunRegistry {
   ): Promise<void> {
     try {
       for await (const event of events) {
+        let published: WebRunEvent | undefined = event;
         if (event.type === 'final' || event.type === 'error') entry.terminal = event;
         else if (event.type === 'timeline') entry.latestTimeline = event;
         else if (event.type === 'answer_delta') {
-          entry.latestAnswer = {
-            type: 'answer',
-            text: `${entry.latestAnswer?.text ?? ''}${event.delta}`,
-          };
+          if (entry.answerOverflowed) {
+            published = undefined;
+          } else {
+            const text = `${entry.latestAnswer?.text ?? ''}${event.delta}`;
+            if (text.length <= MAX_RECONNECT_ANSWER_CHARS) {
+              entry.latestAnswer = { type: 'answer', text };
+            } else {
+              // A stalled view may lose animation, never correctness: clear its
+              // partial prose and wait for the authoritative terminal answer.
+              entry.latestAnswer = undefined;
+              entry.answerOverflowed = true;
+              published = { type: 'answer_reset' };
+            }
+          }
         } else if (event.type === 'answer_reset') {
           entry.latestAnswer = { type: 'answer', text: '' };
+          entry.answerOverflowed = false;
         } else {
-          entry.latestAnswer = event;
+          if (event.text.length <= MAX_RECONNECT_ANSWER_CHARS) {
+            entry.latestAnswer = event;
+            entry.answerOverflowed = false;
+          } else {
+            entry.latestAnswer = undefined;
+            entry.answerOverflowed = true;
+            published = { type: 'answer_reset' };
+          }
         }
-        for (const listener of entry.listeners) listener(event);
+        if (published) {
+          for (const listener of entry.listeners) listener(published);
+        }
       }
     } catch (error) {
       // The run threw rather than yielding an error event. Nobody may be
@@ -199,7 +224,7 @@ export class WebRunRegistry {
     let closed = false;
     const listener = (event: WebRunEvent): void => {
       if (event === SETTLED) closed = true;
-      else queue.push(event);
+      else enqueueViewEvent(queue, event);
       wake?.();
       wake = undefined;
     };
@@ -248,6 +273,69 @@ export class WebRunRegistry {
  * close, and nothing serialises it.
  */
 const SETTLED = { type: 'error', code: '__settled__', message: '' } as const satisfies WebRunEvent;
+
+/**
+ * One browser view needs current state, not an unbounded replay of states it
+ * was too slow to paint. Compact only events whose newer form is equivalent.
+ */
+function enqueueViewEvent(queue: WebRunEvent[], event: WebRunEvent): void {
+  if (event.type === 'final') {
+    queue.splice(0, queue.length, event);
+    return;
+  }
+  if (event.type === 'error') {
+    let latestTimeline: Extract<WebRunEvent, { type: 'timeline' }> | undefined;
+    for (let index = queue.length - 1; index >= 0; index -= 1) {
+      const candidate = queue[index];
+      if (candidate?.type === 'timeline') {
+        latestTimeline = candidate;
+        break;
+      }
+    }
+    queue.splice(0, queue.length, ...(latestTimeline ? [latestTimeline, event] : [event]));
+    return;
+  }
+  if (event.type === 'timeline') {
+    let index = -1;
+    for (let candidateIndex = queue.length - 1; candidateIndex >= 0; candidateIndex -= 1) {
+      if (queue[candidateIndex]?.type === 'timeline') {
+        index = candidateIndex;
+        break;
+      }
+    }
+    if (index >= 0) queue[index] = event;
+    else queue.push(event);
+    return;
+  }
+  if (event.type === 'answer_reset') {
+    removeQueuedAnswerEvents(queue);
+    queue.push(event);
+    return;
+  }
+  if (event.type === 'answer') {
+    removeQueuedAnswerEvents(queue);
+    queue.push(event);
+    return;
+  }
+
+  const last = queue.at(-1);
+  if (last?.type === 'answer_delta') {
+    queue[queue.length - 1] = { type: 'answer_delta', delta: `${last.delta}${event.delta}` };
+  } else if (last?.type === 'answer') {
+    queue[queue.length - 1] = { type: 'answer', text: `${last.text}${event.delta}` };
+  } else {
+    queue.push(event);
+  }
+}
+
+function removeQueuedAnswerEvents(queue: WebRunEvent[]): void {
+  for (let index = queue.length - 1; index >= 0; index -= 1) {
+    const type = queue[index]?.type;
+    if (type === 'answer' || type === 'answer_delta' || type === 'answer_reset') {
+      queue.splice(index, 1);
+    }
+  }
+}
 
 export class WebRunBusyError extends Error {
   readonly code = 'run_in_progress';

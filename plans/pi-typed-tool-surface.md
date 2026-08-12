@@ -1,9 +1,10 @@
 # Pi typed tool surface
 
-> Status: **Historical typed-bootstrap delivery record. The permanent
-> source-owned migration now continues in
-> `pi-first-class-harness-quality-audit.md`; Semrush is the first Pi-native
-> vertical slice.**
+> Status: **ARCHIVED — do not implement from this file.** Its dynamic,
+> per-run registration design and mega-tool removal sequence were superseded
+> by the permanent source-owned catalogue completed on 2026-08-13. The only
+> current implementation and release checklist is
+> `pi-first-class-harness-quality-audit.md`.
 >
 > Last updated: **2026-08-10**
 >

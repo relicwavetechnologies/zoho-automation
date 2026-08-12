@@ -785,6 +785,36 @@ test('streams sanitized controller progress before returning the final text', as
   ]);
 });
 
+test('rejects an unterminated oversized controller frame without buffering indefinitely', async () => {
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: async () => new Response('x'.repeat(2 * 1_024 * 1_024 + 1), {
+      status: 200,
+      headers: { 'content-type': 'application/x-ndjson; charset=utf-8' },
+    }),
+  });
+
+  await assert.rejects(
+    service.run(runtimeInput()),
+    (error) => error instanceof LarkPiRuntimeError
+      && error.code === 'invalid_controller_stream',
+  );
+});
+
 test('preserves controller capacity errors and never invokes a fallback', async () => {
   const service = new LarkPiRuntimeService({
     prisma: {

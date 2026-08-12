@@ -322,25 +322,30 @@ export function createWebChatRoutes(deps: {
     // turns a live work log into a single delayed dump.
     res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders?.();
-    send(res, 'open', { runId, threadId });
+    if (!await send(res, 'open', { runId, threadId })) return;
 
     // A run can work for minutes without producing a frame worth showing, and an
     // idle connection is what a proxy or a laptop sleeping reclaims first. A
     // comment costs nothing, is ignored by every SSE reader, and keeps the
     // connection provably alive.
-    const heartbeat = setInterval(() => res.write(': keep-alive\n\n'), HEARTBEAT_MS);
     let open = true;
+    let heartbeatInFlight = false;
     res.on('close', () => { open = false; });
+    const heartbeat = setInterval(() => {
+      if (!open || heartbeatInFlight) return;
+      heartbeatInFlight = true;
+      void writeFrame(res, ': keep-alive\n\n').finally(() => { heartbeatInFlight = false; });
+    }, HEARTBEAT_MS);
 
     try {
       for await (const event of deps.registry.attach(userId, threadId)) {
         if (!open) break;
-        send(res, event.type, event);
+        if (!await send(res, event.type, event)) break;
       }
     } catch (error) {
       log.error('web_chat.stream_failed', { error: String(error), runId });
       if (open) {
-        send(res, 'error', {
+        await send(res, 'error', {
           type: 'error',
           code: 'stream_failed',
           message: 'Divo hit a temporary problem while finishing this request. Please try again.',
@@ -405,8 +410,26 @@ function identityFrom(
  * attach a listener per event type, and a reader tailing the stream by hand can
  * see what each frame is without parsing it.
  */
-function send(res: Response, event: string, data: unknown): void {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+function send(res: Response, event: string, data: unknown): Promise<boolean> {
+  return writeFrame(res, `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+/** Stop pulling from the registry while Node's socket buffer is full. */
+function writeFrame(res: Response, frame: string): Promise<boolean> {
+  if (res.destroyed || res.writableEnded) return Promise.resolve(false);
+  if (res.write(frame)) return Promise.resolve(true);
+  return new Promise(resolve => {
+    const cleanup = (): void => {
+      res.off('drain', drained);
+      res.off('close', closed);
+      res.off('error', closed);
+    };
+    const drained = (): void => { cleanup(); resolve(true); };
+    const closed = (): void => { cleanup(); resolve(false); };
+    res.once('drain', drained);
+    res.once('close', closed);
+    res.once('error', closed);
+  });
 }
 
 export type { WebRunEvent };

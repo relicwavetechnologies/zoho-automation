@@ -24,6 +24,7 @@ import {
 	validateSessionScope,
 	validateThread,
 } from "./local-rpc-controller.mjs";
+import { createNdjsonStreamWriter } from "./ndjson-stream-writer.mjs";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4317;
@@ -500,11 +501,6 @@ function sendJson(response, statusCode, value, headers = {}) {
 	response.end(`${JSON.stringify(value)}\n`);
 }
 
-function sendNdjson(response, value) {
-	if (response.destroyed || response.writableEnded) return;
-	response.write(`${JSON.stringify(value)}\n`);
-}
-
 export function createControllerServer(options = {}) {
 	const resolveLease = options.resolveLease ?? resolveRuntimeLease;
 	const admission =
@@ -544,6 +540,7 @@ export function createControllerServer(options = {}) {
 			return;
 		}
 		let streaming = false;
+		let ndjsonStream;
 		try {
 			if (isFileUpload) {
 				await handleRuntimeFileUpload(request, response, {
@@ -577,8 +574,10 @@ export function createControllerServer(options = {}) {
 					"cache-control": "no-store",
 					connection: "keep-alive",
 				});
+				const stream = createNdjsonStreamWriter(response);
+				ndjsonStream = stream;
 				const heartbeat = setInterval(
-					() => sendNdjson(response, { type: "heartbeat" }),
+					() => stream.enqueue({ type: "heartbeat" }),
 					streamHeartbeatMs,
 				);
 				heartbeat.unref();
@@ -587,9 +586,9 @@ export function createControllerServer(options = {}) {
 						...body,
 						signal: controller.signal,
 						onProgress: (progress) =>
-							sendNdjson(response, { type: "progress", progress }),
+							stream.enqueue({ type: "progress", progress }),
 					});
-					sendNdjson(response, {
+					stream.enqueue({
 						type: "result",
 						text: result.text,
 						...(result.protectedDataUsed === true
@@ -601,6 +600,7 @@ export function createControllerServer(options = {}) {
 							}
 							: {}),
 					});
+					await stream.flush();
 				} finally {
 					clearInterval(heartbeat);
 				}
@@ -623,7 +623,9 @@ export function createControllerServer(options = {}) {
 				payload.error.retryAfterSeconds = error.retryAfterSeconds;
 			}
 			if (streaming) {
-				sendNdjson(response, { type: "error", ...payload });
+				const stream = ndjsonStream ?? createNdjsonStreamWriter(response, { flushMs: 0 });
+				stream.enqueue({ type: "error", ...payload });
+				await stream.flush();
 				response.end();
 				return;
 			}

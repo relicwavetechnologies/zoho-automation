@@ -42,6 +42,7 @@ import type {
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
 const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
+const MAX_CONTROLLER_STREAM_LINE_BYTES = 2 * 1_024 * 1_024;
 
 function asyncIterableBody(source: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
   const iterator = source[Symbol.asyncIterator]();
@@ -1377,9 +1378,15 @@ export class LarkPiRuntimeService {
     while (true) {
       const { value, done } = await reader.read();
       buffer += decoder.decode(value, { stream: !done });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) await consume(line);
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        assertControllerStreamLineSize(line);
+        await consume(line);
+        newline = buffer.indexOf('\n');
+      }
+      assertControllerStreamLineSize(buffer);
       if (done) break;
     }
     await consume(buffer);
@@ -1396,6 +1403,15 @@ export class LarkPiRuntimeService {
     }
     return { text, protectedDataUsed, protectedReferences };
   }
+}
+
+function assertControllerStreamLineSize(line: string): void {
+  if (Buffer.byteLength(line, 'utf8') <= MAX_CONTROLLER_STREAM_LINE_BYTES) return;
+  throw new LarkPiRuntimeError(
+    'invalid_controller_stream',
+    GENERIC_RUNTIME_FAILURE_MESSAGE,
+    'Controller NDJSON frame exceeded the maximum line size',
+  );
 }
 
 const MAX_PROTECTED_RUN_REFERENCES = 100;

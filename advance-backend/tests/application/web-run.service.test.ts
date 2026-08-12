@@ -175,9 +175,35 @@ describe('web run', () => {
     assert.deepEqual(
       events.filter((event): event is Extract<WebRunEvent, { type: 'answer_delta' }> => event.type === 'answer_delta')
         .map(event => event.delta),
-      ['Hello', ' **there**'],
+      ['Hello **there**'],
     );
     assert.equal(events.at(-1)?.type, 'final');
+  });
+
+  it('publishes a genuine partial answer before the runtime settles', async () => {
+    let finish!: () => void;
+    const finished = new Promise<void>(resolve => { finish = resolve; });
+    const { piRuntime } = fakeRuntime({
+      emit: async report => {
+        report({ type: 'answer_delta', index: 0, delta: 'Arrived early' } as never);
+        await finished;
+      },
+      result: { text: 'Arrived early and finished later.' },
+    });
+    const service = new WebRunService({ piRuntime, logger: noopLogger });
+    const stream = service.run(ask);
+
+    assert.equal((await stream.next()).value?.type, 'timeline');
+    const partial = await Promise.race([
+      stream.next(),
+      new Promise<never>((_resolve, reject) => {
+        setTimeout(() => reject(new Error('live answer did not arrive before completion')), 250);
+      }),
+    ]);
+
+    assert.deepEqual(partial.value, { type: 'answer_delta', delta: 'Arrived early' });
+    finish();
+    for await (const _event of stream) { /* drain */ }
   });
 
   it('clears pre-tool narration before streaming the terminal answer turn', async () => {

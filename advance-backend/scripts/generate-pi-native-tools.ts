@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Tool } from '../src/application/tools/tool.contract';
@@ -230,6 +230,19 @@ async function main(): Promise<void> {
   const files = renderGeneratedNativeToolFiles();
   if (mode === '--write') await mkdir(GENERATED_DIR, { recursive: true });
   const drift: string[] = [];
+  const expectedNames = new Set(files.keys());
+  const actualEntries = await readdir(GENERATED_DIR, { withFileTypes: true }).catch(() => []);
+  const stale = actualEntries
+    .filter(entry => !expectedNames.has(entry.name))
+    .map(entry => entry.name)
+    .sort();
+  if (mode === '--write') {
+    for (const fileName of stale) {
+      await rm(resolve(GENERATED_DIR, fileName), { recursive: true, force: true });
+    }
+  } else {
+    drift.push(...stale.map(fileName => `${fileName} (stale)`));
+  }
   for (const [fileName, expected] of files) {
     const target = resolve(GENERATED_DIR, fileName);
     if (mode === '--write') {

@@ -17,6 +17,7 @@ import type {
   LarkPiRuntimeService,
 } from './lark-pi-runtime.service';
 import { LarkPiRuntimeError } from './lark-pi-runtime.service';
+import { createLiveAnswerPublisher } from './live-answer-publisher';
 
 /**
  * A Divo run driven from the browser.
@@ -149,10 +150,19 @@ export class WebRunService {
     const pending: WebRunEvent[] = [];
     let wake: (() => void) | undefined;
     const push = (event: WebRunEvent): void => {
+      const last = pending.at(-1);
+      if (event.type === 'answer_delta' && last?.type === 'answer_delta') {
+        pending[pending.length - 1] = {
+          type: 'answer_delta',
+          delta: `${last.delta}${event.delta}`,
+        };
+        return;
+      }
       pending.push(event);
       wake?.();
       wake = undefined;
     };
+    const liveAnswer = createLiveAnswerPublisher(push);
 
     let nextPublishAt = startedAtMs;
     const publishTimeline = (force: boolean): void => {
@@ -192,12 +202,12 @@ export class WebRunService {
       onProgress: event => {
         if (event.type === 'answer_delta') {
           answerStarted = true;
-          push({ type: 'answer_delta', delta: event.delta });
+          liveAnswer.append(event.delta);
           return;
         }
         if (event.type === 'answer_reset') {
           answerStarted = false;
-          push({ type: 'answer_reset' });
+          liveAnswer.reset();
           return;
         }
         // Text before a tool call was narration, not the terminal answer. It
@@ -205,7 +215,7 @@ export class WebRunService {
         // answer lane so the next assistant turn starts from an honest blank.
         if (event.type === 'tool_start' && answerStarted) {
           answerStarted = false;
-          push({ type: 'answer_reset' });
+          liveAnswer.reset();
         }
         publishTimeline(timeline.apply(event) === 'immediate');
       },
@@ -222,6 +232,7 @@ export class WebRunService {
     let done: Awaited<typeof settled> | undefined;
     void settled.then(value => {
       done = value;
+      liveAnswer.flush();
       push({ type: 'timeline', timeline: timeline.timeline() });
     });
 
