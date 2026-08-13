@@ -110,7 +110,7 @@ describe("Divo Pi runtime boundary", () => {
 	it("removes direct provider keys and injects only Divo authentication", () => {
 		const environment = buildChildEnvironment(
 			{
-				DIVO_LOCAL_CLI_DISABLED: "1",
+				DIVO_LOCAL_BROKER_SOCKET: "/tmp/divo-someone-else.sock",
 				OPENAI_API_KEY: "openai-secret",
 				DEEPSEEK_API_KEY: "deepseek-secret",
 				PATH: "/usr/bin",
@@ -121,7 +121,9 @@ describe("Divo Pi runtime boundary", () => {
 		assert.equal(environment.DEEPSEEK_API_KEY, undefined);
 		assert.equal(environment.DIVO_MEMBER_TOKEN, "member-token");
 		assert.equal(environment.DIVO_BACKEND_URL, "https://divo.example.com");
-		assert.equal(environment.DIVO_LOCAL_CLI_DISABLED, undefined);
+		// An inherited socket would point divo-local at a broker this run does not
+		// own, and would tell the agent its client exists before one was staged.
+		assert.equal(environment.DIVO_LOCAL_BROKER_SOCKET, undefined);
 		assert.equal(environment.PATH, "/usr/bin");
 	});
 

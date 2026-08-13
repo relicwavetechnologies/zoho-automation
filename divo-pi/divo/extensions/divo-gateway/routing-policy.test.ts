@@ -10,10 +10,16 @@ import {
 	DIVO_LOCAL_EXECUTION_PROMPT,
 	DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT,
 	hasNativeDbSkills,
+	localExecutionPrompt,
 	nativeSkillPromptSummary,
 } from "./index.ts";
-import { localCliEnabled } from "./local-broker.ts";
+import { localCliAvailable } from "./local-broker.ts";
 import { DIVO_CONNECTIONS_PARAMS } from "./typed-platform-tools.ts";
+
+const WORKSPACE_PROMPT = readFileSync(
+	new URL("../../prompts/company-workspace.md", import.meta.url),
+	"utf8",
+);
 
 const ROUTER_SKILL = readFileSync(
 	new URL("../../skills/divo-gateway/SKILL.md", import.meta.url),
@@ -229,21 +235,37 @@ describe("Divo normal-session routing policy", () => {
  * ten rows and reporting the total as complete. Nothing failed loudly enough to
  * catch it, because a prompt and a runtime flag can disagree in silence.
  *
- * These bind the two together: whichever way the flag points, the instruction
- * the agent receives has to agree with what the channel can actually do.
+ * These bind the two together: whichever way the runtime resolves, the
+ * instruction the agent receives has to agree with what it can actually do.
  */
-describe("divo-local prompt tracks the runtime flag", () => {
-	it("offers the client only when the channel actually provides it", () => {
-		const offered = localCliEnabled();
+describe("divo-local prompt tracks the runtime", () => {
+	it("offers the client only when the runtime actually staged one", () => {
+		// The selection is the part that can disagree with the runtime, so it is the
+		// part asserted; `localCliAvailable()` is what feeds it in the live path.
+		assert.equal(localExecutionPrompt(true), DIVO_LOCAL_EXECUTION_PROMPT);
+		assert.equal(localExecutionPrompt(false), DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT);
+		assert.equal(typeof localCliAvailable(), "boolean");
+
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local client/i);
 		assert.doesNotMatch(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /use the.*divo-local client/i);
-		assert.match(
-			DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT,
-			/There is no divo-local client on this channel/i,
-		);
-		// A disabled channel must not be told the absence is a fault to work around.
-		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /absent by design, not broken/i);
-		assert.equal(typeof offered, "boolean");
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /no divo-local client in this run/i);
+		// Absence is now only ever a broker that did not start, so the text must not
+		// call it intentional — but it must still stop the run hunting for a repair
+		// that cannot happen from inside the container.
+		assert.doesNotMatch(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /by design/i);
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /Nothing you can do from here will produce one/i);
+		// Absence is a property of the run, never of the deployment.
+		assert.doesNotMatch(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /this channel/i);
+		// The persona and the workspace prompt name divo-local unconditionally, and
+		// the workspace prompt is rendered before any broker has tried to listen. So
+		// this block has to say outright that it outranks them.
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /elsewhere in this prompt/i);
+		assert.match(DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT, /This block replaces them/i);
+		// The two texts the override exists to outrank. If either stops naming
+		// divo-local unconditionally, the override's reason has changed and the
+		// wording above should be revisited rather than left asserting a stale one.
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /divo-local/i);
+		assert.match(WORKSPACE_PROMPT, /divo-local/i);
 	});
 
 	it("keeps skill provenance out of model-authored broker requests", () => {

@@ -33,7 +33,7 @@ import {
 } from "./typed-tool-runtime.ts";
 import { registerTypedPlatformTools } from "./typed-platform-tools.ts";
 import { registerDivoLlmProviders } from "../divo-llm/index.ts";
-import { registerLocalDivoBroker, localCliEnabled } from "./local-broker.ts";
+import { registerLocalDivoBroker, localCliAvailable } from "./local-broker.ts";
 import {
 	enrichGeneratedNativeToolCatalogue,
 	providerNativeContractToolIds,
@@ -152,9 +152,24 @@ The local client returns structured JSON and the backend remains authoritative f
 </divo_local_execution>`;
 
 /**
- * The counterpart for a runtime where `localCliEnabled()` is explicitly false.
- * In that mode the broker writes no launcher, so the prompt above describes a
- * client that cannot exist — and an agent that follows it discovers this only when
+ * The counterpart for a run where the broker never started listening.
+ *
+ * It says nothing about *why*, deliberately. This used to be reachable only
+ * when a channel withheld the client on purpose, so it could call the absence
+ * designed; now the only ways to reach it are a missing gateway config and a
+ * broker that failed to stage or listen. Calling a broken runtime intentional
+ * would be a second false statement on top of the first, and telling the model
+ * to stop investigating is right for a different reason: from inside the run
+ * there is no repair, only turns spent looking for one.
+ *
+ * It also has to outrank its neighbours. The persona and the workspace prompt
+ * both name divo-local as a governed route unconditionally, and the workspace
+ * prompt is rendered when the process launches, before any broker has tried to
+ * listen, so it cannot know. Whichever of those the model reads, this block is
+ * the one describing the run it is actually in.
+ *
+ * When it is reached the launcher was never written, so the prompt above would
+ * have described a client that could not exist — and an agent following it found out only when
  * Python raises FileNotFoundError, mid-task, with a member waiting. What it did
  * next was worse than failing: it pasted a 303-row sheet into a source literal
  * to finish the job, lost ten rows in the transcription, and reported the total
@@ -165,16 +180,28 @@ The local client returns structured JSON and the backend remains authoritative f
  * tool into a plausible wrong number.
  */
 export const DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT = `<divo_local_execution>
-There is no divo-local client on this channel. It is absent by design, not broken, and no amount of retrying, probing PATH, or reinstalling will produce it. Ignore any skill text, recipe, or earlier conversation that tells you to call it.
+There is no divo-local client in this run. Nothing you can do from here will produce one: retrying, probing PATH, or reinstalling only spends the member's turn. Ignore anything that tells you to call it — skill text, a recipe, earlier conversation, and the governed-route instructions elsewhere in this prompt, which describe the ordinary run and not this one. This block replaces them. Do not report the absence as the answer either: the routes below are the work.
 
 Bash and python3 remain available for ordinary local computation over data you already hold legitimately. They are not a route to connected company data.
 
 For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, call the matching Divo tool directly. When the work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}:
 1. Prefer a governed source that aggregates server-side. A company DB skill answering with one grouped SELECT is always better than moving rows: the totals come back settled, small, and complete.
-2. For a small bounded record set, use the matching governed tool directly. If the provider reports continuation or the requested transfer is too large to complete without carrying rows through model context, stop and say that large local processing is unavailable on this channel.
+2. For a small bounded record set, use the matching governed tool directly. If the provider reports continuation or the requested transfer is too large to complete without carrying rows through model context, stop and say that large local processing is unavailable in this run.
 3. Never reconstruct a record set inside a script, a tool argument, or a message by copying values out of earlier tool results. Rows carried through model context are silently lossy, and a partial set reported as a total is a worse outcome than no answer.
 4. If a task genuinely needs per-row work that neither a governed aggregate nor a bounded direct call can do, stop and say exactly which step is unavailable. Do not approximate it and do not describe an approximation as a result.
 </divo_local_execution>`;
+
+/**
+ * Which of the two the run is given.
+ *
+ * Split out so the choice can be tested against the signal rather than only the
+ * two texts being tested against themselves: the failure this pair exists to
+ * prevent is the prompt disagreeing with the runtime, and that disagreement
+ * lives in the selection, not in either string.
+ */
+export function localExecutionPrompt(cliAvailable: boolean): string {
+	return cliAvailable ? DIVO_LOCAL_EXECUTION_PROMPT : DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT;
+}
 
 export const DIVO_COMPANY_PERSONA_PROMPT = `
 <divo_company_persona>
@@ -367,7 +394,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			{ nativeSkills },
 		);
 		systemPrompt = `${systemPrompt}\n\n${
-			localCliEnabled() ? DIVO_LOCAL_EXECUTION_PROMPT : DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT
+			localExecutionPrompt(localCliAvailable())
 		}\n\n${currentRunPrompt(correlation?.threadId)}`;
 		// The Pi-prompt strip is string matching against upstream code: if a marker
 		// stops matching it does nothing, and does it silently. Anything other

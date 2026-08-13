@@ -265,15 +265,22 @@ function shellQuote(value: string): string {
 }
 
 /**
- * Whether this runtime offers the `divo-local` CLI at all.
+ * Whether the `divo-local` CLI actually exists for this run.
  *
- * The CLI exists so a workflow can page through a large record set
- * from one persistent Python file without every row landing in the model's
- * context. Cloud `/tmp` is `noexec`, so launchers are staged in the
- * runtime-owned home there; the socket itself can remain under `/tmp`.
+ * The CLI exists so a workflow can page through a large record set from one
+ * persistent Python file without every row landing in the model's context.
+ * Cloud `/tmp` is `noexec`, so launchers are staged in the runtime-owned home
+ * there; the socket itself can remain under `/tmp`.
+ *
+ * The broker publishes this socket only once the launchers are written and the
+ * server is listening, and every failure path puts the variable back, so it is
+ * the one signal that tracks what the agent will actually find on PATH. It used
+ * to be an environment flag naming an intention instead — which the runtime
+ * stripped before Pi ever started, so a broker that failed to listen still told
+ * the model its client was there.
  */
-export function localCliEnabled(): boolean {
-	return process.env["DIVO_LOCAL_CLI_DISABLED"] !== "1";
+export function localCliAvailable(): boolean {
+	return Boolean(process.env[DIVO_LOCAL_BROKER_SOCKET_ENV]);
 }
 
 async function writeCliLaunchers(directory: string): Promise<void> {
@@ -345,16 +352,13 @@ export function registerLocalDivoBroker(
 
 	pi.on("session_start", async (_event, ctx) => {
 		if (server) return;
-		// No socket, no launchers, no PATH entry: when explicitly disabled the CLI
-		// is absent. Say so in the log, because an absence
-		// nobody records is one nobody notices — this stayed invisible for four
-		// days while the prompt kept prescribing the client it had removed.
-		if (!localCliEnabled()) {
-			console.error("[divo-gateway] local CLI disabled for this channel; divo-local will not exist");
-			return;
-		}
 		const resolved = resolveDivoGatewayConfig();
 		if ("error" in resolved) {
+			// No socket, no launchers, no PATH entry: the CLI is simply absent, and
+			// `localCliAvailable()` now reports that to the prompt. Say so in the log
+			// too, because an absence nobody records is one nobody notices — this
+			// stayed invisible for four days while the prompt kept prescribing the
+			// client it had removed.
 			console.error(`[divo-gateway] local broker not started: ${resolved.error}`);
 			ctx.ui.notify(`Divo local execution is unavailable: ${resolved.error}`, "warning");
 			return;

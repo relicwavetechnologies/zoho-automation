@@ -482,7 +482,10 @@ function renderWorkspacePrompt(values) {
 export function buildChildEnvironment(baseEnvironment, values) {
 	const environment = { ...baseEnvironment };
 	for (const key of PROVIDER_ENV_KEYS) delete environment[key];
-	delete environment.DIVO_LOCAL_CLI_DISABLED;
+	// Only the broker inside this run may name its own socket. Inheriting one
+	// would point `divo-local` at a socket this run does not own, and would tell
+	// the agent its client exists before the broker has listened.
+	delete environment.DIVO_LOCAL_BROKER_SOCKET;
 	return {
 		...environment,
 		DIVO_BACKEND_URL: values.backendUrl,
