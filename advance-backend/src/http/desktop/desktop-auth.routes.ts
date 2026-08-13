@@ -244,6 +244,28 @@ const zohoSelfClientSchema = z.object({
   access:          z.enum(['read_only', 'read_write']).default('read_only'),
 });
 
+function zohoSelfClientMetadata(tokenMetadata: unknown): {
+  readonly clientId: string | null;
+  readonly accountsBaseUrl: string | null;
+  readonly clientSecretStored: boolean;
+} {
+  const metadata = tokenMetadata && typeof tokenMetadata === 'object' && !Array.isArray(tokenMetadata)
+    ? tokenMetadata as Record<string, unknown>
+    : {};
+  const client = metadata['zohoClient'] && typeof metadata['zohoClient'] === 'object' && !Array.isArray(metadata['zohoClient'])
+    ? metadata['zohoClient'] as Record<string, unknown>
+    : {};
+  return {
+    clientId: typeof client['clientId'] === 'string' ? client['clientId'] : null,
+    accountsBaseUrl: typeof client['accountsBaseUrl'] === 'string'
+      ? client['accountsBaseUrl']
+      : typeof metadata['accountsBaseUrl'] === 'string'
+        ? metadata['accountsBaseUrl']
+        : null,
+    clientSecretStored: typeof client['clientSecretEncrypted'] === 'string' && client['clientSecretEncrypted'].length > 0,
+  };
+}
+
 const runtimeContextQuerySchema = z.object({
   departmentId: z.string().uuid().optional(),
   capabilityVersion: z.literal('3').optional(),
@@ -593,6 +615,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       && !Array.isArray(connection.tokenMetadata)
       ? connection.tokenMetadata as Record<string, unknown>
       : {};
+    const zohoSelfClient = provider === 'zoho'
+      ? zohoSelfClientMetadata(connection.tokenMetadata)
+      : { clientId: null, accountsBaseUrl: null, clientSecretStored: false };
     const readOnlyEnforced = provider === 'shopify' || (provider === 'zoho'
       && (
         tokenMetadata['enforcedAccess'] === 'read_only'
@@ -612,6 +637,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         status:       connection.status,
         reconnectRequired: connection.status === CONNECTION_REAUTHORIZATION_REQUIRED,
         readOnlyEnforced,
+        ...(provider === 'zoho' ? {
+          zohoClientId:           zohoSelfClient.clientId,
+          zohoAccountsBaseUrl:    zohoSelfClient.accountsBaseUrl,
+          zohoClientSecretStored: zohoSelfClient.clientSecretStored,
+        } : {}),
         connectedAt:  connection.connectedAt.toISOString(),
       },
       grants: connection.grants.map(grant => {
@@ -3665,6 +3695,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           id: true,
           ownerUserId: true,
           createdBy: true,
+          tokenMetadata: true,
         },
       });
       const legacyRecord = await deps.prisma.zohoConnection.findUnique({
@@ -3695,6 +3726,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           canManage: canManageCompanyConnections,
           connections: connections.value.map(connection => {
             const management = managementByConnectionId.get(connection.connectionId);
+            const zohoSelfClient = zohoSelfClientMetadata(management?.tokenMetadata);
             return {
               connectionId: connection.connectionId,
               label:        connection.label,
@@ -3708,6 +3740,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
                 management?.ownerUserId === userId ||
                 management?.createdBy === userId,
               scopes:       connection.scopes,
+              zohoClientId:           zohoSelfClient.clientId,
+              zohoAccountsBaseUrl:    zohoSelfClient.accountsBaseUrl,
+              zohoClientSecretStored: zohoSelfClient.clientSecretStored,
               connectedAt:  connection.connectedAt.toISOString(),
               lastUsedAt:   connection.lastUsedAt?.toISOString() ?? null,
             };
