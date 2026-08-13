@@ -949,6 +949,10 @@ async function runPrompt({
 	let child;
 	let exited;
 	let rpc;
+	// Declared out here because the soft-interrupt path in `catch` re-remembers
+	// the warm entry, and an entry without its session id logs `session undefined`
+	// on every later turn that reuses it.
+	let sessionId;
 	let retainRuntimeProcess = false;
 	let softInterrupted = false;
 	let softInterruptMetadata;
@@ -995,7 +999,14 @@ async function runPrompt({
 	signal?.addEventListener("abort", abort, { once: true });
 	if (signal?.aborted) abort();
 	try {
-		const runtime = await ensureRuntime(profile, { ephemeral });
+		// A surviving warm entry at this point means its binding matched, so the
+		// container it is attached to is this turn's container. Its network and
+		// volumes cannot have gone missing underneath a process that is running
+		// inside it, so they are not re-probed.
+		const runtime = await ensureRuntime(profile, {
+			ephemeral,
+			provisioned: piKeepAlive && hasWarmPiProcess(profile),
+		});
 		resources = runtime.resources;
 		const nativeSkillStageStartedAt = Date.now();
 		const stage = await stageNativeSkillBootstrap(
@@ -1037,13 +1048,17 @@ async function runPrompt({
 			await waitUntilRunning(resources.container);
 		}
 		bootstrapAttempted = true;
-		await writeBootstrap(resources.container, bootstrap);
 		let piProcessReused = false;
 		let piPrepareMs = 0;
 		const reusable = piKeepAlive ? getWarmPiProcess(profile) : undefined;
+		// A cold Pi reads the bootstrap itself as it boots, so the file has to be on
+		// the volume before that process starts. A warm one is already running and
+		// only needs the prepare, which now carries the bootstrap on its own stdin
+		// rather than making the member wait for a second exec.
+		if (!reusable) await writeBootstrap(resources.container, bootstrap);
 		if (reusable) {
 			const prepareStartedAt = Date.now();
-			const environment = await prepareWarmRuntime(resources.container);
+			const environment = await prepareWarmRuntime(resources.container, bootstrap);
 			piPrepareMs = Date.now() - prepareStartedAt;
 			reusable.rpc.configure({ answerRequest, onProgress });
 			await reusable.rpc.send({ type: "set_environment", values: environment });
@@ -1062,11 +1077,20 @@ async function runPrompt({
 				onProgress,
 			));
 		}
-		const state = await rpc.send({ type: "get_state" }, 90_000);
+		// A freshly spawned Pi is not necessarily listening yet, and `get_state`
+		// is the knock that waits for it — hence the long timeout. A reused one
+		// answered `set_environment` a few lines ago, so knocking again asks a
+		// live process a question we already have the answer to, and makes the
+		// member wait for the reply. The session belongs to the process, so it
+		// is remembered with it rather than re-fetched every turn.
+		sessionId = piProcessReused
+			? reusable.sessionId
+			: (await rpc.send({ type: "get_state" }, 90_000)).sessionId;
 		if (piKeepAlive && !piProcessReused) {
 			rememberWarmPiProcess(profile, {
 				profile,
 				binding,
+				sessionId,
 				child,
 				exited,
 				rpc,
@@ -1074,7 +1098,7 @@ async function runPrompt({
 		}
 		const readyMs = Date.now() - startedAt;
 		console.error(
-			`Ready ${profile}/${thread} in ${readyMs}ms (session ${state.sessionId}; piProcessReused=${piProcessReused}; prepareMs=${piPrepareMs})`,
+			`Ready ${profile}/${thread} in ${readyMs}ms (session ${sessionId}; piProcessReused=${piProcessReused}; prepareMs=${piPrepareMs})`,
 		);
 		console.error(`[Pi] ${JSON.stringify(runtimeReadyLifecycleEvent({
 			mode: piProcessReused ? "warm" : processMode,
@@ -1089,7 +1113,7 @@ async function runPrompt({
 		if (lifecycle !== undefined) {
 			await waitForClosedRuntime(child, exited);
 			completedSuccessfully = true;
-			return { profile, thread, sessionId: state.sessionId };
+			return { profile, thread, sessionId };
 		}
 		const completion = await promptWithTransientRetries({
 			rpc,
@@ -1130,7 +1154,7 @@ async function runPrompt({
 			|| softInterruptMetadata?.protectedDataUsed === true;
 		if (softInterrupted && !protectedDataUsed) {
 			if (piKeepAlive && !hasWarmPiProcess(profile) && child && exited && rpc) {
-				rememberWarmPiProcess(profile, { profile, binding, child, exited, rpc });
+				rememberWarmPiProcess(profile, { profile, binding, sessionId, child, exited, rpc });
 			}
 			retainRuntimeProcess = true;
 		} else {

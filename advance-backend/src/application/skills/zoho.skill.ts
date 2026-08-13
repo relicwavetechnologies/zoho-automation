@@ -194,8 +194,8 @@ ${ZOHO_FINANCE_EVIDENCE}
 
 PREPARE:
 1. Read any supplied quotation, estimate, specification, or procurement request fully. Confirm it is addressed to the selected organisation and extract its vendor, quotation/reference number, dates, delivery terms, items, shipping/adjustments, taxes, and total.
-2. Resolve the vendor with op="list_contacts", inspect the exact contact with op="get_contact", and use its vendor_id. A previous purchase order is evidence of a convention, not permission to copy stale vendor, address, tax, tag, or terms.
-3. Resolve every item with op="list_items" and use its item_id, quantity, rate, and applicable live tax_id. Never invent an item ID or tax ID. A purchase order does not move stock, so do not add in_quantity/out_quantity merely because a later invoice or bill will need storage allocation.
+2. Resolve the vendor with op="list_contacts", inspect the exact contact with op="get_contact", and use its vendor_id. Check gst_treatment, GSTIN, and state/place before choosing any line tax. A previous purchase order is evidence of a convention, not permission to copy stale vendor, address, tax, tag, or terms.
+3. Resolve every item with op="list_items" and every applicable tax with op="list_taxes". Never invent an item ID or tax ID. For ordinary registered domestic GST, use the live tax_id that matches the intra-state or inter-state treatment. For an unregistered vendor, including gst_treatment="business_none", do not stage ordinary GST: set is_reverse_charge_applied=true on the purchase order and put only reverse_charge_tax_id on each taxable line, omitting ordinary tax_id. Never send both tax fields. Show the vendor value separately from the projected RCM liability and let Zoho calculate the stored totals. If the treatment is uncertain, ask before staging. A purchase order does not move stock, so do not add in_quantity/out_quantity merely because a later invoice or bill will need storage allocation.
 4. Search op="list_purchase_orders" for any supplied purchaseorder_number or reference_number. If an exact existing record matches, read it instead of creating a duplicate.
 5. Include date and expected_delivery_date when known. Delivery cannot precede the purchase-order date. Use delivery/billing address IDs from the live contact or organisation when available instead of inventing or compressing an address.
 6. Apply company tags, branch/location, terms, or custom fields only when the member, current company procedure, or live Zoho records establish them.
@@ -206,6 +206,7 @@ STAGE, CONFIRM, CREATE:
 - stage_purchase_order writes nothing. Show stagedSummary exactly and ask the member to confirm it.
 - Only after confirmation call op="create_purchase_order" with the returned stagingId and the same connectionId. Creation replays the stored draft rather than accepting replacement fields.
 - The created record remains a draft. Do not say it was submitted, approved, marked open, emailed, or sent to the vendor; those actions are not part of this capability.
+- A provider tax rejection is new evidence, not permission to retry silently. Re-stage the corrected treatment, show the changed summary, and obtain fresh confirmation before another create attempt.
 - If creation loses its response, do not retry or stage a duplicate. Check Zoho first and report the uncertainty exactly.
 
 VERIFY:

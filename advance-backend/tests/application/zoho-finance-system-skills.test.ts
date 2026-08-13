@@ -68,6 +68,22 @@ describe('Zoho Finance system skill provisioning', () => {
     assert.match(specialist.markdown, /provider rejection is new evidence/i);
   });
 
+  it('teaches purchase orders to resolve unregistered-vendor RCM before staging', () => {
+    const specialist = ZOHO_FINANCE_SYSTEM_SKILLS.find(
+      skill => skill.slug === 'zoho-books-purchase-order',
+    );
+    assert.ok(specialist);
+    assert.match(specialist.markdown, /gst_treatment="business_none"/);
+    assert.match(specialist.markdown, /is_reverse_charge_applied=true/);
+    assert.match(specialist.markdown, /only reverse_charge_tax_id/);
+    assert.match(specialist.markdown, /omitting ordinary tax_id/);
+    assert.match(specialist.markdown, /Never send both tax fields/);
+    assert.match(specialist.markdown, /vendor value separately from the projected RCM liability/i);
+    assert.match(specialist.markdown, /ask before staging/i);
+    assert.match(specialist.markdown, /Re-stage the corrected treatment/i);
+    assert.match(specialist.markdown, /obtain fresh confirmation/i);
+  });
+
   it('keeps borrowed company patterns as evidence instead of global IDs or shortcuts', () => {
     for (const skill of ZOHO_FINANCE_SYSTEM_SKILLS) {
       assert.doesNotMatch(skill.markdown, /finance\.emiactech\.com/i);
