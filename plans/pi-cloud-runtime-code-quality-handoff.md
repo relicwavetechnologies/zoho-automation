@@ -95,6 +95,8 @@ The following work is already implemented and committed:
 | `708d9ef6c` | Native-skill validation, fetch, digest, telemetry, and atomic staging extracted |
 | `dc2dd65c6` | Native skills made one permanent runtime path; rollback behavior mode removed |
 | `e6ef3eeb1` | Attachment validation, confined paths, MIME policy, limits, and prompt manifest extracted |
+| `434afdd4d` | Phase A: identity, Docker, attachment staging, and warm-process lifecycle each given one owner; controller 2,478 → 1,335 lines |
+| `41fa8819a` | Controller image packaged every module it imports again, guarded by a test derived from the real import graph |
 
 Other completed quality work:
 
@@ -136,10 +138,45 @@ concurrently.
 
 ## 6. Remaining implementation plan
 
-### Phase A — Finish Cloud controller boundaries
+### Phase A — Finish Cloud controller boundaries — **complete (2026-08-14)**
 
 Goal: make container/process changes reviewable without changing the public RPC
 or security contract.
+
+Delivered in `434afdd4d` as four modules, dependencies running one way
+(`runtime-identity` → `runtime-docker` → `runtime-attachment-staging` /
+`runtime-warm-process` → controller), with `local-rpc-controller.mjs` retained
+as a re-export façade. Evidence:
+
+- `npm run divo:check` green: typecheck clean, 199 runtime tests, extension
+  suites 4 / 10 / 169 / 5 / 15 / 10, zero failures;
+- the controller's export surface was diffed name-by-name against
+  `bd6702484` in one process — 77 names, no addition, no removal, identical
+  `typeof` and arity;
+- three independent Opus cold-review rounds; final verdict ship with no open
+  findings.
+
+Deviation from the plan above: the four extractions landed as one commit rather
+than four, because each one rewrites the same controller import block and the
+intermediate states are not independently revertable.
+
+**Found while doing it — a live packaging break.** `Dockerfile.controller`
+copies an explicit allowlist, and it had not been updated since 10 Aug, so the
+five modules extracted on 12–13 Aug were absent from the controller image; the
+entrypoint could not import inside it. Fixed in `41fa8819a`, with a guard test
+that derives the allowlist from the real import graph and checks build stage,
+`--from=`, destination, workdir ordering and line continuations. This was the
+second occurrence (`337cbe7c1` was the first), which is why the guard replaces
+the hand-written list rather than just correcting it.
+
+**Deliberately left for Phase B.** Six controller re-exports have no consumer
+anywhere: `SESSION_SCOPES`, `SESSION_LIFECYCLE_OPERATIONS`, `ensureProfileVolume`,
+`isGovernedDivoTool`, `normalizeMimeType`, `settledSentences`. They predate this
+work. A first review round claimed eleven were dead; five of those are in fact
+imported by `divo/test/attachment-staging.test.mjs`, which plain `grep` skips
+because the file carries deliberate control-byte fixtures and reads as binary.
+Use `grep -a` for any dead-code claim in this tree, and delete these six only
+under Phase B's search-before-delete rule.
 
 Extract only cohesive responsibilities with existing characterization tests:
 
@@ -414,10 +451,14 @@ behavioral or measurement gate named in that phase.
 
 ## 10. Next action
 
-Start with **Phase A: attachment byte staging**. It is the next clean controller
-boundary because pure attachment policy is already isolated and characterized.
-Move Docker writer-process behavior into a dedicated module while preserving
-the controller's exported API and all current attachment tests. Then proceed to
-runtime identity/lease policy.
+Phase A is complete. Start **Phase B: audit Cloud-only flags and compatibility
+code**. Twenty-three environment variables are read across the Pi runtime;
+`DIVO_LOCAL_CLI_DISABLED` has twelve references while `DIVO_PI_ENTRY_MODE`,
+`DIVO_PI_KEEPALIVE` and `DIVO_PI_ADD_HOST_GATEWAY` have one each and no recorded
+purpose. Give each one a documented purpose, a test, or a deletion, and fold in
+the six dead controller re-exports named under Phase A.
+
+Phase C must not start before its baseline is captured. Optimising the 58,027
+uncached input tokens by intuition is the failure this plan exists to prevent.
 
 Do not open or modify `jan/` while performing this work.
