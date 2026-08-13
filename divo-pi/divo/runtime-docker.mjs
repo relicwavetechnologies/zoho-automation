@@ -463,9 +463,9 @@ export async function stageNativeSkillBootstrap(
 	volume,
 	bootstrap,
 	scope,
-	{ force = false, runStaging = runWithInput } = {},
+	{ force = false, runStaging = runWithInput, image = IMAGE } = {},
 ) {
-	return stageNativeSkillBootstrapCore(volume, bootstrap, scope, { force, runStaging });
+	return stageNativeSkillBootstrapCore(volume, bootstrap, scope, { force, runStaging, image });
 }
 
 export function buildBootstrapWriteArgs(container) {

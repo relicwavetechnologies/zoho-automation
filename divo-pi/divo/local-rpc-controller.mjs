@@ -92,10 +92,8 @@ import {
 export {
 	assistantThinkingText,
 	governedOperation,
-	isGovernedDivoTool,
 	projectRuntimeAnswerDelta,
 	projectRuntimeProgress,
-	settledSentences,
 } from "./runtime-progress.mjs";
 
 export {
@@ -114,7 +112,6 @@ export {
 	MAX_RUNTIME_REQUEST_BYTES,
 	attachmentManifestBlock,
 	decodeAttachmentFileName,
-	normalizeMimeType,
 	resolveStagedAttachments,
 	safeAttachmentFileName,
 	stagedAttachmentPath,
@@ -123,8 +120,6 @@ export {
 } from "./runtime-attachments.mjs";
 
 export {
-	SESSION_LIFECYCLE_OPERATIONS,
-	SESSION_SCOPES,
 	assertExpectedLogin,
 	assertPinnedProfile,
 	runtimeIdentityNames,
@@ -145,7 +140,6 @@ export {
 	buildContainerRunArgs,
 	buildInterruptionWriteArgs,
 	deleteProtectedRuntimeSession,
-	ensureProfileVolume,
 	reconcileOwnedContainers,
 	resourcesFor,
 	runtimeContainerNeedsReplacement,

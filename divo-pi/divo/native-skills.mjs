@@ -3,7 +3,6 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { normalizeBackendUrl } from "./auth.mjs";
 
-const DEFAULT_RUNTIME_IMAGE = process.env.DIVO_PI_IMAGE ?? "divo-pi-local:phase0";
 export const NATIVE_SKILLS_ROOT = "/run/divo-skills";
 const MAX_NATIVE_SKILLS = 100;
 const MAX_NATIVE_SKILL_DESCRIPTION_BYTES = 1_024;
@@ -215,7 +214,13 @@ removeTree(previous);
 process.stdout.write("staged\n");
 `;
 
-export function buildNativeSkillStagingArgs(volume, image = DEFAULT_RUNTIME_IMAGE) {
+/** The image is named by `runtime-docker.mjs`, which owns `DIVO_PI_IMAGE`. */
+export function buildNativeSkillStagingArgs(volume, image) {
+	// Checked here as well as at the call site: this is exported, and a missing
+	// image would otherwise reach Docker as the literal argument "undefined".
+	if (typeof image !== "string" || !image) {
+		throw new Error("Native skill staging requires a runtime image");
+	}
 	return [
 		"run",
 		"--rm",
@@ -243,10 +248,13 @@ export async function stageNativeSkillBootstrap(
 	volume,
 	bootstrap,
 	scope,
-	{ force = false, runStaging } = {},
+	{ force = false, runStaging, image } = {},
 ) {
 	if (typeof runStaging !== "function") {
 		throw new Error("Native skill staging requires a process runner");
+	}
+	if (typeof image !== "string" || !image) {
+		throw new Error("Native skill staging requires a runtime image");
 	}
 	const digest = nativeSkillBootstrapDigest(bootstrap, scope);
 	if (!force && stagedNativeSkillDigests.get(volume) === digest) {
@@ -254,7 +262,7 @@ export async function stageNativeSkillBootstrap(
 	}
 	const result = await runStaging(
 		"docker",
-		buildNativeSkillStagingArgs(volume),
+		buildNativeSkillStagingArgs(volume, image),
 		JSON.stringify({ digest, files: renderNativeSkillFiles(bootstrap) }),
 	);
 	const status = result?.stdout?.trim();
