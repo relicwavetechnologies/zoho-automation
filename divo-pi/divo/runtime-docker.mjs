@@ -304,7 +304,22 @@ export async function ensureProfileVolume(profileName) {
 	return ensureVolume(profile, resourcesFor(profile).volume);
 }
 
-export async function ensureRuntime(profile, { ephemeral = false } = {}) {
+/**
+ * Make one profile's runtime exist, and report what had to be done.
+ *
+ * `provisioned` is the caller saying it still holds a live Pi process for this
+ * profile. What makes that safe to trust is inductive rather than anything about
+ * container state: a warm entry can only exist because an earlier turn in this
+ * same controller process already ran this function with `provisioned` false and
+ * created the network and all three volumes. The first turn for any profile
+ * always takes the full path. So the four probes skipped here re-answer a
+ * question this process has already answered once, every turn, forever.
+ *
+ * The image and the container itself are still inspected every time. Those two
+ * answer questions the warm process cannot: whether a deploy moved the tag out
+ * from under it, and whether the container still carries our ownership labels.
+ */
+export async function ensureRuntime(profile, { ephemeral = false, provisioned = false } = {}) {
 	const resources = resourcesFor(profile);
 	let wasRunning = false;
 	let created = false;
@@ -322,13 +337,15 @@ export async function ensureRuntime(profile, { ephemeral = false } = {}) {
 	// objects. Probing them one after another spent four sequential CLI round
 	// trips before every turn to learn what a warm profile already satisfies —
 	// and on a group run, which starts from nothing every time, four creates.
-	const [existing] = await settleAll([
-		findOwnedContainer(profile),
-		ensureNetwork(profile, resources.network),
-		ensureVolume(profile, resources.volume),
-		ensureVolume(profile, resources.authVolume),
-		ensureVolume(profile, resources.skillsVolume),
-	]);
+	const [existing] = provisioned
+		? [await findOwnedContainer(profile)]
+		: await settleAll([
+			findOwnedContainer(profile),
+			ensureNetwork(profile, resources.network),
+			ensureVolume(profile, resources.volume),
+			ensureVolume(profile, resources.authVolume),
+			ensureVolume(profile, resources.skillsVolume),
+		]);
 	let container = existing;
 	if (container) {
 		if (runtimeContainerNeedsReplacement(container, IMAGE, imageId)) {
@@ -562,8 +579,18 @@ export async function recordRuntimeInterruption(container) {
 	}
 }
 
-export async function prepareWarmRuntime(container) {
-	const result = await runWithInput("docker", buildContainerPrepareArgs(container), "");
+/**
+ * Prepare one warm container for the next turn, handing it the bootstrap.
+ *
+ * The bootstrap travels on the same stdin the prepare already opened, so a warm
+ * turn crosses the Docker daemon once instead of twice.
+ */
+export async function prepareWarmRuntime(container, bootstrap) {
+	const result = await runWithInput(
+		"docker",
+		buildContainerPrepareArgs(container),
+		JSON.stringify(bootstrap),
+	);
 	let parsed;
 	try {
 		parsed = JSON.parse(result.stdout);
