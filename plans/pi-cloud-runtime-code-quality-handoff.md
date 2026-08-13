@@ -222,7 +222,47 @@ Exit gate:
   shared/private isolation tests remain green;
 - no circular dependencies or duplicate ownership appear.
 
-### Phase B — Audit Cloud-only flags and compatibility code
+### Phase B — Audit Cloud-only flags and compatibility code — **complete (2026-08-14)**
+
+Delivered in `58c1e5450` and `2ee208cc8`. The register lives in
+`divo-pi/divo/test/runtime-flags.test.mjs` rather than in prose: twelve flags,
+each with who sets it and the one thing it decides, enforced so a new read
+without an entry fails and an entry that outlives its last read fails too. One
+reader per flag is enforced as well.
+
+Classifications:
+
+- permanent deployment configuration — `DIVO_PI_IMAGE`, `DIVO_PI_RESOURCE_PREFIX`,
+  `DIVO_PI_ADD_HOST_GATEWAY`, `DIVO_PI_ENTRY_MODE`, `DIVO_CONTROLLER_HOST`,
+  `DIVO_CONTROLLER_PORT`, `MAX_ACTIVE_RUNS`;
+- deliberate and documented but unset — `DIVO_PI_KEEPALIVE`, the way to take
+  warm process reuse out of the picture during an incident without shipping
+  code; `DIVO_NATIVE_SKILLS_ROOT`, `DIVO_BOOTSTRAP_PATH`,
+  `DIVO_INTERRUPTION_PATH`, `DIVO_BACKEND_URL`;
+- removed — `DIVO_LOCAL_CLI_DISABLED`, and `DIVO_DEV_PI_MAX_ACTIVE_RUNS` from
+  `infra/development/.env.example`.
+
+**The flag audit's real finding was not a dead flag.** `DIVO_LOCAL_CLI_DISABLED`
+was stripped from the child environment before Pi started, so `localCliEnabled()`
+was always true inside the container: the "no divo-local here" prompt was
+unreachable, and a broker that failed to start still told the model its client
+existed. The prompt now tracks `DIVO_LOCAL_BROKER_SOCKET`, which the broker
+publishes only after listening and every failure path restores. Three sibling
+texts — the persona, the workspace prompt, the router skill — named divo-local
+unconditionally; the workspace prompt is rendered before any broker has tried
+to listen, so the unavailable block states outright that it outranks them.
+
+**Left as an open product decision.** `MAX_ACTIVE_RUNS` is 2 on localprod and
+the built-in 8 on main and dev. The dev env example asked for 2 and never
+reached anything, so dev has always run 8; wiring it now would have cut
+deployed concurrency silently. Decide the number before Phase D loads dev.
+
+Four Opus cold-review rounds. Two rounds caught defects in the fixes
+themselves — a dev concurrency regression introduced by the first attempt at
+that last point, and the "absent by design" prompt copy left asserting intent
+once its only reachable causes had become failures.
+
+### Phase B — original scope
 
 For every remaining Cloud runtime flag, record one of:
 
@@ -451,14 +491,13 @@ behavioral or measurement gate named in that phase.
 
 ## 10. Next action
 
-Phase A is complete. Start **Phase B: audit Cloud-only flags and compatibility
-code**. Twenty-three environment variables are read across the Pi runtime;
-`DIVO_LOCAL_CLI_DISABLED` has twelve references while `DIVO_PI_ENTRY_MODE`,
-`DIVO_PI_KEEPALIVE` and `DIVO_PI_ADD_HOST_GATEWAY` have one each and no recorded
-purpose. Give each one a documented purpose, a test, or a deletion, and fold in
-the six dead controller re-exports named under Phase A.
+Phases A and B are complete. Start **Phase C — but capture the baseline first
+and change nothing while capturing it**. Optimising the 58,027 uncached input
+tokens by intuition is the failure this plan exists to prevent, and every gate
+in that phase is stated relative to a measurement nobody has taken yet.
 
-Phase C must not start before its baseline is captured. Optimising the 58,027
-uncached input tokens by intuition is the failure this plan exists to prevent.
+Two decisions are waiting and neither belongs to Phase C: what `MAX_ACTIVE_RUNS`
+should be on main and dev, and whether the 38-tool permanent schema cost is
+worth a separate product conversation once duplication is out of the prompt.
 
 Do not open or modify `jan/` while performing this work.
