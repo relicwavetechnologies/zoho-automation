@@ -36,10 +36,11 @@ export const financeZohoRouterSkill: Skill = {
 - Zoho CRM customer, lead, contact, account, deal, or case context -> load \`zoho-crm-read-analysis\`.
 - Creating, issuing, emailing, correcting, or attaching a PDF to a customer invoice, or adding a new customer -> load \`zoho-books-invoice\`.
 - Recording a customer payment against an invoice, or logging an expense -> load \`zoho-books-money\`.
+- Creating or reviewing a purchase order for goods or services requested from a vendor -> load \`zoho-books-purchase-order\`.
 - Recording or creating a vendor bill from an invoice or PDF -> load \`zoho-books-bill\`.
 - Recording a bill and then notifying the Accounts Lark group -> load \`zoho-bill-notify-accounts\`.
 
-Creating an invoice and recording a vendor bill are different workflows. Money owed to us is an invoice; money we owe a supplier is a bill. Ask which one is meant rather than guessing when the request could be either.
+An invoice requests money from a customer. A purchase order requests goods or services from a vendor before the vendor bills us. A bill records money we owe after the vendor has charged us. Ask which stage is meant rather than guessing.
 
 Preserve explicit read-only constraints. Never create a todo, export data, or perform a write merely because routing was ambiguous.`,
 };
@@ -83,6 +84,7 @@ READ ROUTING:
 - ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, read the result file path returned by \`divo-local invoke\`; its governed Zoho result is at \`data\`, list rows are \`data.preview.rows\`, the reported count is \`data.report.returnedCount\`, and pagination is \`data.hasMore\` plus \`data.nextPage\`. Never count keys in \`data\` as records.
 - Latest/recent bounded invoices -> op="list_invoices" with the requested limit. Do not scan or sort thousands of rows to find them.
 - Human invoice number -> op="get_invoice" with that exact number, or list_invoices with searchQuery. Accept only an exact normalized invoice_number match before using its invoice_id; never substitute a fuzzy result.
+- Purchase-order lookup -> op="list_purchase_orders" for a bounded list, or op="get_purchase_order" with an exact purchase-order ID or number.
 - Aging/overdue report -> op="build_overdue_report".
 - Product, item, SKU, or standard rate question -> op="list_items". Report the rate it returns; never quote a price from memory or from an earlier conversation.
 - GST or tax rate question, and any tax decision that will be written to a record -> op="list_taxes". Never infer a percentage from an invoice you read.
@@ -90,7 +92,7 @@ READ ROUTING:
 - Before describing a total as exact, reconcile it: every source page accounted for, and the row count you computed over stated alongside the figure.
 
 WRITES ARE NOT THIS SKILL:
-- This skill reads. Creating, editing, issuing, emailing, voiding, attaching, paying, or expensing anything is a different workflow, and the safeguards those need — staging, duplicate checks, the GST direction check, payment application — are not in this file: \`zoho-books-invoice\` for invoices and customers, \`zoho-books-bill\` for vendor bills, \`zoho-books-money\` for customer payments and expenses.
+- This skill reads. Creating, editing, issuing, emailing, voiding, attaching, paying, or expensing anything is a different workflow, and the safeguards those need are not in this file: \`zoho-books-invoice\` for invoices, \`zoho-books-purchase-order\` for purchase orders, \`zoho-books-bill\` for vendor bills, and \`zoho-books-money\` for payments and expenses.
 - The zohoBooks tool will accept a write from here because it is the same tool. That is not permission. A write performed under this skill is a write performed without its checks.
 
 OUTPUT:
@@ -145,6 +147,38 @@ AUDIT / VERIFICATION HONESTY:
 - Always state what was checked in Zoho and what could not be verified.
 - Never present parsed PDF text as final Zoho truth until the final Zoho bill has been fetched.
 - Never invent financial figures, tax IDs, bill IDs, account IDs, or payment status.`,
+};
+
+export const zohoBooksPurchaseOrderSkill: Skill = {
+  id: 'zoho-books-purchase-order',
+  name: 'Zoho Books Purchase Orders',
+  description: 'Prepare and create vendor purchase orders with staged human confirmation, duplicate protection, and attachment verification.',
+  toolIds: ['zohoBooks'],
+  instructions: `${ZOHO_CONNECTION_METHOD}
+
+SCOPE:
+- A purchase order is our request to a vendor for goods or services before their invoice arrives. It does not record money owed and it is not a vendor bill.
+- Use this workflow to list, inspect, prepare, or create a purchase order. Creating a bill after delivery is a separate \`zoho-books-bill\` workflow.
+
+${ZOHO_WRITE_SAFETY}
+
+PREPARE:
+1. Resolve the vendor with op="list_contacts" and use the exact vendor_id.
+2. Resolve every item with op="list_items" and use its item_id, quantity, rate, and applicable tax_id. Never invent an item ID or tax ID.
+3. Search op="list_purchase_orders" for any supplied purchaseorder_number or reference_number. If an exact existing record matches, read it instead of creating a duplicate.
+4. Include date and expected_delivery_date when known. Delivery cannot precede the purchase-order date.
+5. Use the vendor quotation, approved estimate, specification, or procurement request as fileName only when that exact file was supplied in the conversation.
+
+STAGE, CONFIRM, CREATE:
+- Call op="stage_purchase_order" with fields containing vendor_id, date, line_items, and any purchaseorder_number, reference_number, expected_delivery_date, notes, terms, tax, and delivery details the member supplied.
+- stage_purchase_order writes nothing. Show stagedSummary exactly and ask the member to confirm it.
+- Only after confirmation call op="create_purchase_order" with the returned stagingId and the same connectionId. Creation replays the stored draft rather than accepting replacement fields.
+- The created record remains a draft. Do not say it was submitted, approved, marked open, emailed, or sent to the vendor; those actions are not part of this capability.
+- If creation loses its response, do not retry or stage a duplicate. Check Zoho first and report the uncertainty exactly.
+
+VERIFY:
+- Report the returned purchase-order number, status, vendor, total, link, and attachment result.
+- Preserve identifiers exactly as Zoho returns them.`,
 };
 
 export const zohoBooksInvoiceSkill: Skill = {

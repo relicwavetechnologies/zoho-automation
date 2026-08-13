@@ -61,6 +61,22 @@ describe('summarizeZohoWrite', () => {
     assert.match(summary.message, /nothing has been sent/i);
   });
 
+  it('reports a created purchase order as an unsent vendor draft', () => {
+    const summary = summarizeZohoWrite({
+      module: 'purchaseorders',
+      verb: 'created',
+      record: {
+        purchaseorder_id: 'po-1', purchaseorder_number: 'PO-7', status: 'draft',
+        total: 420, currency_code: 'INR', documents: [{ file_name: 'quote.pdf' }],
+      },
+      appBaseUrl: 'https://books.zoho.com',
+      organizationId: 'org-9',
+    });
+    assert.match(summary.message, /nothing has been sent to the vendor/i);
+    assert.match(summary.message, /quote\.pdf/);
+    assert.equal(summary.recordUrl, 'https://books.zoho.com/app/org-9#/purchaseorders/po-1');
+  });
+
   it('states that no file is attached when Zoho lists no documents', () => {
     const summary = summarizeZohoWrite({
       module: 'invoices', verb: 'created', record: draft,

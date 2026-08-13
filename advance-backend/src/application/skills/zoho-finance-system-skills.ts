@@ -6,6 +6,7 @@ import {
   zohoBillNotifyAccountsSkill,
   zohoBooksBillSkill,
   zohoBooksInvoiceSkill,
+  zohoBooksPurchaseOrderSkill,
   zohoBooksReadAnalysisSkill,
   zohoCrmReadAnalysisSkill,
 } from './zoho.skill';
@@ -40,6 +41,8 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
       'create an invoice', 'raise an invoice', 'make an invoice', 'new invoice',
       'send an invoice', 'email an invoice', 'bill a customer', 'invoice a client',
       'record a bill', 'enter a vendor bill', 'vendor invoice', 'supplier invoice',
+      'create a purchase order', 'raise a purchase order', 'vendor purchase order',
+      'create po', 'raise po', 'new po',
       // Search scores routers, not the specialists under them, so the phrases a
       // member uses for money movement have to be reachable here or the request
       // lands on whichever router happens to score highest — Airtable, in the
@@ -95,6 +98,21 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
     sortOrder: 18,
   },
   {
+    slug: zohoBooksPurchaseOrderSkill.id,
+    name: zohoBooksPurchaseOrderSkill.name,
+    summary: zohoBooksPurchaseOrderSkill.description,
+    markdown: `# ${zohoBooksPurchaseOrderSkill.name}\n\n${zohoBooksPurchaseOrderSkill.instructions}`,
+    toolIds: zohoBooksPurchaseOrderSkill.toolIds,
+    tags: ['finance', 'zoho', 'books', 'purchase-orders', 'procurement', 'write'],
+    aliases: [
+      'create a purchase order', 'raise a purchase order', 'new purchase order',
+      'create po', 'raise po', 'new po',
+      'vendor purchase order', 'supplier purchase order', 'procurement order',
+      'order goods from vendor', 'order services from vendor', 'purchase order pdf',
+    ],
+    sortOrder: 19,
+  },
+  {
     slug: zohoBooksMoneySkill.id,
     name: zohoBooksMoneySkill.name,
     summary: zohoBooksMoneySkill.description,
@@ -106,7 +124,7 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
       'settle an invoice', 'apply a payment', 'customer paid', 'money received',
       'log an expense', 'record an expense', 'add an expense', 'reimburse',
     ],
-    sortOrder: 19,
+    sortOrder: 20,
   },
   {
     slug: zohoBooksBillSkill.id,
@@ -119,7 +137,7 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
       'record a bill', 'enter a vendor bill', 'create a bill', 'vendor invoice',
       'supplier invoice', 'book this invoice', 'process this invoice pdf',
     ],
-    sortOrder: 20,
+    sortOrder: 21,
   },
   {
     slug: zohoBillNotifyAccountsSkill.id,

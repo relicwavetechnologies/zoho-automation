@@ -12,9 +12,10 @@ describe('Zoho Finance system skill provisioning', () => {
       [
         'finance-zoho-router',
         'zoho-crm-read-analysis',
-        'zoho-books-read-analysis',
-        'zoho-books-invoice',
-        'zoho-books-money',
+      'zoho-books-read-analysis',
+      'zoho-books-invoice',
+      'zoho-books-purchase-order',
+      'zoho-books-money',
         'zoho-books-bill',
         'zoho-bill-notify-accounts',
       ],
