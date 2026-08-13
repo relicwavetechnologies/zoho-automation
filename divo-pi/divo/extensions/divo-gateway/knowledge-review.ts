@@ -268,10 +268,20 @@ export async function executeKnowledgeReview(
 		request = parseRequest(params);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		return { content: [{ type: "text" as const, text: `Knowledge review rejected: ${message}` }], isError: true as const };
+		return {
+			content: [{ type: "text" as const, text: `Knowledge review rejected: ${message}` }],
+			details: { status: "invalid_request", error: message },
+			isError: true as const,
+		};
 	}
 	const config = deps.resolveConfig();
-	if ("error" in config) return { content: [{ type: "text" as const, text: config.error }], isError: true as const };
+	if ("error" in config) {
+		return {
+			content: [{ type: "text" as const, text: config.error }],
+			details: { status: "unconfigured", error: config.error },
+			isError: true as const,
+		};
+	}
 	try {
 		const correlation = await readDivoRunCorrelation();
 		const execution: GatewayExecutionContext = {
@@ -287,7 +297,9 @@ export async function executeKnowledgeReview(
 		const reviewedContent = preparedFile
 			? await (deps.stageFile ?? stagePreparedFile)(config, preparedFile)
 			: request.content;
-		if (correlation.channel === "lark") {
+		// The backend owns the review UI on every channel it drives; only a
+		// desktop-local run has to render one itself.
+		if (correlation.channel) {
 			const requestId = `knowledge:${createHash("sha256").update(JSON.stringify({
 				kind: request.kind,
 				action: request.action,
@@ -334,19 +346,26 @@ export async function executeKnowledgeReview(
 			payload: { toolId: "knowledge", args },
 		});
 		if (!prepared.body.ok || prepared.body.status !== "success") {
-			return { content: [{ type: "text" as const, text: formatGatewayResponse(prepared.body).text }], isError: true as const };
+			return {
+				content: [{ type: "text" as const, text: formatGatewayResponse(prepared.body).text }],
+				details: { status: prepared.body.status, error: prepared.body.error },
+				isError: true as const,
+			};
 		}
 		let intentId: string;
 		try {
 			intentId = await approvePreparedDivoIntent(toolCallId, prepared.body.data, {
 				ui: ctx.ui,
 				cwd: process.cwd(),
-				...(ctx.signal ? { signal: ctx.signal } : {}),
+				signal: ctx.signal,
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (/did not approve/i.test(message)) {
-				return { content: [{ type: "text" as const, text: "The knowledge change was cancelled. Nothing was saved." }] };
+				return {
+					content: [{ type: "text" as const, text: "The knowledge change was cancelled. Nothing was saved." }],
+					details: { status: "cancelled" },
+				};
 			}
 			throw error;
 		}
@@ -357,7 +376,11 @@ export async function executeKnowledgeReview(
 			payload: { intentId },
 		});
 		if (!proposed.body.ok || proposed.body.status !== "success") {
-			return { content: [{ type: "text" as const, text: formatGatewayResponse(proposed.body).text }], isError: true as const };
+			return {
+				content: [{ type: "text" as const, text: formatGatewayResponse(proposed.body).text }],
+				details: { status: proposed.body.status, error: proposed.body.error },
+				isError: true as const,
+			};
 		}
 		const result = asRecord(asRecord(proposed.body.data)?.result);
 		const mutationId = asText(result?.mutationId);
@@ -371,7 +394,11 @@ export async function executeKnowledgeReview(
 			payload: { mutationId, contentHash: contentHash ?? null, decision: "approve" },
 		});
 		if (!reviewed.body.ok || reviewed.body.status !== "success") {
-			return { content: [{ type: "text" as const, text: formatGatewayResponse(reviewed.body).text }], isError: true as const };
+			return {
+				content: [{ type: "text" as const, text: formatGatewayResponse(reviewed.body).text }],
+				details: { status: reviewed.body.status, error: reviewed.body.error },
+				isError: true as const,
+			};
 		}
 		const applied = await deps.callGateway(config, {
 			op: "tools.invoke",
@@ -400,14 +427,18 @@ export async function executeKnowledgeReview(
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		return { content: [{ type: "text" as const, text: `Knowledge review failed safely: ${message}` }], isError: true as const };
+		return {
+			content: [{ type: "text" as const, text: `Knowledge review failed safely: ${message}` }],
+			details: { status: "failed", error: message },
+			isError: true as const,
+		};
 	}
 }
 
 export function registerKnowledgeReviewTool(
 	pi: ExtensionAPI,
 ): void {
-	pi.registerTool({
+	pi.registerTool<typeof KnowledgeReviewParams, unknown>({
 		name: "divo_knowledge_review",
 		label: "Review knowledge change",
 		description: "Review an exact personal/department/company skill or governed-file change, then submit it to backend policy and RBAC.",

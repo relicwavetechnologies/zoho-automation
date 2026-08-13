@@ -24,11 +24,14 @@ import {
 	finalizeRuntimeLifecycle,
 	fetchNativeSkillBootstrap,
 	fetchNativeSkillBootstrapOrEmpty,
+	assistantThinkingText,
+	governedOperation,
+	projectRuntimeAnswerDelta,
+	projectRuntimeProgress,
 	loadToken,
 	logCompletedRun,
 	nativeSkillBootstrapDigest,
 	nativeSkillLifecycleEvent,
-	nativeDbSkillsEnabled,
 	piProcessBindingMismatchReason,
 	piProcessBindingMatches,
 	RUNTIME_IDLE_TIMEOUT_MS,
@@ -497,11 +500,9 @@ test("soft abort refuses to retain a runtime that is still active", async () => 
 });
 
 test("Pi process reuse is limited to compatible private thread runs", () => {
-	assert.equal(canReusePiProcess({ sessionScope: "thread" }), true);
-	assert.equal(canReusePiProcess({ sessionScope: "thread", nativeSkills: true }), false);
+	assert.equal(canReusePiProcess({ sessionScope: "thread" }), false);
 	assert.equal(canReusePiProcess({
 		sessionScope: "thread",
-		nativeSkills: true,
 		nativeSkillDigest: "a".repeat(64),
 	}), true);
 	assert.equal(canReusePiProcess({ sessionScope: "run" }), false);
@@ -541,13 +542,7 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 	);
 });
 
-test("native DB skills are on by default with an explicit rollback switch", () => {
-	assert.equal(nativeDbSkillsEnabled(undefined), true);
-	assert.equal(nativeDbSkillsEnabled(""), true);
-	assert.equal(nativeDbSkillsEnabled("true"), true);
-	assert.equal(nativeDbSkillsEnabled("false"), false);
-	assert.equal(nativeDbSkillsEnabled("1"), false);
-
+test("native DB skill bootstrap accepts a valid governed catalogue", () => {
 	const bootstrap = validateNativeSkillBootstrap({
 		registryRevision: 7,
 		skills: [{
@@ -1238,4 +1233,136 @@ test("a named model carries the provider that serves it", () => {
 test("a model this runtime does not carry is refused by name", () => {
 	assert.throws(() => validateRuntimeModel("gpt-4o"), /must be one of/);
 	assert.throws(() => validateRuntimeModel({ model: "gpt-5.6-luna" }), /must be one of/);
+});
+
+// Every governed Gmail step in a real run reached the reader captioned "call",
+// beside a row that had already said Gmail. `op` is the plumbing in the
+// MCP-backed families; the operation a person would recognise is the native
+// tool the call names.
+test("a governed step is named by the operation, not by the call", () => {
+	assert.equal(
+		governedOperation({ op: "call", nativeTool: "search_gmail_messages", input: {} }),
+		"search_gmail_messages",
+	);
+	assert.equal(
+		governedOperation({ op: "call_resolved_sheet", nativeTool: "append_sheet_values" }),
+		"append_sheet_values",
+	);
+});
+
+// The flat families have no native tool: their operation is what `op` holds.
+test("a flat family keeps the operation it was called with", () => {
+	assert.equal(governedOperation({ op: "list_invoices" }), "list_invoices");
+	assert.equal(governedOperation({ operation: "apply" }), "apply");
+	assert.equal(governedOperation({}), undefined);
+});
+
+// Asking a tool for its schema is not performing the operation described. A row
+// that borrowed the native tool's name here would report work that never ran.
+test("a schema lookup is not reported as the operation it describes", () => {
+	assert.equal(
+		governedOperation({ op: "describe", nativeTool: "send_gmail_message" }),
+		"describe",
+	);
+});
+
+/*
+ * Reasoning used to stop here. The rule was "reasoning stays inside the
+ * container", because a Lark status card is read by everyone in the chat —
+ * true of a card, and enforced one layer too early: it also withheld the
+ * reasoning from the web thread, which is one person reading their own
+ * conversation. It now leaves as its own kind, and the card drops it.
+ */
+test("reasoning leaves the container as its own kind", () => {
+	const thinking = (text) => ({
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "thinking_delta",
+			contentIndex: 1,
+			partial: { content: [{ type: "text", text: "hi" }, { type: "thinking", thinking: text }] },
+		},
+	});
+
+	assert.deepEqual(projectRuntimeProgress(thinking("Unpaid means overdue. Now the")), {
+		type: "thought",
+		index: 1,
+		text: "Unpaid means overdue.",
+	});
+
+	// Nothing finished yet is not a thought, only evidence of thinking.
+	assert.deepEqual(projectRuntimeProgress(thinking("Let me work out what")), { type: "thinking" });
+});
+
+/* Talking and thinking must not be read out of each other's blocks: a thought
+   printed as narration would put the model's private working in the thread as
+   though it had been said to the reader. */
+test("reasoning is read only from a reasoning block", () => {
+	const said = {
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "thinking_delta",
+			contentIndex: 0,
+			partial: { content: [{ type: "text", text: "I checked the invoices." }] },
+		},
+	};
+	assert.deepEqual(projectRuntimeProgress(said), { type: "thinking" });
+	assert.equal(assistantThinkingText(said.assistantMessageEvent), undefined);
+});
+
+/* Reasoning is accumulated from the start and truncated from the front, so a
+   bound meant for a one-line `say` would freeze a thought at its first two
+   sentences and never move again — a window built to let you watch the model
+   think, showing two static lines for the length of the run. */
+test("a long thought keeps growing past a sentence's worth", () => {
+	const sentence = "The invoice ledger is the one to check here. ";
+	const thinking = (text) => projectRuntimeProgress({
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "thinking_delta",
+			contentIndex: 0,
+			partial: { content: [{ type: "thinking", thinking: text }] },
+		},
+	});
+
+	const short = thinking(sentence.repeat(4));
+	const long = thinking(sentence.repeat(12));
+	assert.equal(short.type, "thought");
+	assert.equal(long.type, "thought");
+	assert.ok(long.text.length > short.text.length, "a longer thought must say more");
+	assert.ok(long.text.length > 200, "200 is a say's bound, not a thought's");
+});
+
+test("the provider's exact answer delta leaves on a separate live stream", () => {
+	const event = {
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "text_delta",
+			contentIndex: 2,
+			delta: "| 48 |\n",
+			partial: { content: [{ type: "text", text: "ignored" }] },
+		},
+	};
+	assert.deepEqual(projectRuntimeAnswerDelta(event), {
+		type: "answer_delta",
+		index: 2,
+		delta: "| 48 |\n",
+	});
+	// The card-oriented projection remains independent and sentence-sized.
+	assert.deepEqual(projectRuntimeProgress(event), { type: "writing" });
+});
+
+/* Redacted reasoning has had its content removed by the provider; what is left
+   is an opaque payload kept only so the conversation can continue. A row drawn
+   from it would say nothing. */
+test("redacted reasoning is not forwarded", () => {
+	const event = {
+		type: "thinking_delta",
+		contentIndex: 0,
+		partial: { content: [{ type: "thinking", thinking: "Ada ordered twice.", redacted: true }] },
+	};
+	assert.equal(assistantThinkingText(event), undefined);
+	assert.deepEqual(
+		projectRuntimeProgress({ type: "message_update", assistantMessageEvent: event }),
+		{ type: "thinking" },
+	);
 });

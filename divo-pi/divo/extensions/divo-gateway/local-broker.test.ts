@@ -12,7 +12,7 @@ import {
 import { executeGatewayRequest } from "./gateway-execution.ts";
 import {
 	executeLocalBrokerRequest,
-	localCliEnabled,
+	localCliAvailable,
 	parseLocalBrokerRequest,
 	registerLocalDivoBroker,
 	type ActiveBashCall,
@@ -509,21 +509,20 @@ describe("Divo local broker protocol", () => {
 });
 
 async function pathAfterSessionStart(
-	disabled: string | undefined,
-	runtimeHome?: string,
-): Promise<string | undefined> {
-	const originalDisabled = process.env.DIVO_LOCAL_CLI_DISABLED;
+	{ runtimeHome, configured = true }: { runtimeHome?: string; configured?: boolean } = {},
+): Promise<{ path: string | undefined; available: boolean }> {
 	const originalRuntimeHome = process.env.DIVO_HOME;
 	const originalPath = process.env.PATH;
 	const originalSocket = process.env.DIVO_LOCAL_BROKER_SOCKET;
-	if (disabled === undefined) delete process.env.DIVO_LOCAL_CLI_DISABLED;
-	else process.env.DIVO_LOCAL_CLI_DISABLED = disabled;
 	if (runtimeHome === undefined) delete process.env.DIVO_HOME;
 	else process.env.DIVO_HOME = runtimeHome;
-	captureDivoGatewayConfig({
-		DIVO_BACKEND_URL: "http://localhost:4000",
-		DIVO_MEMBER_TOKEN: "member-token",
-	});
+	delete process.env.DIVO_LOCAL_BROKER_SOCKET;
+	if (configured) {
+		captureDivoGatewayConfig({
+			DIVO_BACKEND_URL: "http://localhost:4000",
+			DIVO_MEMBER_TOKEN: "member-token",
+		});
+	}
 	const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
 	registerLocalDivoBroker({
 		on(name: string, handler: (event: any, ctx: any) => unknown) {
@@ -533,61 +532,45 @@ async function pathAfterSessionStart(
 		},
 	} as never);
 	try {
-		await handlers.get("session_start")?.[0]?.({}, {});
-		return process.env.PATH;
+		await handlers.get("session_start")?.[0]?.({}, { ui: { notify() {} } });
+		// Read the verdict while the broker is still up: it is derived from the
+		// same socket variable the CLI itself resolves, which shutdown restores.
+		return { path: process.env.PATH, available: localCliAvailable() };
 	} finally {
 		await handlers.get("session_shutdown")?.[0]?.({}, {});
 		clearCapturedDivoGatewayConfig();
 		process.env.PATH = originalPath;
 		if (originalSocket === undefined) delete process.env.DIVO_LOCAL_BROKER_SOCKET;
 		else process.env.DIVO_LOCAL_BROKER_SOCKET = originalSocket;
-		if (originalDisabled === undefined) delete process.env.DIVO_LOCAL_CLI_DISABLED;
-		else process.env.DIVO_LOCAL_CLI_DISABLED = originalDisabled;
 		if (originalRuntimeHome === undefined) delete process.env.DIVO_HOME;
 		else process.env.DIVO_HOME = originalRuntimeHome;
 	}
 }
 
 describe("divo-local CLI availability", () => {
-	it("offers the CLI by default for desktop and cloud workflows", () => {
-		const original = process.env.DIVO_LOCAL_CLI_DISABLED;
-		delete process.env.DIVO_LOCAL_CLI_DISABLED;
-		try {
-			assert.equal(localCliEnabled(), true);
-		} finally {
-			if (original !== undefined) process.env.DIVO_LOCAL_CLI_DISABLED = original;
-		}
+	it("reports the CLI as present exactly when the broker staged one", async () => {
+		// The prompt is chosen from this answer, so it has to describe the PATH the
+		// agent will actually get rather than an intention to offer a client.
+		const started = await pathAfterSessionStart();
+		assert.equal(started.available, true);
+		assert.notEqual(started.path, process.env.PATH);
+		assert.match(String(started.path), /divo-cli-/);
 	});
 
-	it("withholds the CLI when the runtime disables it", () => {
-		const original = process.env.DIVO_LOCAL_CLI_DISABLED;
-		process.env.DIVO_LOCAL_CLI_DISABLED = "1";
-		try {
-			assert.equal(localCliEnabled(), false);
-		} finally {
-			if (original === undefined) delete process.env.DIVO_LOCAL_CLI_DISABLED;
-			else process.env.DIVO_LOCAL_CLI_DISABLED = original;
-		}
-	});
-
-	it("stages nothing and leaves PATH alone when the CLI is withheld", async () => {
-		// The point is absence, not refusal: a launcher the agent can find is a
-		// launcher it will try to use, whatever the instructions say. The enabled
-		// case is asserted alongside it so this cannot pass by staging never
-		// happening at all.
-		const staged = await pathAfterSessionStart(undefined);
-		assert.notEqual(staged, process.env.PATH);
-		assert.match(String(staged), /divo-cli-/);
-
-		const withheld = await pathAfterSessionStart("1");
-		assert.equal(withheld, process.env.PATH);
+	it("reports the CLI as absent when the broker never started", async () => {
+		// A run with no gateway configuration writes no launcher and no socket. The
+		// agent is told so, instead of being sent to a client that cannot exist and
+		// improvising around the gap once Python raises FileNotFoundError.
+		const unconfigured = await pathAfterSessionStart({ configured: false });
+		assert.equal(unconfigured.available, false);
+		assert.equal(unconfigured.path, process.env.PATH);
 	});
 
 	it("stages the cloud launcher outside turn-scoped run directories", async () => {
 		const runtimeHome = await mkdtemp(join(tmpdir(), "divo-home-"));
 		try {
-			const staged = await pathAfterSessionStart(undefined, runtimeHome);
-			assert.match(String(staged), new RegExp(`^${runtimeHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/divo-cli-`));
+			const staged = await pathAfterSessionStart({ runtimeHome });
+			assert.match(String(staged.path), new RegExp(`^${runtimeHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/divo-cli-`));
 		} finally {
 			await rm(runtimeHome, { recursive: true, force: true });
 		}

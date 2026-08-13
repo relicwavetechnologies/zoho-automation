@@ -3004,9 +3004,17 @@ describe('GatewayDispatcher', () => {
       payload: { toolIds: ['fakeTool'], query: 'find the requested records' },
     }, member);
     assert.equal(batch.ok, true);
+    const batchedTools = (batch.data as {
+      bootstrap: { tools: Array<Record<string, unknown>> };
+    }).bootstrap.tools;
     assert.deepEqual(
-      (batch.data as { bootstrap: { tools: Array<{ id: string }> } }).bootstrap.tools.map(tool => tool.id),
+      batchedTools.map(tool => tool.id),
       ['fakeTool'],
+    );
+    assert.deepEqual(
+      Object.keys(batchedTools[0] ?? {}).sort(),
+      ['allowedActions', 'family', 'id'],
+      'Pi bootstrap must not receive a second outer description, docs, or schema contract',
     );
 
     const invalidBatch = await dispatcher.dispatch({

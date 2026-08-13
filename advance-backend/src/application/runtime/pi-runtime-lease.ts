@@ -1,13 +1,18 @@
 import { createHmac, randomUUID } from 'node:crypto';
+import { isRuntimeChannel, type RuntimeChannel } from '../../domain/channel/runtime-channel';
 
 export const PI_RUNTIME_AUDIENCE = 'divo-pi-runtime';
-export const PI_RUNTIME_CHANNEL = 'lark';
 export const PI_RUNTIME_CONTEXT_AUDIENCES = ['private', 'shared'] as const;
 export type PiRuntimeContextAudience = typeof PI_RUNTIME_CONTEXT_AUDIENCES[number];
 
 export interface PiRuntimeLeaseClaims {
   readonly aud: typeof PI_RUNTIME_AUDIENCE;
-  readonly channel: typeof PI_RUNTIME_CHANNEL;
+  /**
+   * Which surface the backend launched this run for. Carried in the lease so a
+   * container never has to guess, and so the middleware can tell a runtime lease
+   * from a desktop session without assuming there is only one runtime.
+   */
+  readonly channel: RuntimeChannel;
   readonly sessionId: string;
   readonly userId: string;
   readonly companyId: string;
@@ -33,6 +38,7 @@ export interface PiRuntimeLeaseClaims {
 }
 
 export interface IssuePiRuntimeLeaseInput {
+  readonly channel: RuntimeChannel;
   readonly sessionId: string;
   readonly userId: string;
   readonly companyId: string;
@@ -54,7 +60,7 @@ export function issuePiRuntimeLease(
   const issuedAt = Math.floor((input.now ?? new Date()).getTime() / 1_000);
   const claims: PiRuntimeLeaseClaims = {
     aud: PI_RUNTIME_AUDIENCE,
-    channel: PI_RUNTIME_CHANNEL,
+    channel: input.channel,
     sessionId: input.sessionId,
     userId: input.userId,
     companyId: input.companyId,
@@ -81,7 +87,7 @@ export function isPiRuntimeLeaseClaims(
   value: Record<string, unknown>,
 ): boolean {
   return value['aud'] === PI_RUNTIME_AUDIENCE
-    && value['channel'] === PI_RUNTIME_CHANNEL
+    && isRuntimeChannel(value['channel'])
     && typeof value['instanceId'] === 'string'
     && value['instanceId'].length > 0
     && typeof value['threadId'] === 'string'

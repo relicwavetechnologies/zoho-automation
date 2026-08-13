@@ -1525,17 +1525,18 @@ test("a finished sentence leaves the container, a half-typed one does not", () =
 	);
 });
 
-// Reasoning is the model talking to itself; the card is read by the whole room.
-test("thinking never leaves the container", () => {
-	assert.equal(
+// Reasoning crosses the controller boundary as its own kind. Channel surfaces
+// decide whether it is private enough to render; Lark deliberately drops it.
+test("thinking leaves the container as a distinct bounded event", () => {
+	assert.deepEqual(
 		projectRuntimeProgress({
 			type: "message_update",
 			assistantMessageEvent: {
 				type: "thinking_delta",
 				contentIndex: 0,
-				partial: { content: [{ type: "thinking", text: "the user probably means." }] },
+				partial: { content: [{ type: "thinking", thinking: "The user probably means invoices. Next" }] },
 			},
 		}),
-		undefined,
+		{ type: "thought", index: 0, text: "The user probably means invoices." },
 	);
 });

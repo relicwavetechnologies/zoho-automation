@@ -226,7 +226,7 @@ jobs:
         run: |
           docker pull "${IMAGE}"
           if [[ "${{ matrix.component }}" == "pi" ]]; then
-            docker run --rm --network none --entrypoint npm "${IMAGE}" run divo:test
+            docker run --rm --network none --entrypoint npm "${IMAGE}" run divo:check
             docker run --rm --network none --tmpfs /data:rw,uid=10001,gid=10001 \
               --entrypoint /app/node_modules/.bin/tsx "${IMAGE}" \
               packages/coding-agent/src/cli.ts --version

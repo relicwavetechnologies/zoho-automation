@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
 	composeDivoSystemPrompt,
+	divoPromptStripReport,
 	DIVO_ENGLISH_RESPONSE_POLICY,
 	readDepartmentPersonaContext,
 } from "./department-persona.ts";
@@ -180,10 +181,11 @@ describe("department persona", () => {
 		);
 		assert.match(prompt, /Skill registry revision: 14/);
 		assert.match(prompt, /Daily Report \[skillId=skill-daily-report; revision=3\]/);
-		// Tool ids and actions reach the model as registered typed tools. Listing
-		// them here too was a second, weaker copy of the same facts.
+		// Possible operations live in permanent Pi-native definitions. This prompt
+		// stays compact and makes clear that visibility is not permission.
 		assert.doesNotMatch(prompt, /googleSheets: read, update/);
-		assert.match(prompt, /registered divo_\* tools are the capability list/);
+		assert.match(prompt, /Permanent divo_\* tools describe what Divo can attempt/);
+		assert.match(prompt, /not that this member is permitted to use it/);
 		assert.match(prompt, /Use divo_skill_resolve only when a specialized company workflow is likely/);
 
 		const nativePrompt = composeDivoSystemPrompt(
@@ -291,11 +293,11 @@ describe("department persona", () => {
 		assert.match(prompt, /Airtable \[family=airtable; connection=member_selectable via airtable; skill=optional\]/);
 		// The family header survives because a tool definition cannot express which
 		// connection provider the family needs or whether it requires a skill. The
-		// leaf tools do not, because each is a registered typed tool already.
+		// leaf tools do not, because each is a permanent Pi-native tool already.
 		assert.doesNotMatch(prompt, /Airtable Schema \[toolId=airtableSchema; actions=read\]/);
 		assert.doesNotMatch(prompt, /actions=read, delete/);
-		assert.match(prompt, /describe permitted operations only from the actions named on each registered divo_\* tool/);
-		assert.match(prompt, /never claim an operation mentioned by a skill/);
+		assert.match(prompt, /prove that a capability exists, not that this member is permitted to use it/);
+		assert.match(prompt, /backend's invocation result is the final permission decision/);
 		assert.match(prompt, /Airtable Core \[skillId=airtable-core-id; mode=optional\]/);
 		assert.doesNotMatch(prompt, /Delete every record/);
 		assert.doesNotMatch(prompt, /toolId=airtable;/);
@@ -344,5 +346,54 @@ describe("department persona", () => {
 		assert.doesNotMatch(refreshed, /Build the monthly export/);
 		assert.doesNotMatch(refreshed, /divo_interrupted_work_policy/);
 		await rm(directory, { recursive: true, force: true });
+	});
+});
+
+// Pi's base prompt opens with two unconditional presentation rules and a block
+// of pointers to its own README. Divo cannot argue with them from further down
+// the prompt — the model just receives two rules about the same thing.
+describe("Pi-authored presentation", () => {
+	const PI_BASE = [
+		"You are an expert coding assistant operating inside pi, a coding agent harness.",
+		"",
+		"Guidelines:",
+		"- Use bash for file operations like ls, rg, find",
+		"- Be concise in your responses",
+		"- Show file paths clearly when working with files",
+		"",
+		"Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):",
+		"- Main documentation: /pi/README.md",
+		"- Additional docs: /pi/docs",
+		"- Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)",
+	].join("\n");
+
+	it("removes the two rules that speak for Divo about presentation", () => {
+		const composed = composeDivoSystemPrompt(PI_BASE, "<divo_company_persona>x</divo_company_persona>", null);
+		assert.doesNotMatch(composed, /Be concise in your responses/);
+		assert.doesNotMatch(composed, /Show file paths clearly/);
+	});
+
+	// Pi is right about how to use tools. Only the parts that decide what an
+	// answer looks like are Divo's to own.
+	it("keeps the guidelines that are about using tools", () => {
+		const composed = composeDivoSystemPrompt(PI_BASE, "", null);
+		assert.match(composed, /Use bash for file operations/);
+	});
+
+	it("removes the pointer to Pi's own documentation", () => {
+		const composed = composeDivoSystemPrompt(PI_BASE, "", null);
+		assert.doesNotMatch(composed, /Pi documentation/);
+		assert.doesNotMatch(composed, /tui\.md/);
+		assert.match(composed, /expert coding assistant/); // identity swap is a separate decision
+	});
+
+	// The strip is string matching against upstream code. If a marker stops
+	// matching it does nothing, silently — so the caller logs this instead.
+	it("reports which strips would still match, so a silent miss is visible", () => {
+		assert.deepEqual(divoPromptStripReport(PI_BASE), { guidelines: 2, documentation: true });
+		assert.deepEqual(
+			divoPromptStripReport(composeDivoSystemPrompt(PI_BASE, "", null)),
+			{ guidelines: 0, documentation: false },
+		);
 	});
 });

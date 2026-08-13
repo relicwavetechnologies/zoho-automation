@@ -14,6 +14,7 @@ import { formatAmount } from './zoho-format.utils';
 
 export type ZohoWriteModule =
   | 'invoices'
+  | 'purchaseorders'
   | 'bills'
   | 'expenses'
   | 'contacts'
@@ -29,6 +30,7 @@ export interface ZohoWriteSummary {
 
 const idKeys: Record<ZohoWriteModule, readonly string[]> = {
   invoices:         ['invoice_id'],
+  purchaseorders:   ['purchaseorder_id'],
   bills:            ['bill_id'],
   expenses:         ['expense_id'],
   contacts:         ['contact_id'],
@@ -37,6 +39,7 @@ const idKeys: Record<ZohoWriteModule, readonly string[]> = {
 
 const numberKeys: Record<ZohoWriteModule, readonly string[]> = {
   invoices:         ['invoice_number'],
+  purchaseorders:   ['purchaseorder_number'],
   bills:            ['bill_number'],
   expenses:         ['expense_number', 'reference_number'],
   contacts:         ['contact_name', 'company_name'],
@@ -45,6 +48,7 @@ const numberKeys: Record<ZohoWriteModule, readonly string[]> = {
 
 const label: Record<ZohoWriteModule, string> = {
   invoices:         'Invoice',
+  purchaseorders:   'Purchase order',
   bills:            'Bill',
   expenses:         'Expense',
   contacts:         'Contact',
@@ -161,13 +165,15 @@ export function summarizeZohoWrite(input: {
 
   // A draft is not a bill anyone has received. Say so here rather than letting
   // "created successfully" imply the customer has been asked to pay.
-  if (module === 'invoices' && status.toLowerCase() === 'draft') {
-    message += ' It is still a draft — nothing has been sent to the customer yet.';
+  if ((module === 'invoices' || module === 'purchaseorders') && status.toLowerCase() === 'draft') {
+    message += module === 'invoices'
+      ? ' It is still a draft — nothing has been sent to the customer yet.'
+      : ' It is still a draft — nothing has been sent to the vendor yet.';
   }
 
   // Only invoices and bills carry documents, and only there does their absence
   // mean something the member needs to hear.
-  if (module === 'invoices' || module === 'bills') {
+  if (module === 'invoices' || module === 'purchaseorders' || module === 'bills') {
     message += documents.length > 0
       ? ` Attached: ${documents.join(', ')}.`
       : ' No file is attached to it.';

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildFinalCard, buildStatusCard, foldRepeatedRows, planFinalCards } from '../../src/infrastructure/channels/lark/lark-card.builder.ts'
+import { buildFinalCard, buildStatusCard, foldRepeatedRows, planFinalCards, runTranscript } from '../../src/infrastructure/channels/lark/lark-card.builder.ts'
 import type { ChannelLedgerRow } from '../../src/domain/channel/outbound.ts';
 
 function parseCard(payload: string): Record<string, unknown> {
@@ -576,5 +576,45 @@ describe('lark-card.builder repeated step folding', () => {
     }));
 
     assert.match(elementById(card, 'run_activity')!['content'] as string, /✓ \*\*Airtable\*\* .*×2/);
+  });
+});
+
+// Delivering the answer edits the status card in place, so on a thirteen-minute
+// run the entire record of the work is destroyed at the moment it succeeds.
+describe('run transcript kept past the final card', () => {
+  const say = (label: string) => ({ kind: 'say' as const, label, count: 1, status: 'done' as const });
+  const ran = (label: string, outcome: string) =>
+    ({ kind: 'tool' as const, label, count: 1, outcome, status: 'done' as const });
+
+  it('keeps what was said and what was done, in order', () => {
+    assert.equal(
+      runTranscript([say('Checking the bases.'), ran('Terminal', 'airtable list-bases')]),
+      'Checking the bases.\n**Terminal**  airtable list-bases',
+    );
+  });
+
+  // Its log would just be the model talking, which is what the answer already is.
+  it('gives a run that called no tool no trace at all', () => {
+    assert.equal(runTranscript([say('Sure — here you go.')]), undefined);
+    assert.equal(runTranscript([]), undefined);
+  });
+
+  // The trace shares the card's byte budget with the answer, and the answer is
+  // the thing the user asked for. Steps nearest it are the ones that explain it.
+  it('drops the oldest steps by name rather than silently truncating', () => {
+    const rows = Array.from({ length: 400 }, (_, i) => ran('Terminal', `step number ${i}`));
+    const trace = runTranscript(rows)!;
+
+    assert.ok(trace.length < 3_400, `trace was ${trace.length} chars`);
+    assert.match(trace, /^_\+\d+ earlier steps\._/);
+    assert.match(trace, /step number 399/);
+    assert.doesNotMatch(trace, /step number 0\b/);
+  });
+
+  it('will not let a command close the card markup it is rendered into', () => {
+    assert.equal(
+      runTranscript([ran('Terminal', 'cat <secret> `whoami`')]),
+      '**Terminal**  cat secret whoami',
+    );
   });
 });

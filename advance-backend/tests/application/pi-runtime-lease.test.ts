@@ -9,6 +9,7 @@ function claims(token: string): Record<string, unknown> {
 
 describe('Pi runtime lease', () => {
   const base = {
+    channel: 'lark' as const,
     sessionId: 'session-1',
     userId: 'user-1',
     companyId: 'company-1',
@@ -26,5 +27,13 @@ describe('Pi runtime lease', () => {
   it('omits the department when the run has none, rather than inventing one', () => {
     const token = issuePiRuntimeLease(base, 'secret');
     assert.equal('departmentId' in claims(token), false);
+  });
+
+  it('carries the surface it was issued for, so a second one is not read as Lark', () => {
+    // The middleware trusts this claim to decide which channel the run is on.
+    // Hard-coding it here was what made "backend drove this run" and "this is
+    // Lark" the same fact.
+    assert.equal(claims(issuePiRuntimeLease({ ...base, channel: 'web' }, 'secret'))['channel'], 'web');
+    assert.equal(claims(issuePiRuntimeLease(base, 'secret'))['channel'], 'lark');
   });
 });

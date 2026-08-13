@@ -3,6 +3,7 @@ import type { Logger } from '../../shared/logger';
 import type { GatewayDispatcher } from '../../application/gateway/gateway-dispatcher';
 import type { GatewayMemberContext } from '../../application/gateway/gateway.types';
 import { gatewayFailure, gatewayRequestSchema } from '../../application/gateway/gateway.types';
+import { asChannelKey } from '../../domain/channel/runtime-channel';
 
 const PI_RUNTIME_BLOCKED_OPS = new Set([
   'teach.learning.apply',
@@ -25,7 +26,7 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
     const userId = res.locals['userId'] as string | undefined;
     const aiRole = res.locals['aiRole'] as string | undefined;
     const sessionId = res.locals['sessionId'] as string | undefined;
-    const channel = res.locals['channel'] === 'lark' ? 'lark' : 'desktop';
+    const channel = asChannelKey(res.locals['channel']);
 
     if (!companyId || !userId || !aiRole || !sessionId) {
       res.status(401).json(

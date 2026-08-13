@@ -512,7 +512,7 @@ const ReadParams = Type.Object({
 });
 
 export default function divoChatHistoryExtension(pi: ExtensionAPI) {
-	pi.registerTool({
+	pi.registerTool<typeof SearchParams, unknown>({
 		name: SEARCH_TOOL,
 		label: "Search chats",
 		description:
@@ -558,7 +558,7 @@ export default function divoChatHistoryExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool({
+	pi.registerTool<typeof ReadParams, unknown>({
 		name: READ_TOOL,
 		label: "Read chat",
 		description:

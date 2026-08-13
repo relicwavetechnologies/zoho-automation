@@ -1,5 +1,6 @@
 import { generateObject, type LanguageModel } from 'ai';
 import { z } from 'zod';
+import type { ChannelKey } from '../../domain/channel/incoming-message';
 
 const logicalKeySchema = z.string()
   .trim()
@@ -48,7 +49,7 @@ export interface ExistingPersonalKnowledge {
 
 export interface KnowledgeLearningExtractionInput {
   readonly sourceId: string;
-  readonly channel: 'desktop' | 'lark';
+  readonly channel: ChannelKey;
   readonly userMessages: readonly string[];
   readonly assistantText?: string;
   readonly existing: readonly ExistingPersonalKnowledge[];

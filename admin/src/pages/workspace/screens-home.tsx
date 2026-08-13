@@ -3,13 +3,9 @@
  *
  * Two halves with different rules.
  *
- * The top half is NEW and deliberately inert: a composer and an onboarding
- * carousel. The composer does not send anything. Chat, runs and the work log
- * are being ported from the desktop separately, and wiring a send button here
- * first would mean inventing a second way to start a run that then has to be
- * unpicked. It says so on the control rather than accepting text and dropping
- * it — a box that swallows a sentence in silence is worse than one that admits
- * it is not ready.
+ * The top half opens web chat as a mock run surface. It does not call the
+ * backend yet; it carries the typed prompt to `/chat`, where the future
+ * Cloud-Pi event lifecycle is represented with local fixture events.
  *
  * The bottom half is the OLD `YouHome`, unchanged in what it reads. Same four
  * hooks, same fields, same empty and error states. This screen is a re-skin,
@@ -19,9 +15,11 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import {
   Activity, ArrowUpRight, Check, ChevronLeft, ChevronRight, Link2, Lock, MessageSquare,
-  Plus, Sparkles, X,
+  Plus, Send, Sparkles, X,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { Composer as ChatComposer } from './chat/parts'
+import '@/styles/beautiful.css'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
 import {
   useMyRuns, useMyUsage, changePct, durationLabel, runTitle,
@@ -230,7 +228,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
         Named, not shown: the composer is a better greeting than a title bar.
       */}
       <h1 className="ws-a11y-title">Your workspace</h1>
-      <Composer />
+      <Composer go={go} />
 
       {cards.length > 0 ? (
         <section className="ws-band">
@@ -467,40 +465,35 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
 }
 
 /**
- * The composer, as a preview of itself.
+ * The composer — the first thing on the page, and now a working one.
  *
- * Presentation only, on purpose (see the file header) — and now it says so in
- * the one place somebody is looking.
+ * It is the SAME component `/chat` uses, not a look-alike. Home is where you
+ * start a run and `/chat` is where you watch it, so the box you type into had
+ * better not change shape between the two — otherwise the handoff reads as
+ * navigating to a different product rather than the same sentence continuing.
  *
- * It used to invite you in and then take it back: the box carried
- * "Ask Divo to do something… (@ for an app, / for a skill)", advertising two
- * affordances that do nothing, and a banner underneath explained that none of
- * it works yet. Two elements, overlapping, and the contradiction was between
- * them rather than in either — so the box read as broken and the banner read as
- * an apology for it.
- *
- * The status now lives in the control. The banner is gone, and nothing was lost
- * with it: its "Connect an app" button was the fourth route to the same page on
- * this screen, after the quick action, the Connected panel's Manage, and the
- * "more you can connect" row.
- *
- * Not a textarea any more. A box that takes a caret, accepts characters and
- * drops them is a worse lie than a placeholder — and to a screen reader it was
- * a textbox that does nothing. This is text that looks like a composer, which
- * is exactly what it is.
+ * The prompt is staged in session storage and the route changes to `/chat`,
+ * which picks it up and starts the run immediately. Typing here and landing on
+ * an empty composer would make the handoff feel like a page change rather than
+ * a continuation of the thing you just asked for.
  */
-function Composer() {
+function Composer({ go }: { go: (screen: string) => void }) {
+  const [prompt, setPrompt] = useState('')
+  const submit = () => {
+    const trimmed = prompt.trim()
+    if (!trimmed) return
+    try { window.sessionStorage.setItem('divo.chat.pendingPrompt', trimmed) } catch { /* private mode */ }
+    go('chat')
+  }
+
   return (
-    <div className="ws-comp" data-preview="true">
-      <span className="ws-comp-ic"><MessageSquare size={16} /></span>
-      <div className="ws-comp-say">
-        <b>Chat is coming to the web</b>
-        <p>Today Divo answers in Lark and on the desktop — everything you connect here works in both.</p>
-      </div>
-      {/* Where send will be. A dead send button on a box nobody can type in is
-          the same contradiction one size smaller, so this states the reason
-          there is no button rather than dimming one. */}
-      <span className="ws-comp-pill">Soon</span>
+    <div className="bui-scope ws-comp-slot">
+      <ChatComposer
+        value={prompt}
+        onChange={setPrompt}
+        onSubmit={submit}
+        placeholder="Ask Divo to export, compare, clean up, draft, or investigate…"
+      />
     </div>
   )
 }

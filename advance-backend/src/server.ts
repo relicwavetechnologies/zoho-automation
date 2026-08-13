@@ -65,6 +65,7 @@ import { ManagerTeachWorker } from './application/persona-learning/manager-teach
 import { KnowledgeReviewDecisionWorker } from './application/knowledge/knowledge-review-decision.worker';
 import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
 import { createKnowledgeFileRoutes } from './http/desktop/knowledge-files.routes';
+import { createWebChatRoutes } from './http/desktop/web-chat.routes';
 import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { ElevenLabsTranscriptionClient } from './infrastructure/ai/transcription/elevenlabs-transcription.client';
 
@@ -624,6 +625,21 @@ export const createServer = (c: Container): DivoServerApplication => {
       files: c.knowledgeFileService,
       logger: c.logger,
       maxBytes: c.env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
+    }),
+  );
+
+  // Divo answering in the browser. Member auth, not the Pi runtime lease: the
+  // caller is a person at a keyboard, and the lease is minted for the container
+  // this route is about to start.
+  app.use(
+    '/api/web-chat',
+    memberAuth,
+    createWebChatRoutes({
+      webRuns: c.webRuns,
+      registry: c.webRunRegistry,
+      threads: c.webThreads,
+      logger:  c.logger,
+      maxUploadBytes: c.env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
     }),
   );
 

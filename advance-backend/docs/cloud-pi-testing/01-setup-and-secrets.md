@@ -91,9 +91,9 @@ Then start the controller in the foreground:
 MAX_ACTIVE_RUNS=2 node divo/local-rpc-server.mjs
 ```
 
-Native backend skills are enabled by default. Use
-`DIVO_PI_NATIVE_DB_SKILLS=false` only as an explicit rollback while diagnosing
-a native-skill bootstrap failure; do not use it for normal harness runs.
+Native backend skills are a permanent part of the Cloud-Pi runtime. A
+`native_skills.ready` event must be present before Pi starts; diagnose a
+missing bootstrap instead of running a second skill-loading mode.
 
 The controller listens at `127.0.0.1:4317`. On startup it stops any
 Divo-labelled container left running by an interrupted local test. It does not

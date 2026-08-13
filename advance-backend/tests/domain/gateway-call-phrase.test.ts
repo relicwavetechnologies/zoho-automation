@@ -23,6 +23,21 @@ describe('naming a governed call', () => {
     assert.equal(gatewayOpPhrase(undefined), undefined);
   });
 
+  // The MCP-backed families take `{ op: 'call', nativeTool, input }`, so `call`
+  // is the same "it ran the tool" statement in different clothing. Every Gmail
+  // step in a real run was captioned "call" beside a row already saying Gmail.
+  it('says nothing for the MCP families\' version of the same operation', () => {
+    assert.equal(gatewayOpPhrase('call'), undefined);
+    assert.equal(gatewayOpPhrase('call_resolved_sheet'), undefined);
+  });
+
+  // Introspection is not the operation it introspects. A row that dropped this
+  // would show the product alone and read as though the work had happened.
+  it('keeps a schema lookup distinguishable from doing the thing', () => {
+    assert.equal(gatewayOpPhrase('describe'), 'Checking how it works');
+    assert.equal(gatewayOpPhrase('search_gmail_messages'), 'Search gmail messages');
+  });
+
   it('gives the operations worth naming real words', () => {
     assert.equal(gatewayOpPhrase('tools.preflight'), 'Checking access');
     assert.equal(gatewayOpPhrase('media.image_ocr'), 'Reading a picture');

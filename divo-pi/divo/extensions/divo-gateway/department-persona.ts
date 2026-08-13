@@ -1,5 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { interruptedWorkPolicy } from "../../runtime.mjs";
+import {
+	parseSurfaceCapabilities,
+	presentationPolicy,
+	type DivoSurfaceCapabilities,
+} from "./presentation-policy.ts";
 
 const COMPANY_PERSONA_TAG = "<divo_company_persona>";
 const DEPARTMENT_PERSONA_OPEN_TAG = "<divo_department_persona>";
@@ -18,6 +23,61 @@ const memberDepartmentsBlock = /\n?<divo_member_departments>[\s\S]*?<\/divo_memb
 const capabilityBootstrapBlock = /\n?<divo_capability_bootstrap>[\s\S]*?<\/divo_capability_bootstrap>\n?/g;
 const responseLanguageBlock = /\n?<divo_response_language_policy>[\s\S]*?<\/divo_response_language_policy>\n?/g;
 const personalMemoryBlock = /\n?<divo_personal_memory>[\s\S]*?<\/divo_personal_memory>\n?/g;
+const presentationPolicyBlock = /\n?<divo_presentation_policy>[\s\S]*?<\/divo_presentation_policy>\n?/g;
+
+/**
+ * Pi's own always-on guidelines, removed before Divo says anything about how to
+ * present an answer.
+ *
+ * Both are presentation instructions, both are unconditional, and Divo cannot
+ * argue with them from further down the prompt — the model just gets two rules
+ * about the same thing. "Be concise" pre-empts the surface policy that is the
+ * whole point of this design; "Show file paths clearly" is the exact opposite of
+ * what Divo must say on a surface that cannot open a file.
+ *
+ * Left in place: everything about how to use tools. Pi is right about that.
+ */
+const PI_PRESENTATION_GUIDELINES = [
+	"- Be concise in your responses\n",
+	"- Show file paths clearly when working with files\n",
+];
+
+/**
+ * Pi's pointer to its own README, docs and examples.
+ *
+ * It is guidance for someone hacking on the harness. Divo's user is asking about
+ * their invoices; every token of it is spent on a question they will never ask,
+ * on every turn.
+ */
+const PI_DOCUMENTATION_BLOCK =
+	/\n?Pi documentation \(read only when the user asks about pi itself[\s\S]*?related docs \(e\.g\., tui\.md for TUI API details\)/;
+
+/**
+ * Strip the parts of Pi's base prompt that speak for Divo without being asked.
+ *
+ * Done here, on the string Divo already rewrites, rather than in Pi's core: the
+ * base prompt is upstream code, and a fork that edits it pays for that at every
+ * merge. If a marker stops matching, the strip silently does nothing — which is
+ * why `divoPromptStripReport` exists and the caller logs it.
+ */
+function stripPiAuthoredPresentation(prompt: string): string {
+	let result = prompt;
+	for (const guideline of PI_PRESENTATION_GUIDELINES) {
+		result = result.replace(guideline, "");
+	}
+	return result.replace(PI_DOCUMENTATION_BLOCK, "");
+}
+
+/** Which of the strips above actually matched, so a silent miss is visible. */
+export function divoPromptStripReport(prompt: string): {
+	guidelines: number;
+	documentation: boolean;
+} {
+	return {
+		guidelines: PI_PRESENTATION_GUIDELINES.filter((g) => prompt.includes(g)).length,
+		documentation: PI_DOCUMENTATION_BLOCK.test(prompt),
+	};
+}
 const MAX_MEMBER_DEPARTMENTS = 50;
 const MAX_MEMBER_DEPARTMENT_NAME_LENGTH = 120;
 const MAX_PERSONAL_MEMORY_FACTS = 12;
@@ -43,6 +103,8 @@ export interface DivoDepartmentPersonaContext {
 		clarificationShown: boolean;
 	} | null;
 	capabilityBootstrap?: DivoCapabilityBootstrap | null;
+	/** What the surface this run answers on can carry. Absent on an old backend. */
+	surface?: DivoSurfaceCapabilities | null;
 }
 
 export interface DivoCapabilityBootstrap {
@@ -112,12 +174,14 @@ export async function readDepartmentPersonaContext(
 		const personalMemory = parsePersonalMemory(data.personalMemory);
 		const interruptedWork = parseInterruptedWork(data.interruptedWork);
 		const capabilityBootstrap = parseCapabilityBootstrap(data.capabilityBootstrap);
+		const surface = parseSurfaceCapabilities(data.surface);
 		if (
 			typeof data.personaPrompt !== "string"
 			&& departments.length === 0
 			&& personalMemory.length === 0
 			&& !interruptedWork
 			&& !capabilityBootstrap
+			&& !surface
 		) return null;
 		return {
 			departmentId: typeof data.departmentId === "string" ? data.departmentId : null,
@@ -128,6 +192,7 @@ export async function readDepartmentPersonaContext(
 			...(personalMemory.length > 0 ? { personalMemory } : {}),
 			...(interruptedWork ? { interruptedWork } : {}),
 			...(capabilityBootstrap ? { capabilityBootstrap } : {}),
+			...(surface ? { surface } : {}),
 		};
 	} catch {
 		return null;
@@ -140,13 +205,14 @@ export function composeDivoSystemPrompt(
 	departmentContext: DivoDepartmentPersonaContext | null,
 	options: { nativeSkills?: boolean } = {},
 ): string {
-	const withoutDivoContext = systemPrompt
+	const withoutDivoContext = stripPiAuthoredPresentation(systemPrompt)
 		.replace(departmentPersonaBlock, "")
 		.replace(memberDepartmentsBlock, "")
 		.replace(capabilityBootstrapBlock, "")
 		.replace(responseLanguageBlock, "")
 		.replace(personalMemoryBlock, "")
 		.replace(interruptedWorkPolicyBlock, "")
+		.replace(presentationPolicyBlock, "")
 		.trim();
 	const withCompanyPersona = withoutDivoContext.includes(COMPANY_PERSONA_TAG)
 		? withoutDivoContext
@@ -166,6 +232,10 @@ export function composeDivoSystemPrompt(
 		memberDepartments,
 		personalMemory,
 		interruptedWorkPolicy(departmentContext?.interruptedWork),
+		// Last of the Divo blocks and directly above the language policy: how to
+		// present an answer is the final word on shape, and it must not be
+		// buried under the persona it modifies.
+		departmentContext?.surface ? presentationPolicy(departmentContext.surface) : "",
 		DIVO_ENGLISH_RESPONSE_POLICY,
 	]
 		.filter(Boolean)
@@ -224,9 +294,9 @@ function formatCapabilityBootstrap(
 	const lines = [
 		CAPABILITY_BOOTSTRAP_OPEN_TAG,
 		nativeSkills
-			? "This is a compact backend-generated, RBAC-filtered account and routing catalogue. Your registered divo_* tools are the capability list, and Pi's available_skills list is the skill index. This catalogue is guidance, not a permission grant; the backend validates every invocation against current policy."
-			: "This is a compact backend-generated, RBAC-filtered account and routing catalogue. Your registered divo_* tools are the capability list. It is guidance, not a permission grant; the backend validates every invocation against current policy.",
-		"AUTHORITATIVE CAPABILITY-REPORTING RULE: describe permitted operations only from the actions named on each registered divo_* tool. Skill names and descriptions explain workflows, not permissions; never claim an operation mentioned by a skill when that operation is absent from the tool's actions.",
+			? "This is a compact backend-generated, RBAC-filtered account and routing catalogue. Permanent divo_* tools describe what Divo can attempt, and Pi's available_skills list is the skill index. This catalogue is guidance, not a permission grant; the backend validates every invocation against current policy."
+			: "This is a compact backend-generated, RBAC-filtered account and routing catalogue. Permanent divo_* tools describe what Divo can attempt. This catalogue is guidance, not a permission grant; the backend validates every invocation against current policy.",
+		"AUTHORITATIVE CAPABILITY-REPORTING RULE: a permanent divo_* tool and its operations prove that a capability exists, not that this member is permitted to use it. The RBAC-filtered families below are current routing context, and the backend's invocation result is the final permission decision. Skill names and descriptions explain workflows, not permissions.",
 		`Department function: ${safeInline(bootstrap.departmentFunction)}`,
 		`Company role: ${safeInline(bootstrap.companyRole)}`,
 		`Department role: ${safeInline(bootstrap.departmentRole)}`,
@@ -244,12 +314,11 @@ function formatCapabilityBootstrap(
 		}
 	}
 
-	// Each tool's id, description, and permitted actions now reach the model as a
-	// registered typed tool, which is the channel the provider constrains
-	// generation against. Repeating them here spent tokens on a second, weaker
-	// copy of the same three facts. What survives is what a tool definition
-	// cannot express: which connection provider a family needs, whether it
-	// benefits from specialist guidance, and the finance routing prior.
+	// Each tool's identity, description, and possible operations reach the model
+	// through its permanent Pi-native definition. Repeating them here would be a
+	// second, weaker copy. The RBAC-filtered family list supplies what that static
+	// definition cannot: current reachability, connection requirements,
+	// specialist guidance, and the finance routing prior.
 	if (bootstrap.families?.length) {
 		lines.push("", "Governed capability families (connection and skill requirements):");
 		for (const family of bootstrap.families) {
@@ -473,8 +542,9 @@ function parseCapabilityBootstrap(candidate: unknown): DivoCapabilityBootstrap |
 						: [];
 				})
 				: [];
-			// The leaf tools are no longer rendered — each is a registered typed tool
-			// — but they still decide whether the family is listed at all. A family
+			// Leaf definitions are permanent Pi-native tools and are not repeated in
+			// this prompt, but their RBAC-filtered actions still decide whether the family
+			// is listed at all. A family
 			// whose every tool was filtered out by RBAC is one this member cannot
 			// reach, so it must not appear as an available capability.
 			if (tools.length === 0) return [];

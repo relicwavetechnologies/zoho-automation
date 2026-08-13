@@ -8,6 +8,7 @@ import {
 	type GatewayRequestBody,
 	type GatewayResponseBody,
 } from "./gateway-client.ts";
+import type { DivoRuntimeChannel } from "./run-correlation.ts";
 
 export interface GatewayExecutionDependencies {
 	callGateway: typeof callDivoGateway;
@@ -20,14 +21,15 @@ const DEFAULT_DEPENDENCIES: GatewayExecutionDependencies = {
 };
 
 export interface GatewayExecutionContext extends ApprovalContext {
-	runtimeChannel?: "lark";
+	runtimeChannel?: DivoRuntimeChannel;
 	resultMode?: "local-file";
 }
 
 /**
  * Execute one model-requested gateway operation. Desktop writes use the
- * backend-bound prepared-intent confirmation protocol. Lark skips that local
- * UI step because backend RBAC and HITL are the sole authority for cloud runs.
+ * backend-bound prepared-intent confirmation protocol. A backend-driven run
+ * skips that local UI step because backend RBAC and HITL are the sole authority
+ * for cloud runs — on every channel, not only Lark.
  */
 export async function executeGatewayRequest(
 	config: DivoGatewayConfig,
@@ -41,7 +43,7 @@ export async function executeGatewayRequest(
 		signal: ctx.signal,
 		...(ctx.resultMode ? { resultMode: ctx.resultMode } : {}),
 	});
-	if (result.body.status !== "local_approval_required" || ctx.runtimeChannel === "lark") {
+	if (result.body.status !== "local_approval_required" || ctx.runtimeChannel) {
 		return result;
 	}
 	if (request.op !== "tools.invoke") {

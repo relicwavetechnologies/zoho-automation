@@ -3,9 +3,12 @@ import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime
 import type { Logger } from '../../shared/logger';
 import type { ConversationHandle } from '../channels/channel.adapter';
 import type { IncomingMessage } from '../../domain/channel/incoming-message';
-import type { InteractiveAction } from '../../domain/channel/outbound';
+import type { ChannelPlanStepStatus, InteractiveAction } from '../../domain/channel/outbound';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
+import { isRuntimeChannel, type RuntimeChannel } from '../../domain/channel/runtime-channel';
+import { webThreadTitle } from '../../domain/channel/web-thread';
+import { canonicalToolIdForToolName } from '../../domain/tools/tool-id';
 import type { RunOrigin, RunOriginStore } from '../connections/run-origin.store';
 import type { KnowledgeLearningService } from '../knowledge/knowledge-learning.service';
 import type { Turn } from '../../domain/conversation/turn';
@@ -30,9 +33,16 @@ import {
   renderContextBlock,
   type GroupContextBlock,
 } from '../chat-context/group-context.hydrator';
+import type {
+  RunProgressChild,
+  RunProgressDetail,
+  RunProgressEvent,
+  RunProgressTodo,
+} from './run-progress';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
 const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
+const MAX_CONTROLLER_STREAM_LINE_BYTES = 2 * 1_024 * 1_024;
 
 function asyncIterableBody(source: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
   const iterator = source[Symbol.asyncIterator]();
@@ -127,7 +137,17 @@ export interface LarkPiRuntimeInput {
    */
   readonly sessionId?: string;
   readonly abortSignal?: AbortSignal;
-  readonly onProgress?: (event: LarkPiProgressEvent) => Promise<void> | void;
+  readonly onProgress?: (event: RunProgressEvent) => Promise<void> | void;
+  /**
+   * What the caller watched happen, asked for at the moment the answer is
+   * written down.
+   *
+   * A getter rather than a value because the record is only complete once the
+   * run is: the caller is accumulating it from `onProgress` while this method
+   * is still running. Optional, and Lark passes nothing — its work log lives in
+   * the card still sitting in the chat, so it has nowhere it needs to be saved.
+   */
+  readonly runRecord?: () => unknown;
 }
 
 export interface LarkPiRuntimeSessionInput {
@@ -138,62 +158,6 @@ export interface LarkPiRuntimeSessionInput {
   readonly abortSignal?: AbortSignal;
 }
 
-/** A step's status, in the vocabulary the status card renders. */
-export type LarkPiStepStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
-
-/** One subagent working under a tool call. */
-export interface LarkPiProgressChild {
-  readonly label: string;
-  readonly status: LarkPiStepStatus;
-  readonly detail?: string;
-}
-
-/** One line of the checklist the run declared. */
-export interface LarkPiProgressTodo {
-  readonly title: string;
-  readonly status: LarkPiStepStatus;
-}
-
-/**
- * What a tool reported about the work underneath it. Both arrive as tool
- * details from the container, so they travel on the same events rather than
- * each earning a channel of its own.
- */
-interface LarkPiProgressDetail {
-  readonly children?: readonly LarkPiProgressChild[];
-  readonly todos?: readonly LarkPiProgressTodo[];
-  /** What the call turned out to be — a skill's name, known only on the way out. */
-  readonly detail?: string;
-}
-
-export type LarkPiProgressEvent =
-  | {
-      readonly type: 'starting';
-      readonly stage: 'workspace' | 'container';
-      readonly label: string;
-    }
-  | { readonly type: 'ready' | 'thinking' | 'working' | 'writing' }
-  /** A whole sentence the model finished saying between its tool calls. */
-  | { readonly type: 'say'; readonly index: number; readonly text: string }
-  | {
-      readonly type: 'tool_start';
-      readonly callId: string;
-      readonly toolName: string;
-      readonly toolId?: string;
-      /** What this call is about, from the argument that names the work. */
-      readonly detail?: string;
-    }
-  | ({
-      readonly type: 'tool_progress';
-      readonly callId: string;
-      readonly toolName: string;
-    } & LarkPiProgressDetail)
-  | ({
-      readonly type: 'tool_end';
-      readonly callId: string;
-      readonly toolName: string;
-      readonly isError: boolean;
-    } & LarkPiProgressDetail);
 
 export class LarkPiRuntimeError extends Error {
   constructor(
@@ -206,15 +170,43 @@ export class LarkPiRuntimeError extends Error {
   }
 }
 
+/**
+ * A run this service drives is by definition backend-driven, so its channel is
+ * one we hold a lease vocabulary for. Failing loudly beats issuing a lease that
+ * claims the wrong surface — the container would then be told it can do things
+ * the reader's surface cannot show.
+ */
+function asRuntimeChannel(channel: string): RuntimeChannel {
+  if (!isRuntimeChannel(channel)) {
+    throw new LarkPiRuntimeError(
+      'unsupported_channel',
+      GENERIC_RUNTIME_FAILURE_MESSAGE,
+      `Pi runtime cannot be leased for channel "${channel}"`,
+    );
+  }
+  return channel;
+}
+
 const GENERIC_RUNTIME_FAILURE_MESSAGE =
   'Divo hit a temporary problem while finishing this request. Please try again.';
+const MODEL_CONNECTION_LOST_MESSAGE =
+  'Divo lost the model connection while finishing this request. Please try again.';
+const MODEL_CONNECTION_LOST_AFTER_ACTION_MESSAGE =
+  'Divo lost the model connection while handling a company-action step. It did not retry automatically, '
+  + 'so it would not duplicate the action. Check the latest result before trying again.';
 
-function controllerFailureMessage(code: string): string {
+function controllerFailureMessage(code: string, detail?: string): string {
   if (code === 'capacity_full') {
     return 'Divo is at full capacity right now. Please try again shortly.';
   }
   if (code === 'user_busy') {
     return 'Divo is finishing your previous request. This one will start automatically.';
+  }
+  if (code === 'model_continuation_failed') {
+    if (detail && /company action|duplicate action/i.test(detail)) {
+      return MODEL_CONNECTION_LOST_AFTER_ACTION_MESSAGE;
+    }
+    return MODEL_CONNECTION_LOST_MESSAGE;
   }
   return GENERIC_RUNTIME_FAILURE_MESSAGE;
 }
@@ -243,6 +235,12 @@ export interface LarkPiRuntimeServiceDeps {
         readonly dedupeKey?: string;
         readonly sourceMessageId?: string;
         readonly sourceRunId?: string;
+        readonly contentJson?: unknown;
+        readonly conversationDefaults?: {
+          readonly createdByUserId?: string;
+          readonly createdByEmail?: string;
+          readonly title?: string;
+        };
       },
     ): Promise<Result<Turn, InfraError>>;
   };
@@ -378,13 +376,17 @@ export class LarkPiRuntimeService {
     runContext: LarkPiRuntimeInput['runContext'],
     sessionId?: string,
   ) {
-    if (!runContext.tenantId || !runContext.userExternalId) {
-      return null;
-    }
     const minimumSessionExpiry = new Date(Date.now() + 5 * 60_000);
-    // A caller that issued a session for this run gets that one, not whichever
-    // is newest. The preference below exists for interactive turns and would
-    // otherwise hand a scheduled run the member's own sign-in.
+    // A caller that named the session gets that one, not whichever is newest.
+    //
+    // Checked before the Lark-identity requirement below, because naming a
+    // session is a stronger claim than being able to reconstruct one: the web
+    // hands over the exact session it authenticated the caller with, and a
+    // scheduled run hands over the machine session it minted. Neither has a Lark
+    // open id, and neither needs one — the row is already pinned to this member
+    // and this company. Ordering these the other way round is what made a web
+    // run report "your Divo cloud session is not active" while the person was
+    // demonstrably signed in.
     if (sessionId) {
       return this.deps.prisma.memberSession.findFirst({
         where: {
@@ -396,6 +398,11 @@ export class LarkPiRuntimeService {
         },
         select: { sessionId: true, expiresAt: true },
       });
+    }
+    // Without a named session the only way back to a row is the Lark identity
+    // pair, so a caller that has neither has nothing to look up.
+    if (!runContext.tenantId || !runContext.userExternalId) {
+      return null;
     }
     // A scheduled run mints its own session and revokes it when the run ends.
     // That row is the newest for the member, so a plain "latest session" lookup
@@ -589,7 +596,7 @@ export class LarkPiRuntimeService {
       where: {
         companyId: String(input.runContext.companyId),
         userId: String(input.runContext.userId),
-        channel: 'lark',
+        channel: input.incoming.channel,
         conversationKey: input.threadId,
         consumedAt: null,
         expiresAt: { gt: new Date() },
@@ -613,7 +620,7 @@ export class LarkPiRuntimeService {
       data: staged.map(descriptor => ({
         companyId: String(input.runContext.companyId),
         userId: String(input.runContext.userId),
-        channel: 'lark',
+        channel: input.incoming.channel,
         conversationKey: input.threadId,
         requestId: descriptor.requestId,
         fileId: descriptor.fileId,
@@ -638,6 +645,10 @@ export class LarkPiRuntimeService {
   ): string {
     const remainingSeconds = Math.floor((session.expiresAt.getTime() - Date.now()) / 1_000);
     return issuePiRuntimeLease({
+      // The surface this run answers on, carried all the way into the container
+      // so the presentation policy is built from it. Hard-coding it here is what
+      // made every backend-driven run look like Lark.
+      channel: asRuntimeChannel(input.incoming.channel),
       sessionId: session.sessionId,
       userId: String(input.runContext.userId),
       companyId: String(input.runContext.companyId),
@@ -672,6 +683,10 @@ export class LarkPiRuntimeService {
     if (!this.deps.runOrigins) return;
     // Every one of these is required to issue an authorization intent. A run
     // without them (a scheduled run, say) has no conversation to continue in.
+    //
+    // Genuinely Lark-only, and not a gap: a run origin is a Lark open id and
+    // tenant key, so that an OAuth card can be sent back into the chat this run
+    // came from. A web run resumes in its own tab and needs no such address.
     if (incoming.channel !== 'lark') return;
     if (!incoming.tenantKey || !incoming.userExternalId) return;
 
@@ -940,7 +955,7 @@ export class LarkPiRuntimeService {
       where: {
         companyId: String(input.runContext.companyId),
         userId: String(input.runContext.userId),
-        channel: 'lark',
+        channel: input.incoming.channel,
         conversationKey: input.threadId,
         consumedAt: null,
         expiresAt: { gt: new Date() },
@@ -990,7 +1005,7 @@ export class LarkPiRuntimeService {
         companyId: String(input.runContext.companyId),
         userId: String(input.runContext.userId),
         companyRole: String(input.runContext.companyRole),
-        channel: 'lark',
+        channel: input.incoming.channel,
         audience: input.incoming.chatType === 'group' ? 'shared' : 'private',
         abortSignal: signal,
       });
@@ -1111,11 +1126,11 @@ export class LarkPiRuntimeService {
     ) {
       try {
         await this.deps.knowledgeLearning.captureCompletedTurn({
-          sourceId: `lark:${input.incoming.traceId}`,
+          sourceId: `${input.incoming.channel}:${input.incoming.traceId}`,
           companyId: String(input.runContext.companyId),
           userId: String(input.runContext.userId),
           companyRole: String(input.runContext.companyRole),
-          channel: 'lark',
+          channel: input.incoming.channel,
           userMessages,
           assistantText,
         });
@@ -1158,52 +1173,84 @@ export class LarkPiRuntimeService {
     };
   }
 
+  /**
+   * Whether this run's exchange belongs in the durable conversation.
+   *
+   * A group room's transcript is held centrally rather than per member, and a
+   * scheduled run is Divo talking to itself on a timer — neither is somebody's
+   * conversation to come back to.
+   */
+  private persistableTurn(input: LarkPiRuntimeInput): {
+    readonly scope: { companyId: string; channel: string };
+    readonly chatId: string;
+    readonly messageId: string;
+    readonly text: string;
+  } | null {
+    const text = input.incoming.text.trim();
+    if (
+      input.incoming.chatType !== 'p2p'
+      || input.runContext.deliveryMode === 'scheduled_runtime_delivery'
+      || !text
+      || !this.deps.conversationHistory
+    ) return null;
+    return {
+      scope: {
+        companyId: String(input.runContext.companyId),
+        channel: input.incoming.channel,
+      },
+      chatId: input.threadId,
+      messageId: String(input.incoming.messageId),
+      text,
+    };
+  }
+
   private async persistPrivateConversation(
     input: LarkPiRuntimeInput,
     assistantText: string,
   ): Promise<string[]> {
-    const current = input.incoming.text.trim();
-    if (
-      input.incoming.chatType !== 'p2p'
-      || input.runContext.deliveryMode === 'scheduled_runtime_delivery'
-      || !current
-      || !this.deps.conversationHistory
-    ) return current ? [current] : [];
-
-    const scope = {
-      companyId: String(input.runContext.companyId),
-      channel: 'lark',
-    } as const;
-    const chatId = input.threadId;
-    const messageId = String(input.incoming.messageId);
+    const turn = this.persistableTurn(input);
+    if (!turn) {
+      const current = input.incoming.text.trim();
+      return current ? [current] : [];
+    }
     try {
-      const user = await this.deps.conversationHistory.appendTurn(chatId, {
+      const user = await this.deps.conversationHistory!.appendTurn(turn.chatId, {
         role: 'user',
-        content: current,
+        content: turn.text,
         timestamp: input.incoming.timestamp,
-      }, scope, {
-        dedupeKey: `lark:${messageId}:user`,
-        sourceMessageId: messageId,
+      }, turn.scope, {
+        dedupeKey: `${turn.scope.channel}:${turn.messageId}:user`,
+        sourceMessageId: turn.messageId,
         sourceRunId: String(input.incoming.traceId),
+        // Only used if this ask is what opens the conversation. A thread's
+        // owner and its name both date from its first message, and nothing
+        // later is allowed to change either by accident.
+        conversationDefaults: {
+          createdByUserId: String(input.runContext.userId),
+          ...(input.runContext.requesterEmail ? { createdByEmail: input.runContext.requesterEmail } : {}),
+          title: webThreadTitle(turn.text),
+        },
       });
       if (!user.ok) throw user.error;
 
-      const assistant = await this.deps.conversationHistory.appendTurn(chatId, {
+      const runRecord = input.runRecord?.();
+      const assistant = await this.deps.conversationHistory!.appendTurn(turn.chatId, {
         role: 'assistant',
         content: assistantText,
         timestamp: new Date().toISOString(),
-      }, scope, {
-        dedupeKey: `lark:${messageId}:assistant`,
-        sourceMessageId: messageId,
+      }, turn.scope, {
+        dedupeKey: `${turn.scope.channel}:${turn.messageId}:assistant`,
+        sourceMessageId: turn.messageId,
         sourceRunId: String(input.incoming.traceId),
+        ...(runRecord !== undefined ? { contentJson: runRecord } : {}),
       });
       if (!assistant.ok) throw assistant.error;
 
-      const history = await this.deps.conversationHistory.getHistory(chatId, 30, scope);
+      const history = await this.deps.conversationHistory!.getHistory(turn.chatId, 30, turn.scope);
       if (!history.ok) throw history.error;
       return history.value
-        .filter(turn => turn.role === 'user')
-        .map(turn => turn.content.trim())
+        .filter(item => item.role === 'user')
+        .map(item => item.content.trim())
         .filter(Boolean)
         .slice(-12);
     } catch (error) {
@@ -1211,7 +1258,7 @@ export class LarkPiRuntimeService {
         correlationId: input.incoming.traceId,
         error: String(error),
       });
-      return [current];
+      return [turn.text];
     }
   }
 
@@ -1342,15 +1389,21 @@ export class LarkPiRuntimeService {
     while (true) {
       const { value, done } = await reader.read();
       buffer += decoder.decode(value, { stream: !done });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-      for (const line of lines) await consume(line);
+      let newline = buffer.indexOf('\n');
+      while (newline >= 0) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        assertControllerStreamLineSize(line);
+        await consume(line);
+        newline = buffer.indexOf('\n');
+      }
+      assertControllerStreamLineSize(buffer);
       if (done) break;
     }
     await consume(buffer);
 
     if (streamError) {
-      const userMessage = controllerFailureMessage(streamError.code);
+      const userMessage = controllerFailureMessage(streamError.code, streamError.message);
       throw new LarkPiRuntimeError(streamError.code, userMessage, streamError.message);
     }
     if (!text) {
@@ -1361,6 +1414,15 @@ export class LarkPiRuntimeService {
     }
     return { text, protectedDataUsed, protectedReferences };
   }
+}
+
+function assertControllerStreamLineSize(line: string): void {
+  if (Buffer.byteLength(line, 'utf8') <= MAX_CONTROLLER_STREAM_LINE_BYTES) return;
+  throw new LarkPiRuntimeError(
+    'invalid_controller_stream',
+    GENERIC_RUNTIME_FAILURE_MESSAGE,
+    'Controller NDJSON frame exceeded the maximum line size',
+  );
 }
 
 const MAX_PROTECTED_RUN_REFERENCES = 100;
@@ -1502,9 +1564,9 @@ const STEP_STATUSES: ReadonlySet<string> = new Set([
 const MAX_PROGRESS_CHILDREN = 8;
 const MAX_PROGRESS_TODOS = 12;
 
-function safeStepStatus(value: unknown, fallback: LarkPiStepStatus): LarkPiStepStatus {
+function safeStepStatus(value: unknown, fallback: ChannelPlanStepStatus): ChannelPlanStepStatus {
   return typeof value === 'string' && STEP_STATUSES.has(value)
-    ? value as LarkPiStepStatus
+    ? value as ChannelPlanStepStatus
     : fallback;
 }
 
@@ -1513,10 +1575,10 @@ function safeStepStatus(value: unknown, fallback: LarkPiStepStatus): LarkPiStepS
  * status card says, so its detail arrays are re-validated and capped here the
  * same way every other field crossing this boundary is.
  */
-function safeProgressDetail(event: Record<string, unknown>): LarkPiProgressDetail {
+function safeProgressDetail(event: Record<string, unknown>): RunProgressDetail {
   const rawChildren = event['children'];
   const children = Array.isArray(rawChildren)
-    ? rawChildren.slice(0, MAX_PROGRESS_CHILDREN).flatMap((entry): LarkPiProgressChild[] => {
+    ? rawChildren.slice(0, MAX_PROGRESS_CHILDREN).flatMap((entry): RunProgressChild[] => {
         const row = entry as Record<string, unknown> | null;
         const label = safeProgressString(row?.['label'], 80);
         if (!label) return [];
@@ -1531,7 +1593,7 @@ function safeProgressDetail(event: Record<string, unknown>): LarkPiProgressDetai
 
   const rawTodos = event['todos'];
   const todos = Array.isArray(rawTodos)
-    ? rawTodos.slice(0, MAX_PROGRESS_TODOS).flatMap((entry): LarkPiProgressTodo[] => {
+    ? rawTodos.slice(0, MAX_PROGRESS_TODOS).flatMap((entry): RunProgressTodo[] => {
         const row = entry as Record<string, unknown> | null;
         const title = safeProgressString(row?.['title'], 80);
         if (!title) return [];
@@ -1548,11 +1610,35 @@ function safeProgressDetail(event: Record<string, unknown>): LarkPiProgressDetai
   };
 }
 
-function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
+/**
+ * One frame from the container, in the vocabulary the timeline reducer reads.
+ *
+ * Exported for its tests: this is where a run's identity is established, and
+ * everything downstream — the product name on the row, the vendor mark beside
+ * it — is only as good as what this function recovers.
+ */
+export function parseProgressEvent(value: unknown): RunProgressEvent | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const event = value as Record<string, unknown>;
   const type = event['type'];
-  if (type === 'ready' || type === 'thinking' || type === 'working' || type === 'writing') return { type };
+  if (
+    type === 'ready' || type === 'thinking' || type === 'working'
+    || type === 'writing' || type === 'answer_reset'
+  ) return { type };
+  if (type === 'answer_delta') {
+    const delta = event['delta'];
+    if (typeof delta !== 'string' || delta.length === 0 || delta.length > 8_192) return undefined;
+    const rawIndex = event['index'];
+    return {
+      type,
+      index: typeof rawIndex === 'number' && Number.isInteger(rawIndex) && rawIndex >= 0
+        ? rawIndex
+        : 0,
+      // Whitespace is content in Markdown. Unlike status labels, an answer
+      // delta must not be trimmed or flattened while crossing this boundary.
+      delta,
+    };
+  }
   if (type === 'starting') {
     const stage = event['stage'];
     const label = safeProgressString(event['label']);
@@ -1564,8 +1650,12 @@ function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
   // Free text the model wrote, so it is capped and flattened here the same way
   // every other string crossing this boundary is — the container is trusted to
   // run the work, not to decide how much of a chat card it may occupy.
-  if (type === 'say') {
-    const text = safeProgressString(event['text'], 200);
+  if (type === 'say' || type === 'thought') {
+    /* Reasoning is a paragraph, not a sentence, and it is not on a card — so it
+       keeps the container's own larger bound. Capping it at a `say`'s 200 here
+       would undo that on the way in and freeze the row at its first two
+       sentences, which is the failure this pair of numbers exists to avoid. */
+    const text = safeProgressString(event['text'], type === 'thought' ? 1_200 : 200);
     if (!text) return undefined;
     const rawIndex = event['index'];
     return {
@@ -1579,9 +1669,15 @@ function parseProgressEvent(value: unknown): LarkPiProgressEvent | undefined {
   if (type === 'tool_start') {
     const callId = safeProgressString(event['callId'], 100);
     const toolName = safeProgressString(event['toolName'], 80);
-    const toolId = safeProgressString(event['toolId'], 80);
     const detail = safeProgressString(event['detail'], 64);
     if (!callId || !toolName) return undefined;
+    // A governed call is identified by the tool it ran. The container sends the
+    // id explicitly only when its arguments carry one; typed tools do not, and
+    // carry it in the name instead — so the name is resolved against the
+    // canonical table here rather than left for each surface to parse out of
+    // the English label further downstream.
+    const toolId = safeProgressString(event['toolId'], 80)
+      ?? canonicalToolIdForToolName(toolName);
     return {
       type, callId, toolName,
       ...(toolId ? { toolId } : {}),

@@ -19,6 +19,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { randomUUID } from 'crypto';
+import { asChannelKey } from '../../domain/channel/runtime-channel';
 import type { Logger } from '../../shared/logger';
 import { LlmProxyService, type ProviderUsage } from '../../application/proxy/llm-proxy.service';
 import { canonicalModel, providerOf, type ModelProvider } from '../../application/observability/pricing';
@@ -121,7 +122,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     const companyId = res.locals['companyId'] as string | undefined;
     const userId = res.locals['userId'] as string | undefined;
     if (!companyId || !userId) { res.status(401).json({ error: { message: 'Unauthenticated', type: 'auth' } }); return; }
-    const channel = res.locals['channel'] === 'lark' ? 'lark' : 'desktop';
+    const channel = asChannelKey(res.locals['channel']);
     const runtimeThreadId = res.locals['runtimeThreadId'] as string | undefined;
 
     const startedAt = Date.now();

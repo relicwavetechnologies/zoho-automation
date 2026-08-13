@@ -1588,13 +1588,18 @@ describe('desktop auth routes', () => {
     });
 
     assert.equal(result.status, 200);
-    assert.deepEqual(result.body.data, {
+    const { surface, ...context } = result.body.data as Record<string, unknown>;
+    assert.deepEqual(context, {
       departmentId: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd',
       departmentName: 'Finance',
       personaPrompt: 'Prefer verified records.',
       version: '2026-07-11T10:00:00.000Z',
       personalMemory: [],
     });
+    // The container builds its presentation policy from this and nothing else.
+    // Absent, it would say nothing about the surface and Divo would go back to
+    // guessing — which is the state this whole design replaced.
+    assert.equal((surface as Record<string, unknown>)['key'], 'desktop');
   });
 
   it('returns only active, current, user-owned personal memory without requiring a department', async () => {
@@ -1612,7 +1617,8 @@ describe('desktop auth routes', () => {
     });
 
     assert.equal(result.status, 200);
-    assert.deepEqual(result.body.data, {
+    const { surface: _surface, ...context } = result.body.data as Record<string, unknown>;
+    assert.deepEqual(context, {
       departmentId: null,
       departmentName: null,
       personaPrompt: '',
@@ -2010,7 +2016,8 @@ describe('desktop auth routes', () => {
     });
 
     assert.equal(result.status, 200);
-    assert.deepEqual(result.body.data, {
+    const { surface: _surface, ...context } = result.body.data as Record<string, unknown>;
+    assert.deepEqual(context, {
       departmentId: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd',
       departmentName: 'Finance',
       personaPrompt: '',

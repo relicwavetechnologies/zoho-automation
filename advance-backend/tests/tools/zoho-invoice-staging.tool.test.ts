@@ -145,6 +145,22 @@ describe('invoices must be staged', () => {
     assert.match((result as any).value.stagedSummary, /Retainer/);
   });
 
+  it('blocks a draft whose invoice number Zoho would reject later', async () => {
+    let mutated = false;
+    const store = makeStore();
+    const tool = makeTool({ store, booksClient: makeBooksClient(() => { mutated = true; }) });
+
+    const result = await tool.execute({
+      op: 'stage_invoice',
+      fields: { ...soundPayload, invoice_number: 'DIVO-QA-INV-20260814-001' },
+    } as never, ctx);
+
+    assert.equal(result.ok, true);
+    assert.equal((result as any).value.success, false);
+    assert.equal(mutated, false, 'staging must not call Zoho');
+    assert.match((result as any).value.stagedSummary, /allow at most 16/);
+  });
+
   it('will not create a draft the reviewer rejected', async () => {
     const store = makeStore();
     const tool = makeTool({

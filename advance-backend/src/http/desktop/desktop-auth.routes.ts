@@ -35,6 +35,8 @@ import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../appl
 import { zohoServicesForScopes } from '../../domain/zoho/zoho-scope';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
+import { asChannelKey, isRuntimeChannel } from '../../domain/channel/runtime-channel';
+import { surfaceCapabilities } from '../../domain/channel/surface-capabilities';
 import { DEFAULT_ALLOWED_MODELS, PROXY_MODEL_SPECS, RUNTIME_MODEL_PREFERENCE } from '../../application/observability/pricing';
 import { CONNECTION_PROVIDER_IDS } from '../../domain/connections/connection-provider';
 import { googleScopesToRequestForToolIds } from '../../application/google/google-scope-request';
@@ -1497,9 +1499,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           userId, companyId,
           companyName: company?.name ?? null,
           role: res.locals['aiRole'],
-          runtime: res.locals['channel'] === 'lark'
+          runtime: isRuntimeChannel(res.locals['channel'])
             ? {
-                channel: 'lark',
+                channel: res.locals['channel'],
                 instanceId: res.locals['runtimeInstanceId'],
                 threadId: res.locals['runtimeThreadId'],
                 runId: res.locals['runtimeRunId'],
@@ -1857,6 +1859,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           personaPrompt: '',
           version: null,
           personalMemory: await personalMemoryLoad,
+          surface: surfaceCapabilities(asChannelKey(res.locals['channel'])),
         },
       });
       return;
@@ -2047,6 +2050,10 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
             managerPersonaVersion,
           ].filter((value): value is string => Boolean(value)).join('|') || null,
           personalMemory,
+          // What the surface this run answers on can carry. The container turns
+          // it into one prompt block; nothing else in the system is allowed to
+          // decide how a channel changes what Divo says.
+          surface: surfaceCapabilities(asChannelKey(res.locals['channel'])),
           ...(capabilityBootstrap ? { capabilityBootstrap } : {}),
           ...(nativeSkillBootstrap ? { nativeSkillBootstrap } : {}),
         },
