@@ -51,6 +51,36 @@ const COMPANY_ROLE_LABEL: Record<string, string> = {
 
 type ScreenProps = { persona: Persona; replay: number; toast: Toast; go: (screen: string) => void }
 
+type ZohoConnectPreset = {
+  intent: 'connect' | 'rotate'
+  label?: string
+  clientId?: string | null
+  accountsBaseUrl?: string | null
+  previousAccess?: ZohoSelfClientAccess
+  access?: ZohoSelfClientAccess
+}
+
+function zohoAccessFromScopes(scopes?: readonly string[]): ZohoSelfClientAccess {
+  return scopes?.length && scopes.every((scope) => /\.READ$/i.test(scope))
+    ? 'read_only'
+    : 'read_write'
+}
+
+function zohoSuggestedRotationAccess(): ZohoSelfClientAccess {
+  return 'read_write'
+}
+
+function zohoPresetFromConnection(connection: LiveConnection): ZohoConnectPreset {
+  return {
+    intent: 'rotate',
+    label: connection.label,
+    clientId: connection.zohoClientId ?? null,
+    accountsBaseUrl: connection.zohoAccountsBaseUrl ?? null,
+    previousAccess: zohoAccessFromScopes(connection.scopes),
+    access: zohoSuggestedRotationAccess(),
+  }
+}
+
 /* ══ Home ══════════════════════════════════════════════
    Deliberately NOT four KPI tiles. The first thing on the page is the small
    set of items that actually want a human; the numbers come after, once,
@@ -264,7 +294,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
   // Which provider is waiting on a name before its sign-in window opens.
   const [naming, setNaming] = useState<Provider | null>(null)
   const [shopifyOpen, setShopifyOpen] = useState(false)
-  const [zohoOpen, setZohoOpen] = useState(false)
+  const [zohoOpen, setZohoOpen] = useState<ZohoConnectPreset | null>(null)
   const { byProvider, loading, unreachable, connecting, connect, disconnect, refresh } = useConnections()
   const shopifyStatus = useShopifyCompanyStatus()
   const { session } = useAdminAuth()
@@ -284,7 +314,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
   const startConnect = (provider: Provider, existing: number) => {
     // Zoho takes a detour: it can be connected two different ways, and which
     // one you want is not something the button can infer.
-    if (provider === 'zoho') setZohoOpen(true)
+    if (provider === 'zoho') setZohoOpen({ intent: 'connect' })
     else if (LABELLED.includes(provider) && existing > 0) setNaming(provider)
     else void connect(provider)
   }
@@ -581,6 +611,10 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
           // connection by Google account, so re-approving the same one updates
           // it in place rather than making a second row.
           onReconnect={() => { void connect(open.provider) }}
+          onRotateZoho={(connection) => {
+            setZohoOpen(zohoPresetFromConnection(connection))
+            setOpen(null)
+          }}
           onDisconnect={async (connectionId) => {
             await disconnect(open.provider, connectionId)
             toast(`${providerName(open.provider)} disconnected`)
@@ -601,8 +635,9 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
       {zohoOpen ? (
         <ZohoConnectDialog
           toast={toast}
-          onClose={() => setZohoOpen(false)}
-          onOAuth={() => { setZohoOpen(false); void connect('zoho') }}
+          preset={zohoOpen}
+          onClose={() => setZohoOpen(null)}
+          onOAuth={() => { setZohoOpen(null); void connect('zoho') }}
           onConnected={refresh}
         />
       ) : null}
@@ -1227,12 +1262,13 @@ function GrantAccess({ candidates, accessLevels, busy, onGrant }: {
   )
 }
 
-function ConnectionDrawer({ provider, connection, onClose, onConnect, onReconnect, onDisconnect, toast }: {
+function ConnectionDrawer({ provider, connection, onClose, onConnect, onReconnect, onRotateZoho, onDisconnect, toast }: {
   provider: Provider
   connection?: LiveConnection
   onClose: () => void
   onConnect: () => void
   onReconnect: () => void
+  onRotateZoho?: (connection: LiveConnection) => void
   onDisconnect: (connectionId: string) => Promise<void>
   toast: Toast
 }) {
@@ -1252,6 +1288,9 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onReconnec
   // how the approval rules read — "me" rather than "whoever connected it".
   const isOwner = owner !== null && owner.id === session?.userId
   const scopes = manage.data?.connection.scopes ?? connection?.scopes ?? []
+  const canRotateZoho = provider === 'zoho' && connection && (connection.canManage === true || Boolean(manage.data))
+  const zohoClientId = manage.data?.connection.zohoClientId ?? connection?.zohoClientId ?? null
+  const zohoClientSecretStored = manage.data?.connection.zohoClientSecretStored ?? connection?.zohoClientSecretStored ?? false
 
   return (
     <>
@@ -1433,10 +1472,28 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onReconnec
             <div className="kv"><span className="k">Sign-in method</span><span className="v">{def.auth}</span></div>
           </div>
 
-          {/* Reconnect is not repair — nothing here can tell a stale token from
-              a live one. It is how you change what was granted, which is the
-              only reason to sign in again to an account that already works. */}
-          {def.memberCanConnect ? (
+          {canRotateZoho ? (
+            <div className="ws-rows" style={{ marginTop: 20 }}>
+              <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }}>
+                <div className="ws-row-main">
+                  <b>{scopes.length > 0 && scopes.every((scope) => /\.READ$/i.test(scope)) ? 'Reconnect with write access' : 'Rotate Zoho token'}</b>
+                  <p>
+                    Paste the Self Client secret and a fresh grant token. Divo will exchange the grant, encrypt the
+                    new tokens, and replace this connection when the Zoho org and client ID match.
+                    {zohoClientId ? <> Client ID: <code>{zohoClientId}</code>.</> : null}
+                    {zohoClientSecretStored ? ' The stored secret is never shown again.' : ''}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => { if (connection) onRotateZoho?.(connection) }}
+                >
+                  <RotateCw size={14} />Update access
+                </button>
+              </div>
+            </div>
+          ) : def.memberCanConnect ? (
             <div className="ws-rows" style={{ marginTop: 20 }}>
               <div className="ws-row" style={{ paddingLeft: 0, paddingRight: 0 }}>
                 <div className="ws-row-main">
@@ -2119,20 +2176,26 @@ export function YouSettings({ persona, replay }: ScreenProps) {
  * Ported from the desktop app, which had this and the web did not. Anyone
  * administering Zoho from a browser was simply told to go and use the desktop.
  */
-function ZohoConnectDialog({ toast, onClose, onOAuth, onConnected }: {
+function ZohoConnectDialog({ toast, preset, onClose, onOAuth, onConnected }: {
   toast: Toast
+  preset: ZohoConnectPreset
   onClose: () => void
   onOAuth: () => void
   onConnected: () => Promise<void>
 }) {
   const zoho = useZohoSelfClientConnect()
-  const [mode, setMode] = useState<'choose' | 'self_client'>('choose')
-  const [label, setLabel] = useState('')
-  const [dataCentre, setDataCentre] = useState<string>(ZOHO_DATA_CENTRES[0].value)
-  const [clientId, setClientId] = useState('')
+  const [mode, setMode] = useState<'choose' | 'self_client'>(preset.intent === 'rotate' ? 'self_client' : 'choose')
+  const [label, setLabel] = useState(preset.label ?? '')
+  const [dataCentre, setDataCentre] = useState<string>(
+    preset.accountsBaseUrl && ZOHO_DATA_CENTRES.some((dc) => dc.value === preset.accountsBaseUrl)
+      ? preset.accountsBaseUrl
+      : ZOHO_DATA_CENTRES[0].value,
+  )
+  const [clientId, setClientId] = useState(preset.clientId ?? '')
   const [clientSecret, setClientSecret] = useState('')
   const [grantToken, setGrantToken] = useState('')
-  const [access, setAccess] = useState<ZohoSelfClientAccess>('read_only')
+  const [access, setAccess] = useState<ZohoSelfClientAccess>(preset.access ?? 'read_only')
+  const rotating = preset.intent === 'rotate'
 
   const finish = async () => {
     if (!clientId.trim() || !clientSecret.trim() || !grantToken.trim()) {
@@ -2149,7 +2212,7 @@ function ZohoConnectDialog({ toast, onClose, onOAuth, onConnected }: {
         ...(label.trim() ? { label: label.trim() } : {}),
       })
       await onConnected()
-      toast(`Zoho connected: ${result.label}`)
+      toast(rotating ? `Zoho access updated: ${result.label}` : `Zoho connected: ${result.label}`)
       onClose()
     } catch (e) {
       toast(e instanceof Error ? e.message : 'Could not connect Zoho', 'error')
@@ -2162,9 +2225,11 @@ function ZohoConnectDialog({ toast, onClose, onOAuth, onConnected }: {
       <div className="ws-modal-wrap">
         <div className="ws-modal" role="dialog" aria-label="Connect Zoho">
           <div className="ws-modal-h">
-            <h2>Connect Zoho</h2>
+            <h2>{rotating ? 'Update Zoho access' : 'Connect Zoho'}</h2>
             <p>
-              {mode === 'choose'
+              {rotating
+                ? 'Paste the Self Client secret and a fresh grant token. Choose read and write to let Divo create and edit Zoho records.'
+                : mode === 'choose'
                 ? 'Sign in with Zoho, or hand over Self Client credentials if a consent screen is not available to you.'
                 : 'Register a Self Client in the Zoho API console, then generate a grant and paste it here before it expires.'}
             </p>
@@ -2264,12 +2329,13 @@ function ZohoConnectDialog({ toast, onClose, onOAuth, onConnected }: {
                   ? 'Divo will let this connection create and edit records. The grant still bounds it — Zoho refuses a write the scopes never covered.'
                   : 'Divo will only read through this connection. Choose read and write if it should create or edit records.'}
                 {' '}Credentials go straight to the backend, encrypted, and are never shown here again.
+                {rotating && preset.previousAccess ? ` Current saved access is ${preset.previousAccess === 'read_only' ? 'read-only' : 'read/write'}.` : ''}
               </p>
             </div>
           )}
 
           <div className="ws-modal-f">
-            {mode === 'self_client' ? (
+            {mode === 'self_client' && !rotating ? (
               <button type="button" className="btn" onClick={() => setMode('choose')} disabled={zoho.saving}>Back</button>
             ) : null}
             <button type="button" className="btn" onClick={onClose} disabled={zoho.saving}>Cancel</button>
@@ -2280,7 +2346,7 @@ function ZohoConnectDialog({ toast, onClose, onOAuth, onConnected }: {
                 disabled={zoho.saving || !clientId.trim() || !clientSecret.trim() || !grantToken.trim()}
                 onClick={() => void finish()}
               >
-                {zoho.saving ? 'Connecting…' : 'Connect'}
+                {zoho.saving ? 'Saving…' : rotating ? 'Update access' : 'Connect'}
               </button>
             ) : null}
           </div>
