@@ -105,6 +105,8 @@ export class GoogleConnectionAuthorizationService {
     if (!created.ok) throw created.error;
     if (created.value.outcome === 'already_pending') return created.value;
 
+    const scopes = googleScopesToRequestForToolIds(input.requestedToolIds);
+
     return {
       outcome: 'issued',
       intentId: created.value.intentId,
@@ -116,7 +118,8 @@ export class GoogleConnectionAuthorizationService {
         // set — the behaviour every authorization had before scopes were
         // narrowed, so an unmapped tool degrades to the old screen rather than
         // to a connection that cannot do anything.
-        scopes: [...googleScopesToRequestForToolIds(input.requestedToolIds)],
+        scopes: [...scopes],
+        ...(scopes.length > 0 ? { includeGrantedScopes: false } : {}),
       }),
       expiresAt: created.value.expiresAt,
       correlationId: created.value.correlationId,

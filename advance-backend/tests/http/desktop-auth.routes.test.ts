@@ -1140,11 +1140,13 @@ describe('desktop auth routes', () => {
 
   it('starts mail brief after desktop Gmail OAuth', async () => {
     let authorizeScopes: string[] | undefined;
+    let includeGrantedScopes: boolean | undefined;
     let mailBriefInput: Record<string, unknown> | undefined;
     const router = createDesktopAuthRoutes(makeDeps({
       googleOAuthService: {
-        getAuthorizeUrl: ({ state, redirectUri, scopes }: { state: string; redirectUri: string; scopes?: string[] }) => {
+        getAuthorizeUrl: ({ state, redirectUri, scopes, includeGrantedScopes: incremental }: { state: string; redirectUri: string; scopes?: string[]; includeGrantedScopes?: boolean }) => {
           authorizeScopes = scopes;
+          includeGrantedScopes = incremental;
           return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
         },
         exchangeAuthorizationCode: async () => ({
@@ -1194,6 +1196,7 @@ describe('desktop auth routes', () => {
       'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/gmail.labels',
     ]);
+    assert.equal(includeGrantedScopes, false);
     assert.deepEqual(mailBriefInput, {
       companyId: 'company-1',
       userId: 'user-1',

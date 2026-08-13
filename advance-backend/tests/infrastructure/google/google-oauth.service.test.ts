@@ -90,12 +90,14 @@ describe('GoogleOAuthService', () => {
   describe('getAuthorizeUrl()', () => {
     it('builds correct consent URL', () => {
       const url = svc.getAuthorizeUrl({ state: 'abc123' });
+      const parsed = new URL(url);
       const clientId = BASE_ENV.GOOGLE_OAUTH_CLIENT_ID as string;
       assert(url.includes('accounts.google.com'));
       assert(url.includes(`client_id=${encodeURIComponent(clientId)}`));
       assert(url.includes('state=abc123'));
       assert(url.includes('access_type=offline'));
       assert(url.includes('response_type=code'));
+      assert.equal(parsed.searchParams.get('include_granted_scopes'), 'true');
     });
 
     it('requests the reviewed complete Workspace scope set from Divo OAuth', () => {
@@ -113,6 +115,16 @@ describe('GoogleOAuthService', () => {
       const url = svc.getAuthorizeUrl({ state: 'x', redirectUri: 'https://custom.example.com/cb' });
       assert(url.includes('redirect_uri=https'));
       assert(url.includes('custom.example.com'));
+    });
+
+    it('can keep a narrow consent screen separate from older grants', () => {
+      const url = new URL(svc.getAuthorizeUrl({
+        state: 'mail-only',
+        scopes: ['openid', GOOGLE_SCOPE.gmailModify],
+        includeGrantedScopes: false,
+      }));
+      assert.equal(url.searchParams.get('include_granted_scopes'), 'false');
+      assert.equal(url.searchParams.get('scope'), `openid ${GOOGLE_SCOPE.gmailModify}`);
     });
   });
 

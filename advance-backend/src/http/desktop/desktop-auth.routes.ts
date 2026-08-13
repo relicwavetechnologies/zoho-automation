@@ -2315,7 +2315,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       const authorizeUrl = deps.googleOAuthService.getAuthorizeUrl({
         state,
         redirectUri,
-        ...(scopes.length > 0 ? { scopes: [...scopes] } : {}),
+        ...(scopes.length > 0 ? { scopes: [...scopes], includeGrantedScopes: false } : {}),
       });
 
       res.json({ success: true, data: { authorizeUrl, redirectUri } });
