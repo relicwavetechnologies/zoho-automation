@@ -85,6 +85,9 @@ const num = (value: unknown): number | null => {
 const str = (value: unknown): string =>
   typeof value === 'string' ? value.trim() : '';
 
+const ZOHO_INVOICE_NUMBER_MAX_LENGTH = 16;
+const ZOHO_INVOICE_NUMBER_ALLOWED = /^[A-Za-z0-9/-]+$/;
+
 const lines = (invoice: Record<string, unknown>): Record<string, unknown>[] =>
   Array.isArray(invoice['line_items']) ? invoice['line_items'].filter(isRecord) : [];
 
@@ -296,6 +299,23 @@ export function checkInvoice(input: InvoiceCheckInput): InvoiceFinding[] {
 
   // ── Duplicates ────────────────────────────────────────────────────────────
   const invoiceNumber = str(invoice['invoice_number']);
+  if (invoiceNumber.length > ZOHO_INVOICE_NUMBER_MAX_LENGTH) {
+    add(
+      'invoice_number_too_long',
+      'blocking',
+      `Invoice number "${invoiceNumber}" is ${invoiceNumber.length} characters, but Zoho invoices allow at most `
+      + `${ZOHO_INVOICE_NUMBER_MAX_LENGTH}. Shorten it or omit it so Zoho can auto-number the invoice.`,
+    );
+  }
+  if (invoiceNumber && !ZOHO_INVOICE_NUMBER_ALLOWED.test(invoiceNumber)) {
+    add(
+      'invoice_number_invalid_characters',
+      'blocking',
+      `Invoice number "${invoiceNumber}" contains characters Zoho invoices do not allow. Use only letters, `
+      + 'numbers, hyphen (-), or slash (/), or omit it so Zoho can auto-number the invoice.',
+    );
+  }
+
   const invoiceId = str(invoice['invoice_id']);
   const duplicates = (input.sameNumberInvoices ?? []).filter(other =>
     str(other['invoice_id']) !== invoiceId

@@ -923,7 +923,45 @@ test('a streamed provider failure keeps diagnostics internal', async () => {
     (error) => error instanceof LarkPiRuntimeError
       && error.code === 'model_continuation_failed'
       && error.message.includes('upstream-token=secret')
-      && error.userMessage === 'Divo hit a temporary problem while finishing this request. Please try again.',
+      && error.userMessage === 'Divo lost the model connection while finishing this request. Please try again.'
+      && !error.userMessage.includes('upstream-token=secret'),
+  );
+});
+
+test('a streamed provider failure after a company action explains why Divo did not retry', async () => {
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    fetch: async () => new Response(`${JSON.stringify({
+      type: 'error',
+      error: {
+        code: 'model_continuation_failed',
+        message: 'The model provider failed after a company action was issued. Divo stopped instead of retrying and risking a duplicate action.',
+      },
+    })}\n`, {
+      status: 200,
+      headers: { 'content-type': 'application/x-ndjson; charset=utf-8' },
+    }),
+  });
+
+  await assert.rejects(
+    service.run(runtimeInput()),
+    (error) => error instanceof LarkPiRuntimeError
+      && error.code === 'model_continuation_failed'
+      && error.userMessage === 'Divo lost the model connection while handling a company-action step. It did not retry automatically, so it would not duplicate the action. Check the latest result before trying again.',
   );
 });
 

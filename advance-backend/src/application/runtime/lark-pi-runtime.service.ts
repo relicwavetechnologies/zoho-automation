@@ -189,13 +189,24 @@ function asRuntimeChannel(channel: string): RuntimeChannel {
 
 const GENERIC_RUNTIME_FAILURE_MESSAGE =
   'Divo hit a temporary problem while finishing this request. Please try again.';
+const MODEL_CONNECTION_LOST_MESSAGE =
+  'Divo lost the model connection while finishing this request. Please try again.';
+const MODEL_CONNECTION_LOST_AFTER_ACTION_MESSAGE =
+  'Divo lost the model connection while handling a company-action step. It did not retry automatically, '
+  + 'so it would not duplicate the action. Check the latest result before trying again.';
 
-function controllerFailureMessage(code: string): string {
+function controllerFailureMessage(code: string, detail?: string): string {
   if (code === 'capacity_full') {
     return 'Divo is at full capacity right now. Please try again shortly.';
   }
   if (code === 'user_busy') {
     return 'Divo is finishing your previous request. This one will start automatically.';
+  }
+  if (code === 'model_continuation_failed') {
+    if (detail && /company action|duplicate action/i.test(detail)) {
+      return MODEL_CONNECTION_LOST_AFTER_ACTION_MESSAGE;
+    }
+    return MODEL_CONNECTION_LOST_MESSAGE;
   }
   return GENERIC_RUNTIME_FAILURE_MESSAGE;
 }
@@ -1392,7 +1403,7 @@ export class LarkPiRuntimeService {
     await consume(buffer);
 
     if (streamError) {
-      const userMessage = controllerFailureMessage(streamError.code);
+      const userMessage = controllerFailureMessage(streamError.code, streamError.message);
       throw new LarkPiRuntimeError(streamError.code, userMessage, streamError.message);
     }
     if (!text) {
