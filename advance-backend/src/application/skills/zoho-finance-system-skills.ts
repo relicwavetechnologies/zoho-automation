@@ -53,6 +53,7 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
       'reimbursement', 'petty cash',
       'unpaid invoices', 'outstanding invoices', 'overdue invoices', 'receivables',
       'payables', 'aging report', 'accounts receivable', 'accounts payable',
+      'gstr 2b', 'gstr-2b', '2b reconciliation', 'reconcile purchase bills',
       'zoho books', 'zoho crm', 'chart of accounts', 'tax summary', 'gst',
     ],
     sortOrder: 10,
@@ -79,6 +80,7 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
       'payables', 'aging report', 'invoice list', 'recent payments', 'bank transactions',
       'chart of accounts', 'tax summary', 'item rate', 'product list', 'gst rate', 'tax rates',
       'vendor balance', 'customer balance',
+      'gstr 2b', 'gstr-2b', '2b reconciliation', 'reconcile purchase bills',
     ],
     sortOrder: 15,
   },
@@ -136,6 +138,7 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
     aliases: [
       'record a bill', 'enter a vendor bill', 'create a bill', 'vendor invoice',
       'supplier invoice', 'book this invoice', 'process this invoice pdf',
+      'reverse charge bill', 'rcm bill', 'unregistered vendor bill',
     ],
     sortOrder: 21,
   },

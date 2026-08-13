@@ -50,6 +50,38 @@ describe('Zoho Finance system skill provisioning', () => {
      */
     assert.doesNotMatch(specialist.markdown, /sorted by invoice date newest-first/i);
     assert.doesNotMatch(specialist.markdown, /_amount_inr|_balance_inr|_currency/);
+    assert.match(specialist.markdown, /GSTR-2B AND DOCUMENT RECONCILIATION/);
+    assert.match(specialist.markdown, /substring or fuzzy number is only an ambiguous candidate/i);
+    assert.match(specialist.markdown, /vendor-credit coverage must be labelled incomplete/i);
+  });
+
+  it('teaches bills to reason about RCM and TDS before asking for confirmation', () => {
+    const specialist = ZOHO_FINANCE_SYSTEM_SKILLS.find(skill => skill.slug === 'zoho-books-bill');
+    assert.ok(specialist);
+    assert.match(specialist.markdown, /gst_treatment="business_none"/);
+    assert.match(specialist.markdown, /is_reverse_charge_applied=true/);
+    assert.match(specialist.markdown, /only reverse_charge_tax_id/);
+    assert.match(specialist.markdown, /never send both/i);
+    assert.match(specialist.markdown, /supplier payable, tax liability when distinct/i);
+    assert.match(specialist.markdown, /taxable value rather than the GST-inclusive total/i);
+    assert.match(specialist.markdown, /Obtain confirmation/i);
+    assert.match(specialist.markdown, /provider rejection is new evidence/i);
+  });
+
+  it('keeps borrowed company patterns as evidence instead of global IDs or shortcuts', () => {
+    for (const skill of ZOHO_FINANCE_SYSTEM_SKILLS) {
+      assert.doesNotMatch(skill.markdown, /finance\.emiactech\.com/i);
+      assert.doesNotMatch(skill.markdown, /zero-width|\\u200B/i);
+      assert.doesNotMatch(skill.markdown, /test with temp bills|delete after confirmation/i);
+      assert.doesNotMatch(skill.markdown, /replicate pattern exactly|copy.*exactly/i);
+    }
+    const invoice = ZOHO_FINANCE_SYSTEM_SKILLS.find(skill => skill.slug === 'zoho-books-invoice');
+    assert.ok(invoice);
+    assert.match(invoice.markdown, /storages with out_quantity/);
+    assert.match(invoice.markdown, /Show any inferred convention as unconfirmed/i);
+    const bill = ZOHO_FINANCE_SYSTEM_SKILLS.find(skill => skill.slug === 'zoho-books-bill');
+    assert.ok(bill);
+    assert.match(bill.markdown, /storage and storage with in_quantity|location and storage with in_quantity/i);
   });
 
   it('asks only when the requested Zoho service still has multiple eligible accounts', () => {
