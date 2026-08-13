@@ -11,7 +11,10 @@ RUN apt-get update \
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
 WORKDIR /app
-COPY divo/auth.mjs divo/local-rpc-controller.mjs divo/local-rpc-server.mjs divo/run-terminal.mjs divo/runtime-manifest.json divo/runtime-models.mjs ./divo/
+# Every module `divo/local-rpc-server.mjs` can reach, plus the trusted runtime
+# manifest. `divo/test/controller-image-packaging.test.mjs` recomputes that
+# import closure and fails if this list drifts from it.
+COPY divo/auth.mjs divo/local-rpc-controller.mjs divo/local-rpc-server.mjs divo/native-skills.mjs divo/ndjson-stream-writer.mjs divo/run-terminal.mjs divo/runtime-attachment-staging.mjs divo/runtime-attachments.mjs divo/runtime-channels.mjs divo/runtime-docker.mjs divo/runtime-identity.mjs divo/runtime-manifest.json divo/runtime-models.mjs divo/runtime-progress.mjs divo/runtime-warm-process.mjs ./divo/
 
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 CMD ["node", "divo/local-rpc-server.mjs"]
