@@ -13,7 +13,7 @@
  * did not change is the shape handed to the components below — a transcript and
  * a cursor over it — which is why none of them needed touching.
  */
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Beat } from './transcripts'
 import { toolMarkFor } from './tool-identity'
 import {
@@ -176,6 +176,7 @@ function settledState(beats: Beat[], elapsed: number): RunState {
     gate: null,
     declined: null,
     finished: true,
+    startedAt: null,
     elapsed,
   }
 }
@@ -276,7 +277,6 @@ export function useThreadRun(input: {
   const [final, setFinal] = useState<{ text: string; awaitingApproval?: PendingApproval[] } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
-  const [elapsed, setElapsed] = useState(0)
   const [declined, setDeclined] = useState<string | null>(null)
   const [answered, setAnswered] = useState(false)
   const abort = useRef<AbortController | null>(null)
@@ -286,17 +286,6 @@ export function useThreadRun(input: {
      another one's name. */
   const currentThread = useRef(input.threadId)
   currentThread.current = input.threadId
-
-  /* Elapsed is read off a start timestamp rather than accumulated per tick:
-     `setInterval` is not paced to the millisecond and a background tab throttles
-     it to roughly once a second, so an accumulated clock under-reports a long
-     run by half while the work carries on. */
-  useEffect(() => {
-    if (!running) return
-    const started = startedAt.current
-    const tick = window.setInterval(() => setElapsed((Date.now() - started) / 1000), 100)
-    return () => window.clearInterval(tick)
-  }, [running])
 
   /**
    * Consume a run's events, however it was reached.
@@ -359,7 +348,6 @@ export function useThreadRun(input: {
     setRunning(false)
     setDeclined(null)
     setAnswered(false)
-    setElapsed(0)
     setLoading(true)
 
     const load = async (): Promise<{ prompt: string; startedAt: number } | null> => {
@@ -386,7 +374,6 @@ export function useThreadRun(input: {
       if (!live) return
       setPrompt(live.prompt)
       startedAt.current = live.startedAt
-      setElapsed((Date.now() - live.startedAt) / 1000)
       setRunning(true)
       const answered = await consume(
         watch({ threadId, token: input.token!, signal: controller.signal }),
@@ -422,7 +409,9 @@ export function useThreadRun(input: {
       id: runExchangeId(startedAt.current),
       prompt,
       beats,
-      state: { ...settledState(beats, elapsed), declined },
+      /* Read once, here, from the same clock the header was ticking off. The
+         duration is only news when the run is over. */
+      state: { ...settledState(beats, (Date.now() - startedAt.current) / 1000), declined },
       ...(error ? { error } : {}),
     }])
     setPrompt(null)
@@ -456,7 +445,6 @@ export function useThreadRun(input: {
     setError(null)
     setDeclined(null)
     setAnswered(false)
-    setElapsed(0)
     setRunning(true)
 
     void consume(ask({
@@ -474,7 +462,15 @@ export function useThreadRun(input: {
     void stop(input.threadId, input.token)
   }, [input.threadId, input.token, running])
 
-  const liveBeats = prompt === null ? [] : beatsFrom(timeline, final, liveAnswer)
+  /* Rebuilt only when the wire says something new.
+     Every value below it is derived, and a derived value with a fresh identity
+     is a re-render of everything downstream — so a render caused by anything
+     else at all (a scroll flag, a title arriving) used to rebuild every beat in
+     the run and hand each exchange a new object to redraw from. */
+  const liveBeats = useMemo(
+    () => (prompt === null ? [] : beatsFrom(timeline, final, liveAnswer)),
+    [prompt, timeline, final, liveAnswer],
+  )
   const gateIndex = liveBeats.findIndex(beat => beat.t === 'approve')
   const gate = !answered && !declined && gateIndex !== -1 ? gateIndex : null
   const pendingApproval = final?.awaitingApproval?.[0]
@@ -495,17 +491,18 @@ export function useThreadRun(input: {
      one beat that is waiting rather than done. The timeline is a snapshot of
      work already reported, so there is nothing here to reveal on a cursor; each
      step says for itself whether it is still open. */
-  const liveState: RunState = {
+  const liveState = useMemo<RunState>(() => ({
     played: liveBeats
       .map((_, index) => index)
       .filter(index => index !== gate),
     gate,
     declined,
     finished: !running,
-    elapsed,
-  }
+    startedAt: startedAt.current,
+    elapsed: 0,
+  }), [liveBeats, gate, declined, running])
 
-  const exchanges = prompt === null
+  const exchanges = useMemo(() => (prompt === null
     ? settled
     : [...settled, {
       id: runExchangeId(startedAt.current),
@@ -513,7 +510,7 @@ export function useThreadRun(input: {
       beats: liveBeats,
       state: liveState,
       ...(error ? { error } : {}),
-    }]
+    }]), [prompt, settled, liveBeats, liveState, error])
 
   return {
     exchanges,

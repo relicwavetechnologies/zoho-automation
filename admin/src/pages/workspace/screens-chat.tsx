@@ -23,7 +23,7 @@
  * in the open, Divo stops before it writes anything, and what comes back is an
  * answer rather than a wall of rows.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useParams } from 'react-router-dom'
 import { Chart } from './chat/charts'
 import { Approval, Artifact, Composer, Preview, Say } from './chat/parts'
@@ -198,13 +198,24 @@ function ChatThread({ threadId }: { threadId: string }) {
   /* Follow the run down the page while it works, and only then. Scrolling a
      reader who has deliberately gone back up to re-read something is the most
      reliably irritating thing a chat surface can do, so this stops the moment
-     they leave the bottom. */
+     they leave the bottom.
+
+     Driven by the column actually growing rather than by a render. Keyed on the
+     exchanges array it ran on every render instead — the array was rebuilt each
+     time — so a reader scrolling up inside the last 80 pixels was dragged back
+     down several times a second and the thread felt stuck to its own bottom.
+     A ResizeObserver fires when there is genuinely more to see, which is the
+     only moment following is wanted. */
   const atBottom = useRef(true)
   useEffect(() => {
-    if (!atBottom.current) return
     const node = scroller.current
-    if (node) node.scrollTop = node.scrollHeight
-  }, [live.exchanges])
+    const list = column.current
+    if (!node || !list) return
+    const follow = () => { if (atBottom.current) node.scrollTop = node.scrollHeight }
+    const observer = new ResizeObserver(follow)
+    observer.observe(list)
+    return () => observer.disconnect()
+  }, [])
 
   /* The name we just wrote wins, then the server's, then the opening ask —
      which is the last resort rather than the default it used to be. Printing
@@ -233,7 +244,11 @@ function ChatThread({ threadId }: { threadId: string }) {
               <Exchanged
                 key={exchange.id}
                 exchange={exchange}
-                liveLabel={live.liveLabel}
+                /* Only the exchange that is still running has any use for it,
+                   and handing the same changing string to every exchange in the
+                   thread would defeat the memo on all of them — a new label per
+                   tool call would redraw the entire conversation. */
+                liveLabel={exchange.state.finished ? null : live.liveLabel}
                 onApprove={live.approve}
                 onDecline={live.decline}
               />
@@ -374,7 +389,16 @@ function Welcome({ onPick }: { onPick: (prompt: string) => void }) {
    used to draw exactly one, and sending a follow-up overwrote it — so the
    surface could hold a conversation only for as long as the conversation was
    one sentence long. */
-function Exchanged({
+/**
+ * One ask and everything that came of it.
+ *
+ * Memoised, and it is not a micro-optimisation: a thread is a list of finished
+ * exchanges with at most one live one, and every frame of a live run used to
+ * re-render all of them — re-splitting their traces, re-coalescing their
+ * bursts, and reparsing the markdown of every answer above. Settled exchanges
+ * hold their identity, so now they are drawn once and left alone.
+ */
+const Exchanged = memo(function Exchanged({
   exchange, liveLabel, onApprove, onDecline,
 }: {
   exchange: Exchange
@@ -406,6 +430,7 @@ function Exchanged({
           steps={trace}
           streaming={!state.finished}
           awaitingApproval={state.gate !== null}
+          startedAt={state.startedAt}
           elapsed={state.elapsed}
           declined={state.declined !== null}
           liveLabel={liveLabel}
@@ -453,4 +478,4 @@ function Exchanged({
       </div>
     </div>
   )
-}
+})

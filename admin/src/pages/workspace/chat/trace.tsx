@@ -14,7 +14,7 @@
  * reading one tool call meant opening two disclosures — that is the shape this
  * file exists to not have.
  */
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Waypoints } from 'lucide-react'
 import { ToolMark } from './tools'
 import { burstMarks, summarizeBurst } from './burst'
@@ -187,15 +187,43 @@ function CommandGroup({
    instead — and forced open by an approval, whose controls must stay reachable.
    A click pins it either way, because someone who opened the log to read it
    should not have it shut in their face when the run happens to finish. */
+/**
+ * The clock, and the only thing in the thread that ticks.
+ *
+ * A running duration used to live in the thread's own state, refreshed every
+ * 100ms — which re-rendered every exchange, every step and every answer, and
+ * reparsed the markdown of a streaming reply, ten times a second, to move one
+ * digit. The start is a constant; only its label has to keep up, so the timer
+ * lives here, in the smallest thing that draws it.
+ *
+ * Read off the start rather than accumulated per tick: an interval is not paced
+ * to the millisecond and a background tab throttles it to roughly once a
+ * second, so a counter that added up its own ticks would under-report a long
+ * run by half while the work carried on.
+ */
+function Elapsed({ startedAt, seconds }: { startedAt: number | null; seconds: number }) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (startedAt === null) return
+    const tick = window.setInterval(() => setNow(Date.now()), 100)
+    return () => window.clearInterval(tick)
+  }, [startedAt])
+
+  return <>{elapsedLabel(startedAt === null ? seconds : (now - startedAt) / 1000)}</>
+}
+
 export function PiTraceTimeline({
-  steps, streaming, awaitingApproval, elapsed, declined, liveLabel,
+  steps, streaming, awaitingApproval, startedAt, elapsed, declined, liveLabel,
 }: {
   steps: TraceStep[]
   /** The run is going. */
   streaming: boolean
   /** Something is waiting on a person, so the log must stay open. */
   awaitingApproval: boolean
-  /** Wall time, in seconds. */
+  /** When the run started, while it is going. */
+  startedAt: number | null
+  /** How long the run took, once it is over. */
   elapsed: number
   /** A person ended the run — a legitimate ending, not an error. */
   declined: boolean
@@ -227,7 +255,7 @@ export function PiTraceTimeline({
                 generic verb only before the first frame arrives. */}
             <Shimmer>{awaitingApproval ? 'Waiting on you' : liveLabel || 'Working'}</Shimmer>
             <span className="font-mono text-[12px] text-ink-3 tabular-nums">
-              {elapsedLabel(elapsed)}
+              <Elapsed startedAt={startedAt} seconds={elapsed} />
             </span>
           </>
         ) : (
@@ -239,9 +267,8 @@ export function PiTraceTimeline({
                 same product signs its work the same way on both surfaces. */}
             <DivoMark className="size-[15px] text-ink-3 transition-colors duration-100 group-hover:text-ink-2" />
             <span className="font-medium">
-              {declined
-                ? `Stopped after ${elapsedLabel(elapsed)}`
-                : `Worked for ${elapsedLabel(elapsed)}`}
+              {declined ? 'Stopped after ' : 'Worked for '}
+              <Elapsed startedAt={startedAt} seconds={elapsed} />
             </span>
             {tools > 0 && (
               <span className="text-[12px] text-ink-3 tabular-nums">

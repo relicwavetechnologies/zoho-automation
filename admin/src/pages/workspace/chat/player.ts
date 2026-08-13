@@ -31,7 +31,17 @@ export type RunState = {
   /** Set once the reader declines — carries the beat's `declined` sentence. */
   declined: string | null
   finished: boolean
-  /** Wall time the run has been going, in seconds. Freezes when it ends. */
+  /**
+   * When the run started, while it is still going — not how long it has been
+   * going.
+   *
+   * A duration that lives in state has to be recomputed on a timer, and a timer
+   * in the thread's own state re-renders every exchange, every step and every
+   * answer ten times a second to move one number. The start is a constant, so
+   * the only thing that ticks is the label drawing it.
+   */
+  startedAt: number | null
+  /** How long the run took, once it is over. */
   elapsed: number
 }
 
