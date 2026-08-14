@@ -9,6 +9,7 @@ import { GOVERNED_LOCAL_AVAILABLE_RUNTIME } from './governed-local-routing';
  */
 const ZOHO_CONNECTION_METHOD = `DIVO-GOVERNED ZOHO CONNECTION:
 - Invoke Zoho only through the matching registered Divo Zoho tool for a direct action. Inside a governed terminal workflow, ${GOVERNED_LOCAL_AVAILABLE_RUNTIME}, use \`divo-local\` with the source recipe's exact toolId. Never call Zoho directly, use local credentials, or switch to an unavailable tool surface.
+- Treat only the current run bootstrap and current tool response as evidence of connection availability, access, and OAuth scope. Earlier chat, memory, and summaries are not current connection evidence.
 - Do not call connections.list to rediscover an account the backend can select for itself.
 - If the loaded work context shows multiple Zoho accounts, first restrict them to the requested service: CRM or Books. When exactly one account lists that service, omit connectionId or use that exact ID and let backend validation select it. Ask the member only when multiple accounts list the requested service.
 - If Divo returns structured connection choices, ask one short account-choice question using those labels, then retry with the selected exact ID. Never send a label, organisation name, or guessed value as connectionId.
@@ -23,6 +24,7 @@ const ZOHO_WRITE_SAFETY = `WRITE SAFETY:
 - Stay read-only when the user says "don't change anything".
 - Use a write op only after the exact record IDs, fields, and payload are clear. Never write from a guessed id.
 - Let backend RBAC/HITL handle approval. Never state a mutation is complete until the tool confirms it.
+- Keep failures distinct: a Divo permission denial is an access decision; a Zoho provider rejection is a payload or accounting-rule response. Never relabel one as the other or silently retry with changed tax treatment.
 - Report the status the tool returned, not the status you expected.`;
 
 /**
@@ -34,6 +36,7 @@ const ZOHO_FINANCE_EVIDENCE = `FINANCE EVIDENCE:
 - Read every supplied source document before proposing a write. Use the whole document, including later-page taxes, adjustments, shipping, credits, and totals; never substitute a filename, email subject, old record, or first-page summary for its contents.
 - Reconcile the document arithmetic before presenting it: taxable subtotal, tax, TDS/withholding, shipping or adjustments, and final total. If it does not reconcile, show the difference and ask rather than inventing a balancing value.
 - Treat earlier Zoho transactions as clues for ledger, tax, tag, location, terms, or custom-field choices, never as authority to copy them. The member's current instruction and source document come first; current contact, item, tax, and account records establish the usable IDs.
+- Current Zoho reads and the current loaded skill/tool contract override chat history, memory, and compaction summaries. Never take a permission, scope, connection state, field shape, contact, account, item, tax, or ID from an earlier conversation.
 - Never embed or reuse an organisation, contact, item, account, tax, tag, location, storage, or custom-field ID from instructions or memory. Resolve it in the selected Zoho organisation this turn.
 - Keep organisation-specific conventions company-scoped. Apply a reporting tag, channel, branch, ledger convention, or numbering series only when the member, a current company procedure, or live Zoho evidence establishes it.`;
 
@@ -54,6 +57,8 @@ export const financeZohoRouterSkill: Skill = {
 - Recording a bill and then notifying the Accounts Lark group -> load \`zoho-bill-notify-accounts\`.
 
 An invoice requests money from a customer. A purchase order requests goods or services from a vendor before the vendor bills us. A bill records money we owe after the vendor has charged us. Ask which stage is meant rather than guessing.
+
+After choosing the direction, load the exact current specialist before planning or using Zoho; this router does not contain the write procedure.
 
 Preserve explicit read-only constraints. Never create a todo, export data, or perform a write merely because routing was ambiguous.`,
 };
@@ -124,6 +129,7 @@ OUTPUT:
 
 const ZOHO_BOOKS_BILL_WORKFLOW = `ZOHO BOOKS BILL RECORDING:
 - Use this workflow when the user asks to record, create, or enter a vendor bill/invoice in Zoho Books, especially with a PDF invoice.
+- Keep this order: read the source, resolve the live vendor/account/tax IDs, check the exact bill number for duplicates, decide GST or RCM, show the review, create only after confirmation, attach the source, then verify the stored bill.
 - Extract invoice data from the attached/source PDF before writing: invoice or bill number, date, vendor name, GSTIN/PAN/address, line items, tax breakdown, total, and IRN when present. The PDF is already in the workspace at the path given in [ATTACHED_FILES]; open and read it before any Zoho write.
 - The source invoice/bill number is the Zoho Books bill_number. It is the vendor's own reference, printed on their invoice: read it from the document or ask for it. Never compose one from the vendor's name and the month — an invented number reconciles against nothing and hides the real duplicate.
 - Never create a second bill with the same normalized bill_number. Search existing bills first with op="list_bills" using searchQuery/date/vendor filters where possible; accept only exact normalized bill_number matches. If one already exists, do not create another bill and do not record another payment — read its \`documents\` list and attach the PDF only if it is missing.
@@ -136,7 +142,7 @@ const ZOHO_BOOKS_BILL_WORKFLOW = `ZOHO BOOKS BILL RECORDING:
 - Apply TDS/withholding only when the source, member, current company procedure, and live Zoho setup establish that it applies. Resolve its live ID; calculate it on the taxable value rather than the GST-inclusive total, and show how it changes supplier payable. Do not infer “no TDS” merely because the purchase is goods.
 - Preserve the source currency for a foreign vendor unless the member or current Zoho record establishes a different booked currency. Never invent an exchange rate.
 - For inventory-backed lines, resolve the exact item/SKU. When governed live evidence says storage/bin tracking applies, use the confirmed location and storage with in_quantity for purchased stock. Never evade tracking by altering an item name or silently converting it to a generic expense line. If the governed surface cannot expose the required location/storage, say that plainly and stop rather than borrowing an old or hard-coded ID.
-- Create the bill with op="create_bill" and fields containing vendor_id, bill_number, date, due_date, line_items, taxes, and notes including IRN/payment context when available.
+- Create the bill with op="create_bill" and fields containing vendor_id, bill_number, date, due_date, line_items, and notes including IRN/payment context when available. Every line uses a numeric account_id or item_id resolved from current Zoho data plus quantity and rate; never put an account name in an ID field or replace quantity/rate with an improvised amount. Ordinary GST belongs on each taxable line as tax_id. Reverse charge belongs on each taxable line as reverse_charge_tax_id with is_reverse_charge_applied=true at bill level and no ordinary tax_id. Never send a top-level taxes array or mix normal and reverse-charge tax fields.
 - Attach the source PDF with op="attach_document" and recordType="bill" on the bill_id. If the tool says it cannot find or download the file, say the bill was created without its PDF and ask the member to send the file again.
 - Record payment only when the user asks or the invoice is clearly paid. If unpaid or bill-only, leave it open and say payment was not recorded.
 - For vendor payments, Zoho defaults to Undeposited Funds unless paid_through_account_id is set in the create payload. There is no vendor-payment update op, so if that account is not known before recording, stop and ask rather than recording a payment that will need correcting by hand.

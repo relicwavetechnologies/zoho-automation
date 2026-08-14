@@ -625,6 +625,8 @@ export const createZohoBooksTool = (deps: {
 
   description: [
     'Access Zoho Books: read, write, and report on invoices, purchase orders, bills, expenses, payments, contacts, items, taxes, bank transactions.',
+    'Before any write, read the matching current Invoice, Bill, Purchase Order, or Money skill in this turn.',
+    'Resolve one ledger with get_chart_of_accounts plus a focused searchQuery, which returns at most ten candidates; move an explicitly requested full chart through the governed local-file workflow instead of model context.',
     'A created invoice is a draft until mark_invoice_sent or send_invoice; report the status the tool returns rather than assuming it was issued.',
     'attach_document puts a file the member sent in this Lark conversation onto an invoice, purchase order, or bill, and verifies it against Zoho documents[].',
     'Plain list operations fetch one bounded page and return only the requested limit.',
@@ -638,6 +640,7 @@ export const createZohoBooksTool = (deps: {
     `read params: invoiceId, purchaseOrderId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, limit (1-${TERMINAL_FILE_PAGE_LIMIT}), page (1-${MAX_TERMINAL_PAGE})`,
     'For terminal paging, start with page=1 and continue with nextPage while hasMore=true.',
     'get_invoice accepts a Zoho numeric invoice ID or an exact human invoice number. list_invoices forwards searchQuery to Zoho and returns newest invoice dates first.',
+    'For get_chart_of_accounts, pass a focused searchQuery when resolving a ledger for a write. It returns at most ten matching candidates with their live IDs; omit searchQuery only inside a governed local-file workflow for an explicitly requested full chart.',
     'limit is the requested maximum. Once that many rows are returned, do not fetch more pages unless the user explicitly asks for a complete export or aggregate.',
     'write params: invoiceId, email, fields',
     'update_invoice/create_bill/create_contact/create_expense/record_payment take fields; the tool returns the stored record, its status, and its link. Never restate a status the tool did not return.',
@@ -2194,6 +2197,28 @@ export const createZohoBooksTool = (deps: {
             path: '/chartofaccounts',
             ...(args.organizationId ? { organizationId: args.organizationId } : {}),
           });
+          if (args.searchQuery?.trim()) {
+            const accounts = Array.isArray(data['chartofaccounts'])
+              ? data['chartofaccounts'].filter((account): account is Record<string, unknown> =>
+                Boolean(account) && typeof account === 'object' && !Array.isArray(account))
+              : [];
+            const query = args.searchQuery.trim().toLocaleLowerCase();
+            const matches = accounts.filter(account => [
+              account['account_name'],
+              account['account_code'],
+              account['account_type'],
+              account['description'],
+            ].some(value => typeof value === 'string' && value.toLocaleLowerCase().includes(query)));
+            const candidates = matches.slice(0, 10);
+            return ok({
+              success: true,
+              data: formatZohoResult(candidates),
+              truncated: matches.length > candidates.length,
+              message: matches.length > candidates.length
+                ? `Found ${matches.length} matching accounts; returned the first ${candidates.length}. Refine searchQuery before choosing an ID.`
+                : `Found ${matches.length} matching account${matches.length === 1 ? '' : 's'} for "${args.searchQuery}".`,
+            });
+          }
           return ok({ success: true, data: formatZohoResult(data['chartofaccounts'] ?? data) });
         }
 

@@ -145,6 +145,61 @@ describe('zohoBooks expanded permissions', () => {
 describe('zohoBooks expanded execution', () => {
   const ctx = makeCtx('zohoBooks', ['read', 'create', 'delete']);
 
+  it('returns only focused chart-of-accounts candidates to model context', async () => {
+    const captures: { endpointInput?: any } = {};
+    const booksClient = {
+      ...makeBooksClient(captures),
+      getEndpoint: async (input: any) => {
+        captures.endpointInput = input;
+        return {
+          chartofaccounts: [
+            { account_id: 'bank-1', account_name: 'Bank Charges', account_type: 'expense' },
+            { account_id: 'bank-2', account_name: 'Bank Fees', account_type: 'expense' },
+            { account_id: 'sales-1', account_name: 'Sales', account_type: 'income' },
+          ],
+        };
+      },
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ booksClient });
+
+    const result = await tool.execute({
+      op: 'get_chart_of_accounts',
+      searchQuery: 'Bank Charges',
+    }, ctx);
+
+    assert.equal(result.ok, true);
+    assert.equal(captures.endpointInput.path, '/chartofaccounts');
+    assert.deepEqual((result as any).value.data, [
+      { account_id: 'bank-1', account_name: 'Bank Charges', account_type: 'expense' },
+    ]);
+    assert.equal((result as any).value.truncated, false);
+    assert.match((result as any).value.message, /Found 1 matching account/i);
+  });
+
+  it('caps a broad chart-of-accounts search at ten candidates', async () => {
+    const booksClient = {
+      ...makeBooksClient(),
+      getEndpoint: async () => ({
+        chartofaccounts: Array.from({ length: 12 }, (_, index) => ({
+          account_id: `bank-${index + 1}`,
+          account_name: `Bank charge account ${index + 1}`,
+          account_type: 'expense',
+        })),
+      }),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ booksClient });
+
+    const result = await tool.execute({
+      op: 'get_chart_of_accounts',
+      searchQuery: 'bank charge',
+    }, ctx);
+
+    assert.equal(result.ok, true);
+    assert.equal((result as any).value.data.length, 10);
+    assert.equal((result as any).value.truncated, true);
+    assert.match((result as any).value.message, /Found 12 matching accounts; returned the first 10/i);
+  });
+
   it('normalizes date/status filters for list_bills', async () => {
     const captures: { listInput?: any; allInput?: any } = {};
     const tool = makeTool({ booksClient: makeBooksClient(captures) });
