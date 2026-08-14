@@ -147,6 +147,11 @@ export async function* watch(input: {
 function askFailure(status: number): string {
   if (status === 401) return 'Your session expired. Sign in again to keep working.'
   if (status === 409) return 'This chat already has a run going. Wait for it, or stop it first.'
+  /* The composer checks the size before it offers to send, so reaching this
+     means the server's limit is lower than the one the browser was told about.
+     Named as a size problem anyway — "please try again" would send someone
+     round the same loop with the same file. */
+  if (status === 413) return 'That file is too large to send. Try a smaller one.'
   return 'Divo could not start this run. Please try again.'
 }
 

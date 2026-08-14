@@ -30,6 +30,8 @@ import { Approval, Artifact, Composer, Preview, Say } from './chat/parts'
 import { splitTrace } from './chat/lifecycle'
 import { PiTraceTimeline } from './chat/trace'
 import { PinSpacer } from './chat/pin'
+import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
+import { clearHandoff, peekHandoff } from './chat/handoff'
 import { useThreadRun, type Exchange } from './chat/live'
 import {
   isThreadId, newThreadId, renameThread, threadStarted, threadsChanged,
@@ -39,33 +41,6 @@ import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { TRANSCRIPTS } from './chat/transcripts'
 import { ToolMark } from './chat/tools'
 import '@/styles/beautiful.css'
-
-/** The prompt Home hands over when somebody types there and hits send. */
-const HANDOFF_KEY = 'divo.chat.pendingPrompt'
-
-/**
- * Read the prompt Home staged, without consuming it.
- *
- * Reading and clearing in one step looked tidier and silently lost the handoff:
- * StrictMode mounts a component, unmounts it, and mounts it again, so the first
- * mount took the value and the second — the one that survives — found an empty
- * key and rendered a blank composer. The clear now happens at the only moment
- * that proves the prompt arrived somewhere, which is when the run starts.
- */
-function peekHandoff() {
-  try {
-    return window.sessionStorage.getItem(HANDOFF_KEY) ?? ''
-  } catch {
-    /* private mode — no handoff, just an empty composer */
-    return ''
-  }
-}
-
-function clearHandoff() {
-  try {
-    window.sessionStorage.removeItem(HANDOFF_KEY)
-  } catch { /* private mode — nothing was stored to begin with */ }
-}
 
 /**
  * `/chat` is not a page, it is a request for a new one.
@@ -95,6 +70,13 @@ function ChatThread({ threadId }: { threadId: string }) {
   const [scrolled, setScrolled] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
   const column = useRef<HTMLDivElement>(null)
+
+  /* Files waiting to go with the next message, wherever they came from. Held by
+     the screen rather than the composer because the screen is what knows a run
+     actually started, which is the only moment they may be cleared. */
+  const attach = useAttachments()
+  const { over, dropProps } = useFileDrop(attach.add)
+  useDropGuard()
 
   const live = useThreadRun({ threadId, token })
   /* `send` is rebuilt whenever the run's state changes, so depending on it
@@ -149,15 +131,23 @@ function ChatThread({ threadId }: { threadId: string }) {
       })
   }
 
-  const begin = (text: string) => {
+  /* `files` is a parameter with a default rather than always the composer's,
+     because the handoff carries its own: they arrive with the prompt from Home
+     and were never in this screen's attachment state, so reading that state
+     here would send the message without them. */
+  const begin = (text: string, files: readonly File[] = attach.files) => {
     const trimmed = text.trim()
     if (!trimmed) return
     // Armed only if a run genuinely started. A send declined because one is
     // already open would otherwise leave the pin armed, to fire against
     // whatever exchange happens to appear next.
-    const started = sendRef.current(trimmed)
+    const started = sendRef.current(trimmed, files)
     pinNext.current = started
     if (!started) return
+    // Only once the run is real. Clearing on the attempt would throw away the
+    // files a declined send never carried, and the person would have to find
+    // and drag them again.
+    attach.clear()
     nameThread(trimmed)
     /* The chat now exists, whatever the server thinks. It is created by the run
        that was just asked for, so for the length of that round trip this is the
@@ -169,12 +159,12 @@ function ChatThread({ threadId }: { threadId: string }) {
 
   const handedOff = useRef(false)
   useEffect(() => {
-    if (handedOff.current || !handoff || !token || live.loading) return
+    if (handedOff.current || !handoff.prompt || !token || live.loading) return
     handedOff.current = true
     clearHandoff()
-    /* Through the same door as a send typed here, so a prompt carried over from
+    /* Through the same door as a send typed here, so a message carried over from
        Home pins exactly as it would have if it had been typed on this page. */
-    begin(handoff)
+    begin(handoff.prompt, handoff.files)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handoff, token, live.loading])
 
@@ -225,7 +215,11 @@ function ChatThread({ threadId }: { threadId: string }) {
   const empty = !live.loading && live.exchanges.length === 0
 
   return (
-    <div className="bui-scope flex h-full min-h-0 flex-col bg-page">
+    /* The drop target is the whole conversation, composer included. A file is
+       being given to Divo rather than typed into a field, so anywhere you can
+       see the chat is somewhere you can let go of it. */
+    <div className="bui-scope relative flex h-full min-h-0 flex-col bg-page" {...dropProps}>
+      <DropVeil visible={over} />
       <div
         ref={scroller}
         className="min-h-0 flex-1 overflow-y-auto"
@@ -274,6 +268,10 @@ function ChatThread({ threadId }: { threadId: string }) {
             autoFocus={empty}
             running={live.running}
             onStop={live.stopRun}
+            files={attach.files}
+            rejected={attach.rejected}
+            onAttach={attach.add}
+            onRemoveFile={attach.remove}
           />
         </div>
       </div>
