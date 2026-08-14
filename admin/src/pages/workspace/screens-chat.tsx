@@ -31,6 +31,7 @@ import { splitTrace } from './chat/lifecycle'
 import { PiTraceTimeline } from './chat/trace'
 import { PinSpacer } from './chat/pin'
 import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
+import { CopyButton } from './chat/copy'
 import { clearHandoff, peekHandoff } from './chat/handoff'
 import { useThreadRun, type Exchange } from './chat/live'
 import {
@@ -435,10 +436,14 @@ const Exchanged = memo(function Exchanged({
        child of the thread column, because that is where the spacer looks. */
     <div data-exchange-id={exchange.id} className="flex flex-col gap-5">
       {prompt && (
-        <div className="flex justify-end pl-16">
+        /* The bubble and its control are one group, so hovering anywhere on
+           your own message offers the copy — aiming at a 24px target that only
+           appears once you are already on it is a worse trade than it sounds. */
+        <div className="group flex flex-col items-end gap-0.5 pl-16">
           <p className="rounded-card bg-field px-3 py-2 text-[13.5px] leading-[1.5] text-ink">
             {prompt}
           </p>
+          <CopyButton text={prompt} />
         </div>
       )}
 

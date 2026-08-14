@@ -24,6 +24,7 @@ import { Sources, SourceLink } from './answer/links.view'
 import { sourcesIn } from './answer/links'
 import { FileChips, RejectionNote } from './attach.view'
 import { namedForClipboard, type Rejection } from './attach'
+import { CopyButton } from './copy'
 import type { ArtifactBlock, Beat, StepLine, TableBlock } from './transcripts'
 
 /* ── Step ─────────────────────────────────────────────────
@@ -247,11 +248,19 @@ export function Say({ text, streaming }: { text: string; streaming?: boolean }) 
 
   return (
     <div
-      className="text-[13.5px] leading-[1.7] text-ink"
+      className="group text-[13.5px] leading-[1.7] text-ink"
       style={{ animation: 'bui-stream-in 420ms cubic-bezier(0.23,1,0.32,1) both' }}
     >
       <Markdown>{text}</Markdown>
       <Sources sources={sources} />
+      {/* Under the answer rather than floating beside it: the answer is as wide
+          as the column, so there is no margin to sit in, and a control overlaid
+          on the last line covers the text it belongs to. Only on a settled
+          answer — the streaming branch returns above — because copying a reply
+          that is still arriving gets you half of it. */}
+      <div className="mt-1.5 flex items-center gap-0.5">
+        <CopyButton text={text} />
+      </div>
     </div>
   )
 }
