@@ -563,6 +563,15 @@ Run additional focused backend tests selected from the changed services. Do not
 default to the entire backend suite for every mechanical module extraction;
 run it before final promotion or when the blast radius warrants it.
 
+**`npm run divo:types` typechecks no `.mjs` file.** `divo/tsconfig.json` sets
+`checkJs: false` and its `include` covers only `extensions/**/*.ts`, and biome
+ignores `divo/` entirely. So `divo:check` passing says nothing about
+`local-rpc-controller.mjs`, `native-skills.mjs`, `container-entry.mjs`, `auth.mjs`
+or any of their siblings — those are guarded by `node --check` and the test suite
+alone. Do not report "types clean" for a runtime `.mjs` change; it is true and it
+means nothing. Turning `checkJs` on is worth doing and has not been attempted, so
+the size of the fallout is unknown.
+
 After a runtime or extension change, rebuild the Cloud-Pi image before a real
 container test:
 
