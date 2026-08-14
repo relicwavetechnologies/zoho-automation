@@ -214,27 +214,23 @@ function Elapsed({ startedAt, seconds }: { startedAt: number | null; seconds: nu
 }
 
 export function PiTraceTimeline({
-  steps, streaming, awaitingApproval, startedAt, elapsed, declined, liveLabel,
+  steps, streaming, startedAt, elapsed, liveLabel,
 }: {
   steps: TraceStep[]
   /** The run is going. */
   streaming: boolean
-  /** Something is waiting on a person, so the log must stay open. */
-  awaitingApproval: boolean
   /** When the run started, while it is going. */
   startedAt: number | null
   /** How long the run took, once it is over. */
   elapsed: number
-  /** A person ended the run — a legitimate ending, not an error. */
-  declined: boolean
   /** What the run says it is doing right now. */
   liveLabel?: string | null
 }) {
   const [pinned, setPinned] = useState<boolean | null>(null)
-  const open = pinned ?? (streaming || awaitingApproval)
+  const open = pinned ?? streaming
   const segments = coalesceSegments(steps)
   const tools = steps.filter((step) => step.kind === 'tool').length
-  const working = streaming && !declined
+  const working = streaming
 
   // A turn that answered without doing anything has no log and no header —
   // "Worked for 0.4s" above a one-line reply is furniture, not information.
@@ -253,7 +249,7 @@ export function PiTraceTimeline({
             <PixelGrid />
             {/* The run's own words for what it is doing, falling back to a
                 generic verb only before the first frame arrives. */}
-            <Shimmer>{awaitingApproval ? 'Waiting on you' : liveLabel || 'Working'}</Shimmer>
+            <Shimmer>{liveLabel || 'Working'}</Shimmer>
             <span className="font-mono text-[12px] text-ink-3 tabular-nums">
               <Elapsed startedAt={startedAt} seconds={elapsed} />
             </span>
@@ -267,7 +263,7 @@ export function PiTraceTimeline({
                 same product signs its work the same way on both surfaces. */}
             <DivoMark className="size-[15px] text-ink-3 transition-colors duration-100 group-hover:text-ink-2" />
             <span className="font-medium">
-              {declined ? 'Stopped after ' : 'Worked for '}
+              Worked for{' '}
               <Elapsed startedAt={startedAt} seconds={elapsed} />
             </span>
             {tools > 0 && (

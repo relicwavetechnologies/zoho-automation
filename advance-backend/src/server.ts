@@ -646,6 +646,8 @@ export const createServer = (c: Container): DivoServerApplication => {
     }),
   );
 
+  // Installed Desktop clients retain their client-owned confirmation route.
+  // Web and Lark proceed through the governed tool path instead.
   app.use(
     '/api/desktop',
     createDesktopApprovalRoutes({
@@ -653,6 +655,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       memberJwtSecret: c.env.MEMBER_JWT_SECRET,
       logger:          c.logger,
       inbox:           c.approvalInbox,
+      businessActions: c.businessActions,
     }),
   );
 

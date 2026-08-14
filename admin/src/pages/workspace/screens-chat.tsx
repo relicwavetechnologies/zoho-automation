@@ -20,13 +20,13 @@
  * It exists because the admin only ever showed the operational half of Divo —
  * runs, cost, approvals after the fact — and never the thing people actually
  * do with it. The shape is the one Lark already has: you ask, the work happens
- * in the open, Divo stops before it writes anything, and what comes back is an
- * answer rather than a wall of rows.
+ * in the open, governed tools apply the same backend policy, and what comes
+ * back is an answer rather than a wall of rows.
  */
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useParams } from 'react-router-dom'
 import { Chart } from './chat/charts'
-import { Approval, Artifact, Composer, Preview, Say } from './chat/parts'
+import { Artifact, Composer, Preview, Say } from './chat/parts'
 import { splitTrace } from './chat/lifecycle'
 import { PiTraceTimeline } from './chat/trace'
 import { PinSpacer } from './chat/pin'
@@ -263,8 +263,6 @@ function ChatThread({ threadId }: { threadId: string }) {
                    thread would defeat the memo on all of them — a new label per
                    tool call would redraw the entire conversation. */
                 liveLabel={exchange.state.finished ? null : live.liveLabel}
-                onApprove={live.approve}
-                onDecline={live.decline}
               />
             ))
           )}
@@ -417,16 +415,13 @@ function Welcome({ onPick }: { onPick: (prompt: string) => void }) {
  * hold their identity, so now they are drawn once and left alone.
  */
 const Exchanged = memo(function Exchanged({
-  exchange, liveLabel, onApprove, onDecline,
+  exchange, liveLabel,
 }: {
   exchange: Exchange
   /** What the run says it is doing. Null once it has settled. */
   liveLabel?: string | null
-  onApprove: () => void
-  onDecline: () => void
 }) {
   const { prompt, beats, state } = exchange
-  const seen = new Set(state.played)
   /* Everything that happened on the way is the trace; everything else stays in
      the conversation, in the order the run put it there. */
   const { trace, rest } = splitTrace(beats)
@@ -451,25 +446,12 @@ const Exchanged = memo(function Exchanged({
         <PiTraceTimeline
           steps={trace}
           streaming={!state.finished}
-          awaitingApproval={state.gate !== null}
           startedAt={state.startedAt}
           elapsed={state.elapsed}
-          declined={state.declined !== null}
           liveLabel={liveLabel}
         />
 
         {rest.map(({ beat, index }) => {
-          if (beat.t === 'approve') {
-            return (
-              <Approval
-                key={index}
-                beat={beat}
-                onApprove={onApprove}
-                onDecline={onDecline}
-                answered={state.declined ? 'declined' : seen.has(index) ? 'approved' : null}
-              />
-            )
-          }
           if (beat.t === 'say') {
             return (
               <Say
@@ -487,12 +469,6 @@ const Exchanged = memo(function Exchanged({
           }
           return null
         })}
-
-        {state.declined && (
-          <p className="rounded-card bg-inset px-3 py-2.5 text-[12.5px] leading-relaxed text-ink-2 shadow-hairline">
-            {state.declined}
-          </p>
-        )}
 
         {exchange.error && (
           <p className="text-[13px] text-rose-600 dark:text-rose-400">{exchange.error}</p>

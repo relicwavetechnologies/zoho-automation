@@ -15,7 +15,7 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowUp, ArrowUpRight, Check, ChevronDown, ChevronRight, Paperclip, Plus, X } from 'lucide-react'
+import { ArrowUp, ArrowUpRight, Check, ChevronDown, ChevronRight, Paperclip, Plus } from 'lucide-react'
 import { ToolMark, tool, type ToolKey } from './tools'
 import { RevealCursor, firstWordIn, rehypeWords, wordIndexOf } from './reveal'
 import { DataTable } from './answer/table.view'
@@ -152,80 +152,6 @@ export function Step({
             <span className="mt-1 text-[11px] text-ink-3">{meta.app}</span>
           </div>
         </div>
-      </div>
-    </div>
-  )
-}
-
-/* ── Approval ─────────────────────────────────────────────
-   The moment the run stops. It is a card rather than a row because it is the
-   one thing on the screen that will not resolve itself, and it states what is
-   about to happen in the reader's terms — destination, scope, blast radius —
-   not in the runtime's. */
-export function Approval({
-  beat, onApprove, onDecline, answered,
-}: {
-  beat: Extract<Beat, { t: 'approve' }>
-  onApprove: () => void
-  onDecline: () => void
-  answered: 'approved' | 'declined' | null
-}) {
-  const meta = tool(beat.tool)
-  return (
-    <div
-      className="rounded-card bg-surface shadow-card"
-      style={{ animation: 'bui-fade-up 380ms cubic-bezier(0.23,1,0.32,1) both' }}
-    >
-      <div className="flex items-start gap-2.5 border-b border-line p-3">
-        <span className="mt-px flex size-7 shrink-0 items-center justify-center rounded-control bg-inset shadow-hairline">
-          <ToolMark name={beat.tool} size={15} />
-        </span>
-        <span className="min-w-0">
-          <span className="block text-[13px] font-semibold text-ink">{beat.title}</span>
-          <span className="mt-0.5 block text-[12px] leading-relaxed text-ink-2">{beat.body}</span>
-        </span>
-        {!answered && (
-          <span className="ml-auto shrink-0 rounded-full bg-[var(--bui-accent-tint)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--bui-accent-ink)]">
-            Waiting on you
-          </span>
-        )}
-      </div>
-
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 p-3">
-        {beat.facts.map((f) => (
-          <div key={f.k} className="contents">
-            <dt className="text-[11.5px] text-ink-3">{f.k}</dt>
-            <dd className="text-[11.5px] text-ink">{f.v}</dd>
-          </div>
-        ))}
-      </dl>
-
-      <div className="flex items-center gap-2 border-t border-line p-2.5">
-        {answered ? (
-          <span
-            className={`flex items-center gap-1.5 text-[12px] font-medium ${answered === 'approved' ? 'text-[var(--bui-green)]' : 'text-ink-2'}`}
-          >
-            {answered === 'approved' ? <Check size={13} /> : <X size={13} />}
-            {answered === 'approved' ? `Approved — ${meta.app}` : 'Declined'}
-          </span>
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={onApprove}
-              className="rounded-control bg-ink px-3 py-1.5 text-[12.5px] font-medium text-surface transition-transform duration-150 active:scale-[0.97]"
-            >
-              {beat.confirm}
-            </button>
-            <button
-              type="button"
-              onClick={onDecline}
-              className="rounded-control px-3 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors duration-100 hover:bg-fill hover:text-ink"
-            >
-              Not now
-            </button>
-          </>
-        )}
       </div>
     </div>
   )

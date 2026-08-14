@@ -60,6 +60,10 @@ export interface ToolExecutorInput {
   readonly execution?: GatewayExecutionContext;
   /** Optional invariant used by prepared commits to prevent action reclassification. */
   readonly expectedAction?: ToolActionGroup;
+  /** A human decision should finish this exact stored action without an agent retry. */
+  readonly resumeOnApproval?: boolean;
+  /** Requester-confirmed business action that owns any subsequent governance decision. */
+  readonly parentBusinessActionId?: string;
 }
 
 export interface ToolExecutorDeps {
@@ -290,6 +294,10 @@ export class ToolExecutor {
         runContext,
         chatId: gatewayApprovalChatId(member, input.execution),
         argsSummary,
+        ...(input.resumeOnApproval ? { resumeOnApproval: true } : {}),
+        ...(input.parentBusinessActionId
+          ? { parentBusinessActionId: input.parentBusinessActionId }
+          : {}),
         ...(input.execution ? { execution: input.execution } : {}),
       });
 

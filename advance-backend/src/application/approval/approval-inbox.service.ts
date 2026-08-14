@@ -34,6 +34,8 @@ export interface ApprovalInboxItem {
   readonly approverName: string;
   readonly departmentName: string | null;
   readonly deliveredVia: string;
+  readonly decisionKind: 'requester_confirmation' | 'governance_authorization';
+  readonly canDecide: boolean;
   readonly description: ToolActionDescription;
   /** The exact payload, for an approver who wants to see everything. */
   readonly payload: unknown;
@@ -72,8 +74,8 @@ export class ApprovalInboxService {
       return { awaitingMe: [], requestedByMe: [] };
     }
     return {
-      awaitingMe: result.value.awaitingMe.map(present),
-      requestedByMe: result.value.requestedByMe.map(present),
+      awaitingMe: result.value.awaitingMe.map(row => present(row, true)),
+      requestedByMe: result.value.requestedByMe.map(row => present(row, row.kind === 'business_action')),
     };
   }
 
@@ -150,11 +152,11 @@ export class ApprovalInboxService {
     });
     this.deps.logger.info('approval_inbox.decided', { approvalId, decision, toolId: approval.toolId });
 
-    return { ok: true, decision, item: present({ ...approval, status: decision }) };
+    return { ok: true, decision, item: present({ ...approval, status: decision }, true) };
   }
 }
 
-function present(row: RuntimeApprovalRow): ApprovalInboxItem {
+function present(row: RuntimeApprovalRow, canDecide: boolean): ApprovalInboxItem {
   const meta = isRecord(row.metadataJson) ? row.metadataJson : {};
   const payload = isRecord(row.payloadJson) ? row.payloadJson : {};
   const args = 'args' in payload ? payload['args'] : payload;
@@ -169,6 +171,10 @@ function present(row: RuntimeApprovalRow): ApprovalInboxItem {
     approverName: readString(meta['resolvedManagerName']) ?? 'your approver',
     departmentName: readString(meta['departmentName']) ?? null,
     deliveredVia: row.channel,
+    decisionKind: row.kind === 'business_action'
+      ? 'requester_confirmation'
+      : 'governance_authorization',
+    canDecide,
     description: describeToolAction(row.toolId, row.actionGroup, args),
     payload: args,
   };

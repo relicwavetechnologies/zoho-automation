@@ -19,6 +19,7 @@ import {
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { isAutomationPlanApproval } from '../gateway/automation-plan.service';
 import type { AutomationPlanExecutor } from '../gateway/automation-plan.executor';
+import type { ChannelKey } from '../../domain/channel/incoming-message';
 
 /** An outcome and the adapter that can actually reach its destination. */
 interface FinalDelivery {
@@ -107,6 +108,9 @@ export class ApprovalResumerService {
       ? 'scheduled_runtime_delivery' as const
       : undefined;
     const approvalOrigin = asNonEmptyString(meta['approvalOrigin']);
+    const sourceChannel = asChannel(meta['sourceChannel'])
+      ?? (approvalOrigin === 'cloud_pi' || approvalOrigin === 'lark' ? 'lark' : 'desktop');
+    const parentBusinessActionId = asNonEmptyString(meta['parentBusinessActionId']);
     const execution = asExecutionContext(meta['execution']);
     const approvalCompanyId = asNonEmptyString(approval.companyId);
 
@@ -123,7 +127,7 @@ export class ApprovalResumerService {
       ...(replyInThread !== undefined ? { replyInThread } : {}),
       correlationId,
     };
-    if (statusMessageId) {
+    if (sourceChannel === 'lark' && statusMessageId) {
       this.deps.larkAdapter.restoreStatusCoordinator(String(correlationId), statusMessageId, chatId);
     }
 
@@ -133,7 +137,9 @@ export class ApprovalResumerService {
     // that reads a conversation id as an open_id.
     const scheduledToCreator = deliveryMode === 'scheduled_runtime_delivery'
       && Boolean(requesterLarkOpenId);
-    const delivery: FinalDelivery = scheduledToCreator
+    const delivery: FinalDelivery | null = sourceChannel !== 'lark' && !scheduledToCreator
+      ? null
+      : scheduledToCreator
       ? {
           adapter: this.deps.scheduledDmAdapter,
           conversation: { ...conversation, chatId: asChatId(requesterLarkOpenId!) },
@@ -143,6 +149,17 @@ export class ApprovalResumerService {
     if (decision === 'rejected') {
       await this.deliverFinal(delivery, 'The requested action was not approved by the manager, so nothing was changed.');
       await this.deps.approvalRepo.persistResult(approvalId, { decision: 'rejected' });
+      if (parentBusinessActionId) {
+        const response = { ok: false, status: 'approval_rejected', error: {
+          code: 'approval_rejected',
+          message: 'The manager did not approve this action, so nothing was changed.',
+        } } as const;
+        await this.deps.approvalRepo.failLinkedBusinessAction(
+          parentBusinessActionId,
+          'rejected',
+          response,
+        );
+      }
       return;
     }
 
@@ -201,7 +218,7 @@ export class ApprovalResumerService {
       companyId: asCompanyId(identity.companyId),
       userId: asUserId(identity.userId),
       companyRole: asCompanyRoleSlug(identity.aiRole),
-      channel: 'lark',
+      channel: sourceChannel,
       ...(identity.activeDepartmentId ? { departmentId: asDepartmentId(identity.activeDepartmentId) } : {}),
     });
     if (!permissionResult.ok) {
@@ -216,7 +233,7 @@ export class ApprovalResumerService {
       companyId: asCompanyId(identity.companyId),
       userId: asUserId(identity.userId),
       companyRole: asCompanyRoleSlug(identity.aiRole),
-      channel: 'lark' as const,
+      channel: sourceChannel,
       traceId: String(correlationId),
       requestId: `approval-${approvalId}`,
       chatId,
@@ -238,7 +255,7 @@ export class ApprovalResumerService {
     // Skipped for a scheduled run: this card would be addressed to the synthetic
     // thread the run carries, which is not a chat anyone can receive on, and
     // there is no live conversation waiting on progress either way.
-    if (!scheduledToCreator) {
+    if (delivery && !scheduledToCreator) {
       await this.deps.larkAdapter.sendStatus(conversation, {
         kind: 'status',
         terminal: false,
@@ -265,15 +282,27 @@ export class ApprovalResumerService {
       expectedAction: approval.actionGroup as ToolActionGroup,
       ...(execution ? { execution } : {}),
     });
-    await this.finishApprovedAction(approvalId, delivery, outcome);
+    await this.finishApprovedAction(approvalId, delivery, outcome, parentBusinessActionId);
   }
 
   private async finishApprovedAction(
     approvalId: string,
-    delivery: FinalDelivery,
+    delivery: FinalDelivery | null,
     outcome: RuntimeToolExecutionOutcome,
+    parentBusinessActionId?: string,
   ): Promise<void> {
     if (outcome.status === 'success') {
+      const response = {
+        ok: true,
+        status: 'success',
+        data: { toolId: outcome.toolId, action: outcome.action, result: outcome.result },
+      } as const;
+      if (parentBusinessActionId) {
+        await this.deps.approvalRepo.completeLinkedBusinessAction(
+          parentBusinessActionId,
+          response,
+        );
+      }
       const text = ['Approved action completed.', renderResult(outcome.result)].filter(Boolean).join('\n\n');
       await this.deliverFinal(delivery, text);
       return;
@@ -294,9 +323,10 @@ export class ApprovalResumerService {
   }
 
   private async deliverFinal(
-    delivery: FinalDelivery,
+    delivery: FinalDelivery | null,
     text: string,
   ): Promise<void> {
+    if (!delivery) return;
     const delivered = await delivery.adapter.sendFinalReply(delivery.conversation, {
       kind: 'final',
       text,
@@ -309,13 +339,37 @@ export class ApprovalResumerService {
 
   private async persistFailure(approvalId: string, result: Record<string, unknown>): Promise<boolean> {
     const persisted = await this.deps.approvalRepo.failApprovedExecution(approvalId, result);
-    if (persisted.ok && persisted.value) return true;
+    if (persisted.ok && persisted.value) {
+      const found = await this.deps.approvalRepo.findById(approvalId);
+      const parentBusinessActionId = found.ok && found.value
+        ? asNonEmptyString(asRecord(found.value.metadataJson)['parentBusinessActionId'])
+        : undefined;
+      if (parentBusinessActionId) {
+        const response = {
+          ok: false,
+          status: 'approval_execution_failed',
+          error: {
+            code: 'approval_execution_failed',
+            message: typeof result['message'] === 'string'
+              ? result['message']
+              : 'The approved action could not be completed.',
+          },
+        } as const;
+        await this.deps.approvalRepo.failLinkedBusinessAction(
+          parentBusinessActionId,
+          'failed',
+          response,
+        );
+      }
+      return true;
+    }
     this.log.error('resumer.failure_checkpoint_failed', {
       approvalId,
       error: persisted.ok ? 'approval_not_approved_or_executing' : persisted.error.message,
     });
     return false;
   }
+
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -332,6 +386,12 @@ function asArgs(value: unknown): Record<string, unknown> | null {
 
 function asNonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+}
+
+function asChannel(value: unknown): ChannelKey | undefined {
+  return value === 'lark' || value === 'desktop' || value === 'airnote' || value === 'web'
+    ? value
+    : undefined;
 }
 
 function asExecutionContext(value: unknown): GatewayExecutionContext | undefined {

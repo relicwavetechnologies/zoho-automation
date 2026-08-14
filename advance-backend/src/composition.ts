@@ -272,10 +272,7 @@ import { AirtableContractBootstrapService } from './application/gateway/airtable
 import { CompositeWorkContractBootstrap } from './application/gateway/composite-contract-bootstrap.service';
 import { WorkResolutionService } from './application/gateway/work-resolution.service';
 import { WorkBootstrapService } from './application/gateway/work-bootstrap.service';
-import {
-  InMemoryApprovalIntentRepository,
-  LocalApprovalIntentService,
-} from './application/gateway/local-approval-intent.service';
+import { BusinessActionService } from './application/approval/business-action.service';
 import { MediaOcrService } from './application/gateway/media-ocr.service';
 import { ConnectionRateLimitService } from './application/governance/connection-rate-limit.service';
 import { ApiKeyExhaustionNotifier } from './application/governance/api-key-exhaustion.notifier';
@@ -429,6 +426,7 @@ export interface Container {
   workbookConversionCardHandler: LarkWorkbookConversionCardHandler;
   approvalResumer: ApprovalResumerService;
   approvalInbox: ApprovalInboxService;
+  businessActions: BusinessActionService;
   workbookConversionQueue: WorkbookConversionQueue;
   workbookConversionWorker: GoogleDriveXlsxConversionConsumer;
   airtableConnectionResolver: ResolveAirtableMcpConnection;
@@ -2706,14 +2704,10 @@ export async function buildContainer(
     },
   });
 
-  const localApprovalIntents = new LocalApprovalIntentService({
+  const businessActions = new BusinessActionService({
+    approvals: approvalRepo,
     toolExecutor: gatewayToolExecutor,
-    permissions,
-    skillCatalog,
-    skillAccessEnforcement,
-    repository: new InMemoryApprovalIntentRepository(),
-    clock: systemClock,
-    logger: logger.child({ service: 'gateway-local-approval' }),
+    logger: logger.child({ service: 'business-action' }),
   });
   const automationPlanService = new AutomationPlanService({
     toolExecutor: gatewayToolExecutor,
@@ -2746,7 +2740,7 @@ export async function buildContainer(
     toolRegistry,
     skillCatalog,
     toolExecutor: gatewayToolExecutor,
-    localApprovalIntents,
+    businessActions,
     connectionRegistry: integrationConnectionRepo,
     workContractBootstrap,
     mediaOcr,
@@ -2834,6 +2828,7 @@ export async function buildContainer(
     workbookConversionCardHandler,
     approvalResumer,
     approvalInbox,
+    businessActions,
     // Workbook conversion and async ingress
     workbookConversionQueue,
     workbookConversionWorker,
@@ -2880,7 +2875,6 @@ export async function buildContainer(
       piRuntime: larkPiRuntime,
       identity: channelIdentityRepo,
       departments: deptRepo,
-      approvals: approvalInbox,
       transcript: conversationRepo,
       logger: logger.child({ service: 'web-run' }),
     }),
