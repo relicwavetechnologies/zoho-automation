@@ -132,23 +132,31 @@ fn protected_run_metadata(event: &serde_json::Value) -> ProtectedRunMetadata {
             continue;
         };
         for item in content {
-            if item.get("type").and_then(|value| value.as_str()) != Some("toolCall")
-                || item.get("name").and_then(|value| value.as_str()) != Some("divo_gateway")
-            {
+            if item.get("type").and_then(|value| value.as_str()) != Some("toolCall") {
                 continue;
             }
+            let tool_name = item.get("name").and_then(|value| value.as_str());
             let arguments = item.get("arguments");
-            let protected_attempt = arguments
-                .and_then(|value| value.get("op"))
-                .and_then(|value| value.as_str())
-                == Some("tools.invoke")
-                && matches!(
+            let protected_attempt = match tool_name {
+                Some("divo_shopify_orders" | "divo_shopify_customers") => true,
+                Some("divo_gateway") => {
                     arguments
-                        .and_then(|value| value.get("payload"))
-                        .and_then(|value| value.get("toolId"))
-                        .and_then(|value| value.as_str()),
-                    Some("shopifyOrders" | "shopifyCustomers")
-                );
+                        .and_then(|value| value.get("op"))
+                        .and_then(|value| value.as_str())
+                        == Some("tools.invoke")
+                        && matches!(
+                            arguments
+                                .and_then(|value| value.get("payload"))
+                                .and_then(|value| value.get("toolId"))
+                                .and_then(|value| value.as_str()),
+                            Some("shopifyOrders" | "shopifyCustomers")
+                        )
+                }
+                _ => false,
+            };
+            if !protected_attempt {
+                continue;
+            }
             metadata.used |= protected_attempt;
             if let Some(call_id) = item.get("id").and_then(|value| value.as_str()) {
                 gateway_calls.insert(call_id.to_string());
@@ -3489,6 +3497,52 @@ mod tests {
         let protected = protected_run_metadata(&event);
         assert!(protected.used);
         assert!(protected.provenance_valid);
+    }
+
+    #[test]
+    fn typed_shopify_metadata_uses_the_same_protected_session_contract() {
+        let event = serde_json::json!({
+            "type":"agent_end",
+            "messages":[
+                {"role":"user","content":[{"type":"text","text":"count orders"}]},
+                {"role":"assistant","content":[{
+                    "type":"toolCall",
+                    "id":"call-typed",
+                    "name":"divo_shopify_orders",
+                    "arguments":{"operation":"list"}
+                }]},
+                {"role":"toolResult","toolCallId":"call-typed","details":{
+                    "ok":true,
+                    "status":"success",
+                    "data":{"protectedData":{
+                        "used":true,
+                        "provider":"shopify",
+                        "connectionId":"11111111-1111-4111-8111-111111111111",
+                        "category":"orders",
+                        "references":[]
+                    }}
+                }}
+            ]
+        });
+
+        let protected = protected_run_metadata(&event);
+        assert!(protected.used);
+        assert!(protected.provenance_valid);
+
+        let failed_attempt = protected_run_metadata(&serde_json::json!({
+            "messages":[
+                {"role":"user","content":[]},
+                {"role":"assistant","content":[{
+                    "type":"toolCall",
+                    "id":"call-typed-failed",
+                    "name":"divo_shopify_customers",
+                    "arguments":{"operation":"list"}
+                }]},
+                {"role":"toolResult","toolCallId":"call-typed-failed","isError":true}
+            ]
+        }));
+        assert!(failed_attempt.used);
+        assert!(failed_attempt.provenance_valid);
     }
 
     #[test]

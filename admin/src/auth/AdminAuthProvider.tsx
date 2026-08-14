@@ -44,7 +44,7 @@ type AdminAuthContextValue = {
   signingIn: boolean;
   loginWithPassword: (email: string, password: string) => Promise<void>;
   loginWithLark: (returnTo?: string) => Promise<void>;
-  completeLarkLogin: (code: string, state: string) => Promise<void>;
+  completeLarkLogin: (code: string, state: string) => Promise<string>;
   refresh: () => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -260,6 +260,7 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
       const issued = await exchange({ code, state });
       persistToken(issued);
       await fetchSession(issued);
+      return issued;
     } finally {
       setSigningIn(false);
     }

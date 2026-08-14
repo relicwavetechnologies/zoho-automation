@@ -14,17 +14,22 @@
  * whoever actually manages a department and Company for admins. Nothing is
  * shown as a preview any more.
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, Bot, Building2, Check, ChevronsUpDown, CircleCheck, CircleDashed, Diamond, FileClock,
-  FileStack, Grid2X2, LogOut, Mail, Minus, Moon, Plus, Search, Settings, ShieldCheck, Sun,
-  Users, UserSquare, Waypoints, type LucideIcon,
+  FileStack, Grid2X2, LogOut, Mail, Menu, MessageSquare, Minus, Moon, MoreHorizontal, Pencil, Plus, Search,
+  Settings, ShieldCheck, Sun, Trash2, Users, UserSquare, Waypoints, type LucideIcon,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { notify } from '@/lib/notify'
 import { useManagedDepartments } from '@/pages/workspace/data/use-team'
-import { useOnboarding, useRecentRuns } from '@/pages/workspace/data/use-onboarding'
-import { runTitle } from '@/pages/workspace/data/use-my-activity'
+import { useOnboarding } from '@/pages/workspace/data/use-onboarding'
+import {
+  deleteThread, listThreads, onThreadsChanged, renameThread, startedThreads,
+  withStartedThreads, type ThreadSummary,
+} from '@/pages/workspace/chat/threads'
+import { PixelGrid } from '@/pages/workspace/chat/loader'
 import { Avatar } from '@/pages/workspace/ui'
 import { RAIL } from '@/components/admin/settings-shell'
 import { RoleProvider } from '@/cursor/role-context'
@@ -46,8 +51,15 @@ type NavGroup = { label?: string; items: NavItem[] }
 const NAV: Record<ScopeKind, NavGroup[]> = {
   you: [
     {
+      label: 'Workspace',
       items: [
         { to: '/me', label: 'Home', icon: Grid2X2, end: true },
+        { to: '/chat', label: 'Chat', icon: MessageSquare },
+      ],
+    },
+    {
+      label: 'Work',
+      items: [
         /* Work, not configuration: a mail rule is Divo acting on your behalf
            every hour of every day, and you come back to check it still is. */
         { to: '/me/mail', label: 'Mail', icon: Mail },
@@ -58,15 +70,21 @@ const NAV: Record<ScopeKind, NavGroup[]> = {
     },
   ],
   team: [
-    { items: [{ to: '/team', label: 'Overview', icon: Grid2X2, end: true }] },
+    { label: 'Your team', items: [{ to: '/team', label: 'Overview', icon: Grid2X2, end: true }] },
   ],
   company: [
     {
+      label: 'Company',
       items: [
         { to: '/home', label: 'Overview', icon: Grid2X2 },
         /* Watching the company is work. Governing it is configuration, and
            that half now lives behind Settings. */
         { to: '/ai-ops', label: 'AI Ops', icon: Activity },
+      ],
+    },
+    {
+      label: 'Operations',
+      items: [
         /* The permission matrix already exists in Settings. This is the same
            truth asked the other way round — not "who holds this grant" but
            "what happens when this person asks Divo for something". */
@@ -78,7 +96,7 @@ const NAV: Record<ScopeKind, NavGroup[]> = {
 }
 
 const scopeOfPath = (pathname: string): ScopeKind =>
-  pathname.startsWith('/me') ? 'you' : pathname.startsWith('/team') ? 'team' : 'company'
+  pathname.startsWith('/me') || pathname.startsWith('/chat') ? 'you' : pathname.startsWith('/team') ? 'team' : 'company'
 
 const HOME: Record<ScopeKind, string> = { you: '/me', team: '/team', company: '/home' }
 
@@ -89,12 +107,16 @@ export function WorkspaceShell() {
   const { resolved, setTheme } = useTheme()
   const [scopeOpen, setScopeOpen] = useState(false)
   const [palette, setPalette] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const scopeRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   // Land at the top of a new screen. Without this the router keeps the previous
   // page's offset, so a short page opens scrolled past its own header.
-  useEffect(() => { scrollRef.current?.scrollTo({ top: 0 }) }, [location.pathname])
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: 0 })
+    setSidebarOpen(false)
+  }, [location.pathname])
 
   const scope = scopeOfPath(location.pathname)
   const groups = NAV[scope]
@@ -107,6 +129,8 @@ export function WorkspaceShell() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPalette((v) => !v) }
+      if (e.key === '/' && !isEditableTarget(e.target)) { e.preventDefault(); setPalette(true) }
+      if (e.key === 'Escape') setSidebarOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -129,8 +153,6 @@ export function WorkspaceShell() {
   const active = scopes.find((s) => (
     s.kind === scope && (s.kind !== 'team' || s.departmentId === managed.department?.id)
   )) ?? scopes.find((s) => s.kind === scope) ?? scopes[0]
-  const ScopeIcon = scope === 'you' ? UserSquare : scope === 'team' ? Users : Building2
-
   /*
    * Everywhere this person can go, both surfaces.
    *
@@ -150,8 +172,15 @@ export function WorkspaceShell() {
 
   return (
     <RoleProvider>
-      <div className="cur app">
-        <aside className="sidebar">
+      <div className="cur app workspace-app" data-sidebar-open={sidebarOpen ? 'true' : 'false'}>
+        <button
+          type="button"
+          className="ws-sidebar-backdrop"
+          aria-label="Close navigation"
+          onClick={() => setSidebarOpen(false)}
+        />
+
+        <aside className="sidebar workspace-sidebar" id="workspace-navigation" aria-label="Workspace navigation">
           {/*
             No separate brand row. The reference folds identity into the
             workspace switcher — one row that says both who you are and which
@@ -159,7 +188,7 @@ export function WorkspaceShell() {
             was two rows saying nearly the same thing. The mark lives inside the
             switcher now.
           */}
-          <div className="ws-scope" ref={scopeRef}>
+          <div className="ws-scope ws-workspace" ref={scopeRef}>
             <button
               type="button"
               className={`ws-scope-btn${scopeOpen ? ' open' : ''}`}
@@ -181,37 +210,17 @@ export function WorkspaceShell() {
                 Divo rather than a link that aged out.
               */}
               {active?.kind === 'you' && session?.avatarUrl ? (
-                <Avatar name={session.name} email={session.email} src={session.avatarUrl} size={22} />
+                <Avatar name={session.name} email={session.email} src={session.avatarUrl} size={32} />
               ) : (
                 <span className="ws-scope-ic" data-tone="brand">
-                  <Diamond size={12} fill="currentColor" strokeWidth={0} />
+                  <Diamond size={13} fill="currentColor" strokeWidth={0} />
                 </span>
               )}
               <span className="ws-scope-txt">
                 <b>{active.label}</b>
+                <span>{active.detail}</span>
               </span>
               {scopes.length > 1 ? <ChevronsUpDown size={13} className="muted" /> : null}
-            </button>
-
-            {/* The reference's top-right "+". It starts a new session there; the
-                nearest honest thing here is the composer, so it goes to Home and
-                puts the cursor in it rather than being a button that does
-                nothing until chat exists. */}
-            <button
-              type="button"
-              className="ws-scope-new"
-              title="Ask Divo something"
-              aria-label="Ask Divo something"
-              onClick={() => {
-                navigate('/me')
-                // After the route paints. The composer marks itself so the shell
-                // does not have to know anything else about Home.
-                window.setTimeout(() => {
-                  document.querySelector<HTMLTextAreaElement>('[data-composer]')?.focus()
-                }, 60)
-              }}
-            >
-              <Plus size={16} />
             </button>
 
             {scopeOpen && scopes.length > 1 ? (
@@ -244,31 +253,25 @@ export function WorkspaceShell() {
             ) : null}
           </div>
 
-          <nav className="ws-nav">
-            {groups.map((group, gi) => (
-              <div key={gi}>
-                {group.label ? <div className="nav-label">{group.label}</div> : <div style={{ height: 8 }} />}
-                {group.items.map((item) => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    end={item.end}
-                    className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
-                  >
-                    <span className="g"><item.icon size={16} /></span>
-                    {item.label}
-                  </NavLink>
-                ))}
-              </div>
-            ))}
-          </nav>
+          <button type="button" className="ws-quick-search" onClick={() => setPalette(true)}>
+            <Search size={13} />
+            <span>Quick search</span>
+            <kbd>/</kbd>
+          </button>
+
+          <button type="button" className="ws-new-chat" onClick={() => navigate('/chat')}>
+            <span>New chat</span>
+            <span className="ws-new-chat-plus" aria-hidden="true"><Plus size={10} /></span>
+          </button>
+
+          <WorkspaceNav groups={groups} pathname={location.pathname} />
 
           {/* Personal to whoever is signed in, so they belong to the You scope
               and nowhere else — a manager reading their team's page does not
               want their own half-finished setup in the corner of it. */}
           {scope === 'you' ? (
             <>
-              <RecentRuns onOpen={() => navigate('/me')} onSearch={() => setPalette(true)} />
+              <RecentChats />
               <GettingStarted onGo={(to) => navigate(to)} />
             </>
           ) : null}
@@ -303,17 +306,35 @@ export function WorkspaceShell() {
         </aside>
 
         <div className="shell">
+          <button
+            type="button"
+            className="ws-sidebar-trigger"
+            aria-controls="workspace-navigation"
+            aria-expanded={sidebarOpen}
+            aria-label="Open navigation"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <Menu size={17} />
+          </button>
           {/*
             The reference has no top chrome — a page begins with its own title
             and nothing else. Search moved to the Recent header and appearance
             to the sidebar foot, so nothing was lost; the bell went with them
             because it had no handler and never had one.
+
+            A chat has no bar at all. It carries its own header naming the
+            conversation, and a second one above it named the *page* — which on
+            `/chat/web_…` matched no nav item and fell through to the workspace
+            name, so the one thing on screen the reader could not have wanted
+            was the only thing it said.
           */}
-          <header className="topbar">
-            <b className="ws-crumb-now">
-              {groups.flatMap((g) => g.items).find((i) => i.to === location.pathname)?.label ?? active.label}
-            </b>
-          </header>
+          {location.pathname.startsWith('/chat') ? null : (
+            <header className="topbar">
+              <b className="ws-crumb-now">
+                {groups.flatMap((g) => g.items).find((i) => i.to === location.pathname)?.label ?? active.label}
+              </b>
+            </header>
+          )}
 
           <div className="content">
             <div className="scroll" ref={scrollRef}>
@@ -334,13 +355,89 @@ export function WorkspaceShell() {
   )
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  return target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)
+}
+
+function navItemIsActive(item: NavItem, pathname: string): boolean {
+  if (item.end) return pathname === item.to
+  return pathname === item.to || pathname.startsWith(`${item.to}/`)
+}
+
 /**
- * Recent runs, in the sidebar.
+ * The reference's moving selection surface, with the router as its authority.
  *
- * There is nowhere to open a single run from the You scope yet — run detail is
- * an admin route — so a row goes to All activity rather than pretending to
- * deep-link. It will point at the run itself once that page exists for members.
+ * Hover can borrow the surface, but leaving the rail always returns it to the
+ * current route. Keeping the box outside the links means the text and icons do
+ * not move, and route semantics remain ordinary anchors (including new-tab and
+ * middle-click behaviour).
  */
+function WorkspaceNav({ groups, pathname }: { groups: NavGroup[]; pathname: string }) {
+  const [hovered, setHovered] = useState<string | null>(null)
+  const [box, setBox] = useState<{ top: number; height: number } | null>(null)
+  const navRef = useRef<HTMLElement>(null)
+  const itemRefs = useRef<Record<string, HTMLAnchorElement | null>>({})
+  const active = groups.flatMap((group) => group.items).find((item) => navItemIsActive(item, pathname))
+
+  useLayoutEffect(() => {
+    const container = navRef.current
+    const target = itemRefs.current[hovered ?? active?.to ?? '']
+    if (!container || !target) {
+      setBox(null)
+      return
+    }
+
+    const containerRect = container.getBoundingClientRect()
+    const targetRect = target.getBoundingClientRect()
+    setBox({ top: targetRect.top - containerRect.top, height: targetRect.height })
+  }, [active?.to, groups, hovered])
+
+  return (
+    <nav
+      ref={navRef}
+      className="ws-nav ws-nav-reference"
+      onMouseLeave={() => setHovered(null)}
+    >
+      <span
+        aria-hidden="true"
+        className="ws-nav-highlight"
+        style={{
+          top: box?.top ?? 0,
+          height: box?.height ?? 0,
+          opacity: box ? 1 : 0,
+        }}
+      />
+      {groups.map((group) => (
+        <div className="ws-nav-group" key={group.label ?? group.items[0]?.to}>
+          {group.label ? <div className="nav-label">{group.label}</div> : null}
+          <div className="ws-nav-items">
+            {group.items.map((item) => {
+              const selected = navItemIsActive(item, pathname)
+              return (
+                <NavLink
+                  key={item.to}
+                  ref={(node) => { itemRefs.current[item.to] = node }}
+                  to={item.to}
+                  end={item.end}
+                  aria-current={selected ? 'page' : undefined}
+                  onMouseEnter={() => setHovered(item.to)}
+                  onFocus={() => setHovered(item.to)}
+                  onBlur={() => setHovered(null)}
+                  className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+                >
+                  <span className="g"><item.icon size={14} /></span>
+                  <span className="ws-nav-text">{item.label}</span>
+                </NavLink>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </nav>
+  )
+}
+
 /**
  * "16h", not "16 hours ago".
  *
@@ -361,55 +458,207 @@ function shortAgo(iso: string): string {
 }
 
 /**
- * Which colour the dot takes.
+ * Recent chats, in the sidebar.
  *
- * `running` is deliberately unreachable for Lark: the backend never closes a
- * Lark run, so every one of them reports `running` indefinitely — see the
- * "status unknown" note the run lists carry for the same reason. A rail of five
- * permanently-live dots would say nothing at all, so those read as done.
+ * This was a list of recent *runs*, and every row on it said "Asked in Lark" and
+ * opened the same activity page — five identical labels pointing at one
+ * destination, which is a placeholder wearing a list's clothes. What a person
+ * wants from this corner of the screen is the conversation they were in ten
+ * minutes ago, so that is what is here, and a row goes to that conversation.
+ *
+ * It re-reads on `onThreadsChanged`, because the two moments this list goes
+ * stale — a new thread taking its name from its first answer, and a deleted one
+ * going away — both happen without the route changing.
  */
-function runDotState(run: { status: string; channel: string }): 'ok' | 'err' | 'run' {
-  if (run.status === 'failed') return 'err'
-  if (run.status === 'running' && run.channel !== 'lark') return 'run'
-  return 'ok'
-}
+function RecentChats() {
+  const { token } = useAdminAuth()
+  const [chats, setChats] = useState<ThreadSummary[]>([])
+  /* The last list the server gave, kept so a claim can be drawn over it without
+     waiting for a fresh one. */
+  const known = useRef<ThreadSummary[]>([])
 
-function RecentRuns({ onOpen, onSearch }: { onOpen: () => void; onSearch: () => void }) {
-  const { runs, loading } = useRecentRuns(5)
+  const refresh = useCallback(() => {
+    /* Drawn in two passes, and the first one is the point. A chat that has just
+       been asked for is painted from the browser's own claim on this frame; the
+       server's list follows a round trip later and replaces it. Waiting for the
+       fetch left a gap of a second or two after pressing Enter where the rail
+       said nothing had happened — which is exactly when somebody looks at it.
+
+       With no claim to add there is nothing to paint early, and painting anyway
+       is actively wrong: a run ending drops its claim and then refreshes, so the
+       first pass would remove the row and the second would put it back a fetch
+       later. The chat would blink out of the rail at the moment it finished. */
+    const claims = startedThreads()
+    if (claims.length > 0) setChats(withStartedThreads(known.current, claims).slice(0, 8))
+    if (!token) return
+    void listThreads(token).then((threads) => {
+      known.current = threads
+      setChats(withStartedThreads(threads, startedThreads()).slice(0, 8))
+    })
+  }, [token])
+
+  useEffect(() => {
+    refresh()
+    return onThreadsChanged(refresh)
+  }, [refresh])
 
   // Nothing at all is not worth a heading. A person who has never asked Divo
   // anything is served by the Getting started card below, not by an empty list.
-  if (loading || runs.length === 0) return null
+  if (chats.length === 0) return null
 
   return (
     <div className="ws-recent">
       <div className="ws-recent-hd">
         <span className="nav-label">Recent</span>
-        {/* The reference pairs this with a filter control. There is nothing to
-            filter a five-item list by yet, so only the one that works is here. */}
-        <button type="button" className="ws-recent-ic" onClick={onSearch} title="Search (⌘K)" aria-label="Search">
-          <Search size={14} />
-        </button>
       </div>
-      {runs.map((run) => (
-        <button type="button" className="ws-recent-item" key={run.id} onClick={onOpen}>
-          <b>{runTitle(run)}</b>
-          {/*
-            A dot before the time, because the age of a run is only half of what
-            somebody scanning this rail wants — "22h" reads the same whether it
-            worked or failed, and a failure sitting quietly in the list is the
-            one entry they would have wanted to notice.
-
-            Lark runs are excluded from `running` on purpose: the backend never
-            closes them, so every Lark run stays "running" forever and a live
-            dot on all five would mean nothing.
-          */}
-          <span data-state={runDotState(run)}>
-            <i className="ws-recent-dot" />
-            {shortAgo(run.startedAt)}
-          </span>
-        </button>
+      {chats.map((chat) => (
+        <ChatRow key={chat.threadId} chat={chat} token={token} onChanged={refresh} />
       ))}
+    </div>
+  )
+}
+
+/**
+ * One chat in the rail, and the two things you can do to it.
+ *
+ * The controls are here rather than inside the conversation because that is
+ * where they are about something. A Delete button in the chat's own header sat
+ * beside no other action, applied to the page it was drawn on, and was the
+ * loudest thing on an otherwise empty screen — the reader saw an offer to throw
+ * their work away before they saw their work.
+ *
+ * Kept behind a `⋯` and revealed on hover: a rail of chats is scanned, not
+ * operated, and a destructive control on every row at rest is a rail you read
+ * carefully instead of quickly.
+ */
+function ChatRow({
+  chat, token, onChanged,
+}: {
+  chat: ThreadSummary
+  token: string | null
+  onChanged: () => void
+}) {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const [menu, setMenu] = useState(false)
+  const [renaming, setRenaming] = useState(false)
+  const [title, setTitle] = useState(chat.title)
+  const row = useRef<HTMLDivElement>(null)
+
+  /* A menu that outlives the click that opened it has to be closeable by every
+     gesture that means "not that" — elsewhere, and Escape. */
+  useEffect(() => {
+    if (!menu) return
+    const away = (event: MouseEvent) => {
+      if (!row.current?.contains(event.target as Node)) setMenu(false)
+    }
+    const key = (event: KeyboardEvent) => { if (event.key === 'Escape') setMenu(false) }
+    document.addEventListener('mousedown', away)
+    document.addEventListener('keydown', key)
+    return () => {
+      document.removeEventListener('mousedown', away)
+      document.removeEventListener('keydown', key)
+    }
+  }, [menu])
+
+  const commitRename = async () => {
+    setRenaming(false)
+    const next = title.trim()
+    if (!token || !next || next === chat.title) {
+      setTitle(chat.title)
+      return
+    }
+    if (await renameThread(chat.threadId, next, token)) onChanged()
+    else { setTitle(chat.title); notify.failed('Could not rename that chat.') }
+  }
+
+  const remove = async () => {
+    setMenu(false)
+    if (!token) return
+    if (!window.confirm(`Delete "${chat.title}"? The whole conversation goes with it.`)) return
+    if (!await deleteThread(chat.threadId, token)) {
+      notify.failed('Could not delete that chat.')
+      return
+    }
+    notify.done('Chat deleted.')
+    onChanged()
+    // Leaving a reader inside a conversation that no longer exists would show
+    // them an empty thread under a name that is gone.
+    if (location.pathname === `/chat/${chat.threadId}`) navigate('/chat', { replace: true })
+  }
+
+  return (
+    <div className="ws-recent-row" ref={row}>
+      {renaming ? (
+        <input
+          className="ws-recent-rename"
+          value={title}
+          autoFocus
+          onChange={(e) => setTitle(e.target.value)}
+          onBlur={() => void commitRename()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') void commitRename()
+            if (e.key === 'Escape') { setTitle(chat.title); setRenaming(false) }
+          }}
+        />
+      ) : (
+        <NavLink
+          to={`/chat/${chat.threadId}`}
+          className={({ isActive }) => `ws-recent-item${isActive ? ' active' : ''}`}
+        >
+          {/*
+            The loader leads the row, in front of the name.
+            It sat next to the time, at the far end of a truncated title, which
+            put the one moving thing on the rail at the point the eye reaches
+            last — and wedged between an ellipsis and a word, where it read as
+            punctuation. At the head of the row it is the first thing seen, and
+            it marks the chat rather than annotating its timestamp.
+          */}
+          <span className="ws-recent-head">
+            {chat.running && <PixelGrid />}
+            <b>{chat.title}</b>
+          </span>
+          {/*
+            The age, and nothing else.
+
+            A status dot sat here first, on the theory that "22h" reads the same
+            whether Divo is still working in there or finished hours ago. But a
+            working row says "Working", and a finished one has no status worth
+            reporting — every dot on the rail was green, on every row, forever,
+            which is a decoration that looks like information.
+          */}
+          <span className="ws-recent-meta">
+            {chat.running ? 'Working' : shortAgo(chat.updatedAt)}
+          </span>
+        </NavLink>
+      )}
+
+      {!renaming && (
+        <button
+          type="button"
+          className="ws-recent-more"
+          aria-expanded={menu}
+          aria-label={`Options for ${chat.title}`}
+          onClick={(e) => { e.preventDefault(); setMenu((open) => !open) }}
+        >
+          <MoreHorizontal size={14} />
+        </button>
+      )}
+
+      {menu && (
+        <div className="ws-recent-menu" role="menu">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => { setMenu(false); setTitle(chat.title); setRenaming(true) }}
+          >
+            <Pencil size={13} /> Rename
+          </button>
+          <button type="button" role="menuitem" data-danger onClick={() => void remove()}>
+            <Trash2 size={13} /> Delete
+          </button>
+        </div>
+      )}
     </div>
   )
 }

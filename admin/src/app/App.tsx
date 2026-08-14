@@ -26,6 +26,7 @@ import {
   YouAccess, YouApprovals, YouConnections, YouMemory, YouSkills, YouUsage,
 } from "@/pages/workspace/screens-you"
 import { WorkspaceHome } from "@/pages/workspace/screens-home"
+import { WorkspaceChat } from "@/pages/workspace/screens-chat"
 import { AutomationDetail, Automations } from "@/pages/workspace/screens-automations"
 import { MailRuleDetail, MailRules } from "@/pages/workspace/screens-mail"
 import { MailRuleEdit, MailRuleNew } from "@/pages/workspace/screens-mail-new"
@@ -270,6 +271,7 @@ const RequireScope = ({ kind, children }: { kind: ScopeKind; children: JSX.Eleme
 /* Workspace screens, adapted to routes. Live, apart from the few panels
    that mark themselves as sample data. */
 const MeHome = routed(WorkspaceHome)
+const MeChat = routed(WorkspaceChat, { full: true })
 const MeApprovals = routed(YouApprovals)
 const MeArtifacts = routed(Artifacts)
 const MeAutomations = routed(Automations)
@@ -351,6 +353,11 @@ export function App() {
               Everything you *configure* moved to /settings. What stays is what
               you came here to do: ask, decide, and read what came back. */}
           <Route path="me" element={<MeHomeEntry />} />
+          {/* `/chat` mints a thread id and redirects onto it, so every
+              conversation is somewhere you can be sent, reload into, and keep
+              open in a second tab beside another one. */}
+          <Route path="chat" element={<RequireWorkspace><MeChat /></RequireWorkspace>} />
+          <Route path="chat/:threadId" element={<RequireWorkspace><MeChat /></RequireWorkspace>} />
           <Route path="me/mail" element={<MeMail />} />
           {/* The member's settings page. Inside the app rather than behind the
               Settings takeover, because for a member it is one screen and the

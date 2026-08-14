@@ -94,7 +94,25 @@ const GATEWAY_OPS: Readonly<Record<string, string>> = {
   'teach.learning.apply':  'Saving what it learnt',
   'skills.search':         'Finding a skill',
   'work.persona.resolve':  'Reading the team profile',
+  // Asking a native tool for its schema. Named rather than dropped, because a
+  // row that showed only the product would read as though the work had run.
+  describe:                'Checking how it works',
 };
+
+/**
+ * Operations that describe the plumbing rather than the work.
+ *
+ * `tools.invoke` is the operation that simply runs the tool, so it is true of
+ * almost every row; `call` and `call_resolved_sheet` are the same idea in the
+ * MCP-backed families, where the operation a reader would recognise is the
+ * native tool the call names instead. Printing any of them produced steps
+ * captioned "Call" beside a product that had already been named.
+ */
+const PLUMBING_OPS: ReadonlySet<string> = new Set([
+  'tools.invoke',
+  'call',
+  'call.resolved.sheet',
+]);
 
 /**
  * What a governed Divo call is doing, in words.
@@ -114,7 +132,7 @@ export function gatewayOpPhrase(op?: string): string | undefined {
   // Compared on a normalised form so every spelling of the default operation is
   // recognised — including `tools invoke`, which is what an older backend had
   // already made of it before this function existed.
-  if (!operation || operation.toLowerCase().replace(/[^a-z0-9]+/g, '.') === 'tools.invoke') {
+  if (!operation || PLUMBING_OPS.has(operation.toLowerCase().replace(/[^a-z0-9]+/g, '.'))) {
     return undefined;
   }
   return GATEWAY_OPS[operation] ?? humaniseToolId(operation.replace(/^tools\./, ''));

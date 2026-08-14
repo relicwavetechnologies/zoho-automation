@@ -1,6 +1,10 @@
 # Pi typed tool surface
 
-> Status: **Typed outer tools and prompt-relevant nested provider contracts are live in Cloud Pi; `divo_gateway` is deleted. The broader Phase 3 measurement matrix remains pending.**
+> Status: **ARCHIVED — do not implement from this file.** Its dynamic,
+> per-run registration design and mega-tool removal sequence were superseded
+> by the permanent source-owned catalogue completed on 2026-08-13. The only
+> current implementation and release checklist is
+> `pi-first-class-harness-quality-audit.md`.
 >
 > Last updated: **2026-08-10**
 >

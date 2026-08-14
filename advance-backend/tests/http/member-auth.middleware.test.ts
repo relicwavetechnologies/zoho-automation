@@ -333,6 +333,7 @@ describe('member authentication uses the live company membership', () => {
       logger: noopLogger,
     });
     const lease = issuePiRuntimeLease({
+      channel: 'lark',
       sessionId: 'session-1',
       userId: 'user-1',
       companyId: 'company-1',
@@ -379,6 +380,7 @@ describe('member authentication uses the live company membership', () => {
       logger: noopLogger,
     });
     const lease = issuePiRuntimeLease({
+      channel: 'lark',
       sessionId: 'session-1',
       userId: 'user-1',
       companyId: 'company-1',
@@ -420,6 +422,7 @@ describe('member authentication uses the live company membership', () => {
       sessionTtlMinutes: 480,
     } as any);
     const lease = issuePiRuntimeLease({
+      channel: 'lark',
       sessionId: 'session-1',
       userId: 'user-1',
       companyId: 'company-1',
@@ -524,6 +527,7 @@ describe('member session renewal', () => {
   it('does not let a Pi runtime lease keep its owner signed in', async () => {
     const { prisma, renewals } = harness(ttlMs * 0.2);
     const lease = issuePiRuntimeLease({
+      channel: 'lark',
       sessionId: 'session-1',
       userId: 'user-1',
       companyId: 'company-1',

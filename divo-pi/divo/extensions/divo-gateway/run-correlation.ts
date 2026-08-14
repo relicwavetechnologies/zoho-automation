@@ -1,12 +1,16 @@
 import { readFile } from "node:fs/promises";
+import { normalizeRuntimeChannel } from "../../runtime-channels.mjs";
 
 export const DIVO_RUN_CONTEXT_PATH_ENV = "DIVO_RUN_CONTEXT_PATH";
+
+/** See `divo/runtime-channels.mjs` — absent means a desktop-local run. */
+export type DivoRuntimeChannel = "lark" | "web";
 
 export interface DivoRunCorrelationV1 {
 	version: 1;
 	threadId: string;
 	runId: string;
-	channel?: "lark";
+	channel?: DivoRuntimeChannel;
 	departmentId?: string;
 }
 
@@ -42,11 +46,12 @@ export async function readDivoRunCorrelation(
 	if (record.version !== 1) {
 		throw new Error("Divo run correlation version is unsupported");
 	}
+	const channel = normalizeRuntimeChannel(record.channel);
 	return {
 		version: 1,
 		threadId: identifier(record.threadId, "threadId"),
 		runId: identifier(record.runId, "runId"),
-		...(record.channel === "lark" ? { channel: "lark" as const } : {}),
+		...(channel ? { channel } : {}),
 		...(typeof record.departmentId === "string"
 			? { departmentId: identifier(record.departmentId, "departmentId") }
 			: {}),

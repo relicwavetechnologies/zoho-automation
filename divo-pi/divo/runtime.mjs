@@ -11,6 +11,7 @@ import {
 	providerForModel,
 	thinkingLevelForModel,
 } from "./runtime-models.mjs";
+import { isRuntimeChannel, normalizeRuntimeChannel } from "./runtime-channels.mjs";
 
 const divoDir = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(divoDir, "..");
@@ -481,7 +482,10 @@ function renderWorkspacePrompt(values) {
 export function buildChildEnvironment(baseEnvironment, values) {
 	const environment = { ...baseEnvironment };
 	for (const key of PROVIDER_ENV_KEYS) delete environment[key];
-	delete environment.DIVO_LOCAL_CLI_DISABLED;
+	// Only the broker inside this run may name its own socket. Inheriting one
+	// would point `divo-local` at a socket this run does not own, and would tell
+	// the agent its client exists before the broker has listened.
+	delete environment.DIVO_LOCAL_BROKER_SOCKET;
 	return {
 		...environment,
 		DIVO_BACKEND_URL: values.backendUrl,
@@ -622,11 +626,12 @@ export function buildRunCorrelationContext({
 	channel,
 	departmentId,
 }) {
+	const runtimeChannel = normalizeRuntimeChannel(channel);
 	return {
 		version: 1,
 		threadId,
 		runId,
-		...(channel === "lark" ? { channel: "lark" } : {}),
+		...(runtimeChannel ? { channel: runtimeChannel } : {}),
 		...(departmentId ? { departmentId } : {}),
 	};
 }
@@ -780,7 +785,9 @@ export function prepareDivoPiRun({
 	const contextDir = path.join(stateRoot, "context");
 	const runtimeContextPath = path.join(contextDir, "runtime.json");
 	const runContextPath = path.join(contextDir, `${thread}.json`);
-	if (channel === "lark") {
+	// Only a backend-driven run gets a run id from outside, so only it accumulates
+	// per-run directories that the previous turn left behind.
+	if (isRuntimeChannel(channel)) {
 		removePreviousRunDirectories(path.dirname(runDir), runId);
 	}
 
@@ -917,7 +924,7 @@ export function startDivoPi(options) {
 	});
 	child.once("exit", (code, signal) => {
 		if (signal) console.error(`[divo-pi] exited by signal ${signal}`);
-		if (values.channel === "lark") removeDirectory(runDir);
+		if (isRuntimeChannel(values.channel)) removeDirectory(runDir);
 		// Removed on every outcome, not only success: a failed or interrupted run
 		// leaves a partial transcript that the next turn must not resume, since
 		// the authoritative conversation is sent in with the request.

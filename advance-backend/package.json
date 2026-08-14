@@ -10,6 +10,8 @@
     "start": "node --import tsx src/index.ts",
     "capabilities:reconcile": "tsx scripts/reconcile-capabilities.ts",
     "skills:inventory": "tsx scripts/skill-inventory.ts",
+    "generate:pi-native-tools": "tsx scripts/generate-pi-native-tools.ts --write",
+    "check:pi-native-tools": "tsx scripts/generate-pi-native-tools.ts --check",
     "build": "prisma generate",
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",

@@ -15,14 +15,7 @@ import { AuthCard, AuthError, Field } from "@/components/admin/auth-card"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { api } from "@/lib/api"
 import { GmailMark } from "@/pages/workspace/brand"
-
-const GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
-const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
-
-function hasMailerScopes(scopes: readonly string[] = []) {
-  const normalized = new Set(scopes.map((scope) => scope.trim().toLowerCase().replace(/\/$/, "")))
-  return normalized.has(GMAIL_MODIFY_SCOPE) && normalized.has(GMAIL_SEND_SCOPE)
-}
+import { hasUsableMailerConnection, type MailerGoogleConnection } from "@/pages/mailer-onboarding"
 
 export function LoginPage() {
   const [email, setEmail] = useState("")
@@ -75,13 +68,30 @@ export function LoginPage() {
   const completeLark = async () => {
     if (!larkCode || !larkState) return
     await attempt("lark", async () => {
-      await completeLarkLogin(larkCode, larkState)
+      const issuedToken = await completeLarkLogin(larkCode, larkState)
       const cleanParams = new URLSearchParams(window.location.search)
       cleanParams.delete("lark_code")
       cleanParams.delete("lark_state")
       cleanParams.delete("error")
       const cleanQuery = cleanParams.toString()
       window.history.replaceState(null, "", `${window.location.pathname}${cleanQuery ? `?${cleanQuery}` : ""}${window.location.hash}`)
+      let status: { connections?: MailerGoogleConnection[] }
+      try {
+        status = await api.get<{ connections?: MailerGoogleConnection[] }>(
+          "/api/desktop/auth/google/status",
+          issuedToken,
+          { quiet: true, timeoutMs: 12_000 },
+        )
+      } catch {
+        // The member is already signed in. A transient connection-status read
+        // must not turn into another OAuth demand or block access to Divo.
+        navigate(signedInTarget, { replace: true })
+        return
+      }
+      if (hasUsableMailerConnection(status.connections)) {
+        navigate(signedInTarget, { replace: true })
+        return
+      }
       setMailerStep("gmail")
     }, { navigateAfter: false })
   }
@@ -116,18 +126,14 @@ export function LoginPage() {
         window.addEventListener("message", onMessage)
       })
 
-      const status = await api.get<{
-        connected: boolean
-        connections?: Array<{ scopes?: string[]; reconnectRequired?: boolean }>
-      }>(
+      const status = await api.get<{ connections?: MailerGoogleConnection[] }>(
         "/api/desktop/auth/google/status",
         token,
         { quiet: true, timeoutMs: 12_000 },
       )
-      const mailConnected = status.connections?.some(
-        (connection) => !connection.reconnectRequired && hasMailerScopes(connection.scopes),
-      ) ?? false
-      if (!mailConnected) throw new Error("Gmail was not connected. Try the Google step again.")
+      if (!hasUsableMailerConnection(status.connections)) {
+        throw new Error("Gmail was not connected. Try the Google step again.")
+      }
       setMailerStep("done")
     } catch (gmailError) {
       setError(gmailError instanceof Error ? gmailError.message : "Gmail connection failed.")

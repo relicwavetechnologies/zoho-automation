@@ -107,6 +107,8 @@ describe('Finance router discovery', () => {
       'record a bill from this PDF',
       'what are our unpaid invoices',
       'show me the aging report',
+      'reconcile this GSTR-2B file against our purchase bills',
+      'create an RCM bill for this unregistered vendor',
     ]) {
       assert.equal(
         (await topRouters(query))[0],

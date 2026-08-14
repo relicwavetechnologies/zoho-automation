@@ -316,7 +316,7 @@ export function parseMemoryReviewResponse(
 }
 
 async function presentMemoryReview(
-	ctx: Pick<ExtensionContext, "ui">,
+	ctx: Pick<ExtensionContext, "ui" | "signal">,
 	request: MemoryReviewPayloadV1,
 	runCorrelation: DivoRunCorrelationV1,
 ): Promise<MemoryReviewResponseV1> {
@@ -398,7 +398,7 @@ async function publishApprovedMemory(
 		intentId = await approvePreparedDivoIntent(toolCallId, prepared.body.data, {
 			ui: ctx.ui,
 			cwd: process.cwd(),
-			...(ctx.signal ? { signal: ctx.signal } : {}),
+			signal: ctx.signal,
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -466,7 +466,7 @@ async function publishApprovedMemory(
 	}
 }
 
-async function openLarkMemoryReview(
+async function openBackendMemoryReview(
 	proposal: MemoryReviewProposalV1,
 	config: DivoGatewayConfig,
 	execution: GatewayExecutionContext,
@@ -474,7 +474,7 @@ async function openLarkMemoryReview(
 	signal?: AbortSignal,
 ) {
 	if (!proposal.requestedScope) {
-		throw new Error("Lark shared-memory review requires an explicit department or company scope");
+		throw new Error("A shared-memory review requires an explicit department or company scope");
 	}
 	const opened = await dependencies.callGateway(config, {
 		op: "knowledge.review.open",
@@ -547,9 +547,11 @@ export async function executeMemoryReview(
 		runId: runCorrelation.runId,
 		actionId: `memory-review:${randomUUID()}`,
 	};
-	if (runCorrelation.channel === "lark") {
+	// Backend-driven on any channel: `knowledge.review.open` is a gateway op, and
+	// which surface renders the review is the backend's business, not Pi's.
+	if (runCorrelation.channel) {
 		try {
-			return await openLarkMemoryReview(
+			return await openBackendMemoryReview(
 				proposal,
 				resolved,
 				execution,

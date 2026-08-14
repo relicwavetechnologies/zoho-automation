@@ -73,9 +73,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        # Three divo-pi files below, because three backend tests reach across
-        # into the Pi runtime to check the two halves still agree — the model
-        # catalogue, the governed tool allowlist, and capability finalization.
+        # The selected divo-pi runtime files below let backend tests check that
+        # the compiled model catalogue, governed allowlist, and capability
+        # finalization still agree across the container/backend boundary.
         # They are static imports, so a missing file is not a skipped test but a
         # suite that cannot load: `advance-backend` has been red on main and dev
         # since the allowlist parity test arrived without the two paths it reads.
@@ -85,6 +85,9 @@ jobs:
             divo-pi/divo/runtime-models.mjs
             divo-pi/divo/runtime-manifest.json
             divo-pi/divo/extensions/divo-gateway/typed-tools.ts
+            divo-pi/divo/extensions/divo-gateway/native-tools/catalogue-contract.ts
+            divo-pi/divo/extensions/divo-gateway/native-tools/generated
+            divo-pi/divo/extensions/divo-gateway/native-tools/semrush-contract.ts
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -106,6 +109,9 @@ jobs:
 
       - name: Typecheck
         run: pnpm typecheck
+
+      - name: Verify compiled Pi-native tool catalogue
+        run: pnpm check:pi-native-tools
 
       - name: Test
         # Live integration suites auto-skip when service credentials are absent.
@@ -143,6 +149,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test
+        run: pnpm test:unit
+
       - name: Build
         run: pnpm build
 
@@ -169,8 +178,63 @@ jobs:
       - name: Install dependencies
         run: npm ci --ignore-scripts
 
-      - name: Test Divo runtime and controller
-        run: npm run divo:test
+      - name: Check Divo runtime, controller, and extensions
+        run: npm run divo:check
+
+  development-image-plan:
+    name: development-image-plan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.changes.outputs.backend }}
+      admin: ${{ steps.changes.outputs.admin }}
+      pi: ${{ steps.changes.outputs.pi }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect image build inputs changed by this push
+        id: changes
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${BEFORE_SHA}" || "${BEFORE_SHA}" =~ ^0+$ ]] \
+            || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            files="$(git ls-files)"
+          else
+            files="$(git diff --name-only "${BEFORE_SHA}" "${GITHUB_SHA}")"
+          fi
+
+          changed() {
+            local prefix="$1"
+            if grep -q "^${prefix}" <<<"${files}"; then
+              printf 'true'
+            else
+              printf 'false'
+            fi
+          }
+
+          {
+            echo "backend=$(changed 'advance-backend/')"
+            echo "admin=$(changed 'admin/')"
+            echo "pi=$(changed 'divo-pi/')"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Validate Compose configs used by releases
+        run: |
+          DIVO_ENV_FILE=/dev/null docker compose --env-file .env.production.example config >/dev/null
+          DIVO_DEV_ENV_FILE=/dev/null \
+          DIVO_DEV_BACKEND_IMAGE=divo-backend:ci \
+          DIVO_DEV_ADMIN_IMAGE=divo-admin:ci \
+          DIVO_DEV_PI_IMAGE=divo-pi:ci \
+          DIVO_DEV_PI_CONTROLLER_IMAGE=divo-pi-controller:ci \
+          DIVO_DEV_POSTGRES_PASSWORD=ci-placeholder \
+          DIVO_DEV_PUBLIC_URL=https://app-dev.103.172.92.187.sslip.io \
+          HINDSIGHT_LLM_API_KEY=ci-placeholder \
+          docker compose -f docker-compose.dev.yml config >/dev/null
 
   verify-development-source:
     name: verify-development-source
@@ -182,10 +246,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          passed="$(gh run list --workflow ci.yml --branch dev --event push \
-            --commit "${GITHUB_SHA}" --status success --limit 1 \
-            --json databaseId --jq 'length')"
-          test "${passed}" = 1
+          # A deploy is often dispatched immediately after push. Wait for that
+          # exact push run instead of failing once and requiring a second manual
+          # dispatch merely because CI was still working.
+          for attempt in $(seq 1 90); do
+            state="$(gh run list --workflow ci.yml --branch dev --event push \
+              --commit "${GITHUB_SHA}" --limit 1 \
+              --json status,conclusion \
+              --jq 'if length == 0 then "missing" else (.[0] | .status + ":" + (.conclusion // "")) end')"
+            case "${state}" in
+              completed:success) exit 0 ;;
+              completed:*) echo "Dev push CI did not pass: ${state}" >&2; exit 1 ;;
+              *) sleep 10 ;;
+            esac
+          done
+          echo "Timed out waiting for Dev push CI for ${GITHUB_SHA}." >&2
+          exit 1
 
   docker-build:
     name: docker-build
@@ -198,24 +274,12 @@ jobs:
     if: >-
       ${{
         always() &&
-        (
-          (
-            github.event_name == 'workflow_dispatch' &&
-            github.ref == 'refs/heads/dev' &&
-            inputs.deploy_development == true &&
-            needs.verify-development-source.result == 'success' &&
-            needs.advance-backend.result == 'skipped' &&
-            needs.admin.result == 'skipped' &&
-            needs.divo-pi.result == 'skipped'
-          ) ||
-          (
-            !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true) &&
-            needs.verify-development-source.result == 'skipped' &&
-            needs.advance-backend.result == 'success' &&
-            needs.admin.result == 'success' &&
-            needs.divo-pi.result == 'success'
-          )
-        )
+        !(github.event_name == 'push' && github.ref == 'refs/heads/dev') &&
+        !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true) &&
+        needs.verify-development-source.result == 'skipped' &&
+        needs.advance-backend.result == 'success' &&
+        needs.admin.result == 'success' &&
+        needs.divo-pi.result == 'success'
       }}
     steps:
       - name: Checkout
@@ -227,11 +291,9 @@ jobs:
             divo-pi
 
       - name: Set up Docker Buildx
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true) }}
         uses: docker/setup-buildx-action@v3
 
       - name: Build backend image
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true) }}
         uses: docker/build-push-action@v7
         with:
           context: ./advance-backend
@@ -241,7 +303,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=backend
 
       - name: Build admin image
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true) }}
         uses: docker/build-push-action@v7
         with:
           context: ./admin
@@ -252,7 +313,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=admin
 
       - name: Build Pi runtime image
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true) }}
         uses: docker/build-push-action@v7
         with:
           context: ./divo-pi
@@ -262,7 +322,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=pi
 
       - name: Build Pi controller image
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true) }}
         uses: docker/build-push-action@v7
         with:
           context: ./divo-pi
@@ -273,7 +332,6 @@ jobs:
           cache-to: type=gha,mode=max,scope=pi-controller
 
       - name: Validate Pi controller image
-        if: ${{ !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev' && inputs.deploy_development == true) }}
         run: >-
           docker run --rm --entrypoint node divo-pi-controller:ci
           --input-type=module --eval "await import('./divo/local-rpc-server.mjs')"
@@ -297,14 +355,19 @@ jobs:
     name: publish-development-images
     runs-on: ubuntu-latest
     needs:
-      - docker-build
+      - advance-backend
+      - admin
+      - divo-pi
+      - development-image-plan
     if: >-
       ${{
         always() &&
-        github.event_name == 'workflow_dispatch' &&
+        github.event_name == 'push' &&
         github.ref == 'refs/heads/dev' &&
-        inputs.deploy_development == true &&
-        needs.docker-build.result == 'success'
+        needs.advance-backend.result == 'success' &&
+        needs.admin.result == 'success' &&
+        needs.divo-pi.result == 'success' &&
+        needs.development-image-plan.result == 'success'
       }}
     permissions:
       contents: read
@@ -314,21 +377,25 @@ jobs:
       matrix:
         include:
           - component: backend
+            plan: backend
             context: ./advance-backend
             file: ./advance-backend/Dockerfile
             checkout_path: advance-backend
             build-args: ""
           - component: admin
+            plan: admin
             context: ./admin
             file: ./admin/Dockerfile
             checkout_path: admin
             build-args: VITE_API_BASE_URL=
           - component: pi
+            plan: pi
             context: ./divo-pi
             file: ./divo-pi/Dockerfile
             checkout_path: divo-pi
             build-args: ""
           - component: pi-controller
+            plan: pi
             context: ./divo-pi
             file: ./divo-pi/Dockerfile.controller
             checkout_path: divo-pi
@@ -349,8 +416,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Decide whether to build or reuse ${{ matrix.component }}
+        id: mode
+        env:
+          PATH_CHANGED: ${{ needs.development-image-plan.outputs[matrix.plan] }}
+          LATEST: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-latest
+        run: |
+          # Every successful Dev push must publish all four immutable SHA tags
+          # so a later deploy can resolve one coherent release. An unchanged
+          # component gets a new tag pointing at its last verified digest; it
+          # is not rebuilt merely to make the tag exist.
+          if [[ "${PATH_CHANGED}" == "true" ]] \
+            || ! docker buildx imagetools inspect "${LATEST}" >/dev/null 2>&1; then
+            echo 'build=true' >> "${GITHUB_OUTPUT}"
+          else
+            echo 'build=false' >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Build and push ${{ matrix.component }} image
         id: build
+        if: steps.mode.outputs.build == 'true'
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
@@ -364,19 +449,35 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
 
+      - name: Reuse unchanged ${{ matrix.component }} image
+        if: steps.mode.outputs.build == 'false'
+        env:
+          LATEST: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-latest
+          RELEASE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-${{ github.sha }}
+        run: docker buildx imagetools create --tag "${RELEASE}" "${LATEST}"
+
+      - name: Resolve ${{ matrix.component }} release digest
+        id: release
+        env:
+          RELEASE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-${{ github.sha }}
+        run: |
+          digest="$(docker buildx imagetools inspect "${RELEASE}" --format '{{.Manifest.Digest}}')"
+          test -n "${digest}"
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+
       - name: Record ${{ matrix.component }} release image
         run: |
           {
             echo "### Development image: ${{ matrix.component }}"
             echo "- Tag: \`dev-${GITHUB_SHA}\`"
-            echo "- Digest: \`${{ steps.build.outputs.digest }}\`"
-            echo "- Build cache and timing details are attached in the Docker build summary."
+            echo "- Digest: \`${{ steps.release.outputs.digest }}\`"
+            echo "- Built for this commit: \`${{ steps.mode.outputs.build }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify backend image revision label
-        if: matrix.component == 'backend'
+        if: matrix.component == 'backend' && steps.mode.outputs.build == 'true'
         env:
-          IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.build.outputs.digest }}
+          IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.release.outputs.digest }}
         run: |
           docker pull "${IMAGE}"
           actual="$(docker image inspect "${IMAGE}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
@@ -388,13 +489,13 @@ jobs:
           fi
 
       - name: Smoke published Pi image
-        if: matrix.component == 'pi' || matrix.component == 'pi-controller'
+        if: steps.mode.outputs.build == 'true' && (matrix.component == 'pi' || matrix.component == 'pi-controller')
         env:
-          IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.build.outputs.digest }}
+          IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.release.outputs.digest }}
         run: |
           docker pull "${IMAGE}"
           if [[ "${{ matrix.component }}" == "pi" ]]; then
-            docker run --rm --network none --entrypoint npm "${IMAGE}" run divo:test
+            docker run --rm --network none --entrypoint npm "${IMAGE}" run divo:check
             docker run --rm --network none --tmpfs /data:rw,uid=10001,gid=10001 \
               --entrypoint /app/node_modules/.bin/tsx "${IMAGE}" \
               packages/coding-agent/src/cli.ts --version
@@ -418,8 +519,9 @@ jobs:
           fi
 
       - name: Promote ${{ matrix.component }} development alias
+        if: steps.mode.outputs.build == 'true'
         env:
-          IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.build.outputs.digest }}
+          IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.release.outputs.digest }}
           LATEST: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-latest
         run: docker buildx imagetools create --tag "${LATEST}" "${IMAGE}"
 
@@ -427,14 +529,14 @@ jobs:
     name: deploy-development
     runs-on: ubuntu-latest
     needs:
-      - publish-development-images
+      - verify-development-source
     if: >-
       ${{
         always() &&
         github.event_name == 'workflow_dispatch' &&
         github.ref == 'refs/heads/dev' &&
         inputs.deploy_development == true &&
-        needs.publish-development-images.result == 'success'
+        needs.verify-development-source.result == 'success'
       }}
     permissions:
       contents: read

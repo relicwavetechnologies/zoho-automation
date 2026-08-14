@@ -1,6 +1,6 @@
 import type { Logger } from '../../../shared/logger';
 import type { ChannelLedgerRow } from '../../../domain/channel/outbound';
-import { buildStatusCard } from './lark-card.builder';
+import { buildStatusCard, shownOnCard } from './lark-card.builder';
 import type { StatusCardInput } from './lark-card.builder';
 
 interface LarkClientPort {
@@ -164,8 +164,13 @@ export class LarkStatusCoordinator {
       t.declared ? `${t.declared.done}/${t.declared.total}:${t.declared.current ?? ''}` : '',
       t.liveLabel,
       t.narrationActive,
-      t.ledger?.map(r => this.ledgerPreview(r)).join('|'),
-      t.plan?.map(p => `${p.status}:${p.title}:${p.subtitle ?? ''}`).join('|'),
+      /* The rows this card will actually draw, not every row in the run. The
+         model's reasoning is on the timeline and never on a card, so counting
+         it here would make every settled thought look like a change worth an
+         edit — dozens of Lark API calls on a long run, each one repainting a
+         card that looks exactly the same. */
+      shownOnCard(t.ledger ?? []).map(r => this.ledgerPreview(r)).join('|'),
+      t.declared?.items?.map(i => `${i.status}:${i.title}`).join('|'),
     ].filter(Boolean);
     return parts.join('\n');
   }

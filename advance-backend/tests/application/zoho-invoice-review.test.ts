@@ -97,6 +97,24 @@ describe('invoice rules', () => {
     });
     assert.ok(codes(findings).includes('duplicate_number'));
   });
+
+  it('blocks invoice numbers Zoho would reject at creation', () => {
+    const tooLong = checkInvoice({
+      invoice: { ...sound, invoice_number: 'DIVO-QA-INV-20260814-001' },
+    });
+    assert.ok(codes(tooLong).includes('invoice_number_too_long'));
+    assert.equal(hasBlockingFinding(tooLong), true);
+
+    const invalid = checkInvoice({
+      invoice: { ...sound, invoice_number: 'INV 001' },
+    });
+    assert.ok(codes(invalid).includes('invoice_number_invalid_characters'));
+    assert.equal(hasBlockingFinding(invalid), true);
+
+    assert.equal(codes(checkInvoice({
+      invoice: { ...sound, invoice_number: 'DIVO-QA-INV-001' },
+    })).includes('invoice_number_too_long'), false);
+  });
 });
 
 describe('what the reviewer is shown', () => {

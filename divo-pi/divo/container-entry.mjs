@@ -14,6 +14,7 @@ import {
 	resolveRuntimeThreadId,
 	startDivoPi,
 } from "./runtime.mjs";
+import { isRuntimeChannel } from "./runtime-channels.mjs";
 
 const DEFAULT_BOOTSTRAP_PATH = "/run/divo-auth/bootstrap.json";
 const DEFAULT_INTERRUPTION_PATH = "/run/divo-auth/interruption.json";
@@ -33,10 +34,17 @@ export function validateBootstrap(value) {
 		throw new Error("Bootstrap thread is invalid");
 	}
 	if (
-		value.channel === "lark"
+		value.channel !== undefined
+		&& !isRuntimeChannel(value.channel)
+	) {
+		throw new Error("Bootstrap channel is invalid");
+	}
+	// A backend-driven run is identified from outside; a desktop-local one is not.
+	if (
+		isRuntimeChannel(value.channel)
 		&& (typeof value.runId !== "string" || !value.runId.trim())
 	) {
-		throw new Error("Bootstrap runId is required for Lark");
+		throw new Error("Bootstrap runId is required for a backend-driven run");
 	}
 	resolveRuntimeThreadId(value.thread, value.runtimeThreadId);
 	// Absent means the durable per-thread session, which is what every caller
@@ -205,7 +213,7 @@ export async function runContainer() {
 	let interruptionRecorded = false;
 	for (const signal of ["SIGINT", "SIGTERM"]) {
 		process.once(signal, () => {
-			if (!interruptionRecorded && bootstrap.channel === "lark") {
+			if (!interruptionRecorded && isRuntimeChannel(bootstrap.channel)) {
 				interruptionRecorded = true;
 				try {
 					recordPendingInterruption();
@@ -228,7 +236,46 @@ export async function runContainer() {
 	});
 }
 
-export async function prepareContainerRun() {
+/**
+ * Read a bootstrap the controller sent on stdin, if it sent one.
+ *
+ * A warm turn used to need two `docker exec` calls: one shell to `cat` the
+ * bootstrap onto the volume, then this one to read it back. Both cross the
+ * daemon, and the member waits for both. Accepting the bytes directly collapses
+ * that to one, and the file is still written — `readBootstrap` consumes and
+ * unlinks it exactly as before, so nothing downstream can tell the difference.
+ */
+async function readStdinBootstrap() {
+	if (process.stdin.isTTY) return "";
+	let raw = "";
+	process.stdin.setEncoding("utf8");
+	for await (const chunk of process.stdin) raw += chunk;
+	return raw.trim();
+}
+
+/**
+ * Put the controller's bootstrap on the volume, exactly as the shell used to.
+ *
+ * The mode is applied by removing any existing file first, because `writeFile`'s
+ * `mode` is only honoured when it creates the file — an existing one keeps
+ * whatever permissions it already had. Writing a member token through that would
+ * be a silent downgrade of the very thing `umask 077` was there to guarantee.
+ */
+export function stageControllerBootstrap(
+	bootstrapJson,
+	target = process.env.DIVO_BOOTSTRAP_PATH ?? DEFAULT_BOOTSTRAP_PATH,
+) {
+	if (!bootstrapJson) {
+		throw new Error("Divo runtime prepare requires a bootstrap on stdin");
+	}
+	fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+	fs.rmSync(target, { force: true });
+	fs.writeFileSync(target, `${bootstrapJson}\n`, { mode: 0o600 });
+	return target;
+}
+
+export async function prepareContainerRun(bootstrapJson) {
+	stageControllerBootstrap(bootstrapJson);
 	const { options } = await resolvePiOptions();
 	const prepared = prepareDivoPiRun(options);
 	return {
@@ -242,7 +289,7 @@ const isMain =
 if (isMain) {
 	const command = process.argv[2];
 	const work = command === "prepare"
-		? prepareContainerRun().then((result) => {
+		? readStdinBootstrap().then(prepareContainerRun).then((result) => {
 			process.stdout.write(`${JSON.stringify(result)}\n`);
 		})
 		: command === "record-interruption"

@@ -7,10 +7,10 @@ import {
   replayLarkMessageAfterLogin,
   quotedImageAttachments,
   runPiAndDeliver,
-  runTranscript,
   type LarkWebhookDeps,
 } from '../../../src/infrastructure/channels/lark/lark.webhook.routes.ts';
 import { LarkPiRuntimeError } from '../../../src/application/runtime/lark-pi-runtime.service.ts';
+import type { ChannelLedgerRow } from '../../../src/domain/channel/outbound.ts';
 import { LarkChannelAdapter } from '../../../src/infrastructure/channels/lark/lark.adapter.ts';
 import { BusyLaneNotices } from '../../../src/infrastructure/channels/lark/lark-busy-notice.ts';
 import { LarkWorkbookConversionCardHandler } from '../../../src/infrastructure/channels/lark/lark-workbook-conversion-card.handler.ts';
@@ -1144,6 +1144,11 @@ describe('Lark webhook admission', () => {
       label: 'Google Drive',
       count: 1,
       status: 'done',
+      // The identity behind the label. Lark renders only the label; a surface
+      // that draws vendor marks needs the id, and deriving it back out of the
+      // English is how the web log came to draw a terminal beside every call.
+      toolId: 'googleDrive',
+      toolName: 'divo_gateway',
     }]);
     // A call whose arguments named nothing worth showing stays bare. The row's
     // marker already carries running/done/failed, so an invented placeholder
@@ -1271,10 +1276,18 @@ describe('Lark webhook admission', () => {
     );
 
     // The final card edits the status card in place, so without this the whole
-    // log is destroyed at the moment the answer lands.
-    const trace = adapter.__finalTraces[0] as string;
-    assert.match(trace, /airtable list-bases/);
-    assert.match(trace, /Let me see which bases you can reach\./);
+    // log is destroyed at the moment the answer lands. It crosses the port as
+    // rows, not as text: what Lark folds into a panel, a browser draws as steps.
+    const delivered = adapter.__finalLedgers[0] as readonly ChannelLedgerRow[];
+    assert.deepEqual(
+      delivered.map(row => [row.kind, row.label, row.outcome ?? ''].join('|')),
+      [
+        'say|Let me see which bases you can reach.|',
+        'tool|Terminal|airtable list-bases',
+        'say|Found 3. Profiling the largest.|',
+        'tool|Files|bases.json',
+      ],
+    );
   });
 
   // A block index restarts at zero in every new assistant message, so keying on
@@ -1426,7 +1439,7 @@ describe('Lark webhook admission', () => {
 
     assert.deepEqual(persisted, []);
     assert.equal(finalReply?.['retention'], 'transient');
-    assert.equal(finalReply?.['executionTrace'], undefined);
+    assert.equal(finalReply?.['ledger'], undefined);
     assert.equal(
       finalReply?.['text'],
       'Divo hit a temporary problem while finishing this request. Please try again.',
@@ -1508,7 +1521,7 @@ describe('Lark webhook admission', () => {
     assert.deepEqual(persisted, []);
     assert.deepEqual(order, ['clear', 'deliver']);
     assert.equal(finalReply?.['retention'], 'transient');
-    assert.equal(finalReply?.['executionTrace'], undefined);
+    assert.equal(finalReply?.['ledger'], undefined);
     assert.doesNotMatch(
       JSON.stringify(statusUpdates),
       /SECRET-42|Alice|42,000|alice@example\.test|Private order output/,
@@ -1620,7 +1633,7 @@ describe('Lark webhook admission', () => {
     assert.deepEqual(result, { text: 'Protected answer', protectedDataUsed: true });
     assert.deepEqual(order, ['clear', 'deliver']);
     assert.equal(finalReply?.['retention'], 'transient');
-    assert.equal(finalReply?.['executionTrace'], undefined);
+    assert.equal(finalReply?.['ledger'], undefined);
     assert.doesNotMatch(JSON.stringify(statusUpdates), /Private customer output must not persist/);
     assert.doesNotMatch(JSON.stringify(statusUpdates.at(-1)), /I will check the customer/);
   });
@@ -1963,7 +1976,7 @@ function captureOutbound(adapter: any): void {
   adapter.__interactiveMessages = new Map<string, { chatId: string; card: Record<string, unknown> }>();
   adapter.__finalReplies = [];
   adapter.__finalActions = [];
-  adapter.__finalTraces = [];
+  adapter.__finalLedgers = [];
   adapter.__statusUpdates = [];
   adapter.__outboundOrder = [];
   adapter.sendStatus = async (_conversation: unknown, update: unknown) => {
@@ -2017,10 +2030,10 @@ function captureOutbound(adapter: any): void {
   };
   adapter.sendFinalReply = async (
     _conversation: unknown,
-    reply: { text: string; executionTrace?: string; actions?: unknown },
+    reply: { text: string; ledger?: readonly unknown[]; actions?: unknown },
   ) => {
     adapter.__finalReplies.push(reply.text);
-    adapter.__finalTraces.push(reply.executionTrace);
+    adapter.__finalLedgers.push(reply.ledger);
     adapter.__finalActions.push(reply.actions);
     adapter.__outboundOrder.push('final');
     return ok({ messageId: 'om_reply' });
@@ -3855,42 +3868,3 @@ it('an undecodable quoted image is dropped rather than staged empty', () => {
   );
 });
 
-// Delivering the answer edits the status card in place, so on a thirteen-minute
-// run the entire record of the work is destroyed at the moment it succeeds.
-describe('run transcript kept past the final card', () => {
-  const say = (label: string) => ({ kind: 'say' as const, label, count: 1, status: 'done' as const });
-  const ran = (label: string, outcome: string) =>
-    ({ kind: 'tool' as const, label, count: 1, outcome, status: 'done' as const });
-
-  it('keeps what was said and what was done, in order', () => {
-    assert.equal(
-      runTranscript([say('Checking the bases.'), ran('Terminal', 'airtable list-bases')]),
-      'Checking the bases.\n**Terminal**  airtable list-bases',
-    );
-  });
-
-  // Its log would just be the model talking, which is what the answer already is.
-  it('gives a run that called no tool no trace at all', () => {
-    assert.equal(runTranscript([say('Sure — here you go.')]), undefined);
-    assert.equal(runTranscript([]), undefined);
-  });
-
-  // The trace shares the card's byte budget with the answer, and the answer is
-  // the thing the user asked for. Steps nearest it are the ones that explain it.
-  it('drops the oldest steps by name rather than silently truncating', () => {
-    const rows = Array.from({ length: 400 }, (_, i) => ran('Terminal', `step number ${i}`));
-    const trace = runTranscript(rows)!;
-
-    assert.ok(trace.length < 3_400, `trace was ${trace.length} chars`);
-    assert.match(trace, /^_\+\d+ earlier steps\._/);
-    assert.match(trace, /step number 399/);
-    assert.doesNotMatch(trace, /step number 0\b/);
-  });
-
-  it('will not let a command close the card markup it is rendered into', () => {
-    assert.equal(
-      runTranscript([ran('Terminal', 'cat <secret> `whoami`')]),
-      '**Terminal**  cat secret whoami',
-    );
-  });
-});

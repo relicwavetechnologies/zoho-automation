@@ -20,6 +20,7 @@ import type { Toast } from './ui'
 const PATHS: Record<string, string> = {
   /* Work — the app shell. */
   home: '/me',
+  chat: '/chat',
   'mail-rules': '/me/mail',
   approvals: '/me/approvals',
   artifacts: '/me/artifacts',
@@ -99,8 +100,14 @@ type ScreenProps = {
 /**
  * Wraps a Workspace screen so it can be used as a route element.
  * Screens that don't take `persona` simply ignore it.
+ *
+ * `full` opts a screen out of the `.page` box — the padded, max-width,
+ * height-less container every other screen wants. A chat surface wants the
+ * opposite of all three: it runs to the edges, it owns the full height, and it
+ * scrolls its own thread rather than the shell scrolling the whole document.
+ * Left in `.page` it renders as a short card floating in an empty column.
  */
-export function routed(Screen: ComponentType<ScreenProps>) {
+export function routed(Screen: ComponentType<ScreenProps>, { full = false } = {}) {
   return function RoutedScreen() {
     const navigate = useNavigate()
     const { session } = useAdminAuth()
@@ -114,7 +121,7 @@ export function routed(Screen: ComponentType<ScreenProps>) {
       session?.role === 'SUPER_ADMIN' || session?.role === 'COMPANY_ADMIN' ? 'admin' : 'member'
 
     return (
-      <div className="page">
+      <div className={full ? 'page-full' : 'page'}>
         <Screen
           persona={persona}
           replay={replay}

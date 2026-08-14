@@ -3,6 +3,7 @@ import multer from 'multer';
 import type { KnowledgeFileService } from '../../application/knowledge/knowledge-file.service';
 import { KnowledgeMutationError } from '../../application/knowledge/knowledge-mutation.errors';
 import type { Logger } from '../../shared/logger';
+import { asChannelKey } from '../../domain/channel/runtime-channel';
 
 export function createKnowledgeFileRoutes(deps: {
   readonly files: KnowledgeFileService;
@@ -97,7 +98,7 @@ function identityFrom(res: Response) {
     companyId: String(res.locals['companyId']),
     userId: String(res.locals['userId']),
     companyRole: String(res.locals['aiRole']),
-    channel: res.locals['channel'] === 'lark' ? 'lark' as const : 'desktop' as const,
+    channel: asChannelKey(res.locals['channel']),
   };
 }
 

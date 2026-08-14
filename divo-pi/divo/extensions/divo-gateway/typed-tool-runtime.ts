@@ -1,5 +1,4 @@
 import type { WorkBootstrap } from "./work-bootstrap.ts";
-import { buildTypedTools, typedToolName as typedToolNameFor, type TypedToolDefinition } from "./typed-tools.ts";
 import {
 	formatGatewayResponse,
 	isGatewayApprovalStatus,
@@ -9,29 +8,14 @@ import { executeGatewayRequest } from "./gateway-execution.ts";
 import { readDivoRunCorrelation } from "./run-correlation.ts";
 import { parseWorkBootstrap } from "./work-bootstrap.ts";
 
-/**
- * Turns typed tool definitions into live Pi tools.
- *
- * Registration happens at the moment the run bootstrap arrives — the same
- * moment `formatWorkBootstrap` currently stringifies these schemas into the
- * prompt. Same tools, same timing, same payload; the difference is that Pi can
- * now validate a call against the contract instead of asking the model to copy
- * it out of prose.
- *
- * Pi validates. The backend still authorizes: a tool the member may not use is
- * registered anyway, described as denied, and its call still goes to the
- * gateway so the backend returns its own permission decision. Nothing here
- * grants or refuses access.
- */
-
-/** Mirrors Pi's `AgentToolResult`, where `details` is required so the desktop always has a structured row to render. */
+/** Mirrors Pi's AgentToolResult while keeping structured details for renderers. */
 export interface TypedToolResult {
 	content: Array<{ type: "text"; text: string }>;
 	details: unknown;
 	isError?: boolean;
 }
 
-/** Executes one governed call. Supplied by the extension so the gateway keeps its single execute, approval, and audit path. */
+/** Executes one backend-governed business-tool call. */
 export type TypedToolInvoker = (
 	input: { toolId: string; args: Record<string, unknown>; toolCallId: string },
 	ctx: unknown,
@@ -56,90 +40,37 @@ export interface TypedToolHost {
 	}): void;
 }
 
-export interface TypedToolRegistrationResult {
-	registered: string[];
-	/** Already live from an earlier bootstrap in the same session. */
-	skipped: string[];
-	rejected: Array<{ toolId: string; reason: string }>;
-}
+/** Backend `tools.list` accepts at most 2,000 characters of prompt context. */
+const NATIVE_CONTRACT_QUERY_MAX_CHARS = 2_000;
 
-/** Registered definitions that Pi filtered out of the active tool surface. */
-export function inactiveRegisteredTools(
-	registered: readonly string[],
-	active: readonly string[],
-): string[] {
-	const activeNames = new Set(active);
-	return registered.filter((name) => !activeNames.has(name));
-}
-
-function promptSnippetFor(tool: TypedToolDefinition): string {
-	return tool.denied
-		? `${tool.name} is not permitted for you; report the permission decision instead of routing around it.`
-		: `Use ${tool.name} for governed ${tool.family} work (${tool.allowedActions.join(", ")}).`;
+/**
+ * Keep contract discovery useful without letting an ordinary long user prompt
+ * invalidate the entire provider-schema bootstrap request.
+ */
+export function nativeContractQuery(query: string): string | undefined {
+	const bounded = query.trim().slice(0, NATIVE_CONTRACT_QUERY_MAX_CHARS);
+	return bounded.length >= 3 ? bounded : undefined;
 }
 
 /**
- * Registers every typed tool the bootstrap describes.
+ * Fetch prompt-relevant provider-native input schemas and run account context.
  *
- * A run may resolve work more than once, and Pi keys tools by name, so
- * re-registering would silently replace a live tool mid-run. Names already
- * registered in this session are skipped instead.
+ * Outer Pi tool definitions are compiled into the container and never come
+ * from this response. Google Workspace and Airtable are backed by versioned
+ * external MCP servers, so the exact nested input schema remains provider-owned
+ * and is safely merged into the permanent Pi wrapper when available.
  */
-export function registerTypedTools(
-	host: TypedToolHost,
-	bootstrap: WorkBootstrap,
-	invoke: TypedToolInvoker,
-	registry: Set<string>,
-): TypedToolRegistrationResult {
-	const { tools, rejected } = buildTypedTools(bootstrap);
-	const registered: string[] = [];
-	const skipped: string[] = [];
-
-	for (const tool of tools) {
-		if (registry.has(tool.name)) {
-			skipped.push(tool.name);
-			continue;
-		}
-		registry.add(tool.name);
-		registered.push(tool.name);
-		host.registerTool({
-			name: tool.name,
-			label: tool.label,
-			description: tool.description,
-			promptSnippet: promptSnippetFor(tool),
-			promptGuidelines: tool.promptGuidelines,
-			parameters: tool.parameters,
-			executionMode: tool.executionMode,
-			execute: (toolCallId, params, _signal, _onUpdate, ctx) =>
-				invoke({ toolId: tool.toolId, args: params, toolCallId }, ctx),
-		});
-	}
-
-	return { registered, skipped, rejected };
-}
-
-/**
- * Fetches all reachable contracts plus prompt-relevant nested contracts.
- *
- * The run context already names every tool the member can reach
- * (`capabilityBootstrap.availableTools`), but carries no schema. The gateway
- * A single batch request keeps the outer tool surface complete while letting
- * the backend preload only native operation schemas relevant to this prompt.
- *
- * Folding these contracts into the runtime-context response would remove even
- * that round trip. It needs the tool registry wired into the desktop route, so
- * it stays an optimization to make once the cost has been measured.
- */
-export async function fetchTypedToolContracts(
+export async function fetchNativeContractBootstrap(
 	toolIds: string[],
 	toolCallId: string,
 	query: string,
 ): Promise<{ bootstrap?: WorkBootstrap; failed: Array<{ toolId: string; reason: string }> }> {
 	const resolved = resolveDivoGatewayConfig();
 	if ("error" in resolved) {
-		return { failed: toolIds.map((toolId) => ({ toolId, reason: resolved.error })) };
+		return { failed: toolIds.map(toolId => ({ toolId, reason: resolved.error })) };
 	}
 	const correlation = await readDivoRunCorrelation();
+	const boundedQuery = nativeContractQuery(query);
 	try {
 		const { body } = await executeGatewayRequest(
 			resolved,
@@ -148,7 +79,7 @@ export async function fetchTypedToolContracts(
 				...(correlation.departmentId ? { departmentId: correlation.departmentId } : {}),
 				payload: {
 					toolIds,
-					...(query.trim().length >= 3 ? { query: query.trim() } : {}),
+					...(boundedQuery ? { query: boundedQuery } : {}),
 				},
 				execution: {
 					version: 1,
@@ -173,7 +104,7 @@ export async function fetchTypedToolContracts(
 			bootstrap,
 			failed: toolIds.filter(toolId => !returned.has(toolId)).map(toolId => ({
 				toolId,
-				reason: "response carried no args schema",
+				reason: "response omitted this capability context",
 			})),
 		};
 	} catch (error) {
@@ -182,53 +113,7 @@ export async function fetchTypedToolContracts(
 	}
 }
 
-/**
- * Registers typed tools for every reachable tool before the agent starts.
- *
- * Work resolution is deliberately not called on most runs, so registering only
- * from its bootstrap would leave an ordinary request with no governed tools at
- * all. This makes the typed surface present from the first turn.
- *
- * A failure here is reported and swallowed: an incomplete typed surface is
- * recoverable, a run that cannot start is not.
- */
-export async function registerEagerTypedTools(
-	host: TypedToolHost,
-	toolIds: string[],
-	query: string,
-	invoke: TypedToolInvoker,
-	registry: Set<string>,
-	fetchContracts: typeof fetchTypedToolContracts = fetchTypedToolContracts,
-): Promise<TypedToolRegistrationResult & { failed: Array<{ toolId: string; reason: string }> }> {
-	const pending = toolIds.filter((toolId) => !registry.has(typedToolNameFor(toolId)));
-	if (pending.length === 0) {
-		return { registered: [], skipped: [], rejected: [], failed: [] };
-	}
-	const { bootstrap, failed } = await fetchContracts(pending, "typed-tools-eager", query);
-	const result = registerTypedTools(
-		host,
-		bootstrap ?? {
-			version: 1,
-			scope: "run",
-			registryRevision: 0,
-			tools: [],
-			nativeContracts: [],
-			connections: [],
-			advisories: [],
-		},
-		invoke,
-		registry,
-	);
-	return { ...result, failed };
-}
-
-/**
- * The production invoker: one governed `tools.invoke` through the same client,
- * approval handling, and trace path every governed call uses.
- *
- * Arguments arrive already validated against the backend's own schema, so the
- * envelope-repair step the mega-tool needs has nothing left to repair.
- */
+/** One authenticated backend operation with shared trace and approval handling. */
 export async function runGatewayOperation(
 	op: string,
 	payload: Record<string, unknown>,
@@ -238,9 +123,7 @@ export async function runGatewayOperation(
 ): Promise<TypedToolResult> {
 	const correlation = await readDivoRunCorrelation();
 	const resolved = resolveDivoGatewayConfig();
-	if ("error" in resolved) {
-		throw new Error(resolved.error);
-	}
+	if ("error" in resolved) throw new Error(resolved.error);
 
 	const { body, httpStatus } = await executeGatewayRequest(
 		resolved,
@@ -274,24 +157,19 @@ export async function runGatewayOperation(
 		...label,
 	};
 
-	// A held approval is not a failed action. Keeping the structured details on
-	// an errored result is what lets the desktop render its status in this exact
-	// trace row without a second local approval path.
 	if (isGatewayApprovalStatus(body.status)) {
 		return { content: [{ type: "text", text: formatted.text }], details, isError: true };
 	}
-	if (formatted.isError) {
-		throw new Error(formatted.text);
-	}
+	if (formatted.isError) throw new Error(formatted.text);
 	return { content: [{ type: "text", text: formatted.text }], details };
 }
 
 export function createGatewayTypedToolInvoker(): TypedToolInvoker {
 	return ({ toolId, args, toolCallId }, ctx) =>
-		runGatewayOperation("tools.invoke", { toolId, args }, toolCallId, ctx, { typedTool: toolId });
+		runGatewayOperation("tools.invoke", { toolId, args }, toolCallId, ctx, { nativeTool: toolId });
 }
 
-/** Platform operations that are not a governed tool call: connections, image reading. */
+/** Platform operations that are not a governed business-tool invocation. */
 export function createGatewayPlatformInvoker() {
 	return ({ op, payload, toolCallId }: { op: string; payload: Record<string, unknown>; toolCallId: string }, ctx: unknown) =>
 		runGatewayOperation(op, payload, toolCallId, ctx, { platformOp: op });

@@ -6,6 +6,10 @@
  *     list_invoices   — paginated invoice list (first page, bounded)
  *     get_invoice     — single invoice by ID
  *     create_invoice  — create a new invoice
+ *     list_purchase_orders — paginated purchase-order list
+ *     get_purchase_order   — single purchase order by ID or exact number
+ *     stage_purchase_order — validate and hold a purchase order for confirmation
+ *     create_purchase_order — create exactly the confirmed staged draft
  *     list_contacts   — paginated contact list
  *     get_contact     — single contact by ID
  *     list_expenses   — paginated expense list
@@ -45,6 +49,7 @@ import type { Result }                     from '../../../shared/result';
 import { ok, err }                         from '../../../shared/result';
 import { PermissionError, ToolError }      from '../../../shared/errors';
 import type { ToolActionGroup }            from '../../../domain/permissions/tool-action-group';
+import type { ZohoBooksScopeModule }       from '../../../domain/zoho/zoho-scope';
 import { asToolId }                        from '../../../shared/ids';
 import {
   ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE,
@@ -78,6 +83,8 @@ import {
   type StagedInvoice,
   type StagedInvoiceStore,
 } from '../../zoho/zoho-invoice-staging';
+import type { StagedPurchaseOrderStore } from '../../zoho/zoho-purchase-order-staging';
+import { createZohoPurchaseOrderService } from '../../zoho/zoho-purchase-order.service';
 
 import type { InvoiceReviewer } from '../../zoho/zoho-invoice-reviewer';
 import { validateAttachmentPolicy }        from '../../email/attachment-policy';
@@ -112,6 +119,10 @@ const Schema = z.object({
     'get_contact',
     'list_expenses',
     'list_bills',
+    'list_purchase_orders',
+    'get_purchase_order',
+    'stage_purchase_order',
+    'create_purchase_order',
     'list_payments',
     'get_chart_of_accounts',
     'get_account_balance',
@@ -135,13 +146,14 @@ const Schema = z.object({
 
   // CRUD params
   invoiceId:      z.string().optional(),
+  purchaseOrderId: z.string().optional(),
   contactId:      z.string().optional(),
   accountId:      z.string().optional(),
   // attach_document — which record the file belongs on, and which file it is.
-  recordType:     z.enum(['invoice', 'bill']).optional(),
+  recordType:     z.enum(['invoice', 'purchase_order', 'bill']).optional(),
   recordId:       z.string().optional(),
   fileName:       z.string().optional(),
-  /** Draft produced by stage_invoice. create_invoice replays it rather than re-reading fields. */
+  /** Stored draft identity returned by an invoice or purchase-order staging operation. */
   stagingId:      z.string().uuid().optional(),
   /** The draft this staging corrects, when the reviewer sent one back. */
   supersedesStagingId: z.string().uuid().optional(),
@@ -264,6 +276,8 @@ const readOps = new Set<Args['op']>([
   'get_contact',
   'list_expenses',
   'list_bills',
+  'list_purchase_orders',
+  'get_purchase_order',
   'list_payments',
   'get_chart_of_accounts',
   'get_account_balance',
@@ -281,6 +295,8 @@ const createOps = new Set<Args['op']>([
   'record_payment',
   'create_expense',
   'create_bill',
+  'stage_purchase_order',
+  'create_purchase_order',
   'create_contact',
   'attach_document',
   // Staging writes nothing to Zoho, but it reads what a create would and it is
@@ -306,9 +322,22 @@ export const zohoBooksActionFor = (op: string): ToolActionGroup =>
       : updateOps.has(op as Args['op']) ? 'update'
         : 'delete';
 
+const oauthModuleByCreateOp = new Map<string, ZohoBooksScopeModule>([
+  ['stage_invoice', 'invoices'],
+  ['create_invoice', 'invoices'],
+  ['stage_purchase_order', 'purchaseorders'],
+  ['create_purchase_order', 'purchaseorders'],
+  ['create_bill', 'bills'],
+]);
+
+/** The narrow Zoho OAuth module that may authorize a supported staged/create flow. */
+export const zohoBooksScopeModuleFor = (op: string): ZohoBooksScopeModule | undefined =>
+  oauthModuleByCreateOp.get(op);
+
 const listOpToModule: Record<string, ZohoBooksModule> = {
   list_invoices:         'invoices',
   list_bills:            'bills',
+  list_purchase_orders:  'purchaseorders',
   list_expenses:         'expenses',
   list_payments:         'customerpayments',
   list_contacts:         'contacts',
@@ -318,7 +347,7 @@ const listOpToModule: Record<string, ZohoBooksModule> = {
 };
 
 /** Zoho's own module path for a record the member can attach a file to. */
-const attachModule = { invoice: 'invoices', bill: 'bills' } as const;
+const attachModule = { invoice: 'invoices', purchase_order: 'purchaseorders', bill: 'bills' } as const;
 
 /**
  * How many candidate invoices a read-back will fetch in full before giving up.
@@ -440,7 +469,7 @@ const commonColumns = {
   id: (header = 'ID'): ZohoListCsvColumn<Record<string, unknown>> => ({
     key: 'id',
     header,
-    value: item => stringValue(item, 'invoice_id', 'bill_id', 'payment_id', 'expense_id', 'contact_id', 'transaction_id', 'item_id', 'id'),
+    value: item => stringValue(item, 'invoice_id', 'purchaseorder_id', 'bill_id', 'payment_id', 'expense_id', 'contact_id', 'transaction_id', 'item_id', 'id'),
   }),
   date: { key: 'date', header: 'Date' } satisfies ZohoListCsvColumn<Record<string, unknown>>,
   status: { key: 'status', header: 'Status' } satisfies ZohoListCsvColumn<Record<string, unknown>>,
@@ -571,6 +600,8 @@ export const createZohoBooksTool = (deps: {
   appBaseUrl?: string;
   /** Holds invoice drafts between staging and creation. Absent disables staging. */
   invoiceStaging?: StagedInvoiceStore;
+  /** Holds purchase-order drafts between member review and one-shot creation. */
+  purchaseOrderStaging?: StagedPurchaseOrderStore;
   /** Reads a draft cold before the member is shown it. */
   invoiceReviewer?: InvoiceReviewer;
   /** The member's own words, for the reviewer. Never the model's account of them. */
@@ -593,9 +624,9 @@ export const createZohoBooksTool = (deps: {
   resultSchema: ResultSchema,
 
   description: [
-    'Access Zoho Books: read, write, and report on invoices, bills, expenses, payments, contacts, items, taxes, bank transactions.',
+    'Access Zoho Books: read, write, and report on invoices, purchase orders, bills, expenses, payments, contacts, items, taxes, bank transactions.',
     'A created invoice is a draft until mark_invoice_sent or send_invoice; report the status the tool returns rather than assuming it was issued.',
-    'attach_document puts a file the member sent in this Lark conversation onto an invoice or bill, and verifies it against Zoho documents[].',
+    'attach_document puts a file the member sent in this Lark conversation onto an invoice, purchase order, or bill, and verifies it against Zoho documents[].',
     'Plain list operations fetch one bounded page and return only the requested limit.',
     'For a complete artifact or exact multi-page aggregate, use page/nextPage from one governed local Python file. Do not call this registered Pi tool for a preview first when the user already requested an export; begin the local workflow and call Zoho through divo-local.',
     'Use populated _amount_inr/_balance_inr for INR calculations; never infer an original currency when _currency is UNKNOWN.',
@@ -603,8 +634,8 @@ export const createZohoBooksTool = (deps: {
 
   parameterDocs: [
     'connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.',
-    'op: list_invoices|get_invoice|stage_invoice|create_invoice|update_invoice|mark_invoice_sent|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
-    `read params: invoiceId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, limit (1-${TERMINAL_FILE_PAGE_LIMIT}), page (1-${MAX_TERMINAL_PAGE})`,
+    'op: list_invoices|get_invoice|stage_invoice|create_invoice|update_invoice|mark_invoice_sent|list_purchase_orders|get_purchase_order|stage_purchase_order|create_purchase_order|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
+    `read params: invoiceId, purchaseOrderId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, limit (1-${TERMINAL_FILE_PAGE_LIMIT}), page (1-${MAX_TERMINAL_PAGE})`,
     'For terminal paging, start with page=1 and continue with nextPage while hasMore=true.',
     'get_invoice accepts a Zoho numeric invoice ID or an exact human invoice number. list_invoices forwards searchQuery to Zoho and returns newest invoice dates first.',
     'limit is the requested maximum. Once that many rows are returned, do not fetch more pages unless the user explicitly asks for a complete export or aggregate.',
@@ -616,12 +647,14 @@ export const createZohoBooksTool = (deps: {
     // finds out from a blocking reviewer verdict, one model call later.
     'stage_invoice fields, at minimum: customer_id, date, due_date or payment_terms, and line_items, each carrying item_id or name, quantity, rate, and tax_id. Include place_of_supply whenever the draft carries tax — without it the IGST-versus-CGST check cannot run and only warns that it did not. The zoho-books-invoice recipe states the rest.',
     'create_invoice takes ONLY stagingId. It replays the approved payload, so what the member saw is what Zoho receives. It refuses a draft that failed review, one already created, and one with no stagingId.',
+    'PURCHASE ORDERS ARE STAGED. stage_purchase_order takes fields with vendor_id, date, line_items (item_id, quantity, rate), optional expected_delivery_date, notes, terms, and fileName. Show stagedSummary exactly, obtain confirmation, then call create_purchase_order with only stagingId plus the same connectionId.',
+    'A created purchase order remains a draft: create_purchase_order never submits, approves, marks open, or emails it. Report that nothing was sent to the vendor.',
     'When review.outcome is fail, fix the exact fields named in review.issues and call stage_invoice again with supersedesStagingId. review.attemptsRemaining says how many corrections are left; at zero, put the objection to the member instead of re-staging.',
     'stage_invoice: supply invoice_number only when the member gave one — the tool then overrides Zoho auto-numbering. Omit it to let Zoho number the invoice.',
     'payment_terms is a whole number of days, never words: 15 for "Net 15", 0 for due on receipt. The tool records the original wording as payment_terms_label.',
     'mark_invoice_sent issues a draft without emailing anyone. send_invoice emails it. They are different acts; do not substitute one for the other.',
     'create_contact only after list_contacts with searchQuery returns no match, and say in the reply that a new contact was created.',
-    'attach_document params: recordType (invoice|bill), recordId, fileName — the exact name of a file the member sent in this Lark conversation. Never invent a filename, and never claim an attachment the tool did not confirm.',
+    'attach_document params: recordType (invoice|purchase_order|bill), recordId, fileName — the exact name of a file the member sent in this Lark conversation. Never invent a filename, and never claim an attachment the tool did not confirm.',
     'list_items gives item_id and rate for invoice line_items. list_taxes gives the real tax_id values for GST; never guess a tax rate or tax id.',
     'build_overdue_report params: asOfDate (ISO), minOverdueDays, invoiceDateFrom, invoiceDateTo',
     '',
@@ -664,6 +697,13 @@ export const createZohoBooksTool = (deps: {
           toolId: 'zohoBooks',
           reason: 'permission_denied',
           message: 'Zoho write actions are unavailable while this role is restricted to personalized data.',
+        }));
+      }
+      if (args.op === 'list_purchase_orders' || args.op === 'get_purchase_order') {
+        return err(new ToolError({
+          toolId: 'zohoBooks',
+          reason: 'permission_denied',
+          message: 'Purchase orders are company-wide procurement records and are unavailable for personalized Zoho access.',
         }));
       }
     }
@@ -709,6 +749,21 @@ export const createZohoBooksTool = (deps: {
       : {};
 
     const appBaseUrl = deps.appBaseUrl ?? 'https://books.zoho.com';
+    const purchaseOrders = createZohoPurchaseOrderService({
+      booksClient: deps.booksClient,
+      ...(deps.purchaseOrderStaging ? { staging: deps.purchaseOrderStaging } : {}),
+      appBaseUrl,
+    });
+    const purchaseOrderContext = {
+      companyId,
+      userId,
+      connectionId: args.connectionId,
+      ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+      correlationId: ctx.correlationId,
+      now: ctx.clock.now(),
+      ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+      ...(ctx.onProgress ? { onProgress: (message: string) => ctx.onProgress?.(message) } : {}),
+    };
 
     /** Single-record GET. Unlike getRecord() this surfaces provider errors
      *  instead of turning an expired token into "not found". */
@@ -936,7 +991,7 @@ export const createZohoBooksTool = (deps: {
      * attachment must not be reported as losing the invoice.
      */
     const attachFileToRecord = async (input: {
-      recordType: 'invoice' | 'bill';
+      recordType: 'invoice' | 'purchase_order' | 'bill';
       recordId:   string;
       fileName:   string;
       destination?: { connectionId: string; organizationId?: string | undefined };
@@ -1024,7 +1079,7 @@ export const createZohoBooksTool = (deps: {
       if (!args.recordType || !args.recordId || !args.fileName) {
         return err(new ToolError({
           toolId: 'zohoBooks', reason: 'bad_args',
-          message: 'attach_document needs recordType (invoice or bill), recordId, and the exact fileName the member sent.',
+          message: 'attach_document needs recordType (invoice, purchase_order, or bill), recordId, and the exact fileName the member sent.',
         }));
       }
       const outcome = await attachFileToRecord({
@@ -1355,6 +1410,71 @@ export const createZohoBooksTool = (deps: {
           const invoice = await getOne('invoices', resolvedInvoiceId);
           if (personalizedScope && !recordMatchesZohoEmail(invoice, requesterEmail!)) return ok({ success: true, data: null, message: 'Invoice not found' });
           return ok({ success: true, data: formatZohoResult(invoice) });
+        }
+
+        case 'get_purchase_order': {
+          if (!args.purchaseOrderId) {
+            return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'purchaseOrderId required for get_purchase_order' }));
+          }
+          let resolvedId = args.purchaseOrderId;
+          if (!isZohoRecordId(resolvedId)) {
+            const lookup = await deps.booksClient.listRecords({
+              companyId,
+              ...connectionContext,
+              moduleName: 'purchaseorders',
+              ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+              filters: { purchaseorder_number: resolvedId },
+              page: 1,
+              perPage: 25,
+            });
+            const exact = lookup.items.filter(item =>
+              normalizeRecordNumber(stringValue(item, 'purchaseorder_number')) === normalizeRecordNumber(resolvedId));
+            if (exact.length !== 1) {
+              return ok({
+                success: true,
+                data: null,
+                message: exact.length === 0
+                  ? `Purchase order number "${resolvedId}" was not found`
+                  : `Purchase order number "${resolvedId}" is ambiguous`,
+              });
+            }
+            resolvedId = stringValue(exact[0]!, 'purchaseorder_id');
+          }
+          if (!resolvedId) {
+            return err(new ToolError({ toolId: 'zohoBooks', reason: 'upstream_failure', message: 'Zoho returned a purchase order without an ID.' }));
+          }
+          return ok({ success: true, data: formatZohoResult(await getOne('purchaseorders', resolvedId)) });
+        }
+
+        case 'stage_purchase_order': {
+          const result = await purchaseOrders.stage({
+            ...purchaseOrderContext,
+            ...(args.fields ? { fields: args.fields } : {}),
+            ...(args.fileName ? { fileName: args.fileName } : {}),
+          });
+          return result.ok ? ok(result.value) : err(result.error);
+        }
+
+        case 'create_purchase_order': {
+          const result = await purchaseOrders.create({
+            ...purchaseOrderContext,
+            ...(args.stagingId ? { stagingId: args.stagingId } : {}),
+            attach: (recordId, fileName, organizationId) => attachFileToRecord({
+              recordType: 'purchase_order',
+              recordId,
+              fileName,
+              destination: { connectionId: args.connectionId, organizationId },
+            }),
+          });
+          return result.ok
+            ? ok({
+                success: true,
+                id: result.value.id,
+                data: formatZohoResult(result.value.record),
+                message: result.value.message,
+                ...(result.value.recordUrl ? { recordUrl: result.value.recordUrl } : {}),
+              })
+            : err(result.error);
         }
 
         case 'stage_invoice': {
@@ -1999,6 +2119,24 @@ export const createZohoBooksTool = (deps: {
               commonColumns.status,
               { key: 'total', header: 'Total' },
               { key: 'balance', header: 'Balance' },
+              commonColumns.currency,
+            ],
+          }));
+
+        case 'list_purchase_orders':
+          return ok(await listBounded('purchaseorders', 'purchase orders', {
+            filters: dateFilter,
+            ...(args.searchQuery ? { query: args.searchQuery } : {}),
+            amountKeys: ['total'],
+            columns: [
+              commonColumns.id('Purchase Order ID'),
+              { key: 'purchaseorder_number', header: 'Purchase Order Number' },
+              { key: 'reference_number', header: 'Reference' },
+              { key: 'vendor_name', header: 'Vendor' },
+              commonColumns.date,
+              { key: 'delivery_date', header: 'Expected Delivery' },
+              commonColumns.status,
+              { key: 'total', header: 'Total' },
               commonColumns.currency,
             ],
           }));

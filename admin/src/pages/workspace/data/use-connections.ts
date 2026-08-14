@@ -100,7 +100,11 @@ export type LiveConnection = {
   accountName: string | null
   ownerType: 'user' | 'company'
   access: string
+  canManage?: boolean
   scopes?: string[]
+  zohoClientId?: string | null
+  zohoAccountsBaseUrl?: string | null
+  zohoClientSecretStored?: boolean
   connectedAt?: string
   lastUsedAt?: string | null
   /**
@@ -377,6 +381,9 @@ export type ConnectionManage = {
     access: string
     scopes: string[]
     readOnlyEnforced?: boolean
+    zohoClientId?: string | null
+    zohoAccountsBaseUrl?: string | null
+    zohoClientSecretStored?: boolean
     connectedAt: string
   }
   grants: ConnectionGrant[]

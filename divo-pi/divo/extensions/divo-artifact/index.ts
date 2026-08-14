@@ -150,7 +150,7 @@ export function buildArtifactDetails(input: {
 }
 
 export default function divoArtifactExtension(pi: ExtensionAPI) {
-	pi.registerTool({
+	pi.registerTool<typeof ArtifactParams, unknown>({
 		name: DIVO_ARTIFACT_TOOL_NAME,
 		label: "Divo artifact",
 		description:

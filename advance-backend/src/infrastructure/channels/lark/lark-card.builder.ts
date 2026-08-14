@@ -3,6 +3,7 @@
  * Ported from old backend lark.adapter.ts markdown helpers; extended with dynamic department branding.
  */
 
+import { LARK_CARD_LIMITS } from '../../../domain/channel/surface-capabilities';
 import type {
   ChannelBranding,
   ChannelLedgerRow,
@@ -15,11 +16,14 @@ import type {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const CARD_TITLE       = 'Divo AI';
-const MAX_ELEMENT_LEN  = 1200;
+// Taken from the capability descriptor, not restated here: these numbers are
+// also what the model is told this surface can carry, and two copies drift the
+// first time one is tuned — leaving the model briefed on the stale one.
+const MAX_ELEMENT_LEN  = LARK_CARD_LIMITS.maxBlockChars;
 const MAX_ELEMENTS     = 30;
-const MAX_TABLE_ROWS   = 15;
-const MAX_CARD_BYTES   = 18_000;
-const MAX_TABLES_PER_CARD = 3;
+const MAX_TABLE_ROWS   = LARK_CARD_LIMITS.maxTableRows;
+const MAX_CARD_BYTES   = LARK_CARD_LIMITS.maxCardBytes;
+const MAX_TABLES_PER_CARD = LARK_CARD_LIMITS.maxTablesPerCard;
 const SUMMARY_CAP      = 160;
 
 // ── Department → chip color ─────────────────────────────────────────────────
@@ -281,6 +285,72 @@ function activityLine(row: ChannelLedgerRow, indent: string): string {
  * The merged status is the worst one present: a failure hidden inside a group
  * marked ✓ is exactly the thing a run log must not do.
  */
+const TRANSCRIPT_MAX_CHARS = 3_000;
+const TRANSCRIPT_LINE_MAX  = 240;
+
+/**
+ * The run's log, kept for after the answer has replaced it.
+ *
+ * The final card is an edit of the status card, so delivering the answer
+ * destroys every trace of how it was reached — on a thirteen-minute run that is
+ * the entire record of the work. Folded onto the answer as a trace panel, it
+ * costs one closed line and is there for the person who asks "what did it
+ * actually do".
+ *
+ * A run that called no tool gets none: its log is only the model talking, which
+ * is what the answer already is.
+ */
+/**
+ * The log, minus the model's reasoning.
+ *
+ * A `thought` row is the model addressing itself, and this card is read by
+ * whoever is in the chat — which on Lark is a room, not a person. The runtime
+ * forwards reasoning so the web thread (one reader, their own conversation) can
+ * show it; the decision not to put it on a card belongs here, where the card is
+ * built and where "who can see this" is actually known.
+ *
+ * Applied at both places the ledger enters this file rather than inside the
+ * line renderer: a filter that runs after folding and windowing would let
+ * reasoning occupy a card's five visible rows and then vanish, which is how a
+ * card ends up saying "+9 earlier steps" above two lines.
+ */
+export function shownOnCard(
+  rows: readonly ChannelLedgerRow[],
+): readonly ChannelLedgerRow[] {
+  return rows.filter(row => row.kind !== 'thought');
+}
+
+export function runTranscript(raw: readonly ChannelLedgerRow[]): string | undefined {
+  const input = shownOnCard(raw);
+  if (!input.some(row => row.kind !== 'say')) return undefined;
+
+  // Folded the same way the live card folds, so the trace is the log the user
+  // was watching rather than a second, longer account of the same run.
+  const rows = foldRepeatedRows(input);
+  const rendered = rows.map(row => row.kind === 'say'
+    ? sanitizeRunText(row.label, TRANSCRIPT_LINE_MAX)
+    : [
+        `**${row.label}**`,
+        ...(row.count > 1 ? [`×${row.count}`] : []),
+        ...(row.outcome ? [sanitizeRunText(row.outcome, TRANSCRIPT_LINE_MAX)] : []),
+      ].join('  '));
+
+  // Kept from the newest backwards, matching how the live card windows itself —
+  // the steps nearest the answer are the ones that explain it.
+  const kept: string[] = [];
+  let used = 0;
+  for (let i = rendered.length - 1; i >= 0; i -= 1) {
+    const line = rendered[i]!;
+    if (used + line.length > TRANSCRIPT_MAX_CHARS) {
+      kept.unshift(`_+${i + 1} earlier step${i === 0 ? '' : 's'}._`);
+      break;
+    }
+    kept.unshift(line);
+    used += line.length + 1;
+  }
+  return kept.length > 0 ? kept.join('\n') : undefined;
+}
+
 export function foldRepeatedRows(
   rows: readonly ChannelLedgerRow[],
 ): readonly ChannelLedgerRow[] {
@@ -318,7 +388,9 @@ export function foldRepeatedRows(
  * card that admits it is showing the last five things.
  */
 function activityMarkdown(timeline: ChannelTimeline): string | undefined {
-  const rows = timeline.ledger?.length ? foldRepeatedRows(timeline.ledger) : undefined;
+  const rows = timeline.ledger?.length
+    ? foldRepeatedRows(shownOnCard(timeline.ledger))
+    : undefined;
   if (!rows?.length) return undefined;
 
   const hidden  = Math.max(0, rows.length - ACTIVITY_VISIBLE_ROWS);

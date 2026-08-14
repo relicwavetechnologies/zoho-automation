@@ -1140,11 +1140,13 @@ describe('desktop auth routes', () => {
 
   it('starts mail brief after desktop Gmail OAuth', async () => {
     let authorizeScopes: string[] | undefined;
+    let includeGrantedScopes: boolean | undefined;
     let mailBriefInput: Record<string, unknown> | undefined;
     const router = createDesktopAuthRoutes(makeDeps({
       googleOAuthService: {
-        getAuthorizeUrl: ({ state, redirectUri, scopes }: { state: string; redirectUri: string; scopes?: string[] }) => {
+        getAuthorizeUrl: ({ state, redirectUri, scopes, includeGrantedScopes: incremental }: { state: string; redirectUri: string; scopes?: string[]; includeGrantedScopes?: boolean }) => {
           authorizeScopes = scopes;
+          includeGrantedScopes = incremental;
           return `https://accounts.google.com/o/oauth2/v2/auth?state=${encodeURIComponent(state)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
         },
         exchangeAuthorizationCode: async () => ({
@@ -1194,6 +1196,7 @@ describe('desktop auth routes', () => {
       'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/gmail.labels',
     ]);
+    assert.equal(includeGrantedScopes, false);
     assert.deepEqual(mailBriefInput, {
       companyId: 'company-1',
       userId: 'user-1',
@@ -1585,13 +1588,18 @@ describe('desktop auth routes', () => {
     });
 
     assert.equal(result.status, 200);
-    assert.deepEqual(result.body.data, {
+    const { surface, ...context } = result.body.data as Record<string, unknown>;
+    assert.deepEqual(context, {
       departmentId: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd',
       departmentName: 'Finance',
       personaPrompt: 'Prefer verified records.',
       version: '2026-07-11T10:00:00.000Z',
       personalMemory: [],
     });
+    // The container builds its presentation policy from this and nothing else.
+    // Absent, it would say nothing about the surface and Divo would go back to
+    // guessing — which is the state this whole design replaced.
+    assert.equal((surface as Record<string, unknown>)['key'], 'desktop');
   });
 
   it('returns only active, current, user-owned personal memory without requiring a department', async () => {
@@ -1609,7 +1617,8 @@ describe('desktop auth routes', () => {
     });
 
     assert.equal(result.status, 200);
-    assert.deepEqual(result.body.data, {
+    const { surface: _surface, ...context } = result.body.data as Record<string, unknown>;
+    assert.deepEqual(context, {
       departmentId: null,
       departmentName: null,
       personaPrompt: '',
@@ -2007,7 +2016,8 @@ describe('desktop auth routes', () => {
     });
 
     assert.equal(result.status, 200);
-    assert.deepEqual(result.body.data, {
+    const { surface: _surface, ...context } = result.body.data as Record<string, unknown>;
+    assert.deepEqual(context, {
       departmentId: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd',
       departmentName: 'Finance',
       personaPrompt: '',

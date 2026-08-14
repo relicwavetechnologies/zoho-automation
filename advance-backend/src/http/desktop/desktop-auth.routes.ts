@@ -35,6 +35,8 @@ import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../appl
 import { zohoServicesForScopes } from '../../domain/zoho/zoho-scope';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
+import { asChannelKey, isRuntimeChannel } from '../../domain/channel/runtime-channel';
+import { surfaceCapabilities } from '../../domain/channel/surface-capabilities';
 import { DEFAULT_ALLOWED_MODELS, PROXY_MODEL_SPECS, RUNTIME_MODEL_PREFERENCE } from '../../application/observability/pricing';
 import { CONNECTION_PROVIDER_IDS } from '../../domain/connections/connection-provider';
 import { googleScopesToRequestForToolIds } from '../../application/google/google-scope-request';
@@ -241,6 +243,28 @@ const zohoSelfClientSchema = z.object({
    */
   access:          z.enum(['read_only', 'read_write']).default('read_only'),
 });
+
+function zohoSelfClientMetadata(tokenMetadata: unknown): {
+  readonly clientId: string | null;
+  readonly accountsBaseUrl: string | null;
+  readonly clientSecretStored: boolean;
+} {
+  const metadata = tokenMetadata && typeof tokenMetadata === 'object' && !Array.isArray(tokenMetadata)
+    ? tokenMetadata as Record<string, unknown>
+    : {};
+  const client = metadata['zohoClient'] && typeof metadata['zohoClient'] === 'object' && !Array.isArray(metadata['zohoClient'])
+    ? metadata['zohoClient'] as Record<string, unknown>
+    : {};
+  return {
+    clientId: typeof client['clientId'] === 'string' ? client['clientId'] : null,
+    accountsBaseUrl: typeof client['accountsBaseUrl'] === 'string'
+      ? client['accountsBaseUrl']
+      : typeof metadata['accountsBaseUrl'] === 'string'
+        ? metadata['accountsBaseUrl']
+        : null,
+    clientSecretStored: typeof client['clientSecretEncrypted'] === 'string' && client['clientSecretEncrypted'].length > 0,
+  };
+}
 
 const runtimeContextQuerySchema = z.object({
   departmentId: z.string().uuid().optional(),
@@ -591,6 +615,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       && !Array.isArray(connection.tokenMetadata)
       ? connection.tokenMetadata as Record<string, unknown>
       : {};
+    const zohoSelfClient = provider === 'zoho'
+      ? zohoSelfClientMetadata(connection.tokenMetadata)
+      : { clientId: null, accountsBaseUrl: null, clientSecretStored: false };
     const readOnlyEnforced = provider === 'shopify' || (provider === 'zoho'
       && (
         tokenMetadata['enforcedAccess'] === 'read_only'
@@ -610,6 +637,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         status:       connection.status,
         reconnectRequired: connection.status === CONNECTION_REAUTHORIZATION_REQUIRED,
         readOnlyEnforced,
+        ...(provider === 'zoho' ? {
+          zohoClientId:           zohoSelfClient.clientId,
+          zohoAccountsBaseUrl:    zohoSelfClient.accountsBaseUrl,
+          zohoClientSecretStored: zohoSelfClient.clientSecretStored,
+        } : {}),
         connectedAt:  connection.connectedAt.toISOString(),
       },
       grants: connection.grants.map(grant => {
@@ -1467,9 +1499,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           userId, companyId,
           companyName: company?.name ?? null,
           role: res.locals['aiRole'],
-          runtime: res.locals['channel'] === 'lark'
+          runtime: isRuntimeChannel(res.locals['channel'])
             ? {
-                channel: 'lark',
+                channel: res.locals['channel'],
                 instanceId: res.locals['runtimeInstanceId'],
                 threadId: res.locals['runtimeThreadId'],
                 runId: res.locals['runtimeRunId'],
@@ -1827,6 +1859,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           personaPrompt: '',
           version: null,
           personalMemory: await personalMemoryLoad,
+          surface: surfaceCapabilities(asChannelKey(res.locals['channel'])),
         },
       });
       return;
@@ -2017,6 +2050,10 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
             managerPersonaVersion,
           ].filter((value): value is string => Boolean(value)).join('|') || null,
           personalMemory,
+          // What the surface this run answers on can carry. The container turns
+          // it into one prompt block; nothing else in the system is allowed to
+          // decide how a channel changes what Divo says.
+          surface: surfaceCapabilities(asChannelKey(res.locals['channel'])),
           ...(capabilityBootstrap ? { capabilityBootstrap } : {}),
           ...(nativeSkillBootstrap ? { nativeSkillBootstrap } : {}),
         },
@@ -2278,7 +2315,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       const authorizeUrl = deps.googleOAuthService.getAuthorizeUrl({
         state,
         redirectUri,
-        ...(scopes.length > 0 ? { scopes: [...scopes] } : {}),
+        ...(scopes.length > 0 ? { scopes: [...scopes], includeGrantedScopes: false } : {}),
       });
 
       res.json({ success: true, data: { authorizeUrl, redirectUri } });
@@ -3658,6 +3695,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           id: true,
           ownerUserId: true,
           createdBy: true,
+          tokenMetadata: true,
         },
       });
       const legacyRecord = await deps.prisma.zohoConnection.findUnique({
@@ -3688,6 +3726,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           canManage: canManageCompanyConnections,
           connections: connections.value.map(connection => {
             const management = managementByConnectionId.get(connection.connectionId);
+            const zohoSelfClient = zohoSelfClientMetadata(management?.tokenMetadata);
             return {
               connectionId: connection.connectionId,
               label:        connection.label,
@@ -3701,6 +3740,9 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
                 management?.ownerUserId === userId ||
                 management?.createdBy === userId,
               scopes:       connection.scopes,
+              zohoClientId:           zohoSelfClient.clientId,
+              zohoAccountsBaseUrl:    zohoSelfClient.accountsBaseUrl,
+              zohoClientSecretStored: zohoSelfClient.clientSecretStored,
               connectedAt:  connection.connectedAt.toISOString(),
               lastUsedAt:   connection.lastUsedAt?.toISOString() ?? null,
             };

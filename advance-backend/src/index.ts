@@ -22,6 +22,10 @@ const main = async () => {
     const forceExit = setTimeout(() => process.exit(1), 10_000);
     forceExit.unref();
     try {
+      // Web runs are held in memory and no longer end when their reader
+      // disconnects, so without this an open SSE view keeps the socket — and
+      // the shutdown — waiting on work that will not survive the restart.
+      container.webRunRegistry.clear();
       const httpClosed = new Promise<void>((resolve, reject) => {
         server.close(error => error ? reject(error) : resolve());
       });

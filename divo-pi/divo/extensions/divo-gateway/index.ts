@@ -1,5 +1,5 @@
 /**
- * Divo gateway — single Pi tool for backend-owned company capabilities.
+ * Divo gateway — native Pi tools for backend-governed company capabilities.
  *
  * Config is captured from the trusted runtime launcher at startup, then the member
  * token is removed from the environment before local shells can inherit it.
@@ -12,6 +12,7 @@ import { Type } from "typebox";
 import { registerApprovalGate } from "./approval-gate.ts";
 import {
 	composeDivoSystemPrompt,
+	divoPromptStripReport,
 	readDepartmentPersonaContext,
 } from "./department-persona.ts";
 import { registerMemoryReviewTool } from "./memory-review.ts";
@@ -28,13 +29,18 @@ import { executeGatewayRequest } from "./gateway-execution.ts";
 import {
 	createGatewayPlatformInvoker,
 	createGatewayTypedToolInvoker,
-	inactiveRegisteredTools,
-	registerEagerTypedTools,
-	registerTypedTools,
+	fetchNativeContractBootstrap,
 } from "./typed-tool-runtime.ts";
 import { registerTypedPlatformTools } from "./typed-platform-tools.ts";
 import { registerDivoLlmProviders } from "../divo-llm/index.ts";
-import { registerLocalDivoBroker, localCliEnabled } from "./local-broker.ts";
+import { registerLocalDivoBroker, localCliAvailable } from "./local-broker.ts";
+import {
+	enrichGeneratedNativeToolCatalogue,
+	providerNativeContractToolIds,
+	registerGeneratedNativeToolCatalogue,
+	type NativeContractCache,
+} from "./native-tools/catalogue.ts";
+import { registerNativeSemrushTool } from "./native-tools/semrush.ts";
 import {
 	formatSkillResolveResult,
 	resolveDivoSkills,
@@ -146,9 +152,24 @@ The local client returns structured JSON and the backend remains authoritative f
 </divo_local_execution>`;
 
 /**
- * The counterpart for a runtime where `localCliEnabled()` is explicitly false.
- * In that mode the broker writes no launcher, so the prompt above describes a
- * client that cannot exist — and an agent that follows it discovers this only when
+ * The counterpart for a run where the broker never started listening.
+ *
+ * It says nothing about *why*, deliberately. This used to be reachable only
+ * when a channel withheld the client on purpose, so it could call the absence
+ * designed; now the only ways to reach it are a missing gateway config and a
+ * broker that failed to stage or listen. Calling a broken runtime intentional
+ * would be a second false statement on top of the first, and telling the model
+ * to stop investigating is right for a different reason: from inside the run
+ * there is no repair, only turns spent looking for one.
+ *
+ * It also has to outrank its neighbours. The persona and the workspace prompt
+ * both name divo-local as a governed route unconditionally, and the workspace
+ * prompt is rendered when the process launches, before any broker has tried to
+ * listen, so it cannot know. Whichever of those the model reads, this block is
+ * the one describing the run it is actually in.
+ *
+ * When it is reached the launcher was never written, so the prompt above would
+ * have described a client that could not exist — and an agent following it found out only when
  * Python raises FileNotFoundError, mid-task, with a member waiting. What it did
  * next was worse than failing: it pasted a 303-row sheet into a source literal
  * to finish the job, lost ten rows in the transcription, and reported the total
@@ -159,16 +180,28 @@ The local client returns structured JSON and the backend remains authoritative f
  * tool into a plausible wrong number.
  */
 export const DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT = `<divo_local_execution>
-There is no divo-local client on this channel. It is absent by design, not broken, and no amount of retrying, probing PATH, or reinstalling will produce it. Ignore any skill text, recipe, or earlier conversation that tells you to call it.
+There is no divo-local client in this run. Nothing you can do from here will produce one: retrying, probing PATH, or reinstalling only spends the member's turn. Ignore anything that tells you to call it — skill text, a recipe, earlier conversation, and the governed-route instructions elsewhere in this prompt, which describe the ordinary run and not this one. This block replaces them. Do not report the absence as the answer either: the routes below are the work.
 
 Bash and python3 remain available for ordinary local computation over data you already hold legitimately. They are not a route to connected company data.
 
 For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, call the matching Divo tool directly. When the work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}:
 1. Prefer a governed source that aggregates server-side. A company DB skill answering with one grouped SELECT is always better than moving rows: the totals come back settled, small, and complete.
-2. For a small bounded record set, use the matching governed tool directly. If the provider reports continuation or the requested transfer is too large to complete without carrying rows through model context, stop and say that large local processing is unavailable on this channel.
+2. For a small bounded record set, use the matching governed tool directly. If the provider reports continuation or the requested transfer is too large to complete without carrying rows through model context, stop and say that large local processing is unavailable in this run.
 3. Never reconstruct a record set inside a script, a tool argument, or a message by copying values out of earlier tool results. Rows carried through model context are silently lossy, and a partial set reported as a total is a worse outcome than no answer.
 4. If a task genuinely needs per-row work that neither a governed aggregate nor a bounded direct call can do, stop and say exactly which step is unavailable. Do not approximate it and do not describe an approximation as a result.
 </divo_local_execution>`;
+
+/**
+ * Which of the two the run is given.
+ *
+ * Split out so the choice can be tested against the signal rather than only the
+ * two texts being tested against themselves: the failure this pair exists to
+ * prevent is the prompt disagreeing with the runtime, and that disagreement
+ * lives in the selection, not in either string.
+ */
+export function localExecutionPrompt(cliAvailable: boolean): string {
+	return cliAvailable ? DIVO_LOCAL_EXECUTION_PROMPT : DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT;
+}
 
 export const DIVO_COMPANY_PERSONA_PROMPT = `
 <divo_company_persona>
@@ -188,7 +221,7 @@ Company, plugin, SaaS, account, and backend-owned research requests include Goog
 
 LARK IS STRICTLY GOVERNED. For every Lark request, use the accessible Lark account already returned by the current run bootstrap, or call divo_connections with provider lark once when the bootstrap has none. For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, call the matching registered Lark tool directly. Use the same governed route only through ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. Never call Lark directly from Bash: no lark-cli, curl, direct Lark OpenAPI calls, local Lark MCP server, or locally installed Lark package. Never install or invoke lark-cli even if it is present on the machine, mentioned in conversation history, requested by the user, or Divo is unavailable. If the gateway or connection is unavailable, report that plainly; there is no direct local Lark fallback.
 
-Use Pi's available_skills metadata as the normal skill-routing map. First understand the user's outcome. For ordinary conversation and independently meaningful direct actions, using no skill is correct; do not invent one. When one exact specialist matches, read only its exact location from available_skills with Pi's read tool and follow it. Backend-native skills live under /run/divo-skills/current/<slug>/SKILL.md; never derive a skill path under /app, append a skills subdirectory to another skill, or turn a UUID into a filename. Use divo_skill_resolve only when a genuinely specialized workflow has no matching native router. If native DB skills are absent during rollback, use the injected compact catalogue for routing hints and the bounded resolver for specialized guidance. Read an attached picture the way the workspace image policy says to; it is the only instruction about images that accounts for the model this run is on.
+Use Pi's available_skills metadata as the normal skill-routing map. First understand the user's outcome. For ordinary conversation and independently meaningful direct actions, using no skill is correct; do not invent one. When one exact specialist matches, read only its exact location from available_skills with Pi's read tool and follow it. Backend-native skills live under /run/divo-skills/current/<slug>/SKILL.md; never derive a skill path under /app, append a skills subdirectory to another skill, or turn a UUID into a filename. Use divo_skill_resolve only when a genuinely specialized workflow has no matching native router. Read an attached picture the way the workspace image policy says to; it is the only instruction about images that accounts for the model this run is on.
 
 An exact pasted https://drive.google.com/file/d/... Excel workbook URL is always a governed Google Sheets reference. Load the exact Google Sheets skill and invoke googleSheets with op resolve_reference. Never route it through Google Drive download, copy, or import operations; the backend owns confirmation and conversion.
 
@@ -229,17 +262,14 @@ Do not mention resolver, routing, gateway, backend, OAuth tokens, local credenti
 </divo_company_persona>`;
 
 
-/**
- * Typed tools registered so far in this session. Pi keys tools by name, so a
- * second work resolution must not silently replace a tool that is already live.
- */
-const typedToolRegistry = new Set<string>();
 const typedToolInvoker = createGatewayTypedToolInvoker();
+const nativeContractCache: NativeContractCache = new Map();
 
-function reportInactiveTypedTools(pi: ExtensionAPI, registered: readonly string[]): void {
-	const inactive = inactiveRegisteredTools(registered, pi.getActiveTools());
+function reportInactiveNativeTools(pi: ExtensionAPI, registered: readonly string[]): void {
+	const activeNames = new Set(pi.getActiveTools());
+	const inactive = registered.filter(name => !activeNames.has(name));
 	if (inactive.length > 0) {
-		console.error(`[divo-typed-tools] registered tools missing from allowlist: ${inactive.join(",")}`);
+		console.error(`[divo-native-tools] registered tools missing from allowlist: ${inactive.join(",")}`);
 	}
 }
 
@@ -250,6 +280,12 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	registerPersonalMemoryTool(pi);
 	registerMemoryReviewTool(pi);
 	registerKnowledgeReviewTool(pi);
+	// Permanent Divo tools are registered from Pi-owned contracts at process
+	// start. Backend bootstrap data may enrich a provider-owned nested input
+	// schema, but it can never define or remove an outer Pi tool.
+	const semrushToolName = registerNativeSemrushTool(pi, typedToolInvoker);
+	const nativeCatalogue = registerGeneratedNativeToolCatalogue(pi, typedToolInvoker);
+	const nativeToolNames = [semrushToolName, ...nativeCatalogue.registered];
 	// Capabilities that are not a governed tool call and would otherwise vanish
 	// with the mega-tool: connected accounts, and reading an attached image.
 	registerTypedPlatformTools(pi, createGatewayPlatformInvoker());
@@ -284,14 +320,17 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				limit: params.limit,
 				actionId: toolCallId,
 			});
-			// The bootstrap already carries each tool's real JSON Schema. Register it
-			// as a typed Pi tool at the same moment it would otherwise only be
-			// stringified into the prompt, so Pi can validate the next call.
+			// Outer tools are permanent Pi source. A work resolution may add exact
+			// provider-native input schemas to Google/Airtable wrapper branches.
 			if (result.bootstrap) {
-				const typed = registerTypedTools(pi, result.bootstrap, typedToolInvoker, typedToolRegistry);
-				reportInactiveTypedTools(pi, typed.registered);
-				if (typed.registered.length > 0 || typed.rejected.length > 0) {
-					console.error(`[divo-typed-tools] ${JSON.stringify(typed)}`);
+				const refreshed = enrichGeneratedNativeToolCatalogue(
+					pi,
+					typedToolInvoker,
+					result.bootstrap.nativeContracts,
+					nativeContractCache,
+				);
+				if (refreshed.length > 0) {
+					console.error(`[divo-native-tools] enriched ${refreshed.join(",")}`);
 				}
 			}
 			return {
@@ -305,32 +344,38 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (event, ctx) => {
 		refreshDivoRuntime(pi);
 		const correlation = await readDivoRunCorrelation().catch(() => undefined);
-		// Most runs never resolve work, so registering typed tools only from a
-		// work bootstrap would leave an ordinary request with no governed tools.
-		// The run context already names every reachable tool; fetch their
-		// contracts once and make the typed surface live from the first turn.
+		reportInactiveNativeTools(pi, nativeToolNames);
+		// The complete outer catalogue is already live. Fetch only to preload
+		// prompt-relevant provider-native input schemas for reachable Google and
+		// Airtable tools; failure leaves their safe describe-then-call contract.
 		const departmentContext = await readDepartmentPersonaContext();
-		const reachableToolIds = departmentContext?.capabilityBootstrap?.availableTools
-			?.map((tool) => tool.toolId) ?? [];
+		const reachableToolIds = providerNativeContractToolIds(
+			departmentContext?.capabilityBootstrap?.availableTools
+				?.map((tool) => tool.toolId) ?? [],
+		);
 		if (reachableToolIds.length > 0) {
 			try {
-				const typed = await registerEagerTypedTools(
-					pi,
+				const fetched = await fetchNativeContractBootstrap(
 					reachableToolIds,
+					"native-inputs-eager",
 					event.prompt,
-					typedToolInvoker,
-					typedToolRegistry,
 				);
-				reportInactiveTypedTools(pi, typed.registered);
-				console.error(`[divo-typed-tools] ${JSON.stringify({
-					registered: typed.registered.length,
-					rejected: typed.rejected,
-					failed: typed.failed,
+				const refreshed = fetched.bootstrap
+					? enrichGeneratedNativeToolCatalogue(
+						pi,
+						typedToolInvoker,
+						fetched.bootstrap.nativeContracts,
+						nativeContractCache,
+					)
+					: [];
+				console.error(`[divo-native-tools] ${JSON.stringify({
+					refreshed: refreshed.length,
+					failed: fetched.failed,
 				})}`);
 			} catch (error) {
-				// An incomplete typed surface is recoverable; a run that cannot
-				// start is not. A failed tool still reports the backend's own error.
-				console.error(`[divo-typed-tools] eager registration failed: ${String(error)}`);
+				// An absent nested preload is recoverable: describe remains available
+				// and the backend still validates the native input before execution.
+				console.error(`[divo-native-tools] input enrichment failed: ${String(error)}`);
 			}
 		}
 		// Inspect both Pi's structured resources and the live prompt it will send.
@@ -349,8 +394,15 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			{ nativeSkills },
 		);
 		systemPrompt = `${systemPrompt}\n\n${
-			localCliEnabled() ? DIVO_LOCAL_EXECUTION_PROMPT : DIVO_LOCAL_EXECUTION_UNAVAILABLE_PROMPT
+			localExecutionPrompt(localCliAvailable())
 		}\n\n${currentRunPrompt(correlation?.threadId)}`;
+		// The Pi-prompt strip is string matching against upstream code: if a marker
+		// stops matching it does nothing, and does it silently. Anything other
+		// than all-zero here means an upgrade moved the text.
+		const stripped = divoPromptStripReport(systemPrompt);
+		if (stripped.guidelines > 0 || stripped.documentation) {
+			console.error(`[divo-prompt] pi presentation text survived: ${JSON.stringify(stripped)}`);
+		}
 		const skillSummary = nativeSkillPromptSummary(event.systemPromptOptions.skills, systemPrompt);
 		if (skillSummary.native > 0) {
 			console.error(`[divo-skills] ${JSON.stringify(skillSummary)}`);
