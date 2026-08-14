@@ -48,10 +48,29 @@ import '@/styles/beautiful.css'
  * Minting the id here and redirecting means every conversation — including the
  * one you have not typed into yet — has an address. `replace` so that Back
  * leaves the chat rather than bouncing off `/chat` into a second new thread.
+ *
+ * That makes `/chat` the one place a thread id comes into being, which is why
+ * the sidebar's New chat and the delete-the-open-chat path both just navigate
+ * here rather than minting their own. Two call sites minting is two copies of
+ * one rule.
  */
 export function WorkspaceChat() {
   const { threadId } = useParams<{ threadId: string }>()
-  const minted = useMemo(newThreadId, [])
+  /* Keyed on the thread rather than on the mount, and that is the whole
+     correctness of this component.
+
+     Both `/chat` and `/chat/:threadId` render this same element at the same
+     position in the tree, so React reconciles instead of remounting when the
+     match flips between them — the instance, and everything memoised in it,
+     survives. With `[]` the id was therefore minted once per page load and then
+     never again: opening a chat consumed it, and New chat afterwards redirected
+     to the thread the reader was already in. It looked like a dead button, and
+     a reload "fixed" it exactly once.
+
+     `threadId` changes on every arrival at `/chat` from somewhere else, so this
+     mints exactly when a new thread is actually being asked for, and stays
+     stable across the renders that redirect — which is what stops it looping. */
+  const minted = useMemo(newThreadId, [threadId])
   if (!isThreadId(threadId)) {
     return <Navigate to={`/chat/${minted}`} replace />
   }
