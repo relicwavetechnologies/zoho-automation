@@ -1,11 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { ZohoBooksPaginatedClient, ZohoBooksOrganization } from '../../infrastructure/zoho/zoho-books-paginated.client';
-import { ToolError, WriteNotDispatchedError } from '../../shared/errors';
+import { ToolError } from '../../shared/errors';
 import type { Result } from '../../shared/result';
 import { err, ok } from '../../shared/result';
 import { mapZohoError } from './zoho-error.utils';
 import { refuseSelfDealing } from './zoho-self-dealing';
-import { summarizeZohoWrite, unwrapZohoRecord } from './zoho-books-write-result';
+import { unwrapZohoRecord, type ZohoWriteSummary } from './zoho-books-write-result';
+import {
+  classifyZohoBooksWriteFailure,
+  createZohoBooksWriteRunner,
+} from './zoho-books-write';
 import {
   checkPurchaseOrder,
   hasBlockingPurchaseOrderFinding,
@@ -229,30 +233,34 @@ export function createZohoPurchaseOrderService(deps: {
         }));
       }
 
-      let organizationId: string;
       let record: Record<string, unknown>;
+      let summary: ZohoWriteSummary;
+      const writer = createZohoBooksWriteRunner({
+        booksClient: deps.booksClient,
+        companyId: input.companyId,
+        userId: input.userId,
+        connectionId: staged.connectionId,
+        organizationId: staged.organizationId,
+        ...(input.signal ? { signal: input.signal } : {}),
+        appBaseUrl: deps.appBaseUrl,
+      });
       try {
         const poNumber = staged.payload['purchaseorder_number'];
-        const written = await deps.booksClient.mutate({
-          companyId: input.companyId,
-          userId: input.userId,
-          connectionId: staged.connectionId,
-          organizationId: staged.organizationId,
+        const written = await writer.writeRecord({
+          module: 'purchaseorders',
+          verb: 'created',
           method: 'POST',
           path: '/purchaseorders',
           ...(typeof poNumber === 'string' && poNumber.trim()
             ? { params: { ignore_auto_number_generation: 'true' } }
             : {}),
           body: staged.payload,
-          ...(input.signal ? { signal: input.signal } : {}),
         });
-        organizationId = written.organizationId;
-        record = unwrapZohoRecord(written.payload, 'purchaseorders');
+        record = written.record;
+        summary = written.summary;
       } catch (error) {
-        const status = Number(/Zoho Books (\d{3})/.exec(error instanceof Error ? error.message : String(error))?.[1]);
-        const definitelyNotCreated = error instanceof WriteNotDispatchedError
-          || (status >= 400 && status < 500 && status !== 408 && status !== 429);
-        if (definitelyNotCreated) {
+        const failure = classifyZohoBooksWriteFailure(error, { receivedObject: 'the purchase order' });
+        if (failure.kind !== 'unknown') {
           await deps.staging.release({ stagingId: staged.stagingId, companyId: input.companyId, marker });
           return err(new ToolError({ toolId: 'zohoBooks', reason: 'upstream_failure', cause: error, message: mapZohoError(error) }));
         }
@@ -268,10 +276,6 @@ export function createZohoPurchaseOrderService(deps: {
         }));
       }
 
-      const summary = summarizeZohoWrite({
-        module: 'purchaseorders', verb: 'created', record,
-        appBaseUrl: deps.appBaseUrl, organizationId,
-      });
       if (!summary.id) {
         await deps.staging.markUnresolved({
           stagingId: staged.stagingId,

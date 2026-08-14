@@ -2570,6 +2570,29 @@ model ZohoPurchaseOrderStaging {
   @@index([expiresAt])
 }
 
+/// A vendor-bill payload held until the member confirms the rendered draft.
+/// Creation replays this exact payload and claims it before dispatch so one
+/// confirmation cannot create two bills after a retry or lost stream.
+model ZohoBillStaging {
+  id             String    @id @default(uuid())
+  companyId      String
+  userId         String
+  connectionId   String
+  organizationId String
+  payloadJson    Json
+  summary        String
+  findingsJson   Json
+  attachFileName String?
+  createdBillId  String?
+  claimedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  expiresAt      DateTime
+
+  @@index([companyId, userId, expiresAt])
+  @@index([companyId, connectionId, createdBillId])
+  @@index([expiresAt])
+}
+
 model RuntimeRun {
   id             String                       @id @default(uuid())
   conversationId String

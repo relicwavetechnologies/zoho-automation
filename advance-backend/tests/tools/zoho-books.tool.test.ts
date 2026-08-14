@@ -13,6 +13,7 @@ import type { ZohoFinanceOps } from '../../src/application/zoho/zoho-finance-ops
 import { mapZohoError } from '../../src/application/zoho/zoho-error.utils.ts';
 import { formatAmount, formatDate } from '../../src/application/zoho/zoho-format.utils.ts';
 import { normalizeStatus, parseDateFilter } from '../../src/application/zoho/zoho-filter.utils.ts';
+import type { StagedBill } from '../../src/application/zoho/zoho-bill-staging.ts';
 import type { ZohoBooksPaginatedClient } from '../../src/infrastructure/zoho/zoho-books-paginated.client.ts';
 import {
   ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE,
@@ -50,6 +51,31 @@ const fakeFinanceOps: Partial<ZohoFinanceOps> = {
   } as any),
 };
 
+function makeBillStore() {
+  const rows = new Map<string, StagedBill>();
+  return {
+    put: async (row: StagedBill) => { rows.set(row.stagingId, row); },
+    get: async ({ stagingId }: { stagingId: string }) => rows.get(stagingId) ?? null,
+    claim: async ({ stagingId, marker }: { stagingId: string; marker: string }) => {
+      const row = rows.get(stagingId)!;
+      if (row.createdBillId) return { claimed: false, heldBy: row.createdBillId };
+      rows.set(stagingId, { ...row, createdBillId: marker, claimedAt: new Date() });
+      return { claimed: true };
+    },
+    settle: async ({ stagingId, billId }: { stagingId: string; billId: string }) => {
+      rows.set(stagingId, { ...rows.get(stagingId)!, createdBillId: billId });
+    },
+    release: async ({ stagingId }: { stagingId: string }) => {
+      const row = rows.get(stagingId)!;
+      rows.set(stagingId, { ...row, createdBillId: undefined, claimedAt: undefined });
+    },
+    markUnresolved: async ({ stagingId, unresolved }: { stagingId: string; unresolved: string }) => {
+      rows.set(stagingId, { ...rows.get(stagingId)!, createdBillId: unresolved });
+    },
+    findUnresolved: async () => [...rows.values()].filter(row => row.createdBillId?.startsWith('unknown:')),
+  };
+}
+
 function makeBooksClient(captures: {
   listInput?: unknown;
   endpointInput?: unknown;
@@ -58,6 +84,7 @@ function makeBooksClient(captures: {
   mutations?: any[];
 } = {}) {
   return {
+    listOrganizations: async () => [{ organizationId: 'org-1', isDefault: true, name: 'Test Org' }],
     mutate: async (input: any) => {
       captures.mutateInput = input;
       (captures.mutations ??= []).push(input);
@@ -107,11 +134,13 @@ function makeTool(overrides: {
   booksClient?:  ZohoBooksPaginatedClient;
   financeOps?:   ZohoFinanceOps;
   attachmentSource?: Parameters<typeof createZohoBooksTool>[0]['attachmentSource'];
+  billStaging?: Parameters<typeof createZohoBooksTool>[0]['billStaging'];
 } = {}) {
   return createZohoBooksTool({
     booksClient:     overrides.booksClient ?? makeBooksClient(),
     financeOps:      overrides.financeOps ?? (fakeFinanceOps as ZohoFinanceOps),
     ...(overrides.attachmentSource ? { attachmentSource: overrides.attachmentSource } : {}),
+    ...(overrides.billStaging ? { billStaging: overrides.billStaging } : {}),
     inlineThreshold: 25,
     appBaseUrl: 'https://books.zoho.com',
   });
@@ -136,6 +165,7 @@ describe('zohoBooks expanded permissions', () => {
     assert.equal(zohoBooksScopeModuleFor('create_invoice'), 'invoices');
     assert.equal(zohoBooksScopeModuleFor('stage_purchase_order'), 'purchaseorders');
     assert.equal(zohoBooksScopeModuleFor('create_purchase_order'), 'purchaseorders');
+    assert.equal(zohoBooksScopeModuleFor('stage_bill'), 'bills');
     assert.equal(zohoBooksScopeModuleFor('create_bill'), 'bills');
     assert.equal(zohoBooksScopeModuleFor('create_expense'), undefined);
   });
@@ -618,7 +648,7 @@ describe('zohoBooks expanded execution', () => {
 
   it('executes write operations through the paginated client', async () => {
     const captures: { mutations?: any[] } = {};
-    const tool = makeTool({ booksClient: makeBooksClient(captures) });
+    const tool = makeTool({ booksClient: makeBooksClient(captures), billStaging: makeBillStore() as never });
 
     const sent = await tool.execute({ op: 'send_invoice', invoiceId: 'inv-1', email: 'finance@example.com' }, ctx);
     // `invoices`, not a bare `invoice_id`: Zoho only settles an invoice when the
@@ -629,7 +659,18 @@ describe('zohoBooks expanded execution', () => {
       fields: { customer_id: 'cust-1', amount: 100, invoices: [{ invoice_id: 'inv-1', amount_applied: 100 }] },
     }, ctx);
     const expense = await tool.execute({ op: 'create_expense', fields: { amount: 50 } }, ctx);
-    const bill = await tool.execute({ op: 'create_bill', fields: { amount: 70 } }, ctx);
+    const stagedBill = await tool.execute({
+      op: 'stage_bill',
+      fields: {
+        vendor_id: 'con-1',
+        bill_number: 'B-9',
+        date: '2026-05-01',
+        due_date: '2026-05-01',
+        line_items: [{ account_id: 'acct-1', name: 'Fees', quantity: 1, rate: 70 }],
+      },
+    }, ctx);
+    assert.equal(stagedBill.ok, true);
+    const bill = await tool.execute({ op: 'create_bill', stagingId: stagedBill.ok ? stagedBill.value.stagingId : '' }, ctx);
     const voided = await tool.execute({ op: 'void_invoice', invoiceId: 'inv-1' }, ctx);
 
     assert.equal((sent as any).value.id, 'inv-1');

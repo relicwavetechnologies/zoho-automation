@@ -324,7 +324,7 @@ export const ZOHO_NATIVE_TOOLS = [
     "promptSnippet": "Use divo_zoho_books for governed zoho work. The backend remains authoritative for access, connections, approvals, and execution.",
     "promptGuidelines": [
       "connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.",
-      "op: list_invoices|get_invoice|stage_invoice|create_invoice|update_invoice|mark_invoice_sent|list_purchase_orders|get_purchase_order|stage_purchase_order|create_purchase_order|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report",
+      "op: list_invoices|get_invoice|stage_invoice|create_invoice|update_invoice|mark_invoice_sent|list_purchase_orders|get_purchase_order|stage_purchase_order|create_purchase_order|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|stage_bill|create_bill|void_invoice|build_overdue_report",
       "read params: invoiceId, purchaseOrderId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, limit (1-200), page (1-100)",
       "For terminal paging, start with page=1 and continue with nextPage while hasMore=true."
     ],
@@ -361,6 +361,7 @@ export const ZOHO_NATIVE_TOOLS = [
             "send_invoice",
             "record_payment",
             "create_expense",
+            "stage_bill",
             "create_bill",
             "create_contact",
             "update_invoice",

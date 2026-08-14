@@ -25,7 +25,8 @@
  *     send_invoice          — email an invoice
  *     record_payment        — record a customer payment
  *     create_expense        — create an expense
- *     create_bill           — create a bill
+ *     stage_bill            — validate and hold a bill for confirmation
+ *     create_bill           — create exactly the confirmed staged bill
  *     create_contact        — create a customer or vendor
  *     update_invoice        — correct an existing invoice
  *     mark_invoice_sent     — move a draft invoice to sent without emailing it
@@ -64,6 +65,13 @@ import {
   type ZohoWriteModule,
 } from '../../zoho/zoho-books-write-result';
 import {
+  createZohoBooksWriteRunner,
+  type ZohoBooksMutationRequest,
+} from '../../zoho/zoho-books-write';
+import { createZohoBillService } from '../../zoho/zoho-bill.service';
+import type { StagedBillStore } from '../../zoho/zoho-bill-staging';
+import { createZohoContactService } from '../../zoho/zoho-contact.service';
+import {
   checkInvoice,
   hasBlockingFinding,
 } from '../../zoho/zoho-invoice-checks';
@@ -91,11 +99,10 @@ import { validateAttachmentPolicy }        from '../../email/attachment-policy';
 import { WriteNotDispatchedError }         from '../../../shared/errors';
 import { mapZohoError }                    from '../../zoho/zoho-error.utils';
 import { normalizeInvoiceFields }          from '../../zoho/zoho-invoice-fields';
-import { refuseSelfDealing }               from '../../zoho/zoho-self-dealing';
 import { formatAmount, formatDate }        from '../../zoho/zoho-format.utils';
 import { normalizeStatus, parseDateFilter } from '../../zoho/zoho-filter.utils';
 import { handleZohoList, type ZohoListCsvColumn } from '../../zoho/zoho-list-handler';
-import type { ZohoBooksPaginatedClient, ZohoBooksModule, ZohoBooksOrganization } from '../../../infrastructure/zoho/zoho-books-paginated.client';
+import type { ZohoBooksPaginatedClient, ZohoBooksModule } from '../../../infrastructure/zoho/zoho-books-paginated.client';
 import { filterZohoRecordsByEmail, normalizedEmail, recordMatchesZohoEmail } from '../../../shared/zoho-personalization';
 import {
   createDatasetPreview,
@@ -134,6 +141,7 @@ const Schema = z.object({
     'send_invoice',
     'record_payment',
     'create_expense',
+    'stage_bill',
     'create_bill',
     'create_contact',
     'update_invoice',
@@ -153,7 +161,7 @@ const Schema = z.object({
   recordType:     z.enum(['invoice', 'purchase_order', 'bill']).optional(),
   recordId:       z.string().optional(),
   fileName:       z.string().optional(),
-  /** Stored draft identity returned by an invoice or purchase-order staging operation. */
+  /** Stored draft identity returned by invoice, purchase-order, or bill staging. */
   stagingId:      z.string().uuid().optional(),
   /** The draft this staging corrects, when the reviewer sent one back. */
   supersedesStagingId: z.string().uuid().optional(),
@@ -187,7 +195,7 @@ const ResultSchema = z.object({
   message:      z.string().optional(),
   /** Zoho web link for a record a write just created or changed. */
   recordUrl:    z.string().optional(),
-  /** Draft identity to hand back to create_invoice once the member agrees. */
+  /** Draft identity to hand back to the matching create operation once the member agrees. */
   stagingId:    z.string().optional(),
   /** Exactly what to show the member before creating anything. */
   stagedSummary: z.string().optional(),
@@ -294,6 +302,7 @@ const createOps = new Set<Args['op']>([
   'send_invoice',
   'record_payment',
   'create_expense',
+  'stage_bill',
   'create_bill',
   'stage_purchase_order',
   'create_purchase_order',
@@ -327,6 +336,7 @@ const oauthModuleByCreateOp = new Map<string, ZohoBooksScopeModule>([
   ['create_invoice', 'invoices'],
   ['stage_purchase_order', 'purchaseorders'],
   ['create_purchase_order', 'purchaseorders'],
+  ['stage_bill', 'bills'],
   ['create_bill', 'bills'],
 ]);
 
@@ -602,6 +612,8 @@ export const createZohoBooksTool = (deps: {
   invoiceStaging?: StagedInvoiceStore;
   /** Holds purchase-order drafts between member review and one-shot creation. */
   purchaseOrderStaging?: StagedPurchaseOrderStore;
+  /** Holds bill drafts between member review and one-shot creation. */
+  billStaging?: StagedBillStore;
   /** Reads a draft cold before the member is shown it. */
   invoiceReviewer?: InvoiceReviewer;
   /** The member's own words, for the reviewer. Never the model's account of them. */
@@ -636,14 +648,14 @@ export const createZohoBooksTool = (deps: {
 
   parameterDocs: [
     'connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.',
-    'op: list_invoices|get_invoice|stage_invoice|create_invoice|update_invoice|mark_invoice_sent|list_purchase_orders|get_purchase_order|stage_purchase_order|create_purchase_order|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report',
+    'op: list_invoices|get_invoice|stage_invoice|create_invoice|update_invoice|mark_invoice_sent|list_purchase_orders|get_purchase_order|stage_purchase_order|create_purchase_order|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|stage_bill|create_bill|void_invoice|build_overdue_report',
     `read params: invoiceId, purchaseOrderId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, limit (1-${TERMINAL_FILE_PAGE_LIMIT}), page (1-${MAX_TERMINAL_PAGE})`,
     'For terminal paging, start with page=1 and continue with nextPage while hasMore=true.',
     'get_invoice accepts a Zoho numeric invoice ID or an exact human invoice number. list_invoices forwards searchQuery to Zoho and returns newest invoice dates first.',
     'For get_chart_of_accounts, pass a focused searchQuery when resolving a ledger for a write. It returns at most ten matching candidates with their live IDs; omit searchQuery only inside a governed local-file workflow for an explicitly requested full chart.',
     'limit is the requested maximum. Once that many rows are returned, do not fetch more pages unless the user explicitly asks for a complete export or aggregate.',
-    'write params: invoiceId, email, fields',
-    'update_invoice/create_bill/create_contact/create_expense/record_payment take fields; the tool returns the stored record, its status, and its link. Never restate a status the tool did not return.',
+    'write params: invoiceId, email, fields, stagingId',
+    'update_invoice/create_contact/create_expense/record_payment take fields; the tool returns the stored record, its status, and its link. Never restate a status the tool did not return.',
     'INVOICES ARE STAGED. stage_invoice takes fields (and fileName when a document is the source) and writes nothing to Zoho: it checks the draft, has a reviewer read it cold, and returns stagedSummary plus stagingId. Show the member that summary verbatim, including everything under review.unsourced, and create only once they agree.',
     // `fields` is z.record(z.unknown()), so the serialized schema says nothing
     // about its shape. Without this line the model has to guess the payload and
@@ -652,6 +664,8 @@ export const createZohoBooksTool = (deps: {
     'create_invoice takes ONLY stagingId. It replays the approved payload, so what the member saw is what Zoho receives. It refuses a draft that failed review, one already created, and one with no stagingId.',
     'PURCHASE ORDERS ARE STAGED. stage_purchase_order takes fields with vendor_id, date, line_items (item_id, quantity, rate), optional expected_delivery_date, notes, terms, and fileName. Show stagedSummary exactly, obtain confirmation, then call create_purchase_order with only stagingId plus the same connectionId.',
     'A created purchase order remains a draft: create_purchase_order never submits, approves, marks open, or emails it. Report that nothing was sent to the vendor.',
+    'BILLS ARE STAGED. stage_bill takes fields with vendor_id, bill_number, date, due_date, line_items, tax fields, notes, and fileName. Show stagedSummary exactly, obtain confirmation, then call create_bill with only stagingId plus the same connectionId.',
+    'stage_bill refuses duplicate bill_number, missing vendor/date/due_date/line mappings, and mixed ordinary GST plus reverse-charge payloads before any Zoho write. create_bill replays only the staged payload.',
     'When review.outcome is fail, fix the exact fields named in review.issues and call stage_invoice again with supersedesStagingId. review.attemptsRemaining says how many corrections are left; at zero, put the objection to the member instead of re-staging.',
     'stage_invoice: supply invoice_number only when the member gave one — the tool then overrides Zoho auto-numbering. Omit it to let Zoho number the invoice.',
     'payment_terms is a whole number of days, never words: 15 for "Net 15", 0 for due on receipt. The tool records the original wording as payment_terms_label.',
@@ -752,6 +766,24 @@ export const createZohoBooksTool = (deps: {
       : {};
 
     const appBaseUrl = deps.appBaseUrl ?? 'https://books.zoho.com';
+    const booksWriter = createZohoBooksWriteRunner({
+      booksClient: deps.booksClient,
+      companyId,
+      userId,
+      connectionId: args.connectionId,
+      ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+      ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+      appBaseUrl,
+    });
+    const bills = createZohoBillService({
+      booksClient: deps.booksClient,
+      ...(deps.billStaging ? { staging: deps.billStaging } : {}),
+      appBaseUrl,
+    });
+    const contacts = createZohoContactService({
+      booksClient: deps.booksClient,
+      appBaseUrl,
+    });
     const purchaseOrders = createZohoPurchaseOrderService({
       booksClient: deps.booksClient,
       ...(deps.purchaseOrderStaging ? { staging: deps.purchaseOrderStaging } : {}),
@@ -770,33 +802,6 @@ export const createZohoBooksTool = (deps: {
 
     /** Single-record GET. Unlike getRecord() this surfaces provider errors
      *  instead of turning an expired token into "not found". */
-    /**
-     * The organisation being written to, fetched once per call.
-     *
-     * Memoised because more than one guard wants it and the answer cannot
-     * change mid-operation; failure resolves to undefined so that not knowing
-     * who we are never blocks a write on its own.
-     */
-    let sellingOrganizationPromise: Promise<ZohoBooksOrganization | undefined> | null = null;
-    const sellingOrganization = (): Promise<ZohoBooksOrganization | undefined> => {
-      // try/catch rather than .catch(): a client without this method throws
-      // synchronously, before there is a promise to attach a handler to, and
-      // that would take down a write the guard was only meant to observe.
-      sellingOrganizationPromise ??= (async () => {
-        try {
-          const orgs = await deps.booksClient.listOrganizations(
-            companyId, { userId, connectionId: args.connectionId },
-          );
-          return args.organizationId
-            ? orgs.find(org => org.organizationId === args.organizationId)
-            : orgs.find(org => org.isDefault === true) ?? orgs[0];
-        } catch {
-          return undefined;
-        }
-      })();
-      return sellingOrganizationPromise;
-    };
-
     const getOne = async (
       moduleName: ZohoBooksModule,
       recordId: string,
@@ -813,32 +818,7 @@ export const createZohoBooksTool = (deps: {
       return unwrapZohoRecord(payload, moduleName);
     };
 
-    const write = async (input: {
-      method: 'POST' | 'PUT';
-      path:   string;
-      params?: Record<string, string>;
-      body?:  Record<string, unknown>;
-      multipart?: { field: string; fileName: string; mimeType: string; content: Buffer };
-      /**
-       * Where this write goes, when that is not simply where the call says.
-       * A staged invoice was reviewed against one organisation's customers and
-       * rates, so it has to be created there and not wherever the confirming
-       * call happens to point.
-       */
-      connectionId?: string;
-      organizationId?: string | undefined;
-    }) => {
-      const { connectionId, organizationId, ...rest } = input;
-      const destinationOrg = organizationId ?? args.organizationId;
-      return deps.booksClient.mutate({
-        companyId,
-        userId,
-        connectionId: connectionId ?? args.connectionId,
-        ...(destinationOrg ? { organizationId: destinationOrg } : {}),
-        ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
-        ...rest,
-      });
-    };
+    const write = async (input: ZohoBooksMutationRequest) => booksWriter.mutate(input);
 
     /**
      * Go and look in Zoho for an invoice a draft may already have created.
@@ -1250,16 +1230,12 @@ export const createZohoBooksTool = (deps: {
     const writtenRecord = async (
       moduleName: ZohoWriteModule,
       verb: string,
-      input: Parameters<typeof write>[0],
+      input: ZohoBooksMutationRequest,
     ): Promise<Res> => {
-      const { organizationId, payload } = await write(input);
-      const record = unwrapZohoRecord(payload, moduleName);
-      const summary = summarizeZohoWrite({
+      const { record, summary } = await booksWriter.writeRecord({
         module: moduleName,
         verb,
-        record,
-        appBaseUrl,
-        organizationId,
+        ...input,
       });
       return {
         success: true,
@@ -1993,58 +1969,68 @@ export const createZohoBooksTool = (deps: {
           }));
         }
 
-        case 'create_bill': {
-          if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_bill' }));
-          const billFields = args.fields as Record<string, unknown>;
-
-          // The vendor is a reference, so the party has to be read back before
-          // it can be recognised. Worth one lookup: the failure it catches
-          // writes a payable the company owes itself, and Zoho accepts it.
-          const vendorId = stringValue(billFields, 'vendor_id');
-          const vendor = vendorId
-            ? await getOne('contacts', vendorId, { connectionId: args.connectionId }).catch(() => undefined)
-            : undefined;
-          const billRefusal = refuseSelfDealing({
-            organization: await sellingOrganization(),
-            party: {
-              name: vendor ? stringValue(vendor, 'contact_name', 'company_name') : stringValue(billFields, 'vendor_name'),
-              gstNo: vendor ? stringValue(vendor, 'gst_no') : stringValue(billFields, 'gst_no'),
-            },
-            role: 'vendor',
-            act: 'Recording this bill',
+        case 'stage_bill': {
+          const result = await bills.stage({
+            companyId,
+            userId,
+            connectionId: args.connectionId,
+            ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+            correlationId: ctx.correlationId,
+            now: ctx.clock.now(),
+            ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+            ...(ctx.onProgress ? { onProgress: (message: string) => ctx.onProgress?.(message) } : {}),
+            ...(args.fields ? { fields: args.fields as Record<string, unknown> } : {}),
+            ...(args.fileName ? { fileName: args.fileName } : {}),
           });
-          if (billRefusal) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: billRefusal }));
+          return result.ok ? ok(result.value) : err(result.error);
+        }
 
-          return ok(await writtenRecord('bills', 'created', {
-            method: 'POST',
-            path: '/bills',
-            body: billFields,
-          }));
+        case 'create_bill': {
+          const result = await bills.create({
+            companyId,
+            userId,
+            connectionId: args.connectionId,
+            ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+            correlationId: ctx.correlationId,
+            now: ctx.clock.now(),
+            ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+            ...(args.stagingId ? { stagingId: args.stagingId } : {}),
+            attach: (recordId, fileName, organizationId) => attachFileToRecord({
+              recordType: 'bill',
+              recordId,
+              fileName,
+              destination: { connectionId: args.connectionId, organizationId },
+            }),
+          });
+          return result.ok
+            ? ok({
+                success: true,
+                ...(result.value.summary.id ? { id: result.value.summary.id } : {}),
+                data: formatZohoResult(result.value.record),
+                message: result.value.message,
+                ...(result.value.summary.recordUrl ? { recordUrl: result.value.summary.recordUrl } : {}),
+              })
+            : err(result.error);
         }
 
         case 'create_contact': {
-          if (!args.fields) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'fields required for create_contact' }));
-          const contactFields = args.fields as Record<string, unknown>;
-
-          // Cheaper and earlier than the bill check: the party is named right
-          // here, so the organisation is refused before it exists as a contact
-          // at all rather than after a transaction has been hung off it.
-          const contactRefusal = refuseSelfDealing({
-            organization: await sellingOrganization(),
-            party: {
-              name: stringValue(contactFields, 'contact_name', 'company_name'),
-              gstNo: stringValue(contactFields, 'gst_no'),
-            },
-            role: stringValue(contactFields, 'contact_type') === 'vendor' ? 'vendor' : 'customer',
-            act: 'Creating this contact',
+          const result = await contacts.create({
+            companyId,
+            userId,
+            connectionId: args.connectionId,
+            ...(args.organizationId ? { organizationId: args.organizationId } : {}),
+            ...(ctx.abortSignal ? { signal: ctx.abortSignal } : {}),
+            ...(args.fields ? { fields: args.fields as Record<string, unknown> } : {}),
           });
-          if (contactRefusal) return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: contactRefusal }));
-
-          return ok(await writtenRecord('contacts', 'created', {
-            method: 'POST',
-            path: '/contacts',
-            body: contactFields,
-          }));
+          return result.ok
+            ? ok({
+                success: true,
+                ...(result.value.summary.id ? { id: result.value.summary.id } : {}),
+                data: formatZohoResult(result.value.record),
+                message: result.value.summary.message,
+                ...(result.value.summary.recordUrl ? { recordUrl: result.value.summary.recordUrl } : {}),
+              })
+            : err(result.error);
         }
 
         case 'attach_document':

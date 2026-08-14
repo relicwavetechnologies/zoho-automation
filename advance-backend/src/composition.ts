@@ -108,6 +108,7 @@ import { PrismaConversationAttachmentStore } from './infrastructure/persistence/
 import { LarkConversationAttachmentSource } from './infrastructure/zoho/lark-conversation-attachment.source';
 import { PrismaStagedInvoiceStore } from './infrastructure/persistence/zoho-invoice-staging.repository';
 import { PrismaStagedPurchaseOrderStore } from './infrastructure/persistence/zoho-purchase-order-staging.repository';
+import { PrismaStagedBillStore } from './infrastructure/persistence/zoho-bill-staging.repository';
 import { createInvoiceReviewer } from './application/zoho/zoho-invoice-reviewer';
 import { LarkFileClient } from './infrastructure/channels/lark/clients/lark-file.client';
 import { ZohoCrmPaginatedClient } from './infrastructure/zoho/zoho-crm-paginated.client';
@@ -1980,6 +1981,7 @@ export async function buildContainer(
     booksClient:     zohoPaginatedBooksClient,
     invoiceStaging:  new PrismaStagedInvoiceStore(prisma),
     purchaseOrderStaging: new PrismaStagedPurchaseOrderStore(prisma),
+    billStaging:     new PrismaStagedBillStore(prisma),
     invoiceReviewer: createInvoiceReviewer({
       model: deepSeekModel(env.ZOHO_INVOICE_REVIEW_MODEL_ID),
       logger: logger.child({ service: 'zoho-invoice-reviewer' }),
