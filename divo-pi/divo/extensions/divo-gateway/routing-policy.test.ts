@@ -12,7 +12,7 @@ import {
 	hasNativeDbSkills,
 	localExecutionPrompt,
 	nativeSkillPromptSummary,
-} from "./index.ts";
+} from "./run-prompt.ts";
 import { localCliAvailable } from "./local-broker.ts";
 import { DIVO_CONNECTIONS_PARAMS } from "./typed-platform-tools.ts";
 
