@@ -48,6 +48,7 @@ import type { Toast } from './ui'
 const COMPANY_ROLE_LABEL: Record<string, string> = {
   SUPER_ADMIN: 'Super admin', COMPANY_ADMIN: 'Company admin', MEMBER: 'Member',
 }
+const RUN_CHANNEL_LABEL: Record<string, string> = { lark: 'Lark', desktop: 'Desktop', web: 'Web', api: 'API' }
 
 type ScreenProps = { persona: Persona; replay: number; toast: Toast; go: (screen: string) => void }
 
@@ -263,7 +264,7 @@ function RunList({ runs }: { runs: MyRun[] }) {
                 ) : null}
               </b>
               <p>
-                {ago(r.startedAt)} · {r.channel === 'lark' ? 'Lark' : 'Desktop'}
+                {ago(r.startedAt)} · {RUN_CHANNEL_LABEL[r.channel] ?? r.channel}
                 {duration ? ` · ${duration}` : ''}
                 {r.errorMessage ? ` · ${r.errorMessage}` : ''}
               </p>

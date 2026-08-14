@@ -36,7 +36,7 @@ import {
 } from '@/cursor/use-spend'
 import { KEY_PROVIDERS, useProxyStatus, useSaveProxyKey, type KeyScope } from '@/cursor/use-proxy'
 import { useCompanyForwards } from './data/use-mail-governance'
-import { runTitle } from './data/use-my-activity'
+import { cleanRunSummary, runTitle } from './data/use-my-activity'
 import { useProxyPolicies, useSaveProxyPolicy } from '@/cursor/use-proxy-policy'
 
 /** The cursor hooks take a token and a company; every screen here needs both. */
@@ -58,7 +58,7 @@ const shortDate = (iso: string) =>
  * sentence and leaves anything unrecognised legible rather than blank, so a new
  * backend action never renders as an empty row.
  */
-const CHANNEL_LABEL: Record<string, string> = { lark: 'Lark', desktop: 'Desktop', api: 'API' }
+const CHANNEL_LABEL: Record<string, string> = { lark: 'Lark', desktop: 'Desktop', web: 'Web', api: 'API' }
 const STATUS_LABEL: Record<string, string> = { completed: 'Done', running: 'Running', failed: 'Failed' }
 
 const statusColour = (status: string) =>
@@ -1274,11 +1274,12 @@ export function CompanyAiOps({ replay, go }: Props) {
   const { spend: deptSpend } = useDepartmentSpend(activeDepts, 30)
   const desktopSpend = useCompanyDaily(token, 30, companyId, 'desktop').data
   const larkSpend = useCompanyDaily(token, 30, companyId, 'lark').data
+  const runsReady = r1 && !loading
 
   const list = runs.filter((r) => {
     if (channels.length && !channels.includes(r.channel)) return false
     if (statuses.length && !statuses.includes(r.status)) return false
-    if (query && !`${r.latestSummary ?? ''} ${r.userName ?? ''}`.toLowerCase().includes(query.toLowerCase())) return false
+    if (query && !`${runTitle({ summary: r.latestSummary, channel: r.channel })} ${r.userName ?? ''}`.toLowerCase().includes(query.toLowerCase())) return false
     return true
   })
 
@@ -1299,6 +1300,10 @@ export function CompanyAiOps({ replay, go }: Props) {
   const totalDept = sum(Object.values(deptSpend).map((s) => s.spendUsd))
   const filtered = channels.length > 0 || statuses.length > 0 || query.length > 0
   const runCost = (r: Run) => r.costUsd ?? 0
+
+  useEffect(() => {
+    document.title = 'AI Ops - Divo'
+  }, [])
 
   return (
     <>
@@ -1361,16 +1366,28 @@ export function CompanyAiOps({ replay, go }: Props) {
           </div>
 
           <Panel>
-            <div className="ws-sum">
-              <span><b>{list.length}</b> runs</span>
-              <span className="sep" />
-              <span><b>{money(sum(list.map(runCost)))}</b> spent</span>
-              <span className="sep" />
-              <span><b>{list.filter((r) => r.status === 'failed').length}</b> failed</span>
-              <span className="sep" />
-              <span><b>{list.filter((r) => r.status === 'running').length}</b> still open</span>
-            </div>
-            {!r1 || loading ? <SkelRows n={6} /> : list.length === 0 ? (
+            {runsReady ? (
+              <div className="ws-sum">
+                <span><b>{list.length}</b> runs</span>
+                <span className="sep" />
+                <span><b>{money(sum(list.map(runCost)))}</b> spent</span>
+                <span className="sep" />
+                <span><b>{list.filter((r) => r.status === 'failed').length}</b> failed</span>
+                <span className="sep" />
+                <span><b>{list.filter((r) => r.status === 'running').length}</b> still open</span>
+              </div>
+            ) : (
+              <div className="ws-sum" aria-hidden="true">
+                <Skel w={64} h={16} />
+                <span className="sep" />
+                <Skel w={78} h={16} />
+                <span className="sep" />
+                <Skel w={58} h={16} />
+                <span className="sep" />
+                <Skel w={84} h={16} />
+              </div>
+            )}
+            {!runsReady ? <SkelRows n={6} /> : list.length === 0 ? (
               <Empty title="No runs match" body={filtered ? 'Widen the filter.' : 'Nothing has run yet.'} />
             ) : (
               <Fade>
@@ -1378,17 +1395,13 @@ export function CompanyAiOps({ replay, go }: Props) {
                   {Array.from(new Set(list.map((r) => onDay(r.startedAt)))).map((day) => (
                     <Fragment key={day}>
                       <div className="ws-day">{day}</div>
-                      {list.filter((r) => onDay(r.startedAt) === day).map((r) => (
+                      {list.filter((r) => onDay(r.startedAt) === day).map((r) => {
+                        const summary = cleanRunSummary(r.latestSummary)
+                        return (
                         <ClickRow key={r.id} onOpen={() => go(`co-run:${r.id}`)}>
                           <span className="avatar">{initialsOf(r.userName, r.userName ?? '?')}</span>
                           <div className="ws-row-main">
                             <b>
-                              {/* Was `latestSummary ?? 'No summary recorded'`.
-                                  Almost no run has a summary, so this list read
-                                  as the same sentence 174 times — the fallback
-                                  `runTitle` already solved for the member rail,
-                                  hand-rolled again here and twice more on the
-                                  detail screens. */}
                               {runTitle({ summary: r.latestSummary, channel: r.channel })}
                               {r.status === 'running' && r.channel === 'lark' ? (
                                 <span className="ws-note" title="The LLM proxy creates Lark runs and never closes them, so status and duration are unreliable for this channel.">
@@ -1398,24 +1411,18 @@ export function CompanyAiOps({ replay, go }: Props) {
                             </b>
                             <p>
                               {r.userName ?? 'Unattributed'} · {ago(r.startedAt)}
-                              {/* The channel only when the title above is not
-                                  already the channel. Most runs record no
-                                  summary, so most titles fall back to "Asked in
-                                  Lark" — printing "· Lark" underneath said it
-                                  twice in a two-line row. */}
-                              {r.latestSummary ? ` · ${CHANNEL_LABEL[r.channel] ?? r.channel}` : ''}
+                              {summary ? ` · ${CHANNEL_LABEL[r.channel] ?? r.channel}` : ''}
                               {durationLabel(r.durationMs) ? ` · ${durationLabel(r.durationMs)}` : ''}
                               {r.errorCode ? ` · ${r.errorCode}` : ''}
                             </p>
                           </div>
                           <div className="ws-row-act">
-                            {/* Null cost means nothing was attributed to this run, which is
-                                not the same as free — so it says so rather than showing $0.00. */}
                             <span className="ws-sub">{r.costUsd === null ? 'unattributed' : money(r.costUsd)}</span>
                             <RunBadge status={r.status} />
                           </div>
                         </ClickRow>
-                      ))}
+                        )
+                      })}
                     </Fragment>
                   ))}
                 </div>

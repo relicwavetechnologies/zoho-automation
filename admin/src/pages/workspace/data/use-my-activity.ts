@@ -114,13 +114,91 @@ export const durationLabel = (ms: number | null): string | null => {
  * container's name. The wording matches `CHANNEL_WORD` on the run-detail page.
  */
 const CHANNEL_TITLE: Record<string, string> = {
-  lark: 'Asked in Lark',
-  desktop: 'Asked on the desktop',
-  api: 'Asked over the API',
+  lark: 'Lark task',
+  desktop: 'Desktop task',
+  web: 'Web task',
+  api: 'API task',
+}
+
+const RECALLED_KNOWLEDGE_BLOCK = /<recalled_knowledge\b[^>]*>[\s\S]*?<\/recalled_knowledge>/gi
+const INTERNAL_CONTEXT_SUMMARY = /\b(Backend-recalled (reference|personal) facts|RETRIEVAL_STATUS:|RETRIEVAL_COVERAGE:|CONFLICT_PRECEDENCE:)\b/i
+const XMLISH_TAG = /<\/?[a-z][a-z0-9_-]*(\s[^>]*)?>/i
+const ATTACHED_FILES = /\[ATTACHED_FILES\]\s*\[[\s\S]*?\]\s*/i
+const QUOTED_FILE_NAME = /"name"\s*:\s*"([^"]+)"/i
+const PATH_FILE_NAME = /\/([^/"]+\.[a-z0-9]{2,6})(?=["\s,]|$)/i
+const DOMAIN = /([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)/i
+const TITLE_MAX = 96
+const FILE_WORDS = new Set(['api', 'crm', 'csv', 'gst', 'hdfc', 'hsbc', 'id', 'irdai', 'pdf', 'qa', 'seo', 'tds'])
+
+const compactTitle = (text: string): string | null => {
+  const clean = text.replace(/\s+/g, ' ').replace(/[.?!,:;]+$/g, '').trim()
+  if (!clean) return null
+  return clean.length > TITLE_MAX ? `${clean.slice(0, TITLE_MAX - 1).trimEnd()}…` : clean
+}
+
+const titleCaseFileName = (raw: string): string | null => {
+  const decoded = (() => { try { return decodeURIComponent(raw) } catch { return raw } })()
+  const leaf = decoded.split(/[\\/]/).pop()?.trim()
+  if (!leaf) return null
+  const extension = leaf.match(/\.([a-z0-9]{2,6})$/i)?.[1]?.toLowerCase()
+  const base = leaf
+    .replace(/\.[a-z0-9]{2,6}$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b(divo|test\d*)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!base) return extension ? extension.toUpperCase() : null
+  const words = base.split(' ').map((word) => {
+    const lower = word.toLowerCase()
+    if (FILE_WORDS.has(lower)) return lower.toUpperCase()
+    return lower.length <= 2 ? lower : `${lower[0]!.toUpperCase()}${lower.slice(1)}`
+  })
+  if (extension) words.push(extension.toUpperCase())
+  return compactTitle(words.join(' '))
+}
+
+const attachedFileTitle = (text: string): string | null => {
+  if (!/\[ATTACHED_FILES\]/i.test(text)) return null
+  const afterManifest = text.replace(ATTACHED_FILES, ' ').trim()
+  if (afterManifest && !afterManifest.startsWith('{') && !afterManifest.startsWith('[')) {
+    const promptTitle = promptTitleFromText(afterManifest)
+    if (promptTitle) return promptTitle
+  }
+  const named = text.match(QUOTED_FILE_NAME)?.[1]
+  const file = named && /\.[a-z0-9]{2,6}$/i.test(named) ? named : text.match(PATH_FILE_NAME)?.[1] ?? named
+  const label = file ? titleCaseFileName(file) : null
+  return label ? `Review ${label}` : 'Review attached files'
+}
+
+function promptTitleFromText(text: string): string | null {
+  const seoDomain = text.match(/\bdaily\s+SEO\s+competitive\s+report\s+(?:on|for)\s+/i)
+    ? text.match(DOMAIN)?.[1]
+    : null
+  if (seoDomain) return `Daily SEO report for ${seoDomain.toLowerCase()}`
+
+  const trimmed = text
+    .replace(/^Task:\s*/i, '')
+    .replace(/^You are running read-only Divo governed research for\s+/i, '')
+    .replace(/^a\s+/i, '')
+    .replace(/\bExecute exactly\b[\s\S]*$/i, '')
+    .replace(/\bUse the\b[\s\S]*$/i, '')
+    .trim()
+  if (!trimmed || /^[{\[]/.test(trimmed)) return null
+  if (/^(asked in lark|something you asked divo)$/i.test(trimmed)) return null
+  return compactTitle(trimmed)
+}
+
+export function cleanRunSummary(summary: string | null): string | null {
+  const text = summary
+    ?.replace(RECALLED_KNOWLEDGE_BLOCK, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!text || INTERNAL_CONTEXT_SUMMARY.test(text) || XMLISH_TAG.test(text)) return null
+  return attachedFileTitle(text) ?? promptTitleFromText(text)
 }
 
 export const runTitle = (run: { summary: string | null; channel: string }): string =>
-  run.summary?.trim() || CHANNEL_TITLE[run.channel] || 'Something you asked Divo'
+  cleanRunSummary(run.summary) || CHANNEL_TITLE[run.channel] || 'Divo task'
 
 /**
  * Sixteen weeks — the width a calendar of days is drawn over.
