@@ -4,13 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { abortRuntimeInPlace } from "../local-rpc-controller.mjs";
 import {
-	abortRuntimeInPlace,
-	approveHeadlessWorkspaceAction,
 	collectProtectedRunMetadata,
-	loadToken,
 	logCompletedRun,
-} from "../local-rpc-controller.mjs";
+} from "../run-result.mjs";
+import { approveHeadlessWorkspaceAction } from "../approval-responder.mjs";
+import { loadToken } from "../local-profile.mjs";
 import {
 	buildNativeSkillStagingArgs,
 	fetchRunContext,

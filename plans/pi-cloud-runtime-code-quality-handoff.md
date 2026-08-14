@@ -129,21 +129,19 @@ The Cloud-Pi tool and streaming foundation is functionally complete. The work
 remaining is modularity, measured performance optimization, and production-like
 proof.
 
-The controller is 1,404 lines, down from more than 3,100. It was 1,335 at the end
-of Phase A, 1,329 after `2ee208cc8`, and 1,353 after `5bb9b3655`; **the turn-plan
-slice added 51 to that last figure**, because deleting the 76-line re-export block
-bought less than the effects seam, the phase record and their rationale cost.
+The controller is 715 lines, down from more than 3,100, and what remains is the
+turn plan and nothing else — Phase A's "controller primarily coordinates
+modules" gate is now met. It was 1,335 at the end of Phase A's first pass, 1,404
+after the turn-plan slice, and 715 after the seven remaining jobs were given
+their own owners (`local-profile`, `run-result`, `runtime-rpc`,
+`approval-responder`, `local-controller-cli`).
 
 One log field changed meaning and is worth knowing before reading old graphs
 against new ones: `readyMs` in `pi_runtime.ready` was a wall span and is now the
 sum of the named ready phases, which excludes the synchronous spawn and the gaps
-between phases. The drift is sub-millisecond; the definition still moved. Its
-turn orchestration is now one function whose effects arrive as an argument —
-but that is roughly 430 of those lines. Keychain storage, profile persistence,
-Lark login, run-result classification, the JSONL wire protocol, the terminal
-approval responder and the CLI are all still in the same file, so Phase A's
-"controller primarily coordinates modules" gate is **not** cleared. All 38 permanent
-tool schemas are model-visible on every turn. That visibility is an explicit
+between phases. The drift is sub-millisecond; the definition still moved.
+
+All 38 permanent tool schemas are model-visible on every turn. That visibility is an explicit
 product decision, but its token, latency, and cache impact has not yet been
 measured against the fixed baseline.
 
@@ -199,7 +197,7 @@ concurrently.
 
 ## 6. Remaining implementation plan
 
-### Phase A — Finish Cloud controller boundaries — **partially complete (2026-08-14); exit gate open**
+### Phase A — Finish Cloud controller boundaries — **complete (2026-08-15)**
 
 Goal: make container/process changes reviewable without changing the public RPC
 or security contract.
@@ -272,18 +270,38 @@ Extract only cohesive responsibilities with existing characterization tests.
 (`runtime-identity.mjs`), warm process lifecycle (`runtime-warm-process.mjs`),
 Docker resources and reconciliation (`runtime-docker.mjs`).
 
-**Still in `local-rpc-controller.mjs`, and what the open gate refers to:**
+**All seven are now extracted (2026-08-15). The gate is closed.**
+`local-rpc-controller.mjs` is 715 lines, from 1,404, and what remains is the
+turn plan and nothing else.
 
-1. **Credential storage** — `storeToken`, `readKeychainToken`, `loadToken`.
-2. **Profile persistence** — `profilePath`, `readProfile`, `writeProfile`.
-3. **Lark login** — `login`.
-4. **Run-result classification** — `collectRunAssistantText`,
-   `collectProtectedRunMetadata`, `gatewayActionState`,
-   `completedGatewayFallback`, `terminalRunError`.
-5. **The JSONL wire protocol** — `class JsonlRpc`.
-6. **The interactive approval responder** — `ask`, `createExtensionResponder`,
-   `createHeadlessExtensionResponder`.
-7. **The CLI** — `status`, `parseArguments`, `main`.
+1. **Credential storage and profile persistence** → `local-profile.mjs`. One
+   module, not two: a profile file pins an identity and the keychain holds that
+   identity's token, and a profile you cannot read the token for is not a usable
+   state. `login` writes both, so it lives there too.
+2. **Run-result classification** → `run-result.mjs`. Reading a finished run is a
+   policy question about side effects, not a parsing question, so the one walk
+   over the messages answers the text, the protected records, and whether a
+   retry is permitted.
+3. **The JSONL wire protocol and the transient-retry policy** → `runtime-rpc.mjs`.
+   The retry is a property of this transport, not of a turn: a provider that
+   fails mid-stream leaves work in the session, so a retry continues it rather
+   than repeating completed side effects.
+4. **The approval responders** → `approval-responder.mjs`. The headless one is
+   the security-bearing half — it is what an unattended run may do to its own
+   workspace — and it should be readable without the turn plan around it.
+5. **The CLI** → `local-controller-cli.mjs`, and **removed from the image**. The
+   container's entry point is `local-rpc-server.mjs`; none of the CLI ever ran
+   in the cloud, and the packaging guard now refuses to carry it.
+
+`emitRuntimeProgress` moved to `runtime-progress.mjs` in the same pass, because
+both the turn plan and the wire emit through it.
+
+Not done, and worth doing: the tests for the extracted modules still sit in
+`test/local-rpc-controller.test.mjs` and `test/local-rpc-server.test.mjs`. Their
+imports point at the right owners, so they run and they pass, but a reader
+looking for `run-result.mjs`'s tests will not find them next to it. Splitting
+those files is a mechanical slice of its own and was deliberately not ridden
+along with the extraction.
 
 Rules for every extraction:
 
@@ -597,15 +615,10 @@ behavioral or measurement gate named in that phase.
 
 ## 10. Next action
 
-Phase B is complete. **Phase A's exit gate is open** — its four modules landed
-and the turn plan now takes its effects as an argument, but keychain storage,
-profile persistence, Lark login, run-result classification, the JSONL wire
-protocol, the approval responder and the CLI are all still in
-`local-rpc-controller.mjs`, so "controller primarily coordinates modules" is not
-yet true. Either finish those extractions or reopen the gate deliberately;
-do not treat Phase A as closed.
+Phases A and B are complete. Phase A's gate closed on 2026-08-15: the controller
+is 715 lines and holds only the turn plan.
 
-Then start **Phase C — but capture the baseline first and change nothing while
+Start **Phase C — but capture the baseline first and change nothing while
 capturing it**. Optimising the 58,027 uncached input
 tokens by intuition is the failure this plan exists to prevent, and every gate
 in that phase is stated relative to a measurement nobody has taken yet.

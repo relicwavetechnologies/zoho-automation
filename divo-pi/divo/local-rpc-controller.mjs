@@ -3,26 +3,25 @@
  *
  * This module decides the *order* of a turn: resolve the lease, make the
  * runtime exist, stage the skill catalogue, hand the model its message, and
- * settle what happens to the process and container afterwards. The policies it
- * coordinates each have their own owner:
+ * settle what happens to the process and container afterwards. That ordering is
+ * the whole of its job. Every policy the order is made of has its own owner:
  *
  * - `runtime-identity.mjs` — who a run is, and what it may be called;
  * - `runtime-docker.mjs` — every Docker resource, ownership check and exec argv;
  * - `runtime-warm-process.mjs` — process reuse, idle teardown, reclamation;
  * - `runtime-turn-phases.mjs` — how long each phase of a turn took;
- * - `native-skills.mjs`, `runtime-progress.mjs`, `run-terminal.mjs` — the
- *   catalogue, the projections a turn streams, and what counts as finished.
+ * - `runtime-rpc.mjs` — the JSONL wire to Pi, and retrying a stalled provider;
+ * - `run-result.mjs` — what a finished run produced and whether it may re-run;
+ * - `run-terminal.mjs` — what counts as finished, and what counts as transient;
+ * - `approval-responder.mjs` — who answers when Pi asks for permission;
+ * - `local-profile.mjs` — where a person's sign-in lives on their own machine;
+ * - `native-skills.mjs`, `runtime-progress.mjs` — the catalogue, and the
+ *   projections a turn streams to whoever is watching it.
  *
- * Each of those is imported directly by whoever needs it. This module used to
- * re-export their surfaces verbatim, which made it look like their owner and
- * sent every reader here first.
+ * Each is imported directly by whoever needs it. This module used to re-export
+ * their surfaces verbatim, which made it look like their owner and sent every
+ * reader here first.
  */
-import { spawn } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import readline from "node:readline";
-import { fileURLToPath } from "node:url";
 import {
 	fetchMemberSession,
 	fetchRuntimeSession,
@@ -55,6 +54,20 @@ import {
 	writeBootstrap,
 	backendUrlForContainer,
 } from "./runtime-docker.mjs";
+import {
+	JsonlRpc,
+	promptWithTransientRetries,
+	spawnRuntimeRpc,
+} from "./runtime-rpc.mjs";
+import {
+	createExtensionResponder,
+	createHeadlessExtensionResponder,
+} from "./approval-responder.mjs";
+import {
+	loadToken,
+	login,
+	readProfile,
+} from "./local-profile.mjs";
 import { createTurnPhases } from "./runtime-turn-phases.mjs";
 import {
 	assertExpectedLogin,
@@ -85,215 +98,22 @@ import {
 } from "./runtime-warm-process.mjs";
 import {
 	classifyDivoRunTerminal,
-	isTransientDivoRunFailure,
 } from "./run-terminal.mjs";
+import {
+	collectProtectedRunMetadata,
+	collectRunAssistantText,
+	logCompletedRun,
+	terminalRunError,
+} from "./run-result.mjs";
 import { isRuntimeChannel } from "./runtime-channels.mjs";
 import {
+	emitRuntimeProgress,
 	isGovernedDivoTool,
 	projectRuntimeAnswerDelta,
 	projectRuntimeProgress,
 } from "./runtime-progress.mjs";
 
-const KEYCHAIN_SERVICE = "dev.divo-pi.local";
-const PROFILE_ROOT = path.join(os.homedir(), ".divo-pi", "profiles");
-const RPC_TIMEOUT_MS = 30_000;
-const KEYCHAIN_TIMEOUT_MS = 15_000;
-const MAX_TRANSIENT_MODEL_RETRIES = 3;
-const MODEL_RETRY_IDLE_TIMEOUT_MS = 5_000;
 const SOFT_ABORT_TIMEOUT_MS = 15_000;
-const MODEL_RETRY_PROMPT =
-	"The previous model continuation failed because the provider was temporarily unavailable. Continue this same request from the work already present in the session. Do not repeat completed tool calls or side effects. Finish the remaining work and return only the final user-facing answer.";
-let tokenReadTail = Promise.resolve();
-
-function profilePath(profile) {
-	return path.join(PROFILE_ROOT, `${validateProfileName(profile)}.json`);
-}
-
-function writeProfile(metadata) {
-	fs.mkdirSync(PROFILE_ROOT, { recursive: true, mode: 0o700 });
-	fs.chmodSync(PROFILE_ROOT, 0o700);
-	fs.writeFileSync(profilePath(metadata.profile), `${JSON.stringify(metadata, null, 2)}\n`, {
-		mode: 0o600,
-	});
-}
-
-function readProfile(profile) {
-	const filePath = profilePath(profile);
-	if (!fs.existsSync(filePath)) {
-		throw new Error(
-			`Profile "${profile}" is not logged in. Run: node divo/local-rpc-controller.mjs login ${profile} --backend <url>`,
-		);
-	}
-	const metadata = JSON.parse(fs.readFileSync(filePath, "utf8"));
-	if (
-		metadata.profile !== validateProfileName(profile) ||
-		!metadata.userId ||
-		!metadata.companyId ||
-		!metadata.backendUrl
-	) {
-		throw new Error(`Profile metadata is invalid: ${filePath}`);
-	}
-	return metadata;
-}
-
-async function storeToken(profile, token) {
-	if (process.platform !== "darwin") {
-		throw new Error("Phase-0 credential storage currently requires macOS Keychain");
-	}
-	const source = `
-import Foundation
-import Security
-
-let account = CommandLine.arguments[1]
-let service = CommandLine.arguments[2]
-guard let password = readLine(strippingNewline: true)?.data(using: .utf8) else {
-	fputs("Missing token on stdin\\n", stderr)
-	exit(1)
-}
-let query: [String: Any] = [
-	kSecClass as String: kSecClassGenericPassword,
-	kSecAttrAccount as String: account,
-	kSecAttrService as String: service,
-]
-let attributes: [String: Any] = [kSecValueData as String: password]
-var status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
-if status == errSecItemNotFound {
-	status = SecItemAdd(query.merging(attributes) { _, new in new } as CFDictionary, nil)
-}
-if status != errSecSuccess {
-	let message = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \\(status)"
-	fputs("\\(message)\\n", stderr)
-	exit(1)
-}
-`;
-	await runWithInput(
-		"xcrun",
-		[
-			"swift",
-			"-e",
-			source,
-			validateProfileName(profile),
-			KEYCHAIN_SERVICE,
-		],
-		`${token}\n`,
-	);
-}
-
-async function readKeychainToken(profile) {
-	if (process.platform !== "darwin") {
-		throw new Error("Phase-0 credential storage currently requires macOS Keychain");
-	}
-	const source = `
-import Foundation
-import Security
-
-let account = CommandLine.arguments[1]
-let service = CommandLine.arguments[2]
-let query: [String: Any] = [
-	kSecClass as String: kSecClassGenericPassword,
-	kSecAttrAccount as String: account,
-	kSecAttrService as String: service,
-	kSecReturnData as String: true,
-	kSecMatchLimit as String: kSecMatchLimitOne,
-]
-var item: CFTypeRef?
-let status = SecItemCopyMatching(query as CFDictionary, &item)
-if status != errSecSuccess {
-	let message = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \\(status)"
-	fputs("\\(message)\\n", stderr)
-	exit(1)
-}
-guard let password = item as? Data, let token = String(data: password, encoding: .utf8) else {
-	fputs("Credential is not valid UTF-8\\n", stderr)
-	exit(1)
-}
-print(token)
-`;
-	const result = await runProcess(
-		"xcrun",
-		[
-			"swift",
-			"-e",
-			source,
-			validateProfileName(profile),
-			KEYCHAIN_SERVICE,
-		],
-		{ timeout: KEYCHAIN_TIMEOUT_MS },
-	);
-	return result.stdout;
-}
-
-export async function loadToken(
-	profileName,
-	readToken = readKeychainToken,
-	timeoutMs = KEYCHAIN_TIMEOUT_MS,
-) {
-	const profile = validateProfileName(profileName);
-	const reading = tokenReadTail.then(
-		() =>
-			new Promise((resolve, reject) => {
-				const timeout = setTimeout(
-					() => reject(new Error(`Keychain read timed out for profile "${profile}"`)),
-					timeoutMs,
-				);
-				Promise.resolve()
-					.then(() => readToken(profile))
-					.then(resolve, reject)
-					.finally(() => {
-						clearTimeout(timeout);
-					});
-			}),
-	);
-	tokenReadTail = reading.catch(() => {});
-	const token = (await reading).trim();
-	if (!token) throw new Error(`Keychain token is empty for profile "${profile}"`);
-	return token;
-}
-
-async function login(profileName, options) {
-	const profile = validateProfileName(profileName);
-	if (!options.backend) throw new Error("login requires --backend <url>");
-	const backendUrl = normalizeBackendUrl(options.backend);
-	let previous;
-	try {
-		previous = readProfile(profile);
-	} catch {
-		previous = undefined;
-	}
-	const authenticated = await signInWithLark({
-		backendUrl,
-		launchBrowser: options.browser !== false,
-		onAuthorizeUrl: (url) => {
-			console.error(`Open this URL as ${profile}:\n${url}`);
-		},
-	});
-	const session = await fetchMemberSession(authenticated);
-	assertExpectedLogin(session, authenticated.session, options.expectEmail);
-	if (
-		previous &&
-		(previous.userId !== session.userId || previous.companyId !== session.companyId) &&
-		!options.replaceProfile
-	) {
-		throw new Error(
-			`Profile "${profile}" is pinned to another identity; pass --replace-profile only if intentional`,
-		);
-	}
-	await storeToken(profile, authenticated.token);
-	writeProfile({
-		schemaVersion: 1,
-		profile,
-		backendUrl,
-		userId: session.userId,
-		companyId: session.companyId,
-		name: session.name ?? session.user?.name ?? authenticated.session?.name,
-		email: session.email ?? session.user?.email ?? authenticated.session?.email,
-		departmentId: options.department,
-		updatedAt: new Date().toISOString(),
-	});
-	console.log(
-		`Logged in ${profile}: ${session.name ?? session.userId} (${session.companyId})`,
-	);
-}
 
 export async function abortRuntimeInPlace({ rpc, container, bootstrap }, {
 	stageInterruptionFn = stageRuntimeInterruption,
@@ -311,448 +131,7 @@ export async function abortRuntimeInPlace({ rpc, container, bootstrap }, {
 	return collectProtectedRunMetadata(messageState?.messages);
 }
 
-export function collectRunAssistantText(messages) {
-	if (!Array.isArray(messages)) return "";
-	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
-	const candidates = messages.slice(lastUserIndex + 1).filter(
-		(message) =>
-			message?.role === "assistant" &&
-			Array.isArray(message.content) &&
-			message.content.some((content) => content?.type === "text" && content.text?.trim()),
-	);
-	const finalMessage = candidates.findLast((message) => message.stopReason === "stop")
-		?? candidates.at(-1);
-	if (!finalMessage) return "";
-	const chunks = finalMessage.content.flatMap((content) => {
-		if (content?.type !== "text" || typeof content.text !== "string") return [];
-		const text = content.text.trim();
-		return text ? [text] : [];
-	});
-	return chunks.join("\n\n");
-}
 
-const PROTECTED_SHOPIFY_TOOLS = new Set(["shopifyOrders", "shopifyCustomers"]);
-
-function gatewayToolId(call, result) {
-	if (call?.name === "divo_shopify_orders") return "shopifyOrders";
-	if (call?.name === "divo_shopify_customers") return "shopifyCustomers";
-	const payloadToolId = call?.arguments?.payload?.toolId;
-	if (typeof payloadToolId === "string") return payloadToolId;
-	const dataToolId = result?.details?.data?.toolId;
-	return typeof dataToolId === "string" ? dataToolId : undefined;
-}
-
-export function collectProtectedRunMetadata(messages) {
-	if (!Array.isArray(messages)) {
-		return { protectedDataUsed: false, protectedRefs: [] };
-	}
-	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
-	const currentRun = messages.slice(lastUserIndex + 1);
-	const gatewayCalls = currentRun.flatMap((message) =>
-		message?.role === "assistant" && Array.isArray(message.content)
-			? message.content.filter((content) =>
-				content?.type === "toolCall" && isGovernedDivoTool(content.name))
-			: [],
-	);
-	if (gatewayCalls.length === 0) {
-		return { protectedDataUsed: false, protectedRefs: [] };
-	}
-
-	let protectedDataUsed = false;
-	let protectedRefs = [];
-	let protectedProvenanceValid = true;
-
-	for (const call of gatewayCalls) {
-		const result = currentRun.find((message) =>
-			message?.role === "toolResult" && message.toolCallId === call.id);
-		const toolId = gatewayToolId(call, result);
-		if (toolId && PROTECTED_SHOPIFY_TOOLS.has(toolId)) {
-			protectedDataUsed = true;
-		}
-
-		const protectedData = result?.details?.data?.protectedData;
-		if (protectedData?.used === true) {
-			protectedDataUsed = true;
-			if (result?.isError !== true) {
-				const refs = protectedData.references;
-				if (Array.isArray(refs)) {
-					protectedRefs = refs;
-				} else if (refs !== undefined) {
-					protectedProvenanceValid = false;
-				}
-			}
-		}
-	}
-
-	if (!protectedDataUsed) {
-		return { protectedDataUsed: false, protectedRefs: [] };
-	}
-
-	return {
-		protectedDataUsed: true,
-		protectedRefs,
-		protectedProvenanceValid,
-	};
-}
-
-export function logCompletedRun(text, metadata, logger) {
-	if (metadata?.protectedDataUsed === true) {
-		logger("[divo-pi] protected run completed; final text suppressed");
-		return;
-	}
-	logger(text);
-}
-
-function terminalRunError(terminal, messages) {
-	const error = new Error(terminal.summary ?? "The model continuation did not complete.");
-	error.code = "model_continuation_failed";
-	error.statusCode = 502;
-	const metadata = messages ? collectProtectedRunMetadata(messages) : undefined;
-	if (metadata?.protectedDataUsed) {
-		error.protectedDataUsed = true;
-		error.protectedRefs = metadata.protectedRefs;
-		if (!metadata.protectedProvenanceValid) {
-			error.protectedProvenanceValid = false;
-		}
-	}
-	return error;
-}
-
-const MUTATING_GATEWAY_ACTIONS = new Set(["create", "update", "delete", "send", "execute"]);
-const KNOWN_GATEWAY_ACTIONS = new Set(["read", ...MUTATING_GATEWAY_ACTIONS]);
-
-function gatewayActionState(messages) {
-	if (!Array.isArray(messages)) return "none";
-	const lastUserIndex = messages.findLastIndex((message) => message?.role === "user");
-	const currentRun = messages.slice(lastUserIndex + 1);
-	const calls = currentRun.flatMap((message) =>
-		message?.role === "assistant" && Array.isArray(message.content)
-			? message.content.filter((content) =>
-				content?.type === "toolCall"
-				&& isGovernedDivoTool(content.name))
-			: [],
-	);
-	if (calls.length === 0) return "none";
-	const actions = [];
-	for (const call of calls) {
-		const result = currentRun.find((message) =>
-			message?.role === "toolResult"
-			&& message.toolCallId === call.id
-			&& isGovernedDivoTool(message.toolName),
-		);
-		const action = result?.details?.data?.action;
-		if (
-			result?.isError !== false
-			|| typeof action !== "string"
-			|| !KNOWN_GATEWAY_ACTIONS.has(action)
-		) return "unsafe";
-		actions.push(action);
-	}
-	if (!actions.some((action) => MUTATING_GATEWAY_ACTIONS.has(action))) return "read_only";
-	return actions.at(-1) === "read" ? "mutation_then_read" : "completed_mutation";
-}
-
-function completedGatewayFallback(completion, readAfterMutation) {
-	const text = readAfterMutation
-		? "Divo completed the requested company action, and a subsequent read also succeeded. The final summary was interrupted, so Divo did not repeat the action."
-		: "Divo completed the requested company action. The final summary was interrupted, so Divo did not repeat the action.";
-	return {
-		...completion,
-		messages: [
-			...(Array.isArray(completion?.messages) ? completion.messages : []),
-			{
-				role: "assistant",
-				stopReason: "stop",
-				usage: { input: 0, output: 1 },
-				content: [{ type: "text", text }],
-			},
-		],
-	};
-}
-
-async function waitForRpcIdle(rpc, {
-	timeoutMs = MODEL_RETRY_IDLE_TIMEOUT_MS,
-	pollMs = 25,
-	sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-} = {}) {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() <= deadline) {
-		const state = await rpc.send(
-			{ type: "get_state" },
-			Math.min(timeoutMs, RPC_TIMEOUT_MS),
-		);
-		if (state?.isStreaming !== true && state?.isCompacting !== true) return;
-		await sleep(pollMs);
-	}
-	throw terminalRunError({
-		summary: "The model runtime did not become idle after a transient provider failure.",
-	});
-}
-
-export async function promptWithTransientRetries({
-	rpc,
-	message,
-	maxRetries = MAX_TRANSIENT_MODEL_RETRIES,
-	retryDelayMs = 1_000,
-	waitForIdle = waitForRpcIdle,
-	onRetry,
-	signal,
-}) {
-	rpc.beginRun?.();
-	for (let retry = 0; ; retry += 1) {
-		signal?.throwIfAborted();
-		const completed = rpc.waitFor("agent_end");
-		await rpc.send(
-			{ type: "prompt", message: retry === 0 ? message : MODEL_RETRY_PROMPT },
-			90_000,
-		);
-		const completion = await completed;
-		const terminal = classifyDivoRunTerminal(completion?.messages);
-		if (terminal.status === "ok") return completion;
-		if (!isTransientDivoRunFailure(completion?.messages) || retry >= maxRetries) {
-			throw terminalRunError(terminal, completion?.messages);
-		}
-		const actionState = gatewayActionState(completion?.messages);
-		if (actionState === "mutation_then_read" || actionState === "completed_mutation") {
-			return completedGatewayFallback(completion, actionState === "mutation_then_read");
-		}
-		if (actionState === "unsafe") {
-			throw terminalRunError({
-				summary:
-					"The model provider failed after a company action was issued. Divo stopped instead of retrying and risking a duplicate action.",
-			});
-		}
-		const attempt = retry + 1;
-		onRetry?.({ attempt, maxRetries, summary: terminal.summary });
-		signal?.throwIfAborted();
-		if (retryDelayMs > 0) {
-			await new Promise((resolve, reject) => {
-				const timer = setTimeout(resolve, retryDelayMs * 2 ** retry);
-				if (!signal) return;
-				signal.addEventListener("abort", () => {
-					clearTimeout(timer);
-					reject(signal.reason ?? new Error("request disconnected"));
-				}, { once: true });
-			});
-		}
-		await waitForIdle(rpc);
-	}
-}
-
-function emitRuntimeProgress(onProgress, event) {
-	if (!onProgress) return;
-	try {
-		const result = onProgress(event);
-		if (result && typeof result.catch === "function") {
-			void result.catch(() => {});
-		}
-	} catch {
-		// Status delivery must never interrupt the agent run.
-	}
-}
-
-export class JsonlRpc {
-	constructor(child, answerRequest, onProgress) {
-		this.child = child;
-		this.answerRequest = answerRequest;
-		this.onProgress = onProgress;
-		this.writingStarted = false;
-		this.nextId = 0;
-		this.pending = new Map();
-		this.waiters = new Map();
-		this.reader = readline.createInterface({ input: child.stdout });
-		this.reader.on("line", (line) => this.handleLine(line));
-		child.once("exit", (code, signal) => {
-			const error = new Error(
-				`Docker attach exited ${signal ? `with ${signal}` : `with code ${code}`}`,
-			);
-			this.rejectAll(error);
-		});
-		child.once("error", (error) => this.rejectAll(error));
-	}
-
-	handleLine(line) {
-		let value;
-		try {
-			value = JSON.parse(line);
-		} catch {
-			this.rejectAll(new Error(`Pi emitted invalid JSONL: ${line.slice(0, 160)}`));
-			return;
-		}
-		if (value.type === "response" && value.id && this.pending.has(value.id)) {
-			const pending = this.pending.get(value.id);
-			this.pending.delete(value.id);
-			clearTimeout(pending.timeout);
-			if (value.success) pending.resolve(value.data);
-			else pending.reject(new Error(value.error || `${value.command} failed`));
-			return;
-		}
-		const waiters = this.waiters.get(value.type) ?? [];
-		this.waiters.delete(value.type);
-		for (const waiter of waiters) waiter.resolve(value);
-		// Preserve the provider's real answer stream before projecting the same
-		// Pi event into sentence-sized status updates. These are intentionally two
-		// events: collapsing either one into the other makes one of the web answer
-		// or the Lark card behave badly.
-		const answerDelta = projectRuntimeAnswerDelta(value);
-		if (answerDelta) emitRuntimeProgress(this.onProgress, answerDelta);
-		const progress = projectRuntimeProgress(value);
-		if (progress && !(progress.type === "writing" && this.writingStarted)) {
-			if (progress.type === "writing") this.writingStarted = true;
-			emitRuntimeProgress(this.onProgress, progress);
-		}
-		if (value.type === "extension_ui_request") {
-			void this.answerRequest(value, (response) => this.write(response));
-		}
-	}
-
-	rejectAll(error) {
-		for (const pending of this.pending.values()) {
-			clearTimeout(pending.timeout);
-			pending.reject(error);
-		}
-		this.pending.clear();
-		for (const waiters of this.waiters.values()) {
-			for (const waiter of waiters) waiter.reject(error);
-		}
-		this.waiters.clear();
-	}
-
-	write(value) {
-		this.child.stdin.write(`${JSON.stringify(value)}\n`);
-	}
-
-	beginRun() {
-		this.writingStarted = false;
-	}
-
-	configure({ answerRequest, onProgress }) {
-		this.answerRequest = answerRequest;
-		this.onProgress = onProgress;
-	}
-
-	send(command, timeoutMs = RPC_TIMEOUT_MS) {
-		const id = `controller-${++this.nextId}`;
-		return new Promise((resolve, reject) => {
-			const timeout = setTimeout(() => {
-				this.pending.delete(id);
-				reject(new Error(`RPC ${command.type} timed out`));
-			}, timeoutMs);
-			this.pending.set(id, { resolve, reject, timeout });
-			this.write({ ...command, id });
-		});
-	}
-
-	waitFor(type) {
-		return new Promise((resolve, reject) => {
-			const waiters = this.waiters.get(type) ?? [];
-			waiters.push({ resolve, reject });
-			this.waiters.set(type, waiters);
-		});
-	}
-}
-
-async function ask(question) {
-	const terminal = readline.createInterface({
-		input: process.stdin,
-		output: process.stderr,
-	});
-	try {
-		return await new Promise((resolve) => terminal.question(question, resolve));
-	} finally {
-		terminal.close();
-	}
-}
-
-function createExtensionResponder(autoApprove) {
-	return async (request, respond) => {
-		if (
-			["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"].includes(
-				request.method,
-			)
-		) {
-			if (request.message) console.error(`[Pi] ${request.message}`);
-			return;
-		}
-		if (request.method === "confirm") {
-			const answer = autoApprove
-				? "y"
-				: await ask(`${request.title}: ${request.message} [y/N] `);
-			respond({
-				type: "extension_ui_response",
-				id: request.id,
-				confirmed: /^y(es)?$/i.test(answer.trim()),
-			});
-			return;
-		}
-		if (request.method === "select") {
-			console.error(request.options.map((value, index) => `${index + 1}. ${value}`).join("\n"));
-			const answer = await ask(`${request.title} (number, blank cancels): `);
-			const selected = request.options[Number(answer) - 1];
-			respond(
-				selected
-					? { type: "extension_ui_response", id: request.id, value: selected }
-					: { type: "extension_ui_response", id: request.id, cancelled: true },
-			);
-			return;
-		}
-		const answer = await ask(`${request.title} (blank cancels): `);
-		respond(
-			answer
-				? { type: "extension_ui_response", id: request.id, value: answer }
-				: { type: "extension_ui_response", id: request.id, cancelled: true },
-		);
-	};
-}
-
-export function approveHeadlessWorkspaceAction(title, message) {
-	if (title !== "divo_approval_v1" || typeof message !== "string") return false;
-	try {
-		const request = JSON.parse(message);
-		return ["bash", "edit", "write"].includes(request?.source);
-	} catch {
-		return false;
-	}
-}
-
-export function createHeadlessExtensionResponder() {
-	return async (request, respond) => {
-		if (
-			["notify", "setStatus", "setWidget", "setTitle", "set_editor_text"].includes(
-				request.method,
-			)
-		) {
-			if (request.message) console.error(`[Pi] ${request.message}`);
-			return;
-		}
-		if (request.method === "confirm") {
-			respond({
-				type: "extension_ui_response",
-				id: request.id,
-				confirmed: approveHeadlessWorkspaceAction(request.title, request.message),
-			});
-			return;
-		}
-		respond({ type: "extension_ui_response", id: request.id, cancelled: true });
-	};
-}
-
-function runtimeExitPromise(child) {
-	return new Promise((resolve) => {
-		child.once("error", (error) => resolve({ error }));
-		child.once("exit", (code, terminationSignal) => resolve({ code, terminationSignal }));
-	});
-}
-
-function spawnRuntimeRpc(container, answerRequest, onProgress) {
-	const child = spawn("docker", buildContainerRunArgs(container), {
-		stdio: ["pipe", "pipe", "pipe"],
-	});
-	child.stderr.pipe(process.stderr);
-	const exited = runtimeExitPromise(child);
-	const rpc = new JsonlRpc(child, answerRequest, onProgress);
-	return { child, exited, rpc };
-}
 
 /**
  * Everything a turn does that leaves this process.
@@ -1333,78 +712,4 @@ export async function runRuntimeSessionLifecycle(runtime, operation, options = {
 		lifecycle,
 		signal: options.signal,
 	}, effects);
-}
-
-async function status(profileName) {
-	const profile = validateProfileName(profileName);
-	const metadata = readProfile(profile);
-	const resources = resourcesFor(profile);
-	const container = await findOwnedContainer(profile);
-	console.log(
-		JSON.stringify(
-			{
-				profile,
-				userId: metadata.userId,
-				companyId: metadata.companyId,
-				backendUrl: metadata.backendUrl,
-				resources,
-				container: container ? container.State.Status : "missing",
-			},
-			null,
-			2,
-		),
-	);
-}
-
-function parseArguments(argv) {
-	const positional = [];
-	const options = {};
-	for (let index = 0; index < argv.length; index += 1) {
-		const value = argv[index];
-		if (!value.startsWith("--")) {
-			positional.push(value);
-			continue;
-		}
-		const key = value.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-		if (["approve", "noBrowser", "replaceProfile"].includes(key)) {
-			options[key === "noBrowser" ? "browser" : key] = key === "noBrowser" ? false : true;
-			continue;
-		}
-		const next = argv[index + 1];
-		if (!next || next.startsWith("--")) throw new Error(`${value} requires a value`);
-		options[key] = next;
-		index += 1;
-	}
-	return { positional, options };
-}
-
-export async function main(argv = process.argv.slice(2)) {
-	const { positional, options } = parseArguments(argv);
-	const [command, profile, ...rest] = positional;
-	if (command === "login") return login(profile, options);
-	if (command === "prompt") {
-		if (rest.length === 0) throw new Error("prompt requires a message");
-		return prompt(profile, rest.join(" "), options);
-	}
-	if (command === "status") return status(profile);
-	if (command === "stop") return idleContainers.stopNow(validateProfileName(profile));
-	throw new Error(
-		[
-			"Usage:",
-			"  node divo/local-rpc-controller.mjs login <profile> --backend <url> [--department <id>] [--no-browser]",
-			"  node divo/local-rpc-controller.mjs prompt <profile> --thread <id> [--approve] <message>",
-			"  node divo/local-rpc-controller.mjs status <profile>",
-			"  node divo/local-rpc-controller.mjs stop <profile>",
-		].join("\n"),
-	);
-}
-
-const isMain =
-	process.argv[1] &&
-	path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
-if (isMain) {
-	main().catch((error) => {
-		console.error(`[divo-controller] ${error.message}`);
-		process.exitCode = 1;
-	});
 }

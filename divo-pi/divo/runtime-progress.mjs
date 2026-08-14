@@ -355,3 +355,23 @@ export function projectRuntimeAnswerDelta(event) {
 		delta: event.assistantMessageEvent.delta,
 	};
 }
+
+/**
+ * Hand a progress event to whoever is listening, and never let them break the run.
+ *
+ * A caller's progress sink is a Lark card edit or an HTTP stream: it can be slow,
+ * it can be gone, and it can throw either synchronously or as a rejected promise.
+ * None of those are reasons to fail work the member asked for, so both shapes are
+ * swallowed here rather than at each of the call sites that emit.
+ */
+export function emitRuntimeProgress(onProgress, event) {
+	if (!onProgress) return;
+	try {
+		const result = onProgress(event);
+		if (result && typeof result.catch === "function") {
+			void result.catch(() => {});
+		}
+	} catch {
+		// Status delivery must never interrupt the agent run.
+	}
+}

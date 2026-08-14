@@ -2,12 +2,12 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-	createHeadlessExtensionResponder,
 	prompt,
 	promptWithRuntimeLease,
 	resolveRuntimeLease,
 	runRuntimeSessionLifecycle,
 } from "./local-rpc-controller.mjs";
+import { createHeadlessExtensionResponder } from "./approval-responder.mjs";
 import { createNdjsonStreamWriter } from "./ndjson-stream-writer.mjs";
 import {
 	MAX_RUNTIME_ATTACHMENTS,
