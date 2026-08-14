@@ -299,10 +299,16 @@ export function createZohoBillService(deps: {
           ? ` ${outcome.message}`
           : ` The bill exists, but its attachment is ${outcome.outcome}: ${outcome.message}`;
       }
+      const verified = await writer.verifyRecord({
+        module: 'bills',
+        verb: 'created',
+        recordId: summary.id,
+        fallbackRecord: record,
+      });
       return ok({
-        record,
-        summary,
-        message: `${summary.message}${attachmentNote}`.trim(),
+        record: verified.record,
+        summary: verified.summary,
+        message: `${verified.message}${attachmentNote}`.trim(),
       });
     },
   };

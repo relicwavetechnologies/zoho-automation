@@ -200,6 +200,57 @@ describe('one approved draft makes one invoice', () => {
     assert.equal(mutations, 1, 'Zoho must be called exactly once');
   });
 
+  it('reports the invoice state from post-create read-back, not the create response', async () => {
+    const store = makeStore();
+    const client = {
+      ...makeBooksClient(),
+      mutate: async () => ({
+        organizationId: 'org-1',
+        payload: {
+          invoice: {
+            invoice_id: 'inv-created',
+            invoice_number: 'INV-9',
+            status: 'draft',
+            currency_code: 'INR',
+            total: '59000.00',
+            customer_id: soundPayload.customer_id,
+            sub_total: '50000.00',
+            line_items: soundPayload.line_items,
+          },
+        },
+      }),
+      getEndpoint: async ({ path }: { path: string }) => (
+        path.startsWith('/invoices/')
+          ? {
+              invoice: {
+                invoice_id: 'inv-created',
+                invoice_number: 'INV-9',
+                status: 'sent',
+                currency_code: 'INR',
+                total: '60000.00',
+                balance: '0.00',
+                customer_id: soundPayload.customer_id,
+                sub_total: '50000.00',
+                line_items: soundPayload.line_items,
+              },
+            }
+          : {}
+      ),
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({ store, booksClient: client });
+
+    const staged = await tool.execute({ op: 'stage_invoice', fields: soundPayload } as never, ctx);
+    const created = await tool.execute({
+      op: 'create_invoice',
+      stagingId: (staged as any).value.stagingId,
+    } as never, ctx);
+
+    assert.equal(created.ok, true);
+    assert.equal((created as any).value.data.status, 'sent');
+    assert.match((created as any).value.message, /status sent/);
+    assert.match((created as any).value.message, /total ₹60,000\.00/);
+  });
+
   it('hands the draft back only when Zoho proves it wrote nothing', async () => {
     // A validation refusal is the one failure that proves it: Zoho read the
     // payload, rejected it, wrote nothing. That draft has to stay retryable.
@@ -810,8 +861,22 @@ describe('what Zoho stored versus what was approved', () => {
       ...makeBooksClient(),
       mutate: async () => ({
         organizationId: 'org-1',
-        payload: { invoice: { invoice_id: 'inv-1', status: 'draft', customer_id: '9999999', currency_code: 'INR' } },
+        payload: { invoice: { invoice_id: 'inv-1', status: 'draft', customer_id: soundPayload.customer_id, currency_code: 'INR' } },
       }),
+      getEndpoint: async ({ path }: { path: string }) => (
+        path.startsWith('/invoices/')
+          ? {
+              invoice: {
+                invoice_id: 'inv-1',
+                status: 'draft',
+                customer_id: '9999999',
+                currency_code: 'INR',
+                sub_total: '50000.00',
+                line_items: soundPayload.line_items,
+              },
+            }
+          : {}
+      ),
     } as unknown as ZohoBooksPaginatedClient;
     const tool = makeTool({ store, booksClient: drifting });
 

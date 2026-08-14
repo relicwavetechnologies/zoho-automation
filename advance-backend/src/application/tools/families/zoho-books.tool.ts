@@ -1741,6 +1741,7 @@ export const createZohoBooksTool = (deps: {
           let created: Res;
           /** Set when the invoice was recovered by reading back rather than returned. */
           let recoveryNote = '';
+          let createdFromReadBack = false;
           try {
             const invoiceNumber = staged.payload['invoice_number'];
             created = await writtenRecord('invoices', 'created', {
@@ -1786,6 +1787,7 @@ export const createZohoBooksTool = (deps: {
                 message: summary.message,
               } as Res;
               recoveryNote = `${failure.why}, so Divo checked Zoho: the invoice was created. `;
+              createdFromReadBack = true;
             } else {
             // Recorded as what it is. Storing an 'absent' verdict as "never
             // reported back" would have a later retry told the opposite of what
@@ -1842,14 +1844,32 @@ export const createZohoBooksTool = (deps: {
           }
 
           // Staging cannot see what Zoho does on the way in. This can.
-          const stored = isRecord(created.data) ? created.data : {};
-          const drift = compareStagedToStored(staged.payload, stored);
+          const fallbackStored = isRecord(created.data) ? created.data : {};
+          const shouldVerifyFinalRecord = Boolean(invoiceId) && (!createdFromReadBack || Boolean(attachmentNote));
+          const verified = shouldVerifyFinalRecord
+            ? await booksWriter.verifyRecord({
+                module: 'invoices',
+                verb: 'created',
+                recordId: invoiceId,
+                fallbackRecord: fallbackStored,
+                connectionId: staged.connectionId,
+                ...(staged.organizationId ? { organizationId: staged.organizationId } : {}),
+              })
+            : undefined;
+          const stored = verified?.record ?? fallbackStored;
+          const storedWasReadBack = verified?.verified || (createdFromReadBack && !shouldVerifyFinalRecord);
+          const drift = storedWasReadBack
+            ? compareStagedToStored(staged.payload, stored)
+            : [];
           const base = drift.length > 0
-            ? `${created.message} Zoho stored some values differently from the draft the member approved: `
+            ? `${verified?.message ?? created.message} Zoho stored some values differently from the draft the member approved: `
               + `${drift.map(d => `${d.field} was ${d.staged}, Zoho has ${d.stored}`).join('; ')}. Tell them before doing anything else with it.`
-            : created.message ?? 'Invoice created.';
+            : verified?.message ?? created.message ?? 'Invoice created.';
           return ok({
             ...created,
+            ...(verified?.summary.id ? { id: verified.summary.id } : {}),
+            data: formatZohoResult(stored),
+            ...(verified?.summary.recordUrl ? { recordUrl: verified.summary.recordUrl } : {}),
             ...(drift.length > 0 ? { drift } : {}),
             message: `${recoveryNote}${base}${attachmentNote}`,
           });

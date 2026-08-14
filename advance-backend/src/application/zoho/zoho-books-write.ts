@@ -6,6 +6,7 @@ import {
   type ZohoWriteModule,
   type ZohoWriteSummary,
 } from './zoho-books-write-result';
+import { verifyZohoBooksWrite } from './zoho-books-write-verification';
 
 export type ZohoBooksWriteFailure =
   | { readonly kind: 'not_dispatched'; readonly why: string }
@@ -109,5 +110,28 @@ export function createZohoBooksWriteRunner(input: {
     return { organizationId, record, summary };
   };
 
-  return { mutate, writeRecord };
+  const verifyRecord = async (request: {
+    readonly module: ZohoWriteModule;
+    readonly verb: string;
+    readonly recordId: string;
+    readonly fallbackRecord?: Record<string, unknown>;
+    readonly connectionId?: string;
+    readonly organizationId?: string | undefined;
+  }) => verifyZohoBooksWrite({
+    booksClient: input.booksClient,
+    companyId: input.companyId,
+    userId: input.userId,
+    connectionId: request.connectionId ?? input.connectionId,
+    ...(request.organizationId ?? input.organizationId
+      ? { organizationId: request.organizationId ?? input.organizationId }
+      : {}),
+    module: request.module,
+    verb: request.verb,
+    recordId: request.recordId,
+    ...(request.fallbackRecord ? { fallbackRecord: request.fallbackRecord } : {}),
+    appBaseUrl: input.appBaseUrl,
+    ...(input.signal ? { signal: input.signal } : {}),
+  });
+
+  return { mutate, writeRecord, verifyRecord };
 }

@@ -52,7 +52,20 @@ describe('Zoho bill service', () => {
     let mutation: any;
     const booksClient = {
       listOrganizations: async () => [{ organizationId: 'org-1', isDefault: true, name: 'Relicwave' }],
-      getEndpoint: async () => ({ contact: { contact_id: 'vendor-1', contact_name: 'HSBC' } }),
+      getEndpoint: async ({ path }: { path: string }) => {
+        if (path.startsWith('/contacts/')) return { contact: { contact_id: 'vendor-1', contact_name: 'HSBC' } };
+        return {
+          bill: {
+            bill_id: 'bill-1',
+            bill_number: 'B-1',
+            status: 'overdue',
+            total: '17107.75',
+            balance: '17107.75',
+            currency_code: 'INR',
+            documents: [{ file_name: 'hsbc.pdf' }],
+          },
+        };
+      },
       listRecords: async () => ({ organizationId: 'org-1', items: [], hasMore: false, page: 1 }),
       mutate: async (input: any) => {
         mutation = input;
@@ -83,8 +96,10 @@ describe('Zoho bill service', () => {
     assert.equal(mutation.organizationId, 'org-1');
     assert.deepEqual(mutation.body, validFields);
     assert.equal(result.value.record['bill_id'], 'bill-1');
+    assert.equal(result.value.record['status'], 'overdue');
     assert.equal(result.value.summary.id, 'bill-1');
-    assert.match(result.value.summary.message, /Bill B-1 created in Zoho Books/);
+    assert.match(result.value.summary.message, /status overdue/);
+    assert.match(result.value.summary.message, /Attached: hsbc\.pdf/);
     assert.equal(store.rows.get(stagingId)?.createdBillId, 'bill-1');
   });
 

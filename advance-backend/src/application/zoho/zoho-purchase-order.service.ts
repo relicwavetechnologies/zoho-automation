@@ -301,11 +301,17 @@ export function createZohoPurchaseOrderService(deps: {
           ? ` ${outcome.message}`
           : ` The purchase order exists, but its attachment is ${outcome.outcome}: ${outcome.message}`;
       }
+      const verified = await writer.verifyRecord({
+        module: 'purchaseorders',
+        verb: 'created',
+        recordId: summary.id,
+        fallbackRecord: record,
+      });
       return ok({
-        id: summary.id,
-        record,
-        message: `${summary.message}${attachmentNote}`.trim(),
-        ...(summary.recordUrl ? { recordUrl: summary.recordUrl } : {}),
+        id: verified.summary.id,
+        record: verified.record,
+        message: `${verified.message}${attachmentNote}`.trim(),
+        ...(verified.summary.recordUrl ? { recordUrl: verified.summary.recordUrl } : {}),
       });
     },
   };
