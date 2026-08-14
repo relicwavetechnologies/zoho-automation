@@ -47,7 +47,7 @@ import {
   type ShopifyProtectedResult,
 } from '../shopify/shopify-protected-result';
 import { zohoCrmActionFor } from '../tools/families/zoho-crm.tool';
-import { zohoBooksActionFor } from '../tools/families/zoho-books.tool';
+import { zohoBooksActionFor, zohoBooksScopeModuleFor } from '../tools/families/zoho-books.tool';
 import { hasZohoScope } from '../../domain/zoho/zoho-scope';
 
 export interface ToolExecutorInput {
@@ -1338,13 +1338,19 @@ function runtimeConnectionRequirement(
   }
 
   if (toolId === 'zohoCrm' || toolId === 'zohoBooks') {
+    const operation = typeof args.op === 'string' ? args.op : '';
     const action = toolId === 'zohoCrm'
-      ? zohoCrmActionFor(typeof args.op === 'string' ? args.op : '')
-      : zohoBooksActionFor(typeof args.op === 'string' ? args.op : '');
+      ? zohoCrmActionFor(operation)
+      : zohoBooksActionFor(operation);
     return {
       provider: 'zoho',
       minimumAccess: action === 'read' ? 'read_only' : 'read_write',
-      scopeEligible: scopes => hasZohoScope(scopes, toolId === 'zohoCrm' ? 'crm' : 'books', action),
+      scopeEligible: scopes => hasZohoScope(
+        scopes,
+        toolId === 'zohoCrm' ? 'crm' : 'books',
+        action,
+        toolId === 'zohoBooks' ? zohoBooksScopeModuleFor(operation) : undefined,
+      ),
     };
   }
 

@@ -1343,6 +1343,71 @@ describe('ToolExecutor', () => {
     assert.equal(executions, 0);
   });
 
+  it('authorizes a Books create only with its matching module scope', async () => {
+    let executions = 0;
+    const billsConnectionId = '00000000-0000-4000-8000-000000000004';
+    const invoicesConnectionId = '00000000-0000-4000-8000-000000000005';
+    const registry = new ToolRegistry();
+    registry.register({
+      id: asToolId('zohoBooks'),
+      family: 'zoho',
+      actionGroups: new Set(['create']),
+      argsSchema: z.object({ connectionId: z.string().uuid(), op: z.literal('create_bill') }),
+      resultSchema: z.object({ result: z.string() }),
+      description: 'Zoho Books module-scope test',
+      parameterDocs: 'connectionId, op',
+      permissionCheck: () => ok('create'),
+      execute: async () => {
+        executions += 1;
+        return ok({ result: 'created' });
+      },
+    });
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('zohoBooks', ['create'])),
+      connectionRegistry: {
+        listAccessibleZohoConnections: async () => ok([
+          {
+            connectionId: billsConnectionId,
+            provider: 'zoho',
+            label: 'Bills writer',
+            ownerType: 'company',
+            access: 'read_write',
+            scopes: ['ZohoBooks.bills.CREATE'],
+            connectedAt: new Date(),
+          },
+          {
+            connectionId: invoicesConnectionId,
+            provider: 'zoho',
+            label: 'Invoices writer',
+            ownerType: 'company',
+            access: 'read_write',
+            scopes: ['ZohoBooks.invoices.CREATE'],
+            connectedAt: new Date(),
+          },
+        ]),
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const allowed = await executor.invoke({
+      member,
+      toolId: 'zohoBooks',
+      args: { op: 'create_bill', connectionId: billsConnectionId },
+    });
+    const denied = await executor.invoke({
+      member,
+      toolId: 'zohoBooks',
+      args: { op: 'create_bill', connectionId: invoicesConnectionId },
+    });
+
+    assert.equal(allowed.status, 'success');
+    assert.equal(denied.status, 'invalid_args');
+    assert.match(denied.error?.message ?? '', /selected Zoho account is not eligible/i);
+    assert.equal(executions, 1);
+  });
+
   it('returns safe connected-account choices instead of guessing between accounts', async () => {
     let executions = 0;
     const registry = new ToolRegistry();

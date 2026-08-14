@@ -49,6 +49,7 @@ import type { Result }                     from '../../../shared/result';
 import { ok, err }                         from '../../../shared/result';
 import { PermissionError, ToolError }      from '../../../shared/errors';
 import type { ToolActionGroup }            from '../../../domain/permissions/tool-action-group';
+import type { ZohoBooksScopeModule }       from '../../../domain/zoho/zoho-scope';
 import { asToolId }                        from '../../../shared/ids';
 import {
   ZOHO_BOOKS_CONTACT_OUTSTANDING_RULE,
@@ -320,6 +321,18 @@ export const zohoBooksActionFor = (op: string): ToolActionGroup =>
     : createOps.has(op as Args['op']) ? 'create'
       : updateOps.has(op as Args['op']) ? 'update'
         : 'delete';
+
+const oauthModuleByCreateOp = new Map<string, ZohoBooksScopeModule>([
+  ['stage_invoice', 'invoices'],
+  ['create_invoice', 'invoices'],
+  ['stage_purchase_order', 'purchaseorders'],
+  ['create_purchase_order', 'purchaseorders'],
+  ['create_bill', 'bills'],
+]);
+
+/** The narrow Zoho OAuth module that may authorize a supported staged/create flow. */
+export const zohoBooksScopeModuleFor = (op: string): ZohoBooksScopeModule | undefined =>
+  oauthModuleByCreateOp.get(op);
 
 const listOpToModule: Record<string, ZohoBooksModule> = {
   list_invoices:         'invoices',

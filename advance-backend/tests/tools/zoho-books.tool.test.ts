@@ -5,7 +5,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { makeAllowedPerm, makeCtx } from './tool-test.helpers.ts';
-import { createZohoBooksTool } from '../../src/application/tools/families/zoho-books.tool.ts';
+import {
+  createZohoBooksTool,
+  zohoBooksScopeModuleFor,
+} from '../../src/application/tools/families/zoho-books.tool.ts';
 import type { ZohoFinanceOps } from '../../src/application/zoho/zoho-finance-ops.ts';
 import { mapZohoError } from '../../src/application/zoho/zoho-error.utils.ts';
 import { formatAmount, formatDate } from '../../src/application/zoho/zoho-format.utils.ts';
@@ -126,6 +129,15 @@ describe('zohoBooks expanded permissions', () => {
 
     const del = tool.permissionCheck({ op: 'void_invoice' }, makeAllowedPerm('zohoBooks', ['delete']));
     assert.equal((del as any).value, 'delete');
+  });
+
+  it('maps staged and direct creates to their exact OAuth modules', () => {
+    assert.equal(zohoBooksScopeModuleFor('stage_invoice'), 'invoices');
+    assert.equal(zohoBooksScopeModuleFor('create_invoice'), 'invoices');
+    assert.equal(zohoBooksScopeModuleFor('stage_purchase_order'), 'purchaseorders');
+    assert.equal(zohoBooksScopeModuleFor('create_purchase_order'), 'purchaseorders');
+    assert.equal(zohoBooksScopeModuleFor('create_bill'), 'bills');
+    assert.equal(zohoBooksScopeModuleFor('create_expense'), undefined);
   });
 
 });
