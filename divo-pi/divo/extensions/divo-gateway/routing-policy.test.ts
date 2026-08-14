@@ -100,6 +100,13 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(ROUTER_SKILL, /\/run\/divo-skills\/current\/<slug>\/SKILL\.md/i);
 	});
 
+	it("requires a fresh exact skill read for governed finance writes", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /family marked skill=required is never this direct-action exception/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Every Zoho Books mutation follows this rule/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /including a short approval follow-up/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /compaction summary.*is not a substitute/i);
+	});
+
 	it("requires artifact links and verified counts in the terminal answer", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /final answer is the only result the user is guaranteed to receive/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Repeat every canonical artifact link and requested verified count/i);
