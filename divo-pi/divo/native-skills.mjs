@@ -110,28 +110,6 @@ export function nativeSkillBootstrapDigest(bootstrap, scope) {
 		.digest("hex");
 }
 
-export function nativeSkillLifecycleEvent({
-	bootstrap,
-	digest,
-	staged,
-	fetchMs,
-	stageMs,
-	ephemeral,
-	sessionScope,
-}) {
-	return {
-		event: "native_skills.ready",
-		registryRevision: bootstrap.registryRevision,
-		skillCount: bootstrap.skills.length,
-		digest: digest.slice(0, 12),
-		staged,
-		fetchMs,
-		stageMs,
-		audience: ephemeral ? "shared" : "private",
-		sessionScope,
-	};
-}
-
 export async function fetchNativeSkillBootstrap({
 	backendUrl,
 	token,

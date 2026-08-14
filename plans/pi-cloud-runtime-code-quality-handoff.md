@@ -51,6 +51,14 @@ working code for visual neatness.
 - Desktop Rust allowlists, packaging, tool cards, and protected-session parsing
 - any shared-package project created only to make Cloud and Desktop look alike
 
+**One carve-out was taken.** `jan/web-app/src/lib/audio-sentinel.ts` was edited
+by the turn-plan slice, to replace raw NUL and SOH bytes with the equivalent
+escapes. It is a byte-identical rewrite, verified against the old blob and by
+running that file's own vitest suite, and it was done because a raw NUL makes
+`grep` skip a file silently — the hazard that had already caused one wrong
+dead-code claim in this document. No Jan behaviour, dependency or contract was
+touched. Treat it as the exception it is, not as permission to continue there.
+
 One preparatory Desktop protection commit already exists:
 `95cc8f09f test: preserve typed Shopify session protection`. Leave it as-is.
 Do not continue that migration in this job.
@@ -97,6 +105,8 @@ The following work is already implemented and committed:
 | `e6ef3eeb1` | Attachment validation, confined paths, MIME policy, limits, and prompt manifest extracted |
 | `434afdd4d` | Phase A: identity, Docker, attachment staging, and warm-process lifecycle each given one owner; controller 2,478 → 1,335 lines |
 | `41fa8819a` | Controller image packaged every module it imports again, guarded by a test derived from the real import graph |
+| `2ee208cc8` | Every Pi runtime flag given one owner and one purpose; the flag register enforced as tests |
+| `5bb9b3655` | Warm turns stopped repeating cold-start work: one RPC round trip, one `docker exec` and four `docker inspect` calls removed per turn |
 
 Other completed quality work:
 
@@ -119,8 +129,20 @@ The Cloud-Pi tool and streaming foundation is functionally complete. The work
 remaining is modularity, measured performance optimization, and production-like
 proof.
 
-The controller has been reduced from more than 3,100 lines to roughly 2,500,
-but still combines several process-oriented responsibilities. All 38 permanent
+The controller is 1,404 lines, down from more than 3,100. It was 1,335 at the end
+of Phase A, 1,329 after `2ee208cc8`, and 1,353 after `5bb9b3655`; **the turn-plan
+slice added 51 to that last figure**, because deleting the 76-line re-export block
+bought less than the effects seam, the phase record and their rationale cost.
+
+One log field changed meaning and is worth knowing before reading old graphs
+against new ones: `readyMs` in `pi_runtime.ready` was a wall span and is now the
+sum of the named ready phases, which excludes the synchronous spawn and the gaps
+between phases. The drift is sub-millisecond; the definition still moved. Its
+turn orchestration is now one function whose effects arrive as an argument —
+but that is roughly 430 of those lines. Keychain storage, profile persistence,
+Lark login, run-result classification, the JSONL wire protocol, the terminal
+approval responder and the CLI are all still in the same file, so Phase A's
+"controller primarily coordinates modules" gate is **not** cleared. All 38 permanent
 tool schemas are model-visible on every turn. That visibility is an explicit
 product decision, but its token, latency, and cache impact has not yet been
 measured against the fixed baseline.
@@ -138,7 +160,7 @@ concurrently.
 
 ## 6. Remaining implementation plan
 
-### Phase A — Finish Cloud controller boundaries — **complete (2026-08-14)**
+### Phase A — Finish Cloud controller boundaries — **partially complete (2026-08-14); exit gate open**
 
 Goal: make container/process changes reviewable without changing the public RPC
 or security contract.
@@ -146,7 +168,8 @@ or security contract.
 Delivered in `434afdd4d` as four modules, dependencies running one way
 (`runtime-identity` → `runtime-docker` → `runtime-attachment-staging` /
 `runtime-warm-process` → controller), with `local-rpc-controller.mjs` retained
-as a re-export façade. Evidence:
+as a re-export façade. **That façade was deleted by the later turn-plan work;
+every module is now imported from its owner.** Evidence as of Phase A:
 
 - `npm run divo:check` green: typecheck clean, 199 runtime tests, extension
   suites 4 / 10 / 169 / 5 / 15 / 10, zero failures;
@@ -169,46 +192,70 @@ that derives the allowlist from the real import graph and checks build stage,
 second occurrence (`337cbe7c1` was the first), which is why the guard replaces
 the hand-written list rather than just correcting it.
 
-**Deliberately left for Phase B.** Six controller re-exports have no consumer
-anywhere: `SESSION_SCOPES`, `SESSION_LIFECYCLE_OPERATIONS`, `ensureProfileVolume`,
-`isGovernedDivoTool`, `normalizeMimeType`, `settledSentences`. They predate this
-work. A first review round claimed eleven were dead; five of those are in fact
-imported by `divo/test/attachment-staging.test.mjs`, which plain `grep` skips
-because the file carries deliberate control-byte fixtures and reads as binary.
-Use `grep -a` for any dead-code claim in this tree, and delete these six only
-under Phase B's search-before-delete rule.
+**Deliberately left for Phase B.** Of the names the deleted façade used to
+re-export, three are unused outside their own module: `SESSION_SCOPES`,
+`SESSION_LIFECYCLE_OPERATIONS`, `settledSentences`. They predate this work.
 
-Extract only cohesive responsibilities with existing characterization tests:
+That is not a complete audit of the tree — it is scoped to the façade. A sweep
+of every `divo-pi/divo/*.mjs` export also finds `JsonlRpc`, `RUNTIME_CHANNELS`,
+`RESOURCE_PREFIX` and `validateProtectedRunReferences` unreferenced outside their
+own file. Phase B's search-before-delete rule applies to all of them, and to
+anything else the sweep turns up.
 
-1. **Attachment byte staging**
-   - Docker argv and isolated writer process;
-   - streaming byte cap and abort handling;
-   - atomic `.part` commit and cleanup.
-   - Keep pure attachment policy in `runtime-attachments.mjs`.
+The earlier version of this paragraph listed six, adding `ensureProfileVolume`,
+`isGovernedDivoTool` and `normalizeMimeType`. Those three were only ever dead as
+*re-exports from the controller façade* — each is imported and called from its
+owner today (`runtime-attachment-staging.mjs` for the first and third,
+`local-rpc-controller.mjs` for the second). Deleting the façade made the
+distinction disappear from the sentence and turned a true claim into an
+instruction to delete live code.
 
-2. **Runtime identity and lease validation**
-   - profile/thread/session-scope validation;
-   - signed runtime identity derivation;
-   - trusted session projection;
-   - no Docker or backend fetch behavior in this module.
+A first review round claimed eleven were dead; five of those are in fact
+imported by `divo/test/attachment-staging.test.mjs`, which plain `grep` skipped
+because the file carried raw control bytes and read as binary. **That is fixed
+as of the turn-plan work: no first-party file carries a raw NUL any more, so
+plain `grep` no longer skips source files.** Four
+files carried raw NUL, SOH or ESC bytes — `divo/test/attachment-staging.test.mjs`
+(NUL and ESC), `divo/test/runtime-files-endpoint.test.mjs` (NUL),
+`admin/src/lib/notify.ts` (NUL), `jan/web-app/src/lib/audio-sentinel.ts` (NUL and
+SOH) — and each now writes the same bytes as `\x00`/`\x01`/`\x1b` escapes, proven
+byte-identical at runtime. The only tracked non-asset file `grep` still treats as
+binary is `jan/docs/bun.lockb`, which always was. Two evidence documents under
+`docs/evidence/` still carry raw ESC bytes from pasted ANSI colour codes; ESC
+alone does not make `grep` skip a file, so they are legible and left alone.
+The `grep -a` habit is no longer needed; if a future fixture reintroduces a raw
+control byte, it will take this hazard back with it.
 
-3. **Warm process lifecycle**
-   - binding compatibility;
-   - idle scheduler;
-   - retain/discard/stop behavior;
-   - abort and finalization rules.
+Extract only cohesive responsibilities with existing characterization tests.
 
-4. **Docker resources and reconciliation**
-   - resource naming;
-   - owned volume/network/container checks;
-   - cold create/replace/reconcile/ephemeral cleanup.
+**Delivered in `434afdd4d`** — do not redo these: attachment byte staging
+(`runtime-attachment-staging.mjs`), runtime identity and lease validation
+(`runtime-identity.mjs`), warm process lifecycle (`runtime-warm-process.mjs`),
+Docker resources and reconciliation (`runtime-docker.mjs`).
+
+**Still in `local-rpc-controller.mjs`, and what the open gate refers to:**
+
+1. **Credential storage** — `storeToken`, `readKeychainToken`, `loadToken`.
+2. **Profile persistence** — `profilePath`, `readProfile`, `writeProfile`.
+3. **Lark login** — `login`.
+4. **Run-result classification** — `collectRunAssistantText`,
+   `collectProtectedRunMetadata`, `gatewayActionState`,
+   `completedGatewayFallback`, `terminalRunError`.
+5. **The JSONL wire protocol** — `class JsonlRpc`.
+6. **The interactive approval responder** — `ask`, `createExtensionResponder`,
+   `createHeadlessExtensionResponder`.
+7. **The CLI** — `status`, `parseArguments`, `main`.
 
 Rules for every extraction:
 
 - move policy and tests together;
-- keep `local-rpc-controller.mjs` as compatibility façade until the seam is
-  proven;
-- do not change behavior and module structure in the same commit;
+- the compatibility-façade rule that stood here is retired: the façade was
+  deleted once the seams were proven, and re-creating it would undo that;
+- do not change behavior and module structure in the same commit. **The
+  turn-plan slice broke this rule**: the façade deletion is a pure move, and the
+  effects seam, the phase record and the image hoist are behaviour, and they
+  share one working tree because each rewrites the same function. Split them at
+  commit time if the history matters more than the review already done;
 - run focused tests before the full Pi gate;
 - commit each coherent extraction separately;
 - stop extracting when the remaining controller reads as orchestration rather
@@ -451,7 +498,9 @@ node --test \
   divo/test/attachment-staging.test.mjs \
   divo/test/local-rpc-controller.test.mjs \
   divo/test/local-rpc-server.test.mjs \
-  divo/test/ndjson-stream-writer.test.mjs
+  divo/test/ndjson-stream-writer.test.mjs \
+  divo/test/runtime-turn-plan.test.mjs \
+  divo/test/runtime-turn-phases.test.mjs
 
 # Backend contract generation/parity and types
 cd ../advance-backend
@@ -491,8 +540,16 @@ behavioral or measurement gate named in that phase.
 
 ## 10. Next action
 
-Phases A and B are complete. Start **Phase C — but capture the baseline first
-and change nothing while capturing it**. Optimising the 58,027 uncached input
+Phase B is complete. **Phase A's exit gate is open** — its four modules landed
+and the turn plan now takes its effects as an argument, but keychain storage,
+profile persistence, Lark login, run-result classification, the JSONL wire
+protocol, the approval responder and the CLI are all still in
+`local-rpc-controller.mjs`, so "controller primarily coordinates modules" is not
+yet true. Either finish those extractions or reopen the gate deliberately;
+do not treat Phase A as closed.
+
+Then start **Phase C — but capture the baseline first and change nothing while
+capturing it**. Optimising the 58,027 uncached input
 tokens by intuition is the failure this plan exists to prevent, and every gate
 in that phase is stated relative to a measurement nobody has taken yet.
 

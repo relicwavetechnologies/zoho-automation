@@ -6,51 +6,59 @@ import path from "node:path";
 import test from "node:test";
 import {
 	abortRuntimeInPlace,
-	assertExpectedLogin,
-	assertPinnedProfile,
 	approveHeadlessWorkspaceAction,
-	backendUrlForContainer,
-	buildBootstrapWriteArgs,
-	buildContainerCreateArgs,
-	buildNativeSkillStagingArgs,
-	buildInterruptionWriteArgs,
-	buildContainerPrepareArgs,
-	buildContainerRecordInterruptionArgs,
-	buildContainerRunArgs,
-	canReusePiProcess,
 	collectProtectedRunMetadata,
-	createIdleContainerScheduler,
-	deleteProtectedRuntimeSession,
-	finalizeRuntimeLifecycle,
+	loadToken,
+	logCompletedRun,
+} from "../local-rpc-controller.mjs";
+import {
+	buildNativeSkillStagingArgs,
 	fetchNativeSkillBootstrap,
 	fetchNativeSkillBootstrapOrEmpty,
+	nativeSkillBootstrapDigest,
+	renderNativeSkillFiles,
+	validateNativeSkillBootstrap,
+} from "../native-skills.mjs";
+import {
 	assistantThinkingText,
 	governedOperation,
 	projectRuntimeAnswerDelta,
 	projectRuntimeProgress,
-	loadToken,
-	logCompletedRun,
-	nativeSkillBootstrapDigest,
-	nativeSkillLifecycleEvent,
-	piProcessBindingMismatchReason,
-	piProcessBindingMatches,
-	RUNTIME_IDLE_TIMEOUT_MS,
-	RUNTIME_STOP_RETRY_MS,
+} from "../runtime-progress.mjs";
+import {
+	backendUrlForContainer,
+	ensureRuntime,
+	buildBootstrapWriteArgs,
+	buildContainerCreateArgs,
+	buildContainerPrepareArgs,
+	buildContainerRecordInterruptionArgs,
+	buildContainerRunArgs,
+	buildInterruptionWriteArgs,
+	deleteProtectedRuntimeSession,
 	resourcesFor,
-	renderNativeSkillFiles,
-	runtimeIdentityNames,
 	runtimeContainerNeedsReplacement,
-	runtimeReadyLifecycleEvent,
-	runtimeStartupProgress,
 	settleAll,
 	stageNativeSkillBootstrap,
-	trackRuntimeReclamation,
+} from "../runtime-docker.mjs";
+import {
+	assertExpectedLogin,
+	assertPinnedProfile,
+	runtimeIdentityNames,
 	trustedRuntimeSession,
 	validateProfileName,
 	validateRuntimeModel,
-	validateNativeSkillBootstrap,
 	validateThread,
-} from "../local-rpc-controller.mjs";
+} from "../runtime-identity.mjs";
+import {
+	RUNTIME_IDLE_TIMEOUT_MS,
+	RUNTIME_STOP_RETRY_MS,
+	canReusePiProcess,
+	createIdleContainerScheduler,
+	finalizeRuntimeLifecycle,
+	piProcessBindingMatches,
+	piProcessBindingMismatchReason,
+	trackRuntimeReclamation,
+} from "../runtime-warm-process.mjs";
 
 test("concurrent runtime probes return their values in order", async () => {
 	const order = [];
@@ -81,15 +89,6 @@ test("a failing runtime probe waits for the others before it throws", async () =
 	// `Promise.all` would have thrown while the volume create was still running,
 	// handing the caller an error about a profile Docker was still mutating.
 	assert.equal(slowSettled, true);
-});
-
-test("startup progress names newly created work only", () => {
-	assert.deepEqual(runtimeStartupProgress({ wasRunning: true, created: false }), [{ type: "working" }]);
-	assert.deepEqual(runtimeStartupProgress({ wasRunning: false, created: false }), [{ type: "working" }]);
-	assert.deepEqual(runtimeStartupProgress({ wasRunning: false, created: true }), [
-		{ type: "starting", stage: "workspace", label: "Checking your workspace…" },
-		{ type: "starting", stage: "container", label: "Waking up Divo…" },
-	]);
 });
 
 const protectedCustomerRef = {
@@ -242,14 +241,6 @@ test("protected cleanup refuses a volume not owned by the signed runtime", async
 		/unowned runtime volume/,
 	);
 	assert.equal(removed, false);
-});
-
-test("startup progress names cold work only and keeps warm runs generic", () => {
-	assert.deepEqual(runtimeStartupProgress({ wasRunning: true, created: false }), [{ type: "working" }]);
-	assert.deepEqual(runtimeStartupProgress({ wasRunning: false, created: true }), [
-		{ type: "starting", stage: "workspace", label: "Checking your workspace…" },
-		{ type: "starting", stage: "container", label: "Waking up Divo…" },
-	]);
 });
 
 test("two profiles receive distinct Docker resources", () => {
@@ -778,52 +769,6 @@ test("native DB skill staging skips only an identical scoped catalogue", async (
 	assert.equal(calls.length, 4);
 	assert.notEqual(first.digest, changedScope.digest);
 	assert.equal(first.digest, nativeSkillBootstrapDigest(bootstrap, scope));
-});
-
-test("native skill lifecycle telemetry contains counts and timing, never skill content", () => {
-	const event = nativeSkillLifecycleEvent({
-		bootstrap: { registryRevision: 7, skills: [{ instructions: "private recipe" }] },
-		digest: "a".repeat(64),
-		staged: false,
-		fetchMs: 12,
-		stageMs: 1,
-		ephemeral: true,
-		sessionScope: "run",
-	});
-	assert.deepEqual(event, {
-		event: "native_skills.ready",
-		registryRevision: 7,
-		skillCount: 1,
-		digest: "a".repeat(12),
-		staged: false,
-		fetchMs: 12,
-		stageMs: 1,
-		audience: "shared",
-		sessionScope: "run",
-	});
-	assert.doesNotMatch(JSON.stringify(event), /private recipe/);
-});
-
-test("runtime ready telemetry explains cold, warm, and replacement decisions", () => {
-	const event = runtimeReadyLifecycleEvent({
-		mode: "restarted",
-		replacementReason: "native_skill_digest_changed",
-		readyMs: 2494,
-		prepareMs: 0,
-		nativeSkillDigest: "b".repeat(64),
-		ephemeral: false,
-		sessionScope: "thread",
-	});
-	assert.deepEqual(event, {
-		event: "pi_runtime.ready",
-		mode: "restarted",
-		replacementReason: "native_skill_digest_changed",
-		readyMs: 2494,
-		prepareMs: 0,
-		nativeSkillDigest: "b".repeat(12),
-		audience: "private",
-		sessionScope: "thread",
-	});
 });
 
 test("a shared container mounts only its run-specific disposable volumes", () => {
@@ -1365,4 +1310,12 @@ test("redacted reasoning is not forwarded", () => {
 		projectRuntimeProgress({ type: "message_update", assistantMessageEvent: event }),
 		{ type: "thinking" },
 	);
+});
+
+test("ensureRuntime tells a forgetful caller apart from a missing image", async () => {
+	// Both used to produce "Image … is missing. Build it with: docker build …",
+	// which sends whoever dropped the argument off to rebuild an image that is
+	// already there.
+	await assert.rejects(ensureRuntime("someprofile", {}), /requires an imageId/);
+	await assert.rejects(ensureRuntime("someprofile", { imageId: null }), /is missing\. Build it with/);
 });

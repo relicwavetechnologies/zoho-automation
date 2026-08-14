@@ -8,8 +8,8 @@ import {
 import {
 	collectRunAssistantText,
 	promptWithTransientRetries,
-	projectRuntimeProgress,
 } from "../local-rpc-controller.mjs";
+import { projectRuntimeProgress } from "../runtime-progress.mjs";
 import { isTransientDivoRunFailure } from "../run-terminal.mjs";
 
 function deferred() {
