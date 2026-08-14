@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { Request, Response } from 'express';
 
-import { createDesktopAuthRoutes } from '../../src/http/desktop/desktop-auth.routes.ts';
+import { allowsPiRuntimeLease, createDesktopAuthRoutes } from '../../src/http/desktop/desktop-auth.routes.ts';
 import { LARK_USER_OAUTH_SCOPES, LarkOAuthService } from '../../src/infrastructure/lark/lark-oauth.service.ts';
 import { ZohoTokenService } from '../../src/infrastructure/zoho/zoho-token.service.ts';
 
@@ -1797,6 +1797,72 @@ describe('desktop auth routes', () => {
     }]);
   });
 
+  it('resolves what a member may do once, however many bootstraps the answer feeds', async () => {
+    const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
+    const calls: string[] = [];
+    const permission = {
+      ok: true,
+      value: {
+        allowedToolIds: new Set(['zohoBooks']),
+        allowedActionsByTool: new Map([['zohoBooks', new Set(['read'])]]),
+        decisions: [],
+        department: { roleSlug: 'MEMBER' },
+      },
+    };
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        departmentMembership: {
+          findFirst: async () => ({
+            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
+          }),
+        },
+      },
+      permissions: {
+        resolve: async () => { calls.push('permissions.resolve'); return permission; },
+      },
+      skillCatalog: {
+        // Serves both shapes, so the capability bootstrap genuinely succeeds
+        // here rather than throwing into its own catch and being skipped.
+        listVisible: async () => [{
+          id: 'skill-finance',
+          slug: 'finance-ops-core',
+          name: 'Finance Ops Core',
+          description: 'Route broad finance questions.',
+          instructions: '# Finance Ops',
+          toolIds: ['zohoBooks'],
+          aliases: [],
+          tags: ['router'],
+          revision: 3,
+        }],
+        registryRevision: async () => { calls.push('registryRevision'); return 9; },
+      },
+      skillAccessEnforcement: {
+        listGrantedSkillIds: async () => { calls.push('listGrantedSkillIds'); return new Set(['skill-finance']); },
+      },
+    }));
+
+    const result = await callRoute(router, 'GET', '/runtime-context', {
+      query: { departmentId, capabilityVersion: '3', nativeSkills: '1' },
+      locals: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MEMBER',
+        isPiRuntimeLease: true,
+        runtimeDepartmentId: departmentId,
+      },
+    });
+
+    assert.equal(result.status, 200);
+    // Both bootstraps are present, so both consumers really did run — otherwise
+    // the count below would be trivially satisfied by one of them being skipped.
+    assert.ok(result.body.data.nativeSkillBootstrap);
+    assert.ok(result.body.data.capabilityBootstrap);
+    // This is the request on a turn's critical path, and it used to ask for all
+    // three of these twice — the two permission queries differing only in a
+    // `channel` the resolver never reads.
+    assert.deepEqual(calls.sort(), ['listGrantedSkillIds', 'permissions.resolve', 'registryRevision']);
+  });
+
   it('returns complete native skill files only to the pinned Pi runtime lease', async () => {
     const permissionCalls: unknown[] = [];
     const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
@@ -2116,6 +2182,107 @@ describe('desktop password sign-in', () => {
     // 403 and not 401: the credentials were right, so saying so leaks nothing
     // this caller does not already know, and "wrong password" would be a lie.
     assert.equal(result.status, 403);
+  });
+});
+
+describe('what a runtime lease resolves to', () => {
+  const leaseLocals = {
+    userId:    'user-1',
+    companyId: 'company-1',
+    aiRole:    'MEMBER',
+    channel:   'lark',
+    isPiRuntimeLease:        true,
+    runtimeInstanceId:       'instance-1',
+    runtimeThreadId:         'oc_chat:thread:om_root',
+    runtimeRunId:            'run-1',
+    runtimeChatId:           'oc_chat',
+    runtimeContextAudience:  'private',
+    runtimeDepartmentId:     'department-1',
+  };
+
+  /**
+   * Every query `/me` runs that a container has never read. Each throws, so a
+   * route that still assembled a desktop payload fails the test loudly instead
+   * of quietly costing a turn the round trips it was meant to stop paying.
+   */
+  const refuseDesktopPayload = {
+    user:    { findUnique: async () => { throw new Error('a run does not read the member profile'); } },
+    company: { findUnique: async () => { throw new Error('a run does not read the company record'); } },
+  };
+  const refuseConnectionListing = {
+    listAccessibleLarkConnections:   async () => { throw new Error('a run does not read connected accounts'); },
+    listAccessibleGoogleConnections: async () => { throw new Error('a run does not read connected accounts'); },
+  };
+
+  it('answers with the run facts the middleware established and the departments it may act in', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        ...refuseDesktopPayload,
+        departmentMembership: {
+          findMany: async () => [
+            { department: { id: 'department-1', name: 'Finance' } },
+            { department: { id: 'department-2', name: 'Sales' } },
+          ],
+        },
+      },
+      connectionRepo: refuseConnectionListing,
+    }));
+
+    const result = await callRoute(router, 'GET', '/runtime-session', { locals: { ...leaseLocals } });
+
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body.data, {
+      userId:    'user-1',
+      companyId: 'company-1',
+      role:      'MEMBER',
+      runtime: {
+        channel:         'lark',
+        instanceId:      'instance-1',
+        threadId:        'oc_chat:thread:om_root',
+        runId:           'run-1',
+        chatId:          'oc_chat',
+        contextAudience: 'private',
+        departmentId:    'department-1',
+      },
+      // Id and name only. Role and manager status stay out: a run's authority
+      // is resolved per tool call by the gateway, never carried in from startup.
+      departments: [
+        { id: 'department-1', name: 'Finance' },
+        { id: 'department-2', name: 'Sales' },
+      ],
+    });
+  });
+
+  it('refuses a caller that is not a runtime lease', async () => {
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        departmentMembership: {
+          findMany: async () => { throw new Error('a person is not a run'); },
+        },
+      },
+    }));
+
+    // A signed-in person reaching this would be handed a run's identity claims
+    // for a run that is not theirs — and `channel` is the only thing separating
+    // the two, because both arrive as a valid member session.
+    const result = await callRoute(router, 'GET', '/runtime-session', {
+      locals: { userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER', channel: 'desktop' },
+    });
+
+    assert.equal(result.status, 403);
+    assert.equal(result.body.success, false);
+  });
+
+  it('does not let a container reach the member payload it used to resolve leases through', () => {
+    // `/me` carries the member's email, name, avatar and every connected Lark
+    // and Google account. It was reachable from inside a container for one
+    // reason — it was where a lease got resolved — and that reason is gone.
+    assert.equal(allowsPiRuntimeLease({ method: 'GET', path: '/me' } as any), false);
+    assert.equal(allowsPiRuntimeLease({ method: 'GET', path: '/runtime-session' } as any), true);
+    assert.equal(allowsPiRuntimeLease({ method: 'GET', path: '/runtime-context' } as any), true);
+    // Read-only, and only these two: a lease is held by whatever the model ran.
+    assert.equal(allowsPiRuntimeLease({ method: 'POST', path: '/runtime-session' } as any), false);
+    assert.equal(allowsPiRuntimeLease({ method: 'GET', path: '/handoff' } as any), false);
   });
 });
 

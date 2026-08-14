@@ -25,11 +25,12 @@ import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import {
 	fetchMemberSession,
+	fetchRuntimeSession,
 	normalizeBackendUrl,
 	signInWithLark,
 } from "./auth.mjs";
 import {
-	fetchNativeSkillBootstrapOrEmpty,
+	fetchRunContext,
 	nativeSkillBootstrapDigest,
 } from "./native-skills.mjs";
 import {
@@ -775,7 +776,7 @@ function spawnRuntimeRpc(container, answerRequest, onProgress) {
  * observable to whoever supplied that handle.
  */
 export const defaultTurnEffects = {
-	fetchNativeSkills: fetchNativeSkillBootstrapOrEmpty,
+	fetchRunContext,
 	resolveImageId,
 	activateIdleContainer: (profile) => idleContainers.activate(profile),
 	ensureRuntime,
@@ -852,11 +853,10 @@ async function runTurn({
 	// Handled so an image failure during a fetch that throws first is not an
 	// unhandled rejection. The real rejection still surfaces at the await below.
 	imageIdReady.catch(() => {});
-	const nativeSkillBootstrap = await phases.measure("skills", () => effects.fetchNativeSkills({
-		backendUrl,
-		token,
-		departmentId,
-	}));
+	const { runtimeContext, nativeSkills: nativeSkillBootstrap } = await phases.measure(
+		"skills",
+		() => effects.fetchRunContext({ backendUrl, token, departmentId }),
+	);
 	const nativeSkillScope = { companyId, userId, departmentId, channel };
 	const nativeSkillDigest = nativeSkillBootstrapDigest(nativeSkillBootstrap, nativeSkillScope);
 	const piKeepAlive = canReusePiProcess({
@@ -876,6 +876,12 @@ async function runTurn({
 		...(trustedSession ? { trustedSession } : {}),
 		...(runId ? { runId } : {}),
 		departmentId,
+		// The container used to fetch this for itself, once at startup and again
+		// on every warm turn. It is re-staged per turn exactly as the rest of the
+		// bootstrap is, so the persona and capabilities a turn runs under are as
+		// fresh as they were — one HTTP round trip and a handler's worth of
+		// queries earlier.
+		runtimeContext,
 		sessionScope: normalizedSessionScope,
 		...(channel ? { channel } : {}),
 		nativeSkills: true,
@@ -1264,9 +1270,9 @@ export async function resolveRuntimeLease({ backendUrl, lease }) {
 		throw new Error("runtimeLease must be a non-empty string");
 	}
 	const normalizedBackendUrl = normalizeBackendUrl(backendUrl);
-	const session = await fetchMemberSession({
+	const session = await fetchRuntimeSession({
 		backendUrl: normalizedBackendUrl,
-		token: lease,
+		lease,
 	});
 	if (
 		!isRuntimeChannel(session.runtime?.channel) ||

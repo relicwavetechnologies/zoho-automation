@@ -432,7 +432,7 @@ describe('member authentication uses the live company membership', () => {
       chatId: 'chat-1',
     }, TEST_SECRET);
 
-    const allowed = await callDesktopRoute(router, '/me', lease);
+    const allowed = await callDesktopRoute(router, '/runtime-session', lease);
     assert.equal(allowed.status, 200);
     assert.deepEqual(allowed.body.data.runtime, {
       channel: 'lark',
@@ -445,6 +445,13 @@ describe('member authentication uses the live company membership', () => {
       // container needs to see that rather than infer one.
       departmentId: null,
     });
+
+    // And not the desktop shell's boot payload, which is where a lease used to
+    // go to learn the same thing. That route hands back the member's email,
+    // name, avatar and connected accounts; a run has never read any of it.
+    const refusedMemberPayload = await callDesktopRoute(router, '/me', lease);
+    assert.equal(refusedMemberPayload.status, 403);
+    assert.equal(refusedMemberPayload.body.error, 'Pi runtime lease is not allowed for this route');
 
     const rejected = await callDesktopRoute(
       router,

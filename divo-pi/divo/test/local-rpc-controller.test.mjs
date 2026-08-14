@@ -13,8 +13,7 @@ import {
 } from "../local-rpc-controller.mjs";
 import {
 	buildNativeSkillStagingArgs,
-	fetchNativeSkillBootstrap,
-	fetchNativeSkillBootstrapOrEmpty,
+	fetchRunContext,
 	nativeSkillBootstrapDigest,
 	renderNativeSkillFiles,
 	validateNativeSkillBootstrap,
@@ -594,68 +593,112 @@ test("native DB skill bootstrap rejects unsafe or ambiguous resources", () => {
 	);
 });
 
-test("native DB skills are fetched only through the authenticated runtime endpoint", async () => {
-	let request;
-	const bootstrap = await fetchNativeSkillBootstrap({
+test("a run's context and its skills arrive together, in one authenticated request", async () => {
+	const requests = [];
+	const result = await fetchRunContext({
 		backendUrl: "https://divo.example.com/",
 		token: "member-token",
 		departmentId: "department-1",
 		fetchImpl: async (url, options) => {
-			request = { url, options };
+			requests.push({ url, options });
 			return {
 				ok: true,
 				status: 200,
-				json: async () => ({ success: true, data: { nativeSkillBootstrap: {
-					registryRevision: 1,
-					skills: [{
-						id: "skill-1",
-						slug: "safe-skill",
-						name: "Safe skill",
-						description: "Safe description",
-						instructions: "Use governed tools.",
-						revision: 1,
-					}],
-				} } }),
+				json: async () => ({ success: true, data: {
+					departmentId: "department-1",
+					departmentName: "Finance",
+					personaPrompt: "Prefer verified records.",
+					nativeSkillBootstrap: {
+						registryRevision: 1,
+						skills: [{
+							id: "skill-1",
+							slug: "safe-skill",
+							name: "Safe skill",
+							description: "Safe description",
+							instructions: "Use governed tools.",
+							revision: 1,
+						}],
+					},
+				} }),
 			};
 		},
 	});
-	assert.equal(bootstrap.skills[0].slug, "safe-skill");
-	assert.match(request.url, /nativeSkills=1/);
-	assert.match(request.url, /departmentId=department-1/);
-	assert.deepEqual(request.options.headers, { Authorization: "Bearer member-token" });
+	assert.equal(result.nativeSkills.skills[0].slug, "safe-skill");
+	assert.equal(result.runtimeContext.personaPrompt, "Prefer verified records.");
+	// One. The container used to make the second one for itself, per turn.
+	assert.equal(requests.length, 1);
+	assert.match(requests[0].url, /nativeSkills=1/);
+	assert.match(requests[0].url, /departmentId=department-1/);
+	assert.deepEqual(requests[0].options.headers, { Authorization: "Bearer member-token" });
 });
 
-test("transient native skill bootstrap failure degrades to an empty DB catalogue", async () => {
+test("a catalogue that will not answer costs the skills, not the turn", async () => {
 	const originalError = console.error;
 	console.error = () => {};
+	const requests = [];
 	try {
-		const bootstrap = await fetchNativeSkillBootstrapOrEmpty({
+		const result = await fetchRunContext({
 			backendUrl: "https://divo.example.com/",
 			token: "member-token",
 			departmentId: "department-1",
-			fetchImpl: async () => ({
-				ok: false,
-				status: 503,
-				json: async () => ({ success: false, message: "catalogue unavailable" }),
-			}),
+			fetchImpl: async (url) => {
+				requests.push(url);
+				// `nativeSkills=1` runs code the plain request does not, so it can
+				// fail on its own. Before both fetches became one, that cost bundled
+				// skills and nothing else — the container still got its context from
+				// its own call. Asking again without it is what keeps that true.
+				if (url.includes("nativeSkills=1")) {
+					return { ok: false, status: 503, json: async () => ({ success: false, message: "catalogue unavailable" }) };
+				}
+				return {
+					ok: true,
+					status: 200,
+					json: async () => ({ success: true, data: { departmentId: "department-1", personaPrompt: "Prefer verified records." } }),
+				};
+			},
 		});
-		assert.deepEqual(bootstrap, { registryRevision: 0, skills: [] });
+		assert.deepEqual(result.nativeSkills, { registryRevision: 0, skills: [] });
+		assert.equal(result.runtimeContext.personaPrompt, "Prefer verified records.");
+		assert.equal(requests.length, 2);
 	} finally {
 		console.error = originalError;
 	}
 });
 
-test("native skill bootstrap authorization failure remains fatal", async () => {
-	await assert.rejects(fetchNativeSkillBootstrapOrEmpty({
+test("a refusal is fatal and is never retried into a weaker answer", async () => {
+	const requests = [];
+	await assert.rejects(fetchRunContext({
 		backendUrl: "https://divo.example.com/",
 		token: "member-token",
 		departmentId: "department-1",
-		fetchImpl: async () => ({
-			ok: false,
-			status: 403,
-			json: async () => ({ success: false, message: "department denied" }),
-		}),
+		fetchImpl: async (url) => {
+			requests.push(url);
+			return { ok: false, status: 403, json: async () => ({ success: false, message: "department denied" }) };
+		},
 	}), /department denied/);
+	// Asking again without the skills would turn "you may not use this
+	// department" into a turn that runs with capabilities it was denied.
+	assert.equal(requests.length, 1);
+});
+
+test("a run with no department asks once, and asks the answerable question", async () => {
+	const requests = [];
+	const result = await fetchRunContext({
+		backendUrl: "https://divo.example.com/",
+		token: "member-token",
+		fetchImpl: async (url) => {
+			requests.push(url);
+			return {
+				ok: true,
+				status: 200,
+				json: async () => ({ success: true, data: { departmentId: null, personaPrompt: "" } }),
+			};
+		},
+	});
+	assert.deepEqual(result.nativeSkills, { registryRevision: 0, skills: [] });
+	assert.equal(requests.length, 1);
+	assert.doesNotMatch(requests[0], /nativeSkills/);
+	assert.doesNotMatch(requests[0], /departmentId/);
 });
 
 test("native DB skills are staged by an isolated root helper", () => {

@@ -7,6 +7,7 @@ import { after, before, describe, it } from "node:test";
 import {
 	fetchMemberSession,
 	fetchRuntimeContext,
+	fetchRuntimeSession,
 	normalizeBackendUrl,
 	readSessionEnvironment,
 	selectDepartment,
@@ -66,6 +67,36 @@ before(async () => {
 						departmentId: "department-1",
 						departmentName: "Finance",
 						personaPrompt: "Finance persona",
+					},
+				}),
+			);
+			return;
+		}
+		if (request.url === "/api/desktop/auth/runtime-session") {
+			// A lease, never a member token: the two are different questions asked
+			// by different callers, and only this one is on a turn's critical path.
+			if (request.headers.authorization !== "Bearer runtime-lease") {
+				response.statusCode = 403;
+				response.end(JSON.stringify({ success: false, message: "A Pi runtime lease is required" }));
+				return;
+			}
+			response.end(
+				JSON.stringify({
+					success: true,
+					data: {
+						userId: "user-1",
+						companyId: "company-1",
+						role: "MEMBER",
+						runtime: {
+							channel: "lark",
+							instanceId: "instance-1",
+							threadId: "oc_chat:thread:om_root",
+							runId: "run-1",
+							chatId: "oc_chat",
+							contextAudience: "private",
+							departmentId: "department-1",
+						},
+						departments: [{ id: "department-1", name: "Finance" }],
 					},
 				}),
 			);
@@ -165,5 +196,28 @@ describe("Divo browser authentication", () => {
 		assert.equal(session.userId, "user-1");
 		assert.equal(session.companyId, "company-1");
 		fs.rmSync(directory, { recursive: true });
+	});
+
+	it("resolves a run's own facts without asking for the member's desktop payload", async () => {
+		requests.length = 0;
+		const session = await fetchRuntimeSession({ backendUrl, lease: "runtime-lease" });
+		assert.equal(session.userId, "user-1");
+		assert.equal(session.companyId, "company-1");
+		assert.equal(session.runtime.runId, "run-1");
+		assert.deepEqual(session.departments, [{ id: "department-1", name: "Finance" }]);
+		// The point of the route. `/me` answers the same identity question but
+		// assembles a desktop shell's boot payload to do it — the member's mail
+		// accounts included — and a turn pays for that on its critical path.
+		assert.deepEqual(
+			requests.map((entry) => entry.url),
+			["/api/desktop/auth/runtime-session"],
+		);
+	});
+
+	it("reports the backend's refusal rather than a generic failure", async () => {
+		await assert.rejects(
+			fetchRuntimeSession({ backendUrl, lease: "not-a-lease" }),
+			/A Pi runtime lease is required/,
+		);
 	});
 });

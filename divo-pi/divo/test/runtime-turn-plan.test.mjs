@@ -24,6 +24,16 @@ import {
 } from "../runtime-warm-process.mjs";
 
 const PROFILE = "turnplan";
+
+/** What the backend says about a run. Travels in the bootstrap, not a second fetch. */
+const RUNTIME_CONTEXT = {
+	departmentId: "department-1",
+	departmentName: "Finance",
+	personaPrompt: "Prefer verified records.",
+	version: "2026-08-15T00:00:00.000Z",
+	personalMemory: [],
+	surface: { key: "lark" },
+};
 const CONTAINER = `divo-pi-local-${PROFILE}`;
 const DIGESTABLE_SKILL = {
 	id: "skill-1",
@@ -91,9 +101,12 @@ function recordingEffects({ log, wasRunning = true, created = false } = {}) {
 				line.startsWith("[Pi] {") ? `log ${JSON.parse(line.slice(5)).event}` : `log ${line}`,
 			),
 			logAnswer: (line) => log.push(`answer ${line}`),
-			async fetchNativeSkills() {
-				log.push("backend fetchNativeSkills");
-				return { registryRevision: 4, skills: [DIGESTABLE_SKILL] };
+			async fetchRunContext() {
+				log.push("backend fetchRunContext");
+				return {
+					runtimeContext: RUNTIME_CONTEXT,
+					nativeSkills: { registryRevision: 4, skills: [DIGESTABLE_SKILL] },
+				};
 			},
 			async resolveImageId() {
 				log.push("docker image inspect");
@@ -199,7 +212,7 @@ test("a cold turn issues each effect once, in order", async () => {
 	assert.equal(result.text, "done");
 	assert.deepEqual(log.filter(line => line.startsWith("docker") || line.startsWith("backend")), [
 		"docker image inspect",
-		"backend fetchNativeSkills",
+		"backend fetchRunContext",
 		"docker container inspect provisioned=false imageId=sha256:image",
 		"docker stage force=true",
 		"docker start",
@@ -216,11 +229,14 @@ test("the image inspect is in flight before the skill fetch resolves", async () 
 	const { effects } = recordingEffects({ log });
 	// Deliberately no handshake between the two: each simply records when it ran,
 	// so re-serialising the pair fails this assertion instead of deadlocking it.
-	effects.fetchNativeSkills = async () => {
+	effects.fetchRunContext = async () => {
 		log.push("fetch:start");
 		await new Promise((resolve) => setImmediate(resolve));
 		log.push("fetch:end");
-		return { registryRevision: 4, skills: [DIGESTABLE_SKILL] };
+		return {
+			runtimeContext: RUNTIME_CONTEXT,
+			nativeSkills: { registryRevision: 4, skills: [DIGESTABLE_SKILL] },
+		};
 	};
 	effects.resolveImageId = async () => {
 		log.push("image:done");
@@ -400,7 +416,7 @@ test("a failing image inspect never becomes an unhandled rejection", async () =>
 		effects.resolveImageId = async () => {
 			throw new Error("image inspect blew up");
 		};
-		effects.fetchNativeSkills = async () => {
+		effects.fetchRunContext = async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 			throw new Error("member session expired");
 		};
@@ -457,7 +473,10 @@ test("a replaced process says why, and a shared run says it is shared", async ()
 	// reused. `replacementReason` is the only account of why, and it is now built
 	// from an object literal in the middle of the turn rather than by a function
 	// with its own test.
-	effects.fetchNativeSkills = async () => ({ registryRevision: 9, skills: [DIGESTABLE_SKILL] });
+	effects.fetchRunContext = async () => ({
+		runtimeContext: RUNTIME_CONTEXT,
+		nativeSkills: { registryRevision: 9, skills: [DIGESTABLE_SKILL] },
+	});
 	await promptWithRuntimeLease(runtimeRequest(), "second", {}, effects);
 	assert.equal(eventNamed("pi_runtime.ready").mode, "restarted");
 	assert.equal(eventNamed("pi_runtime.ready").replacementReason, "native_skill_digest_changed");
@@ -540,7 +559,7 @@ test("a turn that never reached the run is still recorded", async () => {
 	// turn before any container work begins. A record emitted from the teardown
 	// never covers this, so a failure-rate view reads zero for exactly the outage
 	// class an operator most needs to see.
-	effects.fetchNativeSkills = async () => {
+	effects.fetchRunContext = async () => {
 		const error = new Error("member session expired");
 		error.status = 401;
 		throw error;
@@ -870,7 +889,7 @@ test("a turn thrown away mid-inspect does not claim the inspect was instant", as
 	// The image inspect is deliberately left running when the skill fetch throws.
 	// Reporting it as 0 would tell an operator a Docker round trip was instant.
 	effects.resolveImageId = () => new Promise(() => {});
-	effects.fetchNativeSkills = async () => {
+	effects.fetchRunContext = async () => {
 		throw new Error("member session expired");
 	};
 	await assert.rejects(

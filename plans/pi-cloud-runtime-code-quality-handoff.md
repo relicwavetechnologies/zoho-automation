@@ -147,6 +147,45 @@ tool schemas are model-visible on every turn. That visibility is an explicit
 product decision, but its token, latency, and cache impact has not yet been
 measured against the fixed baseline.
 
+### The per-turn backend cost (2026-08-15)
+
+Three round trips were being paid per turn. Two are now gone; the third is
+smaller. None of this changed what a turn is allowed to do.
+
+- **The lease used to resolve through `GET /api/desktop/auth/me`** — a desktop
+  shell's boot payload, roughly eight queries, of which a container read one
+  (its departments). It now resolves through `GET /api/desktop/auth/runtime-session`,
+  which answers with the run facts `memberAuth` has already established plus that
+  one query. The round trip itself stays and must: `memberAuth` is what verifies
+  the lease signature and re-checks that the session and membership are live, and
+  the controller has no caller authentication of its own to put in its place. A
+  request body carrying "run facts" would have deleted revocation, so that idea —
+  written down in an earlier version of this plan — should not be revived.
+- **A lease can no longer reach `/me` at all.** The allowlist is now the named
+  `allowsPiRuntimeLease`, and `/me` is off it. That payload carries the member's
+  email, name, avatar and every connected Lark and Google account; it was
+  reachable from inside a container for one reason, and the reason is gone. The
+  now-unreachable `runtime` block was deleted from `/me` with it.
+- **The container fetched `/runtime-context` for itself** — at startup *and* on
+  every warm turn, via `prepare` — while the controller was fetching the same
+  route, same department, for the skill bootstrap. The controller's fetch now
+  returns both halves (`fetchRunContext`) and the context travels in the
+  bootstrap, which is re-staged per turn, so freshness is unchanged.
+  `container-entry.mjs` makes no network call at all now, and a test asserts that
+  against the source, because no fixture can.
+- **One `/runtime-context` request resolved the same facts twice** when
+  `nativeSkills=1`: two `permissions.resolve` calls differing only in a `channel`
+  the resolver never reads, plus `listGrantedSkillIds` and `registryRevision`
+  twice each. One resolution now feeds both bootstraps, and a test pins the count
+  so this stops being silent if `channel` ever starts deciding something.
+
+Two behaviours were deliberately preserved rather than simplified away, and both
+have tests: a 5xx on the skills half still costs bundled-skills-only rather than
+the turn (the merged fetch asks again without `nativeSkills=1`), and a 4xx is
+still fatal and is **not** retried into a weaker answer — asking again without
+the skills would turn "you may not use this department" into a turn that runs
+with capabilities it was denied.
+
 Current unrelated/untracked items must not be staged or deleted as part of this
 job:
 
@@ -500,7 +539,16 @@ node --test \
   divo/test/local-rpc-server.test.mjs \
   divo/test/ndjson-stream-writer.test.mjs \
   divo/test/runtime-turn-plan.test.mjs \
-  divo/test/runtime-turn-phases.test.mjs
+  divo/test/runtime-turn-phases.test.mjs \
+  divo/test/auth.test.mjs \
+  divo/test/container-entry.test.mjs
+
+# The backend half of the same boundary — the lease contract and the one
+# request a turn still makes. Both sides must move together.
+cd ../advance-backend
+npx tsx --test \
+  tests/http/desktop-auth.routes.test.ts \
+  tests/http/member-auth.middleware.test.ts
 
 # Backend contract generation/parity and types
 cd ../advance-backend
