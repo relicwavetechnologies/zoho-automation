@@ -494,26 +494,26 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
           <div className="ws-cols">
             <Panel title="Last 30 days">
               <div className="ws-panel-body">
-                {!r2 || spend.isLoading ? <Skel w="100%" h={110} /> : (
+                {!r2 || spend.isLoading ? <Skel w="100%" h={76} block /> : (
                   <Fade>
-                    <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
-                      <div>
+                    <div className="ws-person-stats">
+                      <div className="ws-person-stat">
                         <div className="ws-lbl">Cost</div>
-                        <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(spent)}</div>
+                        <div className="ws-num" style={{ color: 'var(--cur-primary)' }}>{money(spent)}</div>
                       </div>
-                      <div>
+                      <div className="ws-person-stat">
                         <div className="ws-lbl">Tasks</div>
-                        <div className="ws-num" style={{ marginTop: 8 }}>{detail?.runs ?? 0}</div>
+                        <div className="ws-num">{detail?.runs ?? 0}</div>
                       </div>
-                      <div>
+                      <div className="ws-person-stat">
                         <div className="ws-lbl">Avg per task</div>
-                        <div className="ws-num" style={{ marginTop: 8 }}>
+                        <div className="ws-num">
                           {detail?.runs ? money(detail.avgPerRun) : '—'}
                         </div>
                       </div>
                     </div>
-                    {detail?.sparkline.length ? (
-                      <div style={{ marginTop: 22 }}><Spark data={detail.sparkline} /></div>
+                    {detail?.sparkline.some((value) => value > 0) ? (
+                      <div className="ws-person-spark"><Spark data={detail.sparkline} /></div>
                     ) : null}
                   </Fade>
                 )}
@@ -521,7 +521,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
             </Panel>
 
             <Panel title="Connected accounts" description="What Divo may act through on their behalf">
-              {!r2 || directory.isLoading ? <SkelRows n={3} /> : !person ? null : (
+              {!r2 || directory.isLoading ? <SkelRows n={2} /> : !person ? null : (
                 <Fade>
                   <div className="ws-rows">
                     {/* The directory reports these two and only these two. Listing a
@@ -549,8 +549,14 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
           </div>
 
           <Panel title="Recent runs" source="companyRuns">
-            {!r2 || runs.loading ? <SkelRows n={4} icon={false} /> : runs.data.length === 0 ? (
-              <Empty title="Nothing has run for them" body="They have permissions but Divo has not done anything on their behalf." />
+            {!r2 || runs.loading ? <SkelRows n={2} icon={false} /> : runs.data.length === 0 ? (
+              <div className="ws-empty-mini">
+                <span className="ic"><CircleAlert size={15} /></span>
+                <div>
+                  <b>No runs yet</b>
+                  <p>Permissions are set, but Divo has not acted for them.</p>
+                </div>
+              </div>
             ) : (
               <Fade>
                 <div className="ws-rows">
