@@ -86,6 +86,68 @@ const EXACT_MARKS: Record<string, ToolKey> = {
   teachcontextget: 'teach',
 }
 
+/**
+ * The same vendors, reached by address instead of by tool id.
+ *
+ * This table used to live in `answer/links.view.tsx`, which meant a Zoho *link*
+ * and a Zoho *step* were answered by two lists that nothing kept in step — and
+ * they had already drifted: the link list had no GitHub, no Notion, and could
+ * not tell a Google Doc from a Google Sheet. Vendor identity is one question,
+ * so it gets one module and two ways in.
+ *
+ * `path` is what makes the Google entries work at all: every Google editor
+ * lives on `docs.google.com`, so the host alone cannot say which product a link
+ * points at. Ordered, most specific first.
+ */
+const DOMAIN_MARKS: { host: RegExp; path?: RegExp; mark: ToolKey }[] = [
+  { host: /^(mail|inbox)\.google\.com$/, mark: 'gmail' },
+  { host: /^docs\.google\.com$/, path: /^\/(spreadsheets|sheets)\b/, mark: 'sheets' },
+  { host: /^docs\.google\.com$/, path: /^\/(presentation|slides)\b/, mark: 'slides' },
+  { host: /^docs\.google\.com$/, path: /^\/forms\b/, mark: 'forms' },
+  { host: /^docs\.google\.com$/, mark: 'docs' },
+  { host: /^sheets\.google\.com$/, mark: 'sheets' },
+  { host: /^drive\.google\.com$/, mark: 'drive' },
+  { host: /^calendar\.google\.com$/, mark: 'calendar' },
+  { host: /^contacts\.google\.com$/, mark: 'contacts' },
+  { host: /^tasks\.google\.com$/, mark: 'googleTasks' },
+  { host: /^chat\.google\.com$/, mark: 'googleChat' },
+  { host: /^script\.google\.com$/, mark: 'appsScript' },
+  { host: /(^|\.)google\.(com|co\.[a-z]{2})$/, mark: 'google' },
+  { host: /(^|\.)zoho\.(com|in|eu)$/, mark: 'zohoBooks' },
+  { host: /(^|\.)(larksuite\.com|feishu\.cn)$/, mark: 'lark' },
+  { host: /(^|\.)airtable\.com$/, mark: 'airtable' },
+  { host: /(^|\.)canva\.com$/, mark: 'canva' },
+  { host: /(^|\.)semrush\.com$/, mark: 'semrush' },
+  { host: /(^|\.)(shopify\.com|myshopify\.com)$/, mark: 'shopify' },
+]
+
+/**
+ * The mark for a web address, or null when this is not a site we know.
+ *
+ * Null rather than a fallback, for the same reason `toolMarkFor` returns a
+ * neutral glyph rather than a borrowed one: the caller can draw something
+ * honest about not knowing, and a wrong vendor mark is a claim about where a
+ * link goes.
+ */
+export function markForUrl(href: string): ToolKey | null {
+  let url: URL
+  try {
+    url = new URL(href.trim())
+  } catch {
+    return null
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+
+  const host = url.hostname.toLowerCase().replace(/^www\./, '')
+  const path = url.pathname.toLowerCase()
+  for (const rule of DOMAIN_MARKS) {
+    if (!rule.host.test(host)) continue
+    if (rule.path && !rule.path.test(path)) continue
+    return rule.mark
+  }
+  return null
+}
+
 /** Google surfaces with their own recognisable mark. */
 const GOOGLE_MARKS: Record<string, ToolKey> = {
   googlegmail: 'gmail',
