@@ -9,7 +9,7 @@
  *   - message_type = 'sticker' → skip
  */
 
-import { larkAudioMimeType } from './lark-media-support';
+import { audioMimeType } from '../../../application/runtime/container-media';
 
 export interface LarkAttachment {
   type:       'file' | 'image';
@@ -87,11 +87,11 @@ export function parseLarkAttachments(raw: unknown): LarkMessageAttachment[] {
     const fileName = (parsed['file_name'] as string | undefined) ?? 'file';
     if (fileKey && !seenKeys.has(fileKey)) {
       seenKeys.add(fileKey);
-      const audioMimeType = larkAudioMimeType(fileName);
-      results.push(audioMimeType
+      const audioMime = audioMimeType(fileName);
+      results.push(audioMime
         ? {
             type: 'audio', source: 'file', key: fileKey, fileName,
-            mimeType: audioMimeType, messageId, durationMs: null,
+            mimeType: audioMime, messageId, durationMs: null,
           }
         : { type: 'file', key: fileKey, fileName, mimeType: mimeForFile(fileName), messageId });
     }

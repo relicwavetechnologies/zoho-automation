@@ -640,6 +640,9 @@ export const createServer = (c: Container): DivoServerApplication => {
       threads: c.webThreads,
       logger:  c.logger,
       maxUploadBytes: c.env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
+      // The same client the Lark voice-note path uses, so a recording is heard
+      // identically whichever surface it was handed over on.
+      ...(voiceTranscriber ? { transcriber: voiceTranscriber } : {}),
     }),
   );
 
