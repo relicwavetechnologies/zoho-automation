@@ -296,7 +296,24 @@ turn plan and nothing else.
 `emitRuntimeProgress` moved to `runtime-progress.mjs` in the same pass, because
 both the turn plan and the wire emit through it.
 
-Not done, and worth doing: the tests for the extracted modules still sit in
+**A review caught two `ReferenceError`s in this work; read this before the next
+extraction.** `runtime-rpc.mjs` was moved out of the controller without three of
+its imports: `readline`, used in the `JsonlRpc` constructor, and the two progress
+projections used on every event line. Every gate passed — 243 tests, `node
+--check`, `divo:check`, and a real `docker build` — because nothing in the suite
+ever constructed a `JsonlRpc` over a stream. The first member message after a
+deploy would have taken the controller process down.
+
+Two guards now exist so this class cannot recur, both in
+`test/runtime-module-references.test.mjs`: one asserts tsc reports no TS2304 or
+TS2552 (a name that is not defined) across `divo/*.mjs`, the other no TS6133 (an
+import nothing uses). They deliberately ignore every other diagnostic — turning
+`checkJs` fully on surfaces about 115 untriaged inference complaints, and that is
+a separate job. `test/runtime-rpc.test.mjs` drives `JsonlRpc` over a real stream,
+which is what the suite was missing.
+
+Still not done, and worth doing: the tests for the other extracted modules
+still sit in
 `test/local-rpc-controller.test.mjs` and `test/local-rpc-server.test.mjs`. Their
 imports point at the right owners, so they run and they pass, but a reader
 looking for `run-result.mjs`'s tests will not find them next to it. Splitting
@@ -587,8 +604,13 @@ ignores `divo/` entirely. So `divo:check` passing says nothing about
 `local-rpc-controller.mjs`, `native-skills.mjs`, `container-entry.mjs`, `auth.mjs`
 or any of their siblings — those are guarded by `node --check` and the test suite
 alone. Do not report "types clean" for a runtime `.mjs` change; it is true and it
-means nothing. Turning `checkJs` on is worth doing and has not been attempted, so
-the size of the fallout is unknown.
+means nothing.
+
+Two narrow guards close the worst of that gap — `test/runtime-module-references.test.mjs`
+runs tsc over `divo/*.mjs` and fails on an undefined name or an unused import,
+which are always bugs. It says nothing about types. Turning `checkJs` fully on
+surfaces about 115 inference errors, mostly TS2339 on inferred object shapes;
+nobody has triaged them and the fallout of fixing them is unmeasured.
 
 After a runtime or extension change, rebuild the Cloud-Pi image before a real
 container test:

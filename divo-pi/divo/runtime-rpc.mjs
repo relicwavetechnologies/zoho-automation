@@ -15,18 +15,22 @@
  * is how a "retry" becomes two runs.
  */
 import { spawn } from "node:child_process";
+import readline from "node:readline";
 import { buildContainerRunArgs } from "./runtime-docker.mjs";
 import {
 	classifyDivoRunTerminal,
 	isTransientDivoRunFailure,
 } from "./run-terminal.mjs";
 import {
-	collectRunAssistantText,
 	completedGatewayFallback,
 	gatewayActionState,
 	terminalRunError,
 } from "./run-result.mjs";
-import { emitRuntimeProgress } from "./runtime-progress.mjs";
+import {
+	emitRuntimeProgress,
+	projectRuntimeAnswerDelta,
+	projectRuntimeProgress,
+} from "./runtime-progress.mjs";
 
 const RPC_TIMEOUT_MS = 30_000;
 const MAX_TRANSIENT_MODEL_RETRIES = 3;

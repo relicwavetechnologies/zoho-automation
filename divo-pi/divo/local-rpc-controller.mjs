@@ -26,7 +26,6 @@ import {
 	fetchMemberSession,
 	fetchRuntimeSession,
 	normalizeBackendUrl,
-	signInWithLark,
 } from "./auth.mjs";
 import {
 	fetchRunContext,
@@ -36,16 +35,12 @@ import {
 	attachmentManifestBlock,
 } from "./runtime-attachments.mjs";
 import {
-	buildContainerRunArgs,
 	deleteDurableSession,
 	ensureRuntime,
-	findOwnedContainer,
 	prepareWarmRuntime,
 	recordRuntimeInterruption,
 	resolveImageId,
 	resourcesFor,
-	runProcess,
-	runWithInput,
 	stageNativeSkillBootstrap,
 	startContainer,
 	stageRuntimeInterruption,
@@ -55,7 +50,6 @@ import {
 	backendUrlForContainer,
 } from "./runtime-docker.mjs";
 import {
-	JsonlRpc,
 	promptWithTransientRetries,
 	spawnRuntimeRpc,
 } from "./runtime-rpc.mjs";
@@ -65,12 +59,10 @@ import {
 } from "./approval-responder.mjs";
 import {
 	loadToken,
-	login,
 	readProfile,
 } from "./local-profile.mjs";
 import { createTurnPhases } from "./runtime-turn-phases.mjs";
 import {
-	assertExpectedLogin,
 	assertPinnedProfile,
 	trustedRuntimeSession,
 	validateProfileName,
@@ -97,9 +89,6 @@ import {
 	waitForClosedRuntime,
 } from "./runtime-warm-process.mjs";
 import {
-	classifyDivoRunTerminal,
-} from "./run-terminal.mjs";
-import {
 	collectProtectedRunMetadata,
 	collectRunAssistantText,
 	logCompletedRun,
@@ -108,9 +97,6 @@ import {
 import { isRuntimeChannel } from "./runtime-channels.mjs";
 import {
 	emitRuntimeProgress,
-	isGovernedDivoTool,
-	projectRuntimeAnswerDelta,
-	projectRuntimeProgress,
 } from "./runtime-progress.mjs";
 
 const SOFT_ABORT_TIMEOUT_MS = 15_000;
