@@ -2,6 +2,10 @@ import type { ToolRegistry } from '../tools/tool-registry';
 import type { PermissionService } from '../permissions/permission.service';
 import type { PermissionResult } from '../permissions/permission.types';
 import type { ApprovalGateService } from '../approval/approval-gate.service';
+import type {
+  ApprovalDecision,
+  ApprovalExecutionGrant,
+} from '../approval/approval.types';
 import { buildArgsSummary } from './args-summary';
 import type { ToolExecutionContext } from '../tools/tool.contract';
 import type { Tool } from '../tools/tool.contract';
@@ -183,6 +187,53 @@ type ResolveRuntimeToolInvocationResult =
   | { readonly ok: true; readonly value: ResolvedRuntimeToolInvocation }
   | { readonly ok: false; readonly outcome: RuntimeToolExecutionOutcome };
 
+type GovernedInvocationFailureStatus = Extract<RuntimeToolExecutionOutcome['status'],
+  'invalid_args' | 'approval_required' | 'approval_rejected'
+  | 'approval_execution_failed' | 'approval_misconfigured'
+  | 'rate_limited' | 'rate_limit_unavailable' | 'tool_error'>;
+
+type GovernedApprovalDecision = Extract<ApprovalDecision,
+  { readonly kind: 'pending' | 'rejected' | 'execution_failed' }>;
+
+type GovernedInvocationOutcome =
+  | {
+      readonly ok: true;
+      readonly result: unknown;
+      readonly protectedData?: ShopifyProtectedResult;
+      readonly replayedApprovalId?: string;
+    }
+  | {
+      readonly ok: false;
+      readonly status: GovernedInvocationFailureStatus;
+      readonly message: string;
+      readonly approval?: GovernedApprovalDecision;
+      readonly approvalId?: string;
+      readonly retryAfterSeconds?: number;
+    };
+
+interface GovernedInvocationInput {
+  readonly tool: Tool<unknown, unknown>;
+  readonly action: ToolActionGroup;
+  readonly args: Record<string, unknown>;
+  readonly runContext: RunContext;
+  readonly perm: PermissionResult;
+  /** Durable provider/protected-data provenance for this exact runtime action. */
+  readonly execution?: GatewayExecutionContext;
+  /** Present only when this caller has a durable approval scope. */
+  readonly approval?: {
+    readonly gate: ApprovalGateService;
+    readonly chatId: string;
+    /** Explicit approval provenance; derived provider provenance is not authoritative here. */
+    readonly execution?: GatewayExecutionContext;
+    readonly resumeOnApproval?: boolean;
+    readonly parentBusinessActionId?: string;
+  };
+  readonly correlationId: string;
+  readonly resultAudience?: ToolExecutionContext['resultAudience'];
+  readonly abortSignal?: AbortSignal;
+  readonly onProgress?: (message: string) => void;
+}
+
 export class ToolExecutor {
   constructor(private readonly deps: ToolExecutorDeps) {}
 
@@ -242,274 +293,29 @@ export class ToolExecutor {
     }
 
     const { member } = input;
-    const {
+    const { tool, action, args, perm, runContext } = resolved.value;
+    const outcome = await this.executeGoverned({
       tool,
       action,
-      args: validatedArgs,
+      args,
       perm,
       runContext,
-      effectiveDepartmentId,
-    } = resolved.value;
-
-    const ratePreflight = await this.preflightRateLimit({
-      companyId: runContext.companyId,
-      toolFamily: tool.family,
-      action,
-      args: validatedArgs,
-    });
-    if (ratePreflight) return ratePreflight;
-
-    let executionGrant: {
-      approvalId: string;
-      authority: 'connection_owner' | 'company_admin' | 'department_manager';
-    } | undefined;
-
-    // A connection policy can require its owner even when the caller did not
-    // select a department. The gate itself preserves the old no-department
-    // behaviour for ordinary department-based approval rules.
-    if (this.deps.approvalGate && isProtectedShopifyToolId(String(tool.id))) {
-      const requirement = await this.deps.approvalGate.inspect({
-        toolId: tool.id,
-        action,
-        args: validatedArgs,
-        perm,
-        runContext,
-      });
-      if (requirement.kind === 'required') {
-        return gatewayFailure(
-          'approval_misconfigured',
-          'Protected Shopify reads cannot be stored in a durable approval request. Grant direct read access or deny this capability.',
-        );
-      }
-      if (requirement.kind === 'misconfigured') {
-        return gatewayFailure('approval_misconfigured', requirement.message);
-      }
-    } else if (this.deps.approvalGate) {
-      const argsSummary = buildArgsSummary(tool.id, action, validatedArgs);
-      const decision = await this.deps.approvalGate.check({
-        toolId: tool.id,
-        action,
-        args: validatedArgs,
-        perm,
-        runContext,
-        chatId: gatewayApprovalChatId(member, input.execution),
-        argsSummary,
-        ...(input.resumeOnApproval ? { resumeOnApproval: true } : {}),
-        ...(input.parentBusinessActionId
-          ? { parentBusinessActionId: input.parentBusinessActionId }
-          : {}),
-        ...(input.execution ? { execution: input.execution } : {}),
-      });
-
-      if (decision.kind === 'pending') {
-        return gatewayFailure('approval_required', decision.message, {
-          approval: {
-            approvalId: decision.approvalId,
-            message: decision.message,
-            status: 'pending',
-            authority: decision.authority,
-            approverName: decision.approverName,
-            scope: 'once',
-            requestState: decision.requestState,
-            nextAction: decision.nextAction,
-            retry: decision.retry,
-          },
-        });
-      }
-
-      if (decision.kind === 'rejected') {
-        return gatewayFailure('approval_rejected', decision.message, {
-          approval: {
-            approvalId: decision.approvalId,
-            message: decision.message,
-            status: 'rejected',
-            authority: decision.authority,
-            approverName: decision.approverName,
-            scope: 'once',
-            requestState: decision.requestState,
-            nextAction: decision.nextAction,
-            retry: decision.retry,
-          },
-        });
-      }
-
-      if (decision.kind === 'execution_failed') {
-        return gatewayFailure('approval_execution_failed', decision.message, {
-          approval: {
-            approvalId: decision.approvalId,
-            message: decision.message,
-            status: 'failed',
-            authority: decision.authority,
-            approverName: decision.approverName,
-            scope: 'once',
-            requestState: decision.requestState,
-            nextAction: decision.nextAction,
-            retry: decision.retry,
-          },
-        });
-      }
-
-      if (decision.kind === 'misconfigured') {
-        return gatewayFailure('approval_misconfigured', decision.message);
-      }
-
-      if (decision.kind === 'completed') {
-        const replayed = validateToolResult(tool, decision.result);
-        if (!replayed.ok) return gatewayFailure('tool_error', replayed.message);
-        const provenanceFailure = await this.recordShopifyRun({
-          toolId: String(tool.id),
-          args: validatedArgs,
-          companyId: member.companyId,
-          userId: member.userId,
-          channel: member.channel ?? 'desktop',
+      ...(input.execution ? { execution: input.execution } : {}),
+      ...(this.deps.approvalGate ? {
+        approval: {
+          gate: this.deps.approvalGate,
+          chatId: gatewayApprovalChatId(member, input.execution),
           ...(input.execution ? { execution: input.execution } : {}),
-        });
-        if (provenanceFailure) return gatewayFailure('tool_error', provenanceFailure);
-        const protectedData = classifyShopifyProtectedResult({
-          toolId: String(tool.id),
-          args: validatedArgs,
-          result: replayed.value,
-        });
-        return gatewaySuccess({
-          toolId: tool.id,
-          action,
-          result: limitGatewayResult(member, replayed.value),
-          ...(protectedData ? { protectedData } : {}),
-          replayedApproval: {
-            approvalId: decision.approvalId,
-            status: 'completed',
-          },
-        });
-      }
-
-      executionGrant = decision.executionGrant;
-    }
-
-    const protectionFailure = await this.observeProtectedRun({
-      toolId: String(tool.id),
-      companyId: member.companyId,
-      userId: member.userId,
-      channel: member.channel ?? 'desktop',
-      ...(input.execution ? { execution: input.execution } : {}),
-    });
-    if (protectionFailure) return gatewayFailure('tool_error', protectionFailure);
-
-    const rateConsume = await this.consumeRateLimit({
-      companyId: runContext.companyId,
-      toolFamily: tool.family,
-      action,
-      args: validatedArgs,
-    });
-    if (rateConsume) {
-      if (executionGrant) {
-        const released = await this.releaseExecutionGrant(this.deps.approvalGate, executionGrant);
-        if (!released) return approvalReleaseFailure(executionGrant.approvalId);
-      }
-      return rateConsume;
-    }
-
-    const initialProvenanceFailure = await this.recordShopifyRun({
-      toolId: String(tool.id),
-      args: validatedArgs,
-      companyId: member.companyId,
-      userId: member.userId,
-      channel: member.channel ?? 'desktop',
-      ...(input.execution ? { execution: input.execution } : {}),
-    });
-    if (initialProvenanceFailure) {
-      if (executionGrant) {
-        const finalized = await this.deps.approvalGate?.failExecution(executionGrant, {
-          status: 'tool_error',
-          message: initialProvenanceFailure,
-        });
-        if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
-      }
-      return gatewayFailure('tool_error', initialProvenanceFailure);
-    }
-
-    const execCtx: ToolExecutionContext = {
-      runContext,
-      perm,
-      ...(member.resultAudience ? { resultAudience: member.resultAudience } : {}),
+          ...(input.resumeOnApproval ? { resumeOnApproval: true } : {}),
+          ...(input.parentBusinessActionId
+            ? { parentBusinessActionId: input.parentBusinessActionId }
+            : {}),
+        },
+      } : {}),
       correlationId: input.requestId ?? input.execution?.actionId ?? randomUUID(),
-      logger: this.deps.logger.child({ toolId: tool.id }),
-      clock: this.deps.clock,
-      ...(executionGrant ? { approvalGrant: executionGrant } : {}),
-    };
-
-    try {
-      const result = await tool.execute(validatedArgs, execCtx);
-      if (!result.ok) {
-        if (executionGrant) {
-          const finalized = await this.deps.approvalGate?.failExecution(executionGrant, {
-            status: 'tool_error',
-            message: result.error.message,
-          });
-          if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
-        }
-        // Same mapping as the two preflight sites and the runtime path: a tool
-        // asking for a corrected argument must not reach the caller as a flat
-        // tool failure. This is the path the cloud Pi container uses, so
-        // flattening here is what made the agent report "access was denied".
-        const status = result.error.payload.reason === 'bad_args' ? 'invalid_args' : 'tool_error';
-        this.deps.logger.warn('gateway.tool.failed', {
-          toolId: tool.id,
-          action,
-          status,
-          reason: result.error.payload.reason,
-          message: result.error.message,
-        });
-        return gatewayFailure(status, result.error.message);
-      }
-
-      const validatedResult = validateToolResult(tool, result.value);
-      if (!validatedResult.ok) {
-        if (executionGrant) {
-          const finalized = await this.deps.approvalGate?.failExecution(executionGrant, {
-            status: 'tool_error',
-            message: validatedResult.message,
-          });
-          if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
-        }
-        return gatewayFailure('tool_error', validatedResult.message);
-      }
-
-      if (executionGrant) {
-        const finalized = await this.deps.approvalGate?.completeExecution(executionGrant, {
-          status: 'success',
-          result: validatedResult.value,
-        });
-        if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
-      }
-
-      const provenanceFailure = await this.recordShopifyRun({
-        toolId: String(tool.id),
-        args: validatedArgs,
-        companyId: member.companyId,
-        userId: member.userId,
-        channel: member.channel ?? 'desktop',
-        ...(input.execution ? { execution: input.execution } : {}),
-      });
-      if (provenanceFailure) return gatewayFailure('tool_error', provenanceFailure);
-
-      return gatewaySuccess({
-        toolId: tool.id,
-        action,
-        result: limitGatewayResult(member, validatedResult.value),
-        ...protectedResultField(tool.id, validatedArgs, validatedResult.value),
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.deps.logger.error('gateway.tool.threw', { toolId: tool.id, action, message });
-      if (executionGrant) {
-        const finalized = await this.deps.approvalGate?.failExecution(executionGrant, {
-          status: 'tool_error',
-          message,
-        });
-        if (!finalized) return approvalCheckpointFailure(executionGrant.approvalId);
-      }
-      return gatewayFailure('tool_error', message);
-    }
+      ...(member.resultAudience ? { resultAudience: member.resultAudience } : {}),
+    });
+    return gatewayOutcome(tool, action, member, outcome);
   }
 
   /**
@@ -568,93 +374,112 @@ export class ToolExecutor {
     }
     const resolved = await this.resolveRuntimeInvocation(input);
     if (!resolved.ok) return resolved.outcome;
-    const { toolId, tool, args: validatedArgs, action } = resolved.value;
+    const { toolId, tool, args, action } = resolved.value;
     const { runContext, perm } = input;
     const execution = input.execution ?? runtimeExecutionContext(runContext);
+    const outcome = await this.executeGoverned({
+      tool,
+      action,
+      args,
+      runContext,
+      perm,
+      ...(execution ? { execution } : {}),
+      ...(input.approvalGate && input.chatId ? {
+        approval: {
+          gate: input.approvalGate,
+          chatId: input.chatId,
+          ...(input.execution ? { execution: input.execution } : {}),
+        },
+      } : {}),
+      // A tool ID is global and would make a per-run provider budget shared by
+      // every conversation. Prefer the channel's durable run identity instead.
+      correlationId: runContext.traceId ?? runContext.requestId ?? runContext.chatId ?? randomUUID(),
+      ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+      ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+    });
+    return runtimeOutcome(toolId, action, outcome);
+  }
 
+  /**
+   * One governed invocation lifecycle for every caller.
+   *
+   * Gateway and backend-runtime entry points differ only in how identity is
+   * resolved and how this neutral outcome is presented. Rate limits, approval,
+   * protected-data marking, provider execution, result validation, durable
+   * approval checkpoints, and provenance must remain in this one path.
+   */
+  private async executeGoverned(input: GovernedInvocationInput): Promise<GovernedInvocationOutcome> {
+    const { tool, action, args, runContext, perm } = input;
+    const toolId = String(tool.id);
     const ratePreflight = await this.preflightRateLimit({
       companyId: runContext.companyId,
       toolFamily: tool.family,
       action,
-      args: validatedArgs,
+      args,
     });
-    if (ratePreflight) return runtimeRateLimitFailure(toolId, ratePreflight, action);
+    if (ratePreflight) return governedRateLimitFailure(ratePreflight);
 
-    let executionGrant: {
-      approvalId: string;
-      authority: 'connection_owner' | 'company_admin' | 'department_manager';
-    } | undefined;
-    if (input.approvalGate && input.chatId && isProtectedShopifyToolId(toolId)) {
-      const requirement = await input.approvalGate.inspect({
+    let executionGrant: ApprovalExecutionGrant | undefined;
+    if (input.approval && isProtectedShopifyToolId(toolId)) {
+      const requirement = await input.approval.gate.inspect({
         toolId: tool.id,
         action,
-        args: validatedArgs,
+        args,
         perm,
         runContext,
       });
       if (requirement.kind === 'required') {
-        return runtimeFailure(
-          toolId,
+        return governedFailure(
           'approval_misconfigured',
           'Protected Shopify reads cannot be stored in a durable approval request. Grant direct read access or deny this capability.',
-          action,
         );
       }
       if (requirement.kind === 'misconfigured') {
-        return runtimeFailure(toolId, 'approval_misconfigured', requirement.message, action);
+        return governedFailure('approval_misconfigured', requirement.message);
       }
-    } else if (input.approvalGate && input.chatId) {
-      const decision = await input.approvalGate.check({
+    } else if (input.approval) {
+      const decision = await input.approval.gate.check({
         toolId: tool.id,
         action,
-        args: validatedArgs,
+        args,
         perm,
         runContext,
-        chatId: input.chatId,
-        argsSummary: buildArgsSummary(tool.id, action, validatedArgs),
-        ...(input.execution ? { execution: input.execution } : {}),
+        chatId: input.approval.chatId,
+        argsSummary: buildArgsSummary(tool.id, action, args),
+        ...(input.approval.resumeOnApproval ? { resumeOnApproval: true } : {}),
+        ...(input.approval.parentBusinessActionId
+          ? { parentBusinessActionId: input.approval.parentBusinessActionId }
+          : {}),
+        ...(input.approval.execution ? { execution: input.approval.execution } : {}),
       });
-      if (decision.kind === 'pending') {
-        return runtimeFailure(toolId, 'approval_required', decision.message, action, decision.approvalId);
-      }
-      if (decision.kind === 'rejected') {
-        return runtimeFailure(toolId, 'approval_rejected', decision.message, action, decision.approvalId);
-      }
-      if (decision.kind === 'execution_failed') {
-        return runtimeFailure(
-          toolId,
-          'approval_execution_failed',
-          decision.message,
-          action,
-          decision.approvalId,
-        );
+      if (
+        decision.kind === 'pending'
+        || decision.kind === 'rejected'
+        || decision.kind === 'execution_failed'
+      ) {
+        return governedApprovalFailure(decision);
       }
       if (decision.kind === 'misconfigured') {
-        return runtimeFailure(toolId, 'approval_misconfigured', decision.message, action);
+        return governedFailure('approval_misconfigured', decision.message);
       }
       if (decision.kind === 'completed') {
         const replayed = validateToolResult(tool, decision.result);
-        if (!replayed.ok) return runtimeFailure(toolId, 'tool_error', replayed.message, action);
+        if (!replayed.ok) return governedFailure('tool_error', replayed.message);
         const provenanceFailure = await this.recordShopifyRun({
           toolId,
-          args: validatedArgs,
+          args,
           companyId: String(runContext.companyId),
           userId: String(runContext.userId),
           channel: runContext.channel,
-          ...(execution ? { execution } : {}),
+          ...(input.execution ? { execution: input.execution } : {}),
         });
-        if (provenanceFailure) return runtimeFailure(toolId, 'tool_error', provenanceFailure, action);
-        const protectedData = classifyShopifyProtectedResult({
-          toolId: String(tool.id),
-          args: validatedArgs,
-          result: replayed.value,
-        });
+        if (provenanceFailure) return governedFailure('tool_error', provenanceFailure);
+        const protectedData = classifyShopifyProtectedResult({ toolId, args, result: replayed.value });
         return {
-          status: 'success',
-          toolId,
-          action,
-          result: limitModelFacingResult(replayed.value),
+          ok: true,
+          result: replayed.value,
           ...(protectedData ? { protectedData } : {}),
+          replayedApprovalId: decision.approvalId,
         };
       }
       executionGrant = decision.executionGrant;
@@ -665,59 +490,46 @@ export class ToolExecutor {
       companyId: String(runContext.companyId),
       userId: String(runContext.userId),
       channel: runContext.channel,
-      ...(execution ? { execution } : {}),
+      ...(input.execution ? { execution: input.execution } : {}),
     });
-    if (protectionFailure) return runtimeFailure(toolId, 'tool_error', protectionFailure, action);
+    if (protectionFailure) return governedFailure('tool_error', protectionFailure);
 
     const rateConsume = await this.consumeRateLimit({
       companyId: runContext.companyId,
       toolFamily: tool.family,
       action,
-      args: validatedArgs,
+      args,
     });
     if (rateConsume) {
       if (executionGrant) {
-        const released = await this.releaseExecutionGrant(input.approvalGate, executionGrant);
-        if (!released) {
-          return runtimeFailure(
-            toolId,
-            'approval_misconfigured',
-            approvalReleaseFailureMessage(executionGrant.approvalId),
-            action,
-            executionGrant.approvalId,
-          );
-        }
+        const released = await this.releaseExecutionGrant(input.approval?.gate, executionGrant);
+        if (!released) return governedApprovalReleaseFailure(executionGrant.approvalId);
       }
-      return runtimeRateLimitFailure(toolId, rateConsume, action);
+      return governedRateLimitFailure(rateConsume);
     }
 
     const initialProvenanceFailure = await this.recordShopifyRun({
       toolId,
-      args: validatedArgs,
+      args,
       companyId: String(runContext.companyId),
       userId: String(runContext.userId),
       channel: runContext.channel,
-      ...(execution ? { execution } : {}),
+      ...(input.execution ? { execution: input.execution } : {}),
     });
     if (initialProvenanceFailure) {
-      if (executionGrant) {
-        const finalized = await input.approvalGate?.failExecution(executionGrant, {
-          status: 'tool_error',
-          message: initialProvenanceFailure,
-        });
-        if (!finalized) {
-          return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
-        }
-      }
-      return runtimeFailure(toolId, 'tool_error', initialProvenanceFailure, action);
+      const checkpointFailure = await this.failExecutionGrant(
+        input.approval?.gate,
+        executionGrant,
+        initialProvenanceFailure,
+      );
+      return checkpointFailure ?? governedFailure('tool_error', initialProvenanceFailure);
     }
 
     const context: ToolExecutionContext = {
       runContext,
       perm,
-      // A tool ID is global and would make a per-run provider budget shared by
-      // every conversation. Prefer the channel's durable run identity instead.
-      correlationId: runContext.traceId ?? runContext.requestId ?? runContext.chatId ?? randomUUID(),
+      ...(input.resultAudience ? { resultAudience: input.resultAudience } : {}),
+      correlationId: input.correlationId,
       logger: this.deps.logger.child({ toolId: tool.id, channel: runContext.channel }),
       clock: this.deps.clock,
       ...(executionGrant ? { approvalGrant: executionGrant } : {}),
@@ -728,43 +540,24 @@ export class ToolExecutor {
     try {
       if (input.abortSignal?.aborted) {
         if (executionGrant) {
-          const released = await this.releaseExecutionGrant(input.approvalGate, executionGrant);
-          if (!released) {
-            return runtimeFailure(
-              toolId,
-              'approval_misconfigured',
-              approvalReleaseFailureMessage(executionGrant.approvalId),
-              action,
-              executionGrant.approvalId,
-            );
-          }
+          const released = await this.releaseExecutionGrant(input.approval?.gate, executionGrant);
+          if (!released) return governedApprovalReleaseFailure(executionGrant.approvalId);
         }
-        return runtimeFailure(
-          toolId,
+        return governedFailure(
           'tool_error',
           'Tool execution was cancelled because the parent run ended.',
-          action,
         );
       }
-      const result = await tool.execute(validatedArgs, context);
+
+      const result = await tool.execute(args, context);
       if (!result.ok) {
-        if (executionGrant) {
-          const finalized = await input.approvalGate?.failExecution(executionGrant, {
-            status: 'tool_error',
-            message: result.error.message,
-          });
-          if (!finalized) {
-            return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
-          }
-        }
-        // Preserve `bad_args` the way both preflight paths already do. Flattened
-        // to `tool_error`, a tool saying "add accountId and retry" reads to the
-        // model as the tool failing, and it reports the request as denied
-        // instead of correcting the one argument it was asked to correct.
+        const checkpointFailure = await this.failExecutionGrant(
+          input.approval?.gate,
+          executionGrant,
+          result.error.message,
+        );
+        if (checkpointFailure) return checkpointFailure;
         const status = result.error.payload.reason === 'bad_args' ? 'invalid_args' : 'tool_error';
-        // Nothing on this path was logged, so a run that ended with the model
-        // telling a member "access was denied" left no record of which tool
-        // refused or why. Args stay out: they carry member data.
         this.deps.logger.warn('gateway.tool.failed', {
           toolId,
           action,
@@ -773,32 +566,27 @@ export class ToolExecutor {
           message: result.error.message,
           correlationId: context.correlationId,
         });
-        return runtimeFailure(toolId, status, result.error.message, action);
+        return governedFailure(status, result.error.message);
       }
 
       const validatedResult = validateToolResult(tool, result.value);
       if (!validatedResult.ok) {
-        if (executionGrant) {
-          const finalized = await input.approvalGate?.failExecution(executionGrant, {
-            status: 'tool_error',
-            message: validatedResult.message,
-          });
-          if (!finalized) {
-            return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
-          }
-        }
-        return runtimeFailure(toolId, 'tool_error', validatedResult.message, action);
+        const checkpointFailure = await this.failExecutionGrant(
+          input.approval?.gate,
+          executionGrant,
+          validatedResult.message,
+        );
+        return checkpointFailure ?? governedFailure('tool_error', validatedResult.message);
       }
 
       if (executionGrant) {
-        const finalized = await input.approvalGate?.completeExecution(executionGrant, {
+        const finalized = await input.approval?.gate.completeExecution(executionGrant, {
           status: 'success',
           result: validatedResult.value,
         });
-        if (!finalized) {
-          return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
-        }
+        if (!finalized) return governedApprovalCheckpointFailure(executionGrant.approvalId);
       }
+
       this.deps.logger.info('gateway.tool.succeeded', {
         toolId,
         action,
@@ -806,23 +594,21 @@ export class ToolExecutor {
       });
       const provenanceFailure = await this.recordShopifyRun({
         toolId,
-        args: validatedArgs,
+        args,
         companyId: String(runContext.companyId),
         userId: String(runContext.userId),
         channel: runContext.channel,
-        ...(execution ? { execution } : {}),
+        ...(input.execution ? { execution: input.execution } : {}),
       });
-      if (provenanceFailure) return runtimeFailure(toolId, 'tool_error', provenanceFailure, action);
+      if (provenanceFailure) return governedFailure('tool_error', provenanceFailure);
       const protectedData = classifyShopifyProtectedResult({
-        toolId: String(tool.id),
-        args: validatedArgs,
+        toolId,
+        args,
         result: validatedResult.value,
       });
       return {
-        status: 'success',
-        toolId,
-        action,
-        result: limitModelFacingResult(validatedResult.value),
+        ok: true,
+        result: validatedResult.value,
         ...(protectedData ? { protectedData } : {}),
       };
     } catch (error) {
@@ -833,17 +619,26 @@ export class ToolExecutor {
         message,
         correlationId: context.correlationId,
       });
-      if (executionGrant) {
-        const finalized = await input.approvalGate?.failExecution(executionGrant, {
-          status: 'tool_error',
-          message,
-        });
-        if (!finalized) {
-          return runtimeApprovalCheckpointFailure(toolId, action, executionGrant.approvalId);
-        }
-      }
-      return runtimeFailure(toolId, 'tool_error', message, action);
+      const checkpointFailure = await this.failExecutionGrant(
+        input.approval?.gate,
+        executionGrant,
+        message,
+      );
+      return checkpointFailure ?? governedFailure('tool_error', message);
     }
+  }
+
+  private async failExecutionGrant(
+    approvalGate: ApprovalGateService | undefined,
+    executionGrant: ApprovalExecutionGrant | undefined,
+    message: string,
+  ): Promise<GovernedInvocationOutcome | null> {
+    if (!executionGrant) return null;
+    const finalized = await approvalGate?.failExecution(executionGrant, {
+      status: 'tool_error',
+      message,
+    });
+    return finalized ? null : governedApprovalCheckpointFailure(executionGrant.approvalId);
   }
 
   private async resolveRuntimeInvocation(
@@ -1264,15 +1059,6 @@ function runtimeExecutionContext(runContext: RunContext): GatewayExecutionContex
   };
 }
 
-function protectedResultField(
-  toolId: string,
-  args: Record<string, unknown>,
-  result: unknown,
-): { readonly protectedData?: ShopifyProtectedResult } {
-  const protectedData = classifyShopifyProtectedResult({ toolId, args, result });
-  return protectedData ? { protectedData } : {};
-}
-
 type RuntimeConnectionProvider = Extract<
   ConnectionProvider,
   'google_workspace' | 'zoho' | 'airtable' | 'lark' | 'shopify'
@@ -1412,26 +1198,145 @@ function runtimeFailure(
   };
 }
 
-function approvalReleaseFailure(approvalId: string): GatewayResponse {
-  return gatewayFailure('approval_misconfigured', approvalReleaseFailureMessage(approvalId));
+function gatewayOutcome(
+  tool: Tool<unknown, unknown>,
+  action: ToolActionGroup,
+  member: GatewayMemberContext,
+  outcome: GovernedInvocationOutcome,
+): GatewayResponse {
+  if (outcome.ok) {
+    return gatewaySuccess({
+      toolId: tool.id,
+      action,
+      result: limitGatewayResult(member, outcome.result),
+      ...(outcome.protectedData ? { protectedData: outcome.protectedData } : {}),
+      ...(outcome.replayedApprovalId ? {
+        replayedApproval: {
+          approvalId: outcome.replayedApprovalId,
+          status: 'completed' as const,
+        },
+      } : {}),
+    });
+  }
+  if (outcome.approval) {
+    return gatewayFailure(outcome.status, outcome.message, {
+      approval: gatewayApprovalPresentation(outcome.approval),
+    });
+  }
+  if (outcome.retryAfterSeconds !== undefined) {
+    return gatewayFailure(outcome.status, outcome.message, {
+      retryAfterSeconds: outcome.retryAfterSeconds,
+    });
+  }
+  return gatewayFailure(outcome.status, outcome.message);
 }
 
-function approvalCheckpointFailure(approvalId: string): GatewayResponse {
-  return gatewayFailure('approval_execution_failed', approvalCheckpointFailureMessage(approvalId));
-}
-
-function runtimeApprovalCheckpointFailure(
+function runtimeOutcome(
   toolId: string,
   action: ToolActionGroup,
-  approvalId: string,
+  outcome: GovernedInvocationOutcome,
 ): RuntimeToolExecutionOutcome {
+  if (outcome.ok) {
+    return {
+      status: 'success',
+      toolId,
+      action,
+      result: limitModelFacingResult(outcome.result),
+      ...(outcome.protectedData ? { protectedData: outcome.protectedData } : {}),
+    };
+  }
   return runtimeFailure(
     toolId,
-    'approval_execution_failed',
-    approvalCheckpointFailureMessage(approvalId),
+    outcome.status,
+    outcome.message,
     action,
-    approvalId,
+    outcome.approval?.approvalId ?? outcome.approvalId,
   );
+}
+
+function governedFailure(
+  status: GovernedInvocationFailureStatus,
+  message: string,
+): GovernedInvocationOutcome {
+  return { ok: false, status, message };
+}
+
+function governedApprovalFailure(
+  decision: GovernedApprovalDecision,
+): GovernedInvocationOutcome {
+  const status = decision.kind === 'pending'
+    ? 'approval_required'
+    : decision.kind === 'rejected'
+      ? 'approval_rejected'
+      : 'approval_execution_failed';
+  return {
+    ok: false,
+    status,
+    message: decision.message,
+    approval: decision,
+    approvalId: decision.approvalId,
+  };
+}
+
+function governedApprovalCheckpointFailure(
+  approvalId: string,
+): GovernedInvocationOutcome {
+  return {
+    ok: false,
+    status: 'approval_execution_failed',
+    message: approvalCheckpointFailureMessage(approvalId),
+    approvalId,
+  };
+}
+
+function governedApprovalReleaseFailure(approvalId: string): GovernedInvocationOutcome {
+  return {
+    ok: false,
+    status: 'approval_misconfigured',
+    message: approvalReleaseFailureMessage(approvalId),
+    approvalId,
+  };
+}
+
+function governedRateLimitFailure(response: GatewayResponse): GovernedInvocationOutcome {
+  const status = response.status === 'rate_limited' || response.status === 'rate_limit_unavailable'
+    ? response.status
+    : 'rate_limit_unavailable';
+  const retryAfterSeconds = response.error?.retryAfterSeconds;
+  return {
+    ok: false,
+    status,
+    message: response.error?.message ?? 'Connection rate limit check failed.',
+    ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+  };
+}
+
+function gatewayApprovalPresentation(decision: GovernedApprovalDecision): {
+  readonly approvalId: string;
+  readonly message: string;
+  readonly status: 'pending' | 'rejected' | 'failed';
+  readonly authority: GovernedApprovalDecision['authority'];
+  readonly approverName: string;
+  readonly scope: 'once';
+  readonly requestState: GovernedApprovalDecision['requestState'];
+  readonly nextAction: GovernedApprovalDecision['nextAction'];
+  readonly retry: GovernedApprovalDecision['retry'];
+} {
+  return {
+    approvalId: decision.approvalId,
+    message: decision.message,
+    status: decision.kind === 'pending'
+      ? 'pending'
+      : decision.kind === 'rejected'
+        ? 'rejected'
+        : 'failed',
+    authority: decision.authority,
+    approverName: decision.approverName,
+    scope: 'once',
+    requestState: decision.requestState,
+    nextAction: decision.nextAction,
+    retry: decision.retry,
+  };
 }
 
 function approvalCheckpointFailureMessage(approvalId: string): string {
