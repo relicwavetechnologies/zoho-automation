@@ -129,12 +129,18 @@ The Cloud-Pi tool and streaming foundation is functionally complete. The work
 remaining is modularity, measured performance optimization, and production-like
 proof.
 
-The controller is 715 lines, down from more than 3,100, and what remains is the
-turn plan and nothing else — Phase A's "controller primarily coordinates
-modules" gate is now met. It was 1,335 at the end of Phase A's first pass, 1,404
-after the turn-plan slice, and 715 after the seven remaining jobs were given
-their own owners (`local-profile`, `run-result`, `runtime-rpc`,
-`approval-responder`, `local-controller-cli`).
+The controller is 701 lines, down from more than 3,100. It was 1,335 at the end
+of Phase A's first pass, 1,404 after the turn-plan slice, and 701 after the seven
+remaining jobs were given their own owners (`local-profile`, `run-result`,
+`runtime-rpc`, `approval-responder`, `local-controller-cli`).
+
+Phase A's "controller primarily coordinates modules" gate is met. It is *not*
+true that nothing but the turn plan remains, and an earlier version of this
+document said so: the file still holds `prompt` (the CLI's turn entry),
+`resolveRuntimeLease` (a lease to a run identity) and `abortRuntimeInPlace` (the
+interrupt path). All three are turn-scoped, which is why they stayed, but
+`resolveRuntimeLease` in particular would sit as well beside `runtime-identity`
+and is a fair next cut for anyone who wants one.
 
 One log field changed meaning and is worth knowing before reading old graphs
 against new ones: `readyMs` in `pi_runtime.ready` was a wall span and is now the
@@ -304,13 +310,23 @@ projections used on every event line. Every gate passed — 243 tests, `node
 ever constructed a `JsonlRpc` over a stream. The first member message after a
 deploy would have taken the controller process down.
 
-Two guards now exist so this class cannot recur, both in
-`test/runtime-module-references.test.mjs`: one asserts tsc reports no TS2304 or
-TS2552 (a name that is not defined) across `divo/*.mjs`, the other no TS6133 (an
-import nothing uses). They deliberately ignore every other diagnostic — turning
-`checkJs` fully on surfaces about 115 untriaged inference complaints, and that is
-a separate job. `test/runtime-rpc.test.mjs` drives `JsonlRpc` over a real stream,
-which is what the suite was missing.
+Guards now exist in `test/runtime-module-references.test.mjs`: one asserts tsc
+reports no TS2304 or TS2552 (a name that is not defined) across `divo/*.mjs`,
+one no TS6133 (an import nothing uses), and a third asserts the compiler
+actually ran. That third one is not ceremony — the first version of this guard
+shipped green with `npx` removed from `PATH`, because a shell reports a missing
+command as exit 127 and the diagnostic filters then match nothing. A guard that
+passes over an unchecked codebase is worse than no guard. Proof of life is a
+`tsc --version` preflight rather than an exit-code check, because a diagnostic
+run exits 2, not 1, and the first attempt at the assertion got that wrong.
+`test/runtime-rpc.test.mjs` drives `JsonlRpc` over a real stream, which is what
+the suite was missing.
+
+Two commit messages in this series state wrong import counts: `5790b88b5` says
+four dead controller imports and `f43950aeb` says six. Thirteen were removed in
+total — twelve from the controller and `collectRunAssistantText` from
+`runtime-rpc.mjs`. The code is right; the messages are not, and they are
+published, so this is the record.
 
 Still not done, and worth doing: the tests for the other extracted modules
 still sit in
@@ -608,9 +624,13 @@ means nothing.
 
 Two narrow guards close the worst of that gap — `test/runtime-module-references.test.mjs`
 runs tsc over `divo/*.mjs` and fails on an undefined name or an unused import,
-which are always bugs. It says nothing about types. Turning `checkJs` fully on
-surfaces about 115 inference errors, mostly TS2339 on inferred object shapes;
-nobody has triaged them and the fallout of fixing them is unmeasured.
+which are always bugs. It says nothing about types. Turning `checkJs` fully on over `divo/*.mjs`
+surfaces 26 further diagnostics, mostly TS2339 on inferred object shapes. Two
+earlier figures in this document — 115 and 615 — were wrong: they came from
+adding `*.mjs` to the project tsconfig's `include`, which also pulls in
+`extensions/**/*.ts` and the base config's settings, and so measured an
+invocation nobody runs. 26 is small enough to triage, and widening the guard
+afterwards is worth doing.
 
 After a runtime or extension change, rebuild the Cloud-Pi image before a real
 container test:
