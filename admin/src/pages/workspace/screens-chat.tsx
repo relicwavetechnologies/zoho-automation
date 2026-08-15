@@ -34,6 +34,7 @@ import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/atta
 import { CopyButton } from './chat/copy'
 import { clearHandoff, peekHandoff } from './chat/handoff'
 import { useThreadRun, type Exchange } from './chat/live'
+import { PlanPanel } from './chat/plan.view'
 import {
   isThreadId, newThreadId, renameThread, threadStarted, threadsChanged,
 } from './chat/threads'
@@ -240,6 +241,14 @@ function ChatThread({ threadId }: { threadId: string }) {
        see the chat is somewhere you can let go of it. */
     <div className="bui-scope relative flex h-full min-h-0 flex-col bg-page" {...dropProps}>
       <DropVeil visible={over} />
+      {/* Over the conversation, not in it. The work log answers "what has it
+          done"; this answers "how far through is it", and an answer that
+          scrolls away with the thread is one you have to go looking for.
+
+          Rendered only while there is a plan, which is only while a run that
+          declared one is going — so most conversations never see it, which is
+          the point. `live.plan` is null the rest of the time. */}
+      {live.plan && <PlanPanel plan={live.plan} />}
       <div
         ref={scroller}
         className="min-h-0 flex-1 overflow-y-auto"

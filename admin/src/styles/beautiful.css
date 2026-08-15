@@ -334,9 +334,54 @@
   animation: bui-shimmer-text 1.4s linear infinite;
 }
 
+/* The step being worked on, in the plan panel.
+
+   A ring with one quarter lit, turning. The only spinner on the surface, and it
+   is allowed here for the reason it is banned elsewhere: everywhere else a
+   running thing has a name and a mark of its own to shimmer, and this is a
+   checklist row whose text is the plan's wording rather than a live label. */
+.bui-spinner {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1.5px solid var(--bui-line-strong);
+  border-top-color: var(--bui-ink);
+  animation: bui-spin 700ms linear infinite;
+}
+
+/* A finished step, struck through as it finishes.
+
+   `line-through` rather than a line drawn over the row, and the reason is the
+   text: a step title runs to 80 characters, which wraps to two or three lines in
+   a 300px panel. An overlay line has to be told how wide the words are, and a
+   pseudo-element stretched across the row crosses the empty space after a short
+   title as well — a rule through the whole panel rather than through a step.
+   Text decoration follows the glyphs, on every line, at no cost.
+
+   The colour is what animates, so the line still *arrives* rather than being
+   there on the frame the step settles. It runs once, when React adds this class
+   to a row already on screen.
+
+   The row stays legible underneath. A plan is what was promised, and a step that
+   vanishes when it completes takes the promise with it. */
+.bui-strike {
+  text-decoration-line: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: transparent;
+  animation: bui-strike 320ms ease-out forwards;
+}
+
+@keyframes bui-strike {
+  100% { text-decoration-color: currentColor; }
+}
+
 /* Reduced motion keeps every state legible — the grid freezes dim, labels
    stop sweeping, rows appear rather than rise. Nothing disappears. */
 @media (prefers-reduced-motion: reduce) {
+  /* The struck step keeps its line; only the drawing of it goes. */
+  .bui-strike::after { animation: none; }
+  .bui-spinner { animation: none; }
   .bui-shimmer {
     animation: none;
     background: none;

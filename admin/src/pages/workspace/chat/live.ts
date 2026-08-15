@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Beat } from './beats'
 import { agentRunOf, isAgentRow } from './agents'
+import { planOf, type Plan } from './plan'
 import { toolMarkFor } from './tool-identity'
 import {
   ask, stop, watch,
@@ -258,6 +259,19 @@ export type ThreadRun = {
   liveLabel: string | null
   /** True while a run is open — the composer turns its send control into stop. */
   running: boolean
+  /**
+   * The checklist the model committed to, while a run is open.
+   *
+   * Null the rest of the time, and that is the tool's own design rather than a
+   * limitation here: a `divo_todos` list grants nothing, stores nothing, and
+   * dies with the run — `ThreadRunRecord` carries a ledger and no plan. It
+   * describes work happening now, so it exists only while work is happening.
+   *
+   * Kept off `Exchange` for the same reason. An exchange is a thing the
+   * conversation keeps; this is not one, and hanging it there would put a field
+   * on every settled exchange that could only ever be null.
+   */
+  plan: Plan | null
   /** Ask the run to stop. The reply still arrives on the open stream. */
   stopRun: () => void
   /**
@@ -479,6 +493,17 @@ export function useThreadRun(input: {
     elapsed: 0,
   }), [running])
 
+  /* Read straight off the timeline rather than folded into the beats, because
+     it is not one: a beat is a thing that happened at a point in the run, and
+     the plan is the run's declared shape — replaced whole each time the model
+     restates it, drawn in one place beside the thread rather than in sequence
+     with everything else.
+
+     Memoised on the timeline alone. The answer stream arrives in deltas every
+     few milliseconds, and a plan rebuilt on each of them would hand the panel a
+     new list of steps thirty times a second to draw the same five rows. */
+  const plan = useMemo(() => planOf(timeline, running), [timeline, running])
+
   const exchanges = useMemo(() => (prompt === null
     ? settled
     : [...settled, {
@@ -495,6 +520,7 @@ export function useThreadRun(input: {
     loading,
     liveLabel: running ? timeline?.liveLabel ?? null : null,
     running,
+    plan,
     stopRun,
     send,
     error,
