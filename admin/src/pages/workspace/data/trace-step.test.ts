@@ -10,7 +10,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { actionOf, foldRepeats, humanizeId, readStep } from './trace-step'
+import { actionOf, describeTraceStep, foldRepeats, humanizeId, readStep, summarizeTraceValue } from './trace-step'
 
 describe('readStep', () => {
   it('names the tool inside a gateway dispatch, not the gateway', () => {
@@ -125,6 +125,57 @@ describe('foldRepeats', () => {
   it('never reorders, so a poll-then-act sequence still reads in order', () => {
     const folded = foldRepeats(['read', 'read', 'write'], (s) => s)
     assert.deepEqual(folded.map((f) => f.step), ['read', 'write'])
+  })
+})
+
+describe('summarizeTraceValue', () => {
+  it('pulls a readable result from a capped model-content preview', () => {
+    const summary = summarizeTraceValue({
+      _truncated: true,
+      _bytes: 3631,
+      preview: JSON.stringify({
+        content: [{ type: 'text', text: 'Request succeeded.\n\n{"toolId":"webSearch"}' }],
+      }),
+    })
+
+    assert.equal(summary, 'Request succeeded.')
+  })
+})
+
+describe('describeTraceStep', () => {
+  it('explains a successful step before showing raw evidence', () => {
+    const view = readStep('divo_todos', {
+      items: [{ title: 'Create the bill and verify', status: 'running' }],
+    })
+
+    const brief = describeTraceStep(view, {
+      content: [{ type: 'text', text: 'Checklist shown to the user (4/5):\n[~] Create the bill and verify' }],
+      details: { done: 4, total: 5, current: 'Create the bill and verify' },
+    }, false)
+
+    assert.equal(brief.tone, 'ok')
+    assert.equal(
+      brief.text,
+      'Checklist ran. Checklist updated: 4 of 5 done. Current step: Create the bill and verify.',
+    )
+  })
+
+  it('pulls the useful error out of a tool result', () => {
+    const view = readStep('divo_zoho_books', { op: 'create_bill' })
+
+    const brief = describeTraceStep(view, {
+      content: [{
+        type: 'text',
+        text: 'Tool error (local_approval_required).\n\nThis exact action requires local approval before execution.',
+      }],
+      details: {},
+    }, true)
+
+    assert.equal(brief.tone, 'error')
+    assert.equal(
+      brief.text,
+      'Zoho Books tried to create bill but failed: Local approval required: This exact action requires local approval before execution',
+    )
   })
 })
 

@@ -48,6 +48,7 @@ import type { Toast } from './ui'
 const COMPANY_ROLE_LABEL: Record<string, string> = {
   SUPER_ADMIN: 'Super admin', COMPANY_ADMIN: 'Company admin', MEMBER: 'Member',
 }
+const RUN_CHANNEL_LABEL: Record<string, string> = { lark: 'Lark', desktop: 'Desktop', web: 'Web', api: 'API' }
 
 type ScreenProps = { persona: Persona; replay: number; toast: Toast; go: (screen: string) => void }
 
@@ -263,7 +264,7 @@ function RunList({ runs }: { runs: MyRun[] }) {
                 ) : null}
               </b>
               <p>
-                {ago(r.startedAt)} · {r.channel === 'lark' ? 'Lark' : 'Desktop'}
+                {ago(r.startedAt)} · {RUN_CHANNEL_LABEL[r.channel] ?? r.channel}
                 {duration ? ` · ${duration}` : ''}
                 {r.errorMessage ? ` · ${r.errorMessage}` : ''}
               </p>
@@ -561,10 +562,9 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
             <div className="ws-ceiling">
               <TriangleAlert size={14} />
               <div>
-                <b>A connection is marked "Reconnect" the first time the provider refuses it — not before.</b>{' '}
-                Google and Shopify say outright when they have ended an authorisation, and Divo writes that down the
-                moment it hears it, so the account above stops claiming to work. The other providers give no such
-                answer yet: theirs stay listed as working until something run against them fails.
+                <b>Reconnect appears only after a provider refuses access.</b>{' '}
+                Google and Shopify report revoked authorisations immediately; other providers stay marked working
+                until a run against them fails.
               </div>
             </div>
           </div>
@@ -683,9 +683,9 @@ type AppCardModel = {
  * somebody opens this page with, *which of these is already working*, took
  * reading every row to answer.
  *
- * A card holds a bigger mark, a description that can breathe, the accounts
- * that belong to it, and one action pinned to the bottom so a row of them
- * shares a baseline whatever their text does.
+ * A card holds the app identity, the accounts that belong to it, and one clear
+ * action. It sizes to its content so a connected app with one account does not
+ * carry the empty space of a busier neighbour.
  */
 function AppCard({ mark, name, blurb, accounts, action, tone }: {
   mark: ReactNode
@@ -700,15 +700,14 @@ function AppCard({ mark, name, blurb, accounts, action, tone }: {
 }) {
   return (
     <article className="ws-appcard" data-tone={tone}>
-      <div className="ws-appcard-h">{mark}</div>
-      <h3>{name}</h3>
+      <div className="ws-appcard-top">
+        <div className="ws-appcard-h">{mark}</div>
+        <h3>{name}</h3>
+      </div>
       {/* Omitted rather than rendered empty: an empty paragraph still carries
           its own margin, which is the gap this was meant to remove. */}
       {blurb ? <p>{blurb}</p> : null}
       {accounts}
-      {/* `margin-top: auto`, so the action sits on the card's floor however tall
-          its neighbours make it — the alignment comes from the card stretching
-          rather than from filler reserved above the button. */}
       <div className="ws-appcard-act">{action}</div>
     </article>
   )
@@ -720,23 +719,21 @@ function AppCard({ mark, name, blurb, accounts, action, tone }: {
  * It used to be four `SkelRows` inside a Panel — a completely different element
  * to what arrives, so the page swapped a 4-row list for three sections of cards
  * and jumped by several hundred pixels. This mirrors the real geometry: section
- * headings, a grid at the same `auto-fill` track size, and cards with the mark,
- * title, blurb and action in the places they will land.
+ * headings, a grid at the same `auto-fill` track size, and compact cards with
+ * the mark, title, body and action in the places they will land.
  */
 /*
- * Three sections, and the first one's cards are taller.
+ * Three sections, and the first one's cards show account rows.
  *
  * The shape is not a guess about this particular workspace — it is the shape
- * the page always takes: some apps connected, some the member may connect, some
- * their admin owns. A connected card carries its accounts and runs about a
- * hundred pixels taller than an empty one, so a skeleton of uniformly short
- * cards left the page to grow by 705px when the real thing arrived, which is
- * the jump this exists to prevent.
+ * the page usually takes: some apps connected, some the member may connect,
+ * some their admin owns. The cards stay content-sized here too, so loading does
+ * not introduce a block of dead space the real page then removes.
  */
 const GRID_SKELETON = [
-  { cards: 2, accounts: 2 },
-  { cards: 2, accounts: 0 },
+  { cards: 3, accounts: 1 },
   { cards: 3, accounts: 0 },
+  { cards: 1, accounts: 0 },
 ]
 
 function AppGridSkeleton() {
@@ -748,13 +745,13 @@ function AppGridSkeleton() {
           <div className="ws-appgrid">
             {Array.from({ length: section.cards }).map((_, i) => (
               <article className="ws-appcard" key={i}>
-                <div className="ws-appcard-h"><Skel w={30} h={30} block /></div>
-                <Skel w={`${52 + ((i * 11) % 24)}%`} h={13} />
+                <div className="ws-appcard-top">
+                  <div className="ws-appcard-h"><Skel w={30} h={30} block /></div>
+                  <Skel w={`${52 + ((i * 11) % 24)}%`} h={13} />
+                </div>
                 {section.accounts === 0 ? (
                   <>
-                    <div style={{ height: 8 }} />
                     <Skel w="94%" h={11} />
-                    <div style={{ height: 5 }} />
                     <Skel w={`${58 + ((i * 7) % 20)}%`} h={11} />
                   </>
                 ) : (
@@ -769,7 +766,7 @@ function AppGridSkeleton() {
                     ))}
                   </ul>
                 )}
-                <div className="ws-appcard-act"><Skel w="100%" h={38} block /></div>
+                <div className="ws-appcard-act"><Skel w="100%" h={34} block /></div>
               </article>
             ))}
           </div>

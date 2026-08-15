@@ -1,5 +1,8 @@
 import { SemrushServiceError } from './semrush.types';
 
+const UNHEALTHY_KEY_TTL_MS = 5 * 60 * 1000;
+const FALLBACK_RECHECK_MS = 60 * 1000;
+
 /**
  * Where a Semrush API key comes from, and what happens when one is spent.
  *
@@ -10,8 +13,9 @@ import { SemrushServiceError } from './semrush.types';
  * working one, which is the whole of that outage.
  *
  * So the environment key is the fallback, not the primary, wherever a webhook
- * is configured. A resolved key is cached until it fails, so the webhook is
- * called on the first request and then only when a key dies.
+ * is configured. A resolved key is cached until it fails; when the webhook
+ * keeps returning a rejected key, the fallback is used briefly while Divo
+ * rechecks the webhook instead of spending the same bad key over and over.
  */
 export interface SemrushKeyProvider {
   /** The key to use now. */
@@ -31,9 +35,10 @@ export function createSemrushKeyProvider(deps: {
   const environmentKey = deps.environmentApiKey?.trim() ?? '';
   const webhookUrl = deps.webhookUrl?.trim() ?? '';
 
-  let cached: string | undefined;
+  let cached: { key: string; expiresAt?: number } | undefined;
+  const unhealthyUntil = new Map<string, number>();
   /** Shared so concurrent first requests make one webhook call, not several. */
-  let inFlight: Promise<string> | undefined;
+  let inFlight: Promise<{ key: string; fallbackTtlMs?: number }> | undefined;
 
   async function loadFromWebhook(): Promise<string> {
     const controller = new AbortController();
@@ -68,7 +73,11 @@ export function createSemrushKeyProvider(deps: {
     canRotate: Boolean(webhookUrl),
 
     async resolve(): Promise<string> {
-      if (cached) return cached;
+      const now = Date.now();
+      if (cached && (!cached.expiresAt || cached.expiresAt > now) && !isUnhealthy(cached.key, now)) {
+        return cached.key;
+      }
+      cached = undefined;
       if (!webhookUrl) {
         if (!environmentKey) {
           throw new SemrushServiceError(
@@ -76,25 +85,54 @@ export function createSemrushKeyProvider(deps: {
             'Semrush is not configured. Set SEMRUSH_WEB_API_KEY in the backend environment.',
           );
         }
-        cached = environmentKey;
-        return cached;
+        if (isUnhealthy(environmentKey)) throw allConfiguredKeysRejected();
+        cached = { key: environmentKey };
+        return cached.key;
       }
       // A webhook that is down must not take Semrush down with it while a
       // usable environment key exists.
-      inFlight ??= loadFromWebhook().catch((error) => {
-        if (environmentKey) return environmentKey;
+      inFlight ??= loadFromWebhook().then((key) => ({ key })).catch((error) => {
+        if (environmentKey && !isUnhealthy(environmentKey)) {
+          return { key: environmentKey, fallbackTtlMs: FALLBACK_RECHECK_MS };
+        }
         throw error;
       });
       try {
-        cached = await inFlight;
-        return cached;
+        const loaded = await inFlight;
+        const key = loaded.key;
+        if (loaded.fallbackTtlMs) return cache(key, loaded.fallbackTtlMs);
+        if (!isUnhealthy(key)) return cache(key);
+        if (environmentKey && environmentKey !== key && !isUnhealthy(environmentKey)) {
+          return cache(environmentKey, FALLBACK_RECHECK_MS);
+        }
+        throw allConfiguredKeysRejected();
       } finally {
         inFlight = undefined;
       }
     },
 
     invalidate(key: string): void {
-      if (cached && cached === key.trim()) cached = undefined;
+      const trimmed = key.trim();
+      if (!trimmed) return;
+      unhealthyUntil.set(trimmed, Date.now() + UNHEALTHY_KEY_TTL_MS);
+      if (cached?.key === trimmed) cached = undefined;
     },
   };
+
+  function cache(key: string, ttlMs?: number): string {
+    cached = { key, ...(ttlMs ? { expiresAt: Date.now() + ttlMs } : {}) };
+    return key;
+  }
+
+  function isUnhealthy(key: string, now = Date.now()): boolean {
+    const until = unhealthyUntil.get(key);
+    if (!until) return false;
+    if (until > now) return true;
+    unhealthyUntil.delete(key);
+    return false;
+  }
+}
+
+function allConfiguredKeysRejected(): SemrushServiceError {
+  return new SemrushServiceError('provider_auth_failed', 'All configured Semrush API keys were rejected.');
 }

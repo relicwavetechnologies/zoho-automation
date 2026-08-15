@@ -117,6 +117,9 @@
    30px heading, a centred pill sits visibly low, because a line box is taller
    than the letters in it. */
 .cur .ws-ph-title { display: flex; align-items: baseline; gap: 11px; flex-wrap: wrap; }
+.cur .ws-run-detail .ws-ph { display: block; margin-bottom: 18px; }
+.cur .ws-run-detail .ws-ph-act { margin-top: 12px; width: fit-content; }
+.cur .ws-run-detail .ws-raw-toggle { height: 34px; padding: 0 12px; }
 
 /* A page that is not built yet, said beside its name.
    Reads as a label, not a control: no pointer, no hover, nothing to press. The
@@ -433,6 +436,17 @@
 }
 .cur .ws-empty b { font-size: 14px; font-weight: 500; display: block; }
 .cur .ws-empty p { font-size: 12px; color: var(--cur-muted); margin-top: 5px; line-height: 1.5; max-width: 330px; margin-left: auto; margin-right: auto; }
+.cur .ws-empty-mini {
+  display: flex; align-items: center; gap: 12px; padding: 16px 18px;
+  color: var(--cur-body);
+}
+.cur .ws-empty-mini .ic {
+  width: 32px; height: 32px; border-radius: 50%; background: var(--cur-canvas-soft);
+  border: 1px solid var(--cur-hairline); display: grid; place-items: center;
+  color: var(--cur-muted); flex-shrink: 0;
+}
+.cur .ws-empty-mini b { font-size: 13px; font-weight: 500; color: var(--cur-ink); }
+.cur .ws-empty-mini p { font-size: 12px; color: var(--cur-muted); margin-top: 2px; line-height: 1.45; }
 
 /* ── Misc ────────────────────────────────────────────── */
 .cur .ws-tag {
@@ -449,6 +463,16 @@
 .cur .ws-spark { height: 46px; display: flex; align-items: flex-end; gap: 3px; }
 .cur .ws-spark i { flex: 1; border-radius: 2px 2px 0 0; background: var(--cur-surface-strong); min-height: 2px; }
 .cur .ws-spark i[data-hot="true"] { background: color-mix(in srgb, var(--cur-primary) 60%, transparent); }
+.cur .ws-person-stats {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px;
+}
+.cur .ws-person-stat { min-width: 0; }
+.cur .ws-person-stat .ws-num { margin-top: 6px; }
+.cur .ws-person-spark { margin-top: 12px; }
+.cur .ws-person-spark .ws-spark { height: 26px; }
+@media (max-width: 720px) {
+  .cur .ws-person-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 /* ── Activity heatmap ─────────────────────────────────
    Seven rows, one week per column, exactly as every contribution grid draws
@@ -1132,6 +1156,52 @@
 .cur .ws-step-a[data-a="write"] { color: var(--ws-warning); }
 .cur .ws-step-h .badge { margin-left: auto; flex-shrink: 0; }
 .cur .ws-step-b { padding: 2px 0 14px 22px; }
+.cur .ws-step-summary {
+  display: grid; gap: 9px; margin-top: 4px; padding: 12px 14px;
+  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-cta);
+  background: color-mix(in srgb, var(--cur-surface-strong) 45%, transparent);
+}
+.cur .ws-step-summary span {
+  display: block; margin-bottom: 4px; font-size: 10px; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--cur-muted-soft);
+}
+.cur .ws-step-summary p { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--cur-body); }
+.cur .ws-step-brief {
+  padding-bottom: 10px; border-bottom: 1px solid var(--cur-hairline-soft);
+}
+.cur .ws-step-brief p {
+  color: var(--cur-ink); font-size: 13px;
+}
+.cur .ws-step-brief[data-tone="error"] {
+  padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--cur-error) 30%, var(--cur-hairline));
+  border-radius: 6px; background: color-mix(in srgb, var(--cur-error) 8%, transparent);
+}
+.cur .ws-step-brief[data-tone="error"] span,
+.cur .ws-step-brief[data-tone="error"] p { color: var(--cur-error); }
+.cur .ws-run-briefs {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: 8px;
+}
+.cur .ws-run-brief {
+  display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; align-items: start; gap: 12px;
+  padding: 9px 0; border-bottom: 1px solid var(--cur-hairline-soft);
+}
+.cur .ws-run-brief:last-child { border-bottom: 0; }
+.cur .ws-run-brief > span {
+  font-size: 11px; font-weight: 600; color: var(--cur-muted-soft); text-transform: uppercase; letter-spacing: 0.06em;
+}
+.cur .ws-run-brief p {
+  margin: 0; color: var(--cur-body); font-size: 12.5px; line-height: 1.45;
+}
+.cur .ws-run-brief small {
+  color: var(--cur-muted-soft); font-size: 11.5px; white-space: nowrap;
+}
+.cur .ws-run-brief[data-tone="error"] p,
+.cur .ws-run-brief[data-tone="error"] small { color: var(--cur-error); }
+.cur .ws-run-brief[data-tone="error"] > span { color: color-mix(in srgb, var(--cur-error) 68%, var(--cur-muted)); }
+@media (max-width: 760px) {
+  .cur .ws-run-brief { grid-template-columns: 1fr; gap: 4px; }
+  .cur .ws-run-brief small { white-space: normal; }
+}
 .cur .ws-turn-end {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--cur-hairline);
@@ -1192,11 +1262,11 @@
    same height read as a settings table, and the question this page is opened
    with — which of these already works — took reading every one of them.
 
-   `auto-fill` with a 250px floor rather than a fixed column count, so the
+   `auto-fill` with a compact card floor rather than a fixed column count, so the
    section reflows instead of squeezing three cards into a rail width nobody
    tested. */
-.cur .ws-appsec { margin-top: 26px; }
-.cur .ws-appsec:first-of-type { margin-top: 18px; }
+.cur .ws-appsec { margin-top: 22px; }
+.cur .ws-appsec:first-of-type { margin-top: 14px; }
 .cur .ws-appsec-h {
   display: flex; align-items: baseline; gap: 9px; margin-bottom: 12px; flex-wrap: wrap;
 }
@@ -1215,7 +1285,7 @@
    `auto-fit` collapses the tracks nothing sits in, which does remove the empty
    column — but it does it by stretching two cards to 508px each, and a 40px
    logo over one line of text in a 508px box is more air than the empty column
-   ever was. A card holds its ~330px and a short row simply ends. */
+   ever was. A card holds a readable width and a short row simply ends. */
 /* `start`, not `stretch`.
    Stretching made every card in a row as tall as the tallest, and the extra
    height had to go somewhere — on Lark, 57px of nothing between its one account
@@ -1224,13 +1294,13 @@
    contents genuinely differ, so a card takes the height it needs and a row ends
    slightly ragged rather than holding a hole. */
 .cur .ws-appgrid {
-  display: grid; gap: 14px;
-  grid-template-columns: repeat(auto-fill, minmax(272px, 1fr));
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(286px, 1fr));
   align-items: start;
 }
 
 .cur .ws-appcard {
-  display: flex; flex-direction: column; padding: 20px;
+  display: flex; flex-direction: column; gap: 12px; padding: 16px;
   border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
   background: var(--cur-surface); box-shadow: var(--cur-shadow-card);
 }
@@ -1239,21 +1309,20 @@
 .cur .ws-appcard[data-tone="warn"] {
   border-color: color-mix(in srgb, var(--ws-warning) 30%, var(--cur-hairline));
 }
-/* The mark sits on its own line with room under it, which is the proportion the
-   reference card gets its calm from — the logo is the first thing read, not a
-   bullet beside the title. Smaller than it was: at 40px it competed with the
-   name instead of introducing it. */
-.cur .ws-appcard-h { flex-shrink: 0; margin-bottom: 20px; }
+.cur .ws-appcard-top {
+  display: flex; align-items: center; gap: 11px; min-width: 0;
+}
+.cur .ws-appcard-h { flex-shrink: 0; }
 .cur .ws-appcard h3 {
   font-size: 14px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-/* No `min-height`. It existed to line the buttons up, which the card now does by
-   stretching and pushing the action to its floor — so a one-line blurb takes one
-   line instead of reserving two and leaving the second empty. */
+/* Content-sized cards: a short provider should not inherit a tall neighbour's
+   empty middle just to line up buttons. */
 .cur .ws-appcard p {
-  margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--cur-muted);
+  margin: -2px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--cur-muted);
 }
-.cur .ws-appcard-act { margin-top: auto; padding-top: 20px; }
+.cur .ws-appcard-act { margin-top: 2px; }
 
 /* The action reads as a bar, not an outline.
    `.btn` is `--cur-surface` with a hairline, which is the card's own colour —
@@ -1261,7 +1330,7 @@
    reference has a filled control you can see at a glance. A step up the surface
    scale puts it back without spending the primary on it. */
 .cur .ws-appcard-act > .btn {
-  height: 38px;
+  height: 34px;
   background: var(--cur-surface-strong);
   border-color: var(--cur-hairline);
 }
@@ -1269,18 +1338,18 @@
   background: var(--cur-canvas-soft); border-color: var(--cur-hairline-strong);
 }
 .cur .ws-appcard-act .ws-tag {
-  width: 100%; justify-content: center; height: 38px; box-sizing: border-box;
+  width: 100%; justify-content: center; min-height: 34px; box-sizing: border-box;
 }
 
 /* The accounts under an app. Compact rows, because the card is about the app
    and these are what it currently holds. */
-.cur .ws-appcard-accs { list-style: none; margin: 13px 0 0; padding: 0; }
+.cur .ws-appcard-accs { list-style: none; margin: 2px 0 0; padding: 0; }
 .cur .ws-appcard-accs li { border-top: 1px solid var(--cur-hairline-soft); }
 .cur .ws-appcard-accs li:first-child { border-top: 0; }
 .cur .ws-appcard-accs button,
 .cur .ws-appcard-accs > li > div {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
-  gap: 4px 8px; width: 100%; padding: 8px 0; text-align: left;
+  gap: 4px 8px; width: 100%; padding: 7px 0; text-align: left;
   border: 0; background: none; font: inherit; color: inherit;
 }
 .cur .ws-appcard-accs button { cursor: pointer; }

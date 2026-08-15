@@ -41,6 +41,8 @@ export function humanizeId(id: string): string {
 
 /** Vendor display names where humanizing the id alone reads wrong. */
 const VENDOR_NAMES: Record<string, string> = {
+  divo_todos: 'Checklist',
+  divo_zoho_books: 'Zoho Books',
   semrush: 'Semrush',
   webSearch: 'Web search',
   googleGmail: 'Gmail',
@@ -178,8 +180,160 @@ export function readStep(toolName: string, input: unknown): TraceStepView {
   return { title, detail, operation, action: actionOf(effectiveId, operationRaw?.value ?? null), viaGateway }
 }
 
+export function summarizeTraceValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string') return summarizeText(value)
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (Array.isArray(value)) {
+    const parts = value.map(summarizeTraceValue).filter((part): part is string => Boolean(part))
+    return parts.length ? truncate(parts.join(', '), 180) : null
+  }
+
+  const record = asRecord(value)
+  if (!record) return null
+
+  if (record['_truncated'] === true && typeof record['preview'] === 'string') {
+    return summarizeTraceValue(record['preview']) ?? `${asText(record['_bytes']) ?? 'Large'} bytes returned`
+  }
+
+  const details = asRecord(record['details'])
+  const done = asText(details?.['done'])
+  const total = asText(details?.['total'])
+  const current = asText(details?.['current'])
+  if (done && total) {
+    return current
+      ? `Checklist updated: ${done} of ${total} done. Current step: ${current}.`
+      : `Checklist updated: ${done} of ${total} done.`
+  }
+
+  const content = Array.isArray(record['content']) ? record['content'] : null
+  if (content) {
+    const text = content
+      .map(item => asRecord(item)?.['text'])
+      .filter((item): item is string => typeof item === 'string')
+      .join(' ')
+    const summary = summarizeText(text)
+    if (summary) return summary
+  }
+
+  for (const key of ['summary', 'message', 'text', 'title', 'status', 'error', 'value', 'preview']) {
+    const summary = summarizeTraceValue(record[key])
+    if (summary) return summary
+  }
+
+  return Object.keys(record).length ? 'Structured data returned.' : null
+}
+
+export type TraceStepBrief = {
+  tone: 'ok' | 'error'
+  label: 'What happened' | 'Error'
+  text: string
+}
+
+export function describeTraceStep(view: TraceStepView, output: unknown, isError: boolean): TraceStepBrief {
+  const action = stepActionText(view)
+  const error = extractTraceError(output)
+  if (isError || error) {
+    return {
+      tone: 'error',
+      label: 'Error',
+      text: `${action} but failed${error ? `: ${error}` : '.'}`,
+    }
+  }
+
+  const result = summarizeTraceValue(output)
+  return {
+    tone: 'ok',
+    label: 'What happened',
+    text: result ? `${action}. ${result}` : `${action} and completed.`,
+  }
+}
+
 const truncate = (text: string, max: number): string =>
   text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`
+
+const sentenceCase = (text: string): string =>
+  text ? `${text[0]!.toUpperCase()}${text.slice(1)}` : text
+
+const stripFinalPunctuation = (text: string): string =>
+  text.replace(/[.?!]+$/g, '').trim()
+
+const stepActionText = (view: TraceStepView): string => {
+  const detail = view.detail ? ` for ${view.detail}` : ''
+  if (view.operation) {
+    const verb = view.action === 'write' ? 'tried to' : 'ran'
+    return `${view.title} ${verb} ${view.operation}${detail}`
+  }
+  if (view.action === 'write') return `${view.title} tried to write${detail || ' data'}`
+  if (view.action === 'read') return `${view.title} read${detail || ' data'}`
+  return `${view.title} ran${detail}`
+}
+
+function extractTraceError(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value === 'string') return extractErrorFromText(value)
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const error = extractTraceError(item)
+      if (error) return error
+    }
+    return null
+  }
+
+  const record = asRecord(value)
+  if (!record) return null
+
+  const content = Array.isArray(record['content']) ? record['content'] : null
+  if (content) {
+    const error = extractTraceError(content.map(item => asRecord(item)?.['text']).filter(Boolean))
+    if (error) return error
+  }
+
+  for (const key of ['error', 'message', 'status', 'text', 'preview', 'value']) {
+    const error = extractTraceError(record[key])
+    if (error) return error
+  }
+
+  return null
+}
+
+function extractErrorFromText(raw: string): string | null {
+  const text = raw.trim()
+  if (!text) return null
+
+  try {
+    return extractTraceError(JSON.parse(text))
+  } catch {
+    const normalized = text.replace(/\s+/g, ' ').trim()
+    const toolError = normalized.match(/\bTool error(?:\s*\(([^)]+)\))?\.?\s*(.*)$/i)
+    if (toolError) {
+      const code = toolError[1] ? humanizeId(toolError[1]) : 'Tool error'
+      const detail = stripFinalPunctuation(toolError[2] ?? '')
+      return detail ? `${code}: ${sentenceCase(detail)}` : code
+    }
+
+    if (/\berror\b/i.test(normalized)) return truncate(stripFinalPunctuation(normalized), 180)
+    return null
+  }
+}
+
+const summarizeText = (raw: string): string | null => {
+  const text = raw.trim()
+  if (!text) return null
+
+  try {
+    return summarizeTraceValue(JSON.parse(text))
+  } catch {
+    const match = text.match(/"text"\s*:\s*"((?:\\.|[^"\\])*)"/)
+    const extracted = match?.[1]
+      ? (() => { try { return JSON.parse(`"${match[1]}"`) as string } catch { return null } })()
+      : null
+    const normalized = (extracted ?? text).replace(/\s+/g, ' ').trim()
+    const publicText = normalized.replace(/\s*(\{|\[|"[a-zA-Z_][\w-]*"\s*:)[\s\S]*$/, '').trim()
+    const visible = publicText || normalized
+    return visible ? truncate(visible, 180) : null
+  }
+}
 
 /**
  * A full UUID tells a reader nothing and eats the row.
