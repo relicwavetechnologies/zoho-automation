@@ -1557,6 +1557,26 @@ function safeProgressString(value: unknown, maxLength = 120): string | undefined
   return normalized ? normalized.slice(0, maxLength) : undefined;
 }
 
+/**
+ * The same guard, keeping the end of the value instead of the beginning.
+ *
+ * Only reasoning is read this way, and only because reasoning is the one thing
+ * on this wire that is re-sent in full and grows: cut it from the front and the
+ * value stops changing once it passes the bound, so the thinking window on the
+ * far end shows one static paragraph for the rest of the run. The reader
+ * concludes the agent has hung. See `progressThought` in `runtime-progress.mjs`,
+ * which is where this is normally decided; this is the backstop.
+ */
+function safeProgressTail(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return undefined;
+  if (normalized.length <= maxLength) return normalized;
+  const tail = normalized.slice(-(maxLength - 1));
+  // On a word boundary: a window opening mid-word reads as corrupted.
+  return `…${tail.slice(tail.indexOf(' ') + 1)}`;
+}
+
 const STEP_STATUSES: ReadonlySet<string> = new Set([
   'pending', 'running', 'done', 'failed', 'skipped',
 ]);
@@ -1657,7 +1677,13 @@ export function parseProgressEvent(value: unknown): RunProgressEvent | undefined
        keeps the container's own larger bound. Capping it at a `say`'s 200 here
        would undo that on the way in and freeze the row at its first two
        sentences, which is the failure this pair of numbers exists to avoid. */
-    const text = safeProgressString(event['text'], type === 'thought' ? 1_200 : 200);
+    /* A thought keeps its end, everything else keeps its beginning — see
+       `safeProgressTail`. The container already trims to this bound, so this
+       normally cuts nothing; it matters on the day the two bounds disagree,
+       because cutting a thought from the front is what freezes the window. */
+    const text = type === 'thought'
+      ? safeProgressTail(event['text'], 1_200)
+      : safeProgressString(event['text'], 200);
     if (!text) return undefined;
     const rawIndex = event['index'];
     return {

@@ -1315,8 +1315,8 @@ test("reasoning is read only from a reasoning block", () => {
 	assert.equal(assistantThinkingText(said.assistantMessageEvent), undefined);
 });
 
-/* Reasoning is accumulated from the start and truncated from the front, so a
-   bound meant for a one-line `say` would freeze a thought at its first two
+/* Reasoning is accumulated from the start and re-sent in full on every delta,
+   so a bound meant for a one-line `say` would freeze a thought at its first two
    sentences and never move again — a window built to let you watch the model
    think, showing two static lines for the length of the run. */
 test("a long thought keeps growing past a sentence's worth", () => {
@@ -1336,6 +1336,46 @@ test("a long thought keeps growing past a sentence's worth", () => {
 	assert.equal(long.type, "thought");
 	assert.ok(long.text.length > short.text.length, "a longer thought must say more");
 	assert.ok(long.text.length > 200, "200 is a say's bound, not a thought's");
+});
+
+/* The freeze this used to have, and the reason raising the bound never fixed
+   it. Reasoning arrives accumulated from the start, so truncating from the
+   front pins the value to the opening paragraph the moment it passes the
+   bound — a model that reasons for 80 seconds publishes the same text eighty
+   times and the run looks hung. The end is the part still moving. */
+test("a thought past its bound keeps moving instead of freezing", () => {
+	const thinking = (text) => projectRuntimeProgress({
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "thinking_delta",
+			contentIndex: 0,
+			partial: { content: [{ type: "thinking", thinking: text }] },
+		},
+	});
+
+	// Each sentence is distinct, so the window's contents can be checked rather
+	// than just its length.
+	const upTo = (n) => Array.from({ length: n }, (_, i) => `Sentence ${i} of the reasoning.`).join(" ");
+
+	const early = thinking(upTo(40));
+	const later = thinking(upTo(400));
+	const latest = thinking(upTo(800));
+
+	for (const [name, value] of [["early", early], ["later", later], ["latest", latest]]) {
+		assert.equal(value.type, "thought", name);
+		assert.ok(value.text.length <= 1200, `${name} must stay within the bound`);
+	}
+
+	// The whole bug in one assertion: these were identical.
+	assert.notEqual(later.text, latest.text, "a thought that grew must not publish the same text");
+	assert.ok(latest.text.includes("Sentence 799"), "the newest sentence must be in the window");
+	assert.ok(!latest.text.includes("Sentence 0 "), "the opening must have scrolled out of it");
+	assert.ok(latest.text.startsWith("…"), "a partial window must say it is one");
+	// Cut on a word boundary — a window opening mid-word reads as corrupted.
+	assert.ok(/^…[A-Za-z]/.test(latest.text), latest.text.slice(0, 40));
+
+	// Short enough to fit is sent whole, with nothing to say it was cut.
+	assert.ok(!early.text.startsWith("…"));
 });
 
 test("the provider's exact answer delta leaves on a separate live stream", () => {

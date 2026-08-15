@@ -34,10 +34,6 @@ const PROGRESS_SAY_MAX = 200;
  * 200 was the right bound for a `say`: a Lark card shows a line of what the
  * model told you, and more would take the card over. A thought is neither of
  * those things — it is not on a card at all, and it is routinely a paragraph.
- * Held to 200 it froze at its first two sentences and then never changed again,
- * because the text is accumulated from the start and truncated from the front:
- * a window built to let you watch the model think would have shown two static
- * lines for the length of the run.
  */
 const PROGRESS_THOUGHT_MAX = 1200;
 
@@ -46,6 +42,42 @@ function progressLabel(value, maxLength = PROGRESS_LABEL_MAX) {
 	const flat = value.replace(/\s+/g, " ").trim();
 	if (!flat) return undefined;
 	return flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat;
+}
+
+/**
+ * A thought, kept from its **end** rather than its beginning.
+ *
+ * Everything else here is truncated from the front, and for everything else
+ * that is right: a label, a tool detail and a `say` are each a whole short
+ * thing, and the front of one is the useful part.
+ *
+ * Reasoning is not. It accumulates from the start of the block and is re-sent
+ * in full on every delta, so truncating it from the front means that once it
+ * passes the bound the value **stops changing for the rest of the run**. It is
+ * not a slow window, it is a frozen one: a model that reasoned for 80 seconds
+ * and 21,000 characters published the same opening paragraph roughly eighty
+ * times, and the surface faithfully drew it. The reader sees a run that has
+ * plainly stopped, and reaches for the stop button.
+ *
+ * Raising the bound only moves where it freezes, which is what happened last
+ * time — 200 became 1200, and 1200 froze after the first six percent instead of
+ * the first one. The end of the text is the part that is still moving, so that
+ * is the part that crosses.
+ *
+ * The leading ellipsis is load-bearing. It says the window is a view onto
+ * something longer rather than the whole of what the model thought.
+ */
+function progressThought(value) {
+	if (typeof value !== "string") return undefined;
+	const flat = value.replace(/\s+/g, " ").trim();
+	if (!flat) return undefined;
+	if (flat.length <= PROGRESS_THOUGHT_MAX) return flat;
+	const tail = flat.slice(-(PROGRESS_THOUGHT_MAX - 1));
+	// Start on a word boundary. Cutting to a fixed length lands mid-word, and a
+	// window whose first word is a fragment reads as corrupted rather than
+	// scrolled. `indexOf` of a missing space is -1, so a single unbroken run of
+	// characters keeps the whole tail rather than losing all of it.
+	return `…${tail.slice(tail.indexOf(" ") + 1)}`;
 }
 
 /**
@@ -320,9 +352,8 @@ export function projectRuntimeProgress(event) {
 		 * So it leaves as its own event kind, capped and sentence-cut exactly
 		 * like `say`, and each surface decides. The Lark card drops it.
 		 */
-		const thought = progressLabel(
+		const thought = progressThought(
 			settledSentences(assistantThinkingText(event.assistantMessageEvent)),
-			PROGRESS_THOUGHT_MAX,
 		);
 		if (!thought) return { type: "thinking" };
 		return {
