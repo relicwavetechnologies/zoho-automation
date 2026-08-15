@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import divoGatewayExtension, { DIVO_COMPANY_PERSONA_PROMPT } from "./index.ts";
+import divoGatewayExtension from "./index.ts";
+import { DIVO_COMPANY_PERSONA_PROMPT } from "./run-prompt.ts";
 import { DIVO_ENGLISH_RESPONSE_POLICY } from "./department-persona.ts";
 import {
 	executeMemoryRecall,

@@ -6,10 +6,10 @@ import {
 	createControllerServer,
 } from "../local-rpc-server.mjs";
 import {
-	collectRunAssistantText,
-	promptWithTransientRetries,
-	projectRuntimeProgress,
 } from "../local-rpc-controller.mjs";
+import { promptWithTransientRetries } from "../runtime-rpc.mjs";
+import { collectRunAssistantText } from "../run-result.mjs";
+import { projectRuntimeProgress } from "../runtime-progress.mjs";
 import { isTransientDivoRunFailure } from "../run-terminal.mjs";
 
 function deferred() {

@@ -12,7 +12,7 @@ import {
 	hasNativeDbSkills,
 	localExecutionPrompt,
 	nativeSkillPromptSummary,
-} from "./index.ts";
+} from "./run-prompt.ts";
 import { localCliAvailable } from "./local-broker.ts";
 import { DIVO_CONNECTIONS_PARAMS } from "./typed-platform-tools.ts";
 
@@ -98,6 +98,13 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /exact location from available_skills/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /never derive a skill path under \/app/i);
 		assert.match(ROUTER_SKILL, /\/run\/divo-skills\/current\/<slug>\/SKILL\.md/i);
+	});
+
+	it("requires a fresh exact skill read for governed finance writes", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /family marked skill=required is never this direct-action exception/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Every Zoho Books mutation follows this rule/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /including a short approval follow-up/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /compaction summary.*is not a substitute/i);
 	});
 
 	it("requires artifact links and verified counts in the terminal answer", () => {

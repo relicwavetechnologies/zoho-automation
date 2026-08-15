@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type { Logger } from '../../shared/logger';
 import type { WebRunEvent, WebRunService } from '../../application/runtime/web-run.service';
 import { WebRunBusyError, type WebRunRegistry } from '../../application/runtime/web-run-registry';
-import type { LarkPiRuntimeAttachment } from '../../application/runtime/lark-pi-runtime.service';
+import { intakeUploads, type UploadTranscriber } from '../../application/runtime/upload-intake';
 import type { WebThreadRepoPort } from '../../infrastructure/persistence/web-thread.repository';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
@@ -56,6 +56,12 @@ export function createWebChatRoutes(deps: {
   readonly threads: WebThreadRepoPort;
   readonly logger: Logger;
   readonly maxUploadBytes: number;
+  /**
+   * Turns an uploaded recording into text. Optional because it is optional in
+   * the deployment: without a transcription key Lark refuses voice notes too,
+   * and the web says the same thing rather than pretending to have listened.
+   */
+  readonly transcriber?: UploadTranscriber;
 }) {
   const router = Router();
   const log = deps.logger.child({ service: 'web-chat-routes' });
@@ -224,20 +230,35 @@ export function createWebChatRoutes(deps: {
     const { threadId, text } = parsed.data;
     const runId = randomUUID();
     const controller = new AbortController();
-    const attachments = ((req.files as Express.Multer.File[] | undefined) ?? [])
-      .map(attachmentFromUpload);
+
+    // Every file is classified before any of it reaches the container, and the
+    // outcome is always visible to the model — a transcript, a named refusal,
+    // or a real path. Silently staging whatever arrived is what let the browser
+    // accept files a Lark DM refuses. See `upload-intake`.
+    const intake = await intakeUploads({
+      files: (req.files as Express.Multer.File[] | undefined) ?? [],
+      text,
+      ...(deps.transcriber ? { transcriber: deps.transcriber } : {}),
+      logger: log,
+      abortSignal: controller.signal,
+    });
+    const attachments = intake.attachments;
 
     try {
       deps.registry.start({
         runId,
         threadId,
         userId: identity.userId,
+        // What the person typed, not what the run was given. The prompt is
+        // echoed back into the thread and the rail, and a reader seeing their
+        // own message quoted with a transcript and two refusals stapled to the
+        // front of it would not recognise it as theirs.
         prompt: text,
         controller,
         events: deps.webRuns.run({
           runContext: identity.runContext,
           threadId,
-          text,
+          text: intake.text,
           userExternalId: identity.userId,
           sessionId: identity.sessionId,
           ...(attachments.length ? { attachments } : {}),
@@ -358,20 +379,6 @@ export function createWebChatRoutes(deps: {
   };
 
   return router;
-}
-
-/** Turn an uploaded buffer into what the runtime stages. */
-export function attachmentFromUpload(file: {
-  readonly originalname: string;
-  readonly mimetype: string;
-  readonly buffer: Buffer;
-}): LarkPiRuntimeAttachment {
-  return {
-    kind: file.mimetype.startsWith('image/') ? 'image' : 'file',
-    name: file.originalname,
-    mimeType: file.mimetype,
-    openStream: async () => (async function* () { yield new Uint8Array(file.buffer); })(),
-  };
 }
 
 function unauthenticated(res: Response): void {

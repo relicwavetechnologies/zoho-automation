@@ -17,8 +17,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Beat } from './transcripts'
 import { toolMarkFor } from './tool-identity'
 import {
-  ask, decideApproval, stop, watch,
-  type LedgerRow, type PendingApproval, type RunEvent, type Timeline,
+  ask, stop, watch,
+  type LedgerRow, type RunEvent, type Timeline,
 } from './stream'
 import { getThread, threadSettled, type ThreadRunRecord, type ThreadTurn } from './threads'
 import type { RunState } from './player'
@@ -104,29 +104,11 @@ function ledgerBeats(ledger: readonly LedgerRow[], answered: boolean): Beat[] {
  */
 export function beatsFrom(
   timeline: Timeline | null,
-  final: { text: string; awaitingApproval?: PendingApproval[] } | null,
+  final: { text: string } | null,
   liveAnswer = '',
 ): Beat[] {
   const answer = final?.text?.trim() ?? liveAnswer
   const beats = ledgerBeats(timeline?.ledger ?? [], answer.length > 0)
-
-  for (const approval of final?.awaitingApproval ?? []) {
-    beats.push({
-      t: 'approve',
-      // An approval names the capability it is asking about, so the mark comes
-      // from the same identity a tool row's does.
-      tool: toolMarkFor({ toolId: approval.toolId }),
-      title: String(approval.description?.title ?? 'This needs your approval'),
-      body: String(approval.description?.detail ?? 'Divo is asking before it changes anything.'),
-      facts: [
-        { k: 'Capability', v: approval.toolId },
-        { k: 'Action', v: approval.action },
-        ...(approval.departmentName ? [{ k: 'Department', v: approval.departmentName }] : []),
-      ],
-      confirm: 'Approve',
-      declined: 'Declined. Nothing was changed.',
-    })
-  }
 
   beats.push(...sayBeats(answer))
   return beats
@@ -248,8 +230,6 @@ export type ThreadRun = {
   liveLabel: string | null
   /** True while a run is open — the composer turns its send control into stop. */
   running: boolean
-  approve: () => void
-  decline: () => void
   /** Ask the run to stop. The reply still arrives on the open stream. */
   stopRun: () => void
   /**
@@ -274,11 +254,9 @@ export function useThreadRun(input: {
   const [prompt, setPrompt] = useState<string | null>(null)
   const [timeline, setTimeline] = useState<Timeline | null>(null)
   const [liveAnswer, setLiveAnswer] = useState('')
-  const [final, setFinal] = useState<{ text: string; awaitingApproval?: PendingApproval[] } | null>(null)
+  const [final, setFinal] = useState<{ text: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
-  const [declined, setDeclined] = useState<string | null>(null)
-  const [answered, setAnswered] = useState(false)
   const abort = useRef<AbortController | null>(null)
   const startedAt = useRef(0)
   /* Guards a late response from a thread the reader has already left. Without
@@ -310,10 +288,7 @@ export function useThreadRun(input: {
         if (event.type === 'final') {
           answered = true
           setTimeline(event.timeline)
-          setFinal({
-            text: event.text,
-            ...(event.awaitingApproval?.length ? { awaitingApproval: event.awaitingApproval } : {}),
-          })
+          setFinal({ text: event.text })
         }
       }
     } catch {
@@ -346,8 +321,6 @@ export function useThreadRun(input: {
     setFinal(null)
     setError(null)
     setRunning(false)
-    setDeclined(null)
-    setAnswered(false)
     setLoading(true)
 
     const load = async (): Promise<{ prompt: string; startedAt: number } | null> => {
@@ -411,7 +384,7 @@ export function useThreadRun(input: {
       beats,
       /* Read once, here, from the same clock the header was ticking off. The
          duration is only news when the run is over. */
-      state: { ...settledState(beats, (Date.now() - startedAt.current) / 1000), declined },
+      state: settledState(beats, (Date.now() - startedAt.current) / 1000),
       ...(error ? { error } : {}),
     }])
     setPrompt(null)
@@ -419,8 +392,6 @@ export function useThreadRun(input: {
     setLiveAnswer('')
     setFinal(null)
     setError(null)
-    setDeclined(null)
-    setAnswered(false)
     // A finished run is the moment a new thread acquires its name and stops
     // being marked as working, and neither is visible from the sidebar. It is
     // also the moment the rail's own claim on this thread expires: the server
@@ -443,8 +414,6 @@ export function useThreadRun(input: {
     setLiveAnswer('')
     setFinal(null)
     setError(null)
-    setDeclined(null)
-    setAnswered(false)
     setRunning(true)
 
     void consume(ask({
@@ -471,36 +440,18 @@ export function useThreadRun(input: {
     () => (prompt === null ? [] : beatsFrom(timeline, final, liveAnswer)),
     [prompt, timeline, final, liveAnswer],
   )
-  const gateIndex = liveBeats.findIndex(beat => beat.t === 'approve')
-  const gate = !answered && !declined && gateIndex !== -1 ? gateIndex : null
-  const pendingApproval = final?.awaitingApproval?.[0]
 
-  const approve = useCallback(() => {
-    if (!pendingApproval || !input.token) return
-    setAnswered(true)
-    void decideApproval(pendingApproval.id, 'approved', input.token)
-  }, [pendingApproval, input.token])
-
-  const decline = useCallback(() => {
-    if (!pendingApproval || !input.token) return
-    setDeclined('Declined. Nothing was changed.')
-    void decideApproval(pendingApproval.id, 'rejected', input.token)
-  }, [pendingApproval, input.token])
-
-  /* Everything the ledger holds has happened, except the gate — which is the
-     one beat that is waiting rather than done. The timeline is a snapshot of
-     work already reported, so there is nothing here to reveal on a cursor; each
-     step says for itself whether it is still open. */
+  /* The timeline is a snapshot of work already reported, so every received
+     beat is visible. Web writes no longer create a client-side approval gate;
+     configured company governance remains a backend concern. */
   const liveState = useMemo<RunState>(() => ({
-    played: liveBeats
-      .map((_, index) => index)
-      .filter(index => index !== gate),
-    gate,
-    declined,
+    played: liveBeats.map((_, index) => index),
+    gate: null,
+    declined: null,
     finished: !running,
     startedAt: startedAt.current,
     elapsed: 0,
-  }), [liveBeats, gate, declined, running])
+  }), [liveBeats, running])
 
   const exchanges = useMemo(() => (prompt === null
     ? settled
@@ -518,8 +469,6 @@ export function useThreadRun(input: {
     loading,
     liveLabel: running ? timeline?.liveLabel ?? null : null,
     running,
-    approve,
-    decline,
     stopRun,
     send,
     error,

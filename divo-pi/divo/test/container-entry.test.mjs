@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
 	assertPinnedIdentity,
 	piOptions,
@@ -24,7 +25,59 @@ const bootstrap = {
 	runtimeThreadId: "oc_chat:thread:om_root",
 	userId: "user-a",
 	companyId: "company-1",
+	trustedSession: {
+		userId: "user-a",
+		companyId: "company-1",
+		departments: [{ id: "department-1", name: "Finance" }],
+	},
+	runtimeContext: {
+		departmentId: "department-1",
+		departmentName: "Finance",
+		personaPrompt: "Prefer verified records.",
+		surface: { key: "lark" },
+	},
 };
+
+test("a container is never asked to work out whose run it is", () => {
+	// The controller resolved this before it picked the profile and the image.
+	// When the answer was optional, a container that did not receive it asked
+	// the backend itself — a per-turn round trip on a route a container is no
+	// longer permitted to call, so it would now fail late and obscurely instead.
+	const { trustedSession, ...withoutIt } = bootstrap;
+	assert.throws(
+		() => validateBootstrap(withoutIt),
+		/trusted session is invalid/,
+	);
+});
+
+test("a container is never asked what the backend already told the controller", () => {
+	// Persona, capabilities and surface. Without them a turn does not fail — it
+	// runs as a Divo with no department and no capabilities, and reads as one
+	// that simply gave a poor answer.
+	const { runtimeContext, ...withoutIt } = bootstrap;
+	assert.throws(
+		() => validateBootstrap(withoutIt),
+		/runtime context is invalid/,
+	);
+	assert.throws(
+		() => validateBootstrap({ ...bootstrap, runtimeContext: [] }),
+		/runtime context is invalid/,
+	);
+});
+
+test("a container talks to Pi and to its own disk, and to nothing else", () => {
+	// The one claim this slice rests on, and the one a fixture cannot make: a
+	// turn now costs one call to the backend rather than two, because the
+	// container reads what the controller already fetched. Nothing above proves
+	// the second call is gone — only that it has an answer without it — so the
+	// absence is asserted here, against the source itself.
+	const source = fs.readFileSync(
+		fileURLToPath(new URL("../container-entry.mjs", import.meta.url)),
+		"utf8",
+	);
+	assert.doesNotMatch(source, /\bfetch\s*\(/);
+	assert.doesNotMatch(source, /\/api\//);
+});
 
 test("container bootstrap requires an exact pinned identity", () => {
 	assert.equal(validateBootstrap(bootstrap), bootstrap);

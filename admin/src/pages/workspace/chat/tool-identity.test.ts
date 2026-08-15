@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { toolMarkFor } from './tool-identity'
+import { markForUrl, toolMarkFor } from './tool-identity'
 
 /**
  * Mirrors `TOOL_CAPABILITY_DEFINITIONS` in
@@ -102,5 +102,43 @@ describe('tool mark resolution', () => {
     assert.equal(toolMarkFor({ toolId: 'contextSearch' }), 'search')
     assert.equal(toolMarkFor({ toolId: 'skills.search' }), 'search')
     assert.equal(toolMarkFor({ toolId: 'skills.get' }), 'skill')
+  })
+})
+
+describe('the mark for a web address', () => {
+  it('gives a Zoho link the same mark a Zoho step gets', () => {
+    // The whole point of moving this table here: two ways in, one answer.
+    assert.equal(markForUrl('https://books.zoho.com/app/inv/9'), toolMarkFor({ toolId: 'zohoBooks' }))
+    assert.equal(markForUrl('https://open.larksuite.com/x'), toolMarkFor({ toolId: 'larkMessaging' }))
+  })
+
+  it('tells Google products apart by path, not just by host', () => {
+    // Every Google editor lives on docs.google.com, so a host-only table drew a
+    // spreadsheet as a document. This is the drift that made two registries
+    // visible in the first place.
+    assert.equal(markForUrl('https://docs.google.com/spreadsheets/d/abc/edit'), 'sheets')
+    assert.equal(markForUrl('https://docs.google.com/presentation/d/abc'), 'slides')
+    assert.equal(markForUrl('https://docs.google.com/forms/d/abc'), 'forms')
+    assert.equal(markForUrl('https://docs.google.com/document/d/abc'), 'docs')
+    assert.equal(markForUrl('https://drive.google.com/file/d/abc'), 'drive')
+    assert.equal(markForUrl('https://mail.google.com/mail/u/0'), 'gmail')
+  })
+
+  it('ignores www and reads a plain google domain', () => {
+    assert.equal(markForUrl('https://www.google.com/search?q=x'), 'google')
+    assert.equal(markForUrl('https://google.co.in/x'), 'google')
+  })
+
+  it('says nothing rather than guessing', () => {
+    // Null, not a fallback: an unknown site gets a monogram drawn from its own
+    // name, and a borrowed vendor mark would be a claim about where a link goes.
+    assert.equal(markForUrl('https://reuters.com/world'), null)
+    assert.equal(markForUrl('https://github.com/anthropics'), null)
+  })
+
+  it('refuses anything that is not an http address', () => {
+    for (const href of ['mailto:a@b.com', '/workspace/q3.pdf', 'not a url', '', 'javascript:alert(1)']) {
+      assert.equal(markForUrl(href), null, href)
+    }
   })
 })

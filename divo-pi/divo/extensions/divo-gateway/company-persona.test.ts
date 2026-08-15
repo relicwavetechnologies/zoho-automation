@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { DIVO_COMPANY_PERSONA_PROMPT } from './index.ts';
+import { DIVO_COMPANY_PERSONA_PROMPT } from './run-prompt.ts';
 
 describe('Divo company persona prompt', () => {
 	it('teaches normal Divo conversations the direct scheduling route', () => {

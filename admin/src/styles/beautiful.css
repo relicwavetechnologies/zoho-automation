@@ -64,6 +64,17 @@
   --bui-accent-tint: var(--cur-surface-strong);
   --bui-accent-ink: var(--cur-ink);
 
+  /* A link is the one thing on this surface that has to look clickable before
+     it is read, so it is the one thing that takes the app's blue accent rather
+     than an ink weight. Not a new colour: `--cur-accent` is what the sidebar's
+     active rail already uses, and `cursor.css` defines it in both themes. The
+     scarcity rule above is about orange, the brand — which this is not. */
+  --bui-link: var(--cur-accent);
+  /* The resting underline. A token rather than an opacity modifier on the class:
+     Tailwind cannot compute alpha over a CSS variable, so `.../35` compiled to
+     nothing at all and the underline quietly stayed at full strength. */
+  --bui-link-soft: color-mix(in oklab, var(--cur-accent) 42%, transparent);
+
   /* Tooltips invert onto the app's CTA ink. */
   --bui-tip-bg: var(--cur-cta);
   --bui-tip-fg: var(--cur-on-cta);

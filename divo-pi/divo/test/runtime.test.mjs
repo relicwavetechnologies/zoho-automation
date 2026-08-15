@@ -38,7 +38,7 @@ const values = {
 	homeDir: "/tmp/divo-home",
 	internalDir: "/tmp/workspace/.divo",
 	logsDir: "/tmp/run/logs",
-	model: "deepseek-v4-flash",
+	model: "deepseek-v4-pro",
 	print: true,
 	prompt: "hello",
 	provider: "deepseek",
@@ -142,7 +142,7 @@ describe("Divo Pi runtime boundary", () => {
 			"--provider",
 			"deepseek",
 			"--model",
-			"deepseek-v4-flash",
+			"deepseek-v4-pro",
 		]);
 		assert.ok(args.includes("--no-extensions"));
 		assert.ok(args.includes("--no-skills"));
@@ -503,7 +503,7 @@ describe("The run launches on the model it was given", () => {
 	it("keeps DeepSeek on DeepSeek", () => {
 		const args = buildPiArguments(values);
 
-		assert.equal(args[args.indexOf("--model") + 1], "deepseek-v4-flash");
+		assert.equal(args[args.indexOf("--model") + 1], "deepseek-v4-pro");
 		assert.equal(args[args.indexOf("--provider") + 1], "deepseek");
 		assert.equal(args[args.indexOf("--thinking") + 1], "high");
 	});

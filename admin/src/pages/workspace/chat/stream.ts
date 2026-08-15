@@ -59,23 +59,12 @@ export type Timeline = {
   ledger?: LedgerRow[]
 }
 
-export type PendingApproval = {
-  id: string
-  toolId: string
-  action: string
-  requestedAt: string
-  approverName: string
-  departmentName: string | null
-  description: { title?: string; detail?: string } & Record<string, unknown>
-  payload: unknown
-}
-
 export type RunEvent =
   | { type: 'timeline'; timeline: Timeline }
   | { type: 'answer'; text: string }
   | { type: 'answer_delta'; delta: string }
   | { type: 'answer_reset' }
-  | { type: 'final'; text: string; timeline: Timeline; awaitingApproval?: PendingApproval[] }
+  | { type: 'final'; text: string; timeline: Timeline }
   | { type: 'error'; message: string; code: string }
 
 export type AskInput = {
@@ -147,6 +136,11 @@ export async function* watch(input: {
 function askFailure(status: number): string {
   if (status === 401) return 'Your session expired. Sign in again to keep working.'
   if (status === 409) return 'This chat already has a run going. Wait for it, or stop it first.'
+  /* The composer checks the size before it offers to send, so reaching this
+     means the server's limit is lower than the one the browser was told about.
+     Named as a size problem anyway — "please try again" would send someone
+     round the same loop with the same file. */
+  if (status === 413) return 'That file is too large to send. Try a smaller one.'
   return 'Divo could not start this run. Please try again.'
 }
 
@@ -185,23 +179,6 @@ export async function stop(threadId: string, token: string): Promise<void> {
     method: 'POST',
     headers: { Authorization: `Bearer ${token}` },
   }).catch(() => {})
-}
-
-/** Answer an approval this run raised, through the ordinary approval route. */
-export async function decideApproval(
-  approvalId: string,
-  decision: 'approved' | 'rejected',
-  token: string,
-): Promise<boolean> {
-  const response = await fetch(
-    `${API_BASE_URL}/api/desktop/approvals/${encodeURIComponent(approvalId)}/decision`,
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision }),
-    },
-  ).catch(() => null)
-  return response?.ok === true
 }
 
 function parseFrame(frame: string): RunEvent | null {

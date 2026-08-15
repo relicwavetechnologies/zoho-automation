@@ -320,11 +320,11 @@ export const ZOHO_NATIVE_TOOLS = [
     "name": "divo_zoho_books",
     "family": "zoho",
     "label": "Divo Zoho Books",
-    "description": "Access Zoho Books: read, write, and report on invoices, purchase orders, bills, expenses, payments, contacts, items, taxes, bank transactions. A created invoice is a draft until mark_invoice_sent or send_invoice; report the status the tool returns rather than assuming it was issued. attach_document puts a file the member sent in this Lark conversation onto an invoice, purchase order, or bill, and verifies it against Zoho documents[]. Plain list operations fetch one bounded page and return only the requested limit. For a complete artifact or exact multi-page aggregate, use page/nextPage from one governed local Python file. Do not call this registered Pi tool for a preview first when the user already requested an export; begin the local workflow and call Zoho through divo-local. Use populated _amount_inr/_balance_inr for INR calculations; never infer an original currency when _currency is UNKNOWN.",
+    "description": "Access Zoho Books: read, write, and report on invoices, purchase orders, bills, expenses, payments, contacts, items, taxes, bank transactions. Before any write, read the matching current Invoice, Bill, Purchase Order, or Money skill in this turn. Resolve one ledger with get_chart_of_accounts plus a focused searchQuery, which returns at most ten candidates; move an explicitly requested full chart through the governed local-file workflow instead of model context. A created invoice is a draft until mark_invoice_sent or send_invoice; report the status the tool returns rather than assuming it was issued. attach_document puts a file the member sent in this Lark conversation onto an invoice, purchase order, or bill, and verifies it against Zoho documents[]. Plain list operations fetch one bounded page and return only the requested limit. For a complete artifact or exact multi-page aggregate, use page/nextPage from one governed local Python file. Do not call this registered Pi tool for a preview first when the user already requested an export; begin the local workflow and call Zoho through divo-local. Use populated _amount_inr/_balance_inr for INR calculations; never infer an original currency when _currency is UNKNOWN.",
     "promptSnippet": "Use divo_zoho_books for governed zoho work. The backend remains authoritative for access, connections, approvals, and execution.",
     "promptGuidelines": [
       "connectionId: exact accessible Zoho UUID. In backend-hosted channels, omit it when only one Zoho account is accessible; the backend resolves that account. If multiple are available, retry with the exact ID returned by the error.",
-      "op: list_invoices|get_invoice|stage_invoice|create_invoice|update_invoice|mark_invoice_sent|list_purchase_orders|get_purchase_order|stage_purchase_order|create_purchase_order|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|create_bill|void_invoice|build_overdue_report",
+      "op: list_invoices|get_invoice|stage_invoice|create_invoice|update_invoice|mark_invoice_sent|list_purchase_orders|get_purchase_order|stage_purchase_order|create_purchase_order|attach_document|list_contacts|get_contact|create_contact|list_expenses|list_bills|list_payments|list_items|list_taxes|get_chart_of_accounts|get_account_balance|list_bank_transactions|search_transactions|get_tax_summary|send_invoice|record_payment|create_expense|stage_bill|create_bill|void_invoice|build_overdue_report",
       "read params: invoiceId, purchaseOrderId, accountId, searchQuery, dateFrom, dateTo, status, taxYear, limit (1-200), page (1-100)",
       "For terminal paging, start with page=1 and continue with nextPage while hasMore=true."
     ],
@@ -361,6 +361,7 @@ export const ZOHO_NATIVE_TOOLS = [
             "send_invoice",
             "record_payment",
             "create_expense",
+            "stage_bill",
             "create_bill",
             "create_contact",
             "update_invoice",

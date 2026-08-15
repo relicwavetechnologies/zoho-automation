@@ -36,6 +36,10 @@ export const GATEWAY_STATUSES = [
   'unknown_tool',
   'invalid_args',
   'permission_denied',
+  'requester_confirmation_required',
+  // Rolling-compatibility input only. New backend responses use the
+  // channel-neutral status above; installed Desktop clients may still return
+  // this value while a deployment rolls through.
   'local_approval_required',
   'approval_intent_not_found',
   'approval_intent_expired',
@@ -321,17 +325,18 @@ export function gatewayFailure(
 
 /**
  * A write invocation was valid and authorized, but execution is intentionally
- * paused at the desktop approval boundary. The data contains the server-bound
- * intent and its safe presentation; it is not a successful tool execution.
+ * paused until the requester confirms the exact backend-bound business action.
+ * Channel adapters decide how to present it; this status does not imply a
+ * Desktop-local process or UI.
  */
-export function gatewayLocalApprovalRequired<T>(data: T): GatewayResponse<T> {
+export function gatewayRequesterConfirmationRequired<T>(data: T): GatewayResponse<T> {
   return {
     ok: false,
-    status: 'local_approval_required',
+    status: 'requester_confirmation_required',
     data,
     error: {
-      code: 'local_approval_required',
-      message: 'This exact action requires local approval before execution.',
+      code: 'requester_confirmation_required',
+      message: 'This exact action requires requester confirmation before execution.',
     },
   };
 }

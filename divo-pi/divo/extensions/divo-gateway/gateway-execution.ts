@@ -26,10 +26,9 @@ export interface GatewayExecutionContext extends ApprovalContext {
 }
 
 /**
- * Execute one model-requested gateway operation. Desktop writes use the
- * backend-bound prepared-intent confirmation protocol. A backend-driven run
- * skips that local UI step because backend RBAC and HITL are the sole authority
- * for cloud runs — on every channel, not only Lark.
+ * Execute one model-requested gateway operation. An installed Desktop client
+ * renders requester confirmation locally. Backend-driven channels return the
+ * same durable action to their own adapter; they must never open Desktop UI.
  */
 export async function executeGatewayRequest(
 	config: DivoGatewayConfig,
@@ -43,12 +42,14 @@ export async function executeGatewayRequest(
 		signal: ctx.signal,
 		...(ctx.resultMode ? { resultMode: ctx.resultMode } : {}),
 	});
-	if (result.body.status !== "local_approval_required" || ctx.runtimeChannel) {
+	const requesterConfirmation = result.body.status === "requester_confirmation_required"
+		|| result.body.status === "local_approval_required";
+	if (!requesterConfirmation || ctx.runtimeChannel) {
 		return result;
 	}
 	if (request.op !== "tools.invoke") {
 		throw new Error(
-			"The backend requested local approval for an unsupported gateway operation.",
+			"The backend requested requester confirmation for an unsupported gateway operation.",
 		);
 	}
 

@@ -1,79 +1,15 @@
 /**
- * What Divo can actually do with a Lark attachment.
+ * The parts of attachment handling that are genuinely about Lark.
  *
- * A file sent in Lark is streamed into the sender's own container workspace
- * and named to the agent as a path. Nothing is extracted here, so this module
- * no longer asks "can the backend parse these bytes" — it asks the only
- * question left: is there a skill in the container that can open this at all.
+ * What a container can open is not one of them — that moved to
+ * `application/runtime/container-media`, because the same container answers the
+ * browser, and a classifier living in this folder is how the web surface came to
+ * accept a file a Lark DM would have refused. Re-exported here so the Lark call
+ * sites read in one vocabulary.
  *
- * That inverts the old allow-list. The container has PDF, Office, image, text
- * and archive tooling, so refusing anything not on a list of extensions would
- * refuse files it can open perfectly well. What it genuinely has no skill for
- * is a short, stable set — video and opaque binaries — so that is what is named
- * here. Recognised audio files are intercepted by the voice transcription path
- * before this classifier. Everything else is staged and left to the agent.
+ * What is left is shaped by Lark's own message model: a quote-reply, an image
+ * carried inline in a prompt, and a DM whose file arrives before its question.
  */
-
-import type { GroupChatAttachmentContext } from '../../../domain/conversation/group-context';
-
-export type LarkMediaSupport = 'supported' | 'unsupported_document';
-
-const AUDIO_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
-  mp3: 'audio/mpeg',
-  wav: 'audio/wav',
-  m4a: 'audio/mp4',
-  aac: 'audio/aac',
-  flac: 'audio/flac',
-  ogg: 'audio/ogg',
-  opus: 'audio/opus',
-  wma: 'audio/x-ms-wma',
-  amr: 'audio/amr',
-};
-
-/**
- * Formats no container skill can open. Recognised audio is removed from this
- * path for transcription; these entries keep the fallback closed if that
- * routing is ever bypassed. Video and opaque binaries remain unreadable.
- */
-const UNREADABLE_EXTENSIONS = new Set([
-  'mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'wma', 'amr',
-  'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'm4v', '3gp',
-  'exe', 'dll', 'so', 'dylib', 'bin', 'dmg', 'iso', 'img', 'apk', 'msi',
-]);
-
-const UNREADABLE_MIME_PREFIXES = ['audio/', 'video/'];
-
-const extensionOf = (fileName: string | undefined): string =>
-  (fileName ?? '').toLowerCase().split('.').at(-1) ?? '';
-
-export const larkAudioMimeType = (fileName: string | undefined): string | null =>
-  AUDIO_MIME_BY_EXTENSION[extensionOf(fileName)] ?? null;
-
-/**
- * The extension is consulted as well as the MIME type because Lark reports
- * `application/octet-stream` for anything its own table misses — a bare MIME
- * type is not enough to tell a spreadsheet from an .mp4.
- */
-export const classifyLarkMedia = (attachment: {
-  readonly type: 'file' | 'image';
-  readonly fileName?: string;
-  readonly mimeType?: string;
-}): LarkMediaSupport => {
-  if (attachment.type === 'image') return 'supported';
-  const mime = (attachment.mimeType ?? '').toLowerCase().split(';')[0]?.trim() ?? '';
-  if (UNREADABLE_MIME_PREFIXES.some(prefix => mime.startsWith(prefix))) {
-    return 'unsupported_document';
-  }
-  return UNREADABLE_EXTENSIONS.has(extensionOf(attachment.fileName))
-    ? 'unsupported_document'
-    : 'supported';
-};
-
-export const isSupportedLarkMedia = (attachment: {
-  readonly type: 'file' | 'image';
-  readonly fileName?: string;
-  readonly mimeType?: string;
-}): boolean => classifyLarkMedia(attachment) === 'supported';
 
 /**
  * Pixels are carried for the current turn only, never persisted, so the byte
@@ -81,26 +17,6 @@ export const isSupportedLarkMedia = (attachment: {
  * well under this.
  */
 export const MAX_INLINE_IMAGE_BYTES = 4 * 1_024 * 1_024;
-
-/**
- * Prompt-only context for a file no skill in the container can open.
- *
- * The limit is this file's format, not Lark and not the channel, so pointing
- * the user at the desktop app would be wrong advice — it reaches the same
- * container and cannot transcribe an .mp4 either.
- *
- * Written as an instruction rather than a canned sentence so Divo answers in
- * its own voice and can fold the refusal into whatever else the message asked.
- * The explicit "do not guess" line matters: without it a model will happily
- * infer a meeting's contents from `standup-recording.mp4`.
- */
-export const unsupportedDocumentNotice = (fileName: string): string =>
-  `[File: "${fileName}" — NOT SAVED. Divo has no skill that can open this file format.\n`
-  + 'Tell the user in your own words that you cannot work with this particular format. '
-  + 'This audio or video format cannot be transcribed, and program binaries cannot be inspected. '
-  + 'Documents, spreadsheets, images, text, and archives all work. '
-  + 'Do not guess or infer anything about this file\'s contents from its name. '
-  + 'Do not claim to have read it, and do not promise to read it later in this conversation.]';
 
 /**
  * Whether this message is an attachment with nothing asked of it yet.
@@ -113,6 +29,11 @@ export const unsupportedDocumentNotice = (fileName: string): string =>
  * Only for direct messages. In a group Divo answers when addressed, so an
  * image posted without a mention already stays quiet, and an image posted
  * *with* one is a deliberate request that deserves an answer.
+ *
+ * There is no web equivalent and there should not be one: a browser composer
+ * holds the file next to the field until the person presses send, so the file
+ * and its question arrive together by construction. This exists because Lark
+ * has no composer to hold anything.
  */
 export const isAwaitingItsQuestion = (input: {
   readonly chatType: string;

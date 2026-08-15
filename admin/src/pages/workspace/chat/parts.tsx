@@ -15,13 +15,16 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowUp, ArrowUpRight, Check, ChevronDown, ChevronRight, Plus, X } from 'lucide-react'
+import { ArrowUp, ArrowUpRight, Check, ChevronDown, ChevronRight, Paperclip, Plus } from 'lucide-react'
 import { ToolMark, tool, type ToolKey } from './tools'
 import { RevealCursor, firstWordIn, rehypeWords, wordIndexOf } from './reveal'
 import { DataTable } from './answer/table.view'
 import { parseDrawnTable, readGrid, textOf } from './answer/table'
 import { Sources, SourceLink } from './answer/links.view'
 import { sourcesIn } from './answer/links'
+import { FileChips, RejectionNote } from './attach.view'
+import { namedForClipboard, type Rejection } from './attach'
+import { CopyButton } from './copy'
 import type { ArtifactBlock, Beat, StepLine, TableBlock } from './transcripts'
 
 /* ── Step ─────────────────────────────────────────────────
@@ -154,80 +157,6 @@ export function Step({
   )
 }
 
-/* ── Approval ─────────────────────────────────────────────
-   The moment the run stops. It is a card rather than a row because it is the
-   one thing on the screen that will not resolve itself, and it states what is
-   about to happen in the reader's terms — destination, scope, blast radius —
-   not in the runtime's. */
-export function Approval({
-  beat, onApprove, onDecline, answered,
-}: {
-  beat: Extract<Beat, { t: 'approve' }>
-  onApprove: () => void
-  onDecline: () => void
-  answered: 'approved' | 'declined' | null
-}) {
-  const meta = tool(beat.tool)
-  return (
-    <div
-      className="rounded-card bg-surface shadow-card"
-      style={{ animation: 'bui-fade-up 380ms cubic-bezier(0.23,1,0.32,1) both' }}
-    >
-      <div className="flex items-start gap-2.5 border-b border-line p-3">
-        <span className="mt-px flex size-7 shrink-0 items-center justify-center rounded-control bg-inset shadow-hairline">
-          <ToolMark name={beat.tool} size={15} />
-        </span>
-        <span className="min-w-0">
-          <span className="block text-[13px] font-semibold text-ink">{beat.title}</span>
-          <span className="mt-0.5 block text-[12px] leading-relaxed text-ink-2">{beat.body}</span>
-        </span>
-        {!answered && (
-          <span className="ml-auto shrink-0 rounded-full bg-[var(--bui-accent-tint)] px-2 py-0.5 text-[10.5px] font-medium text-[var(--bui-accent-ink)]">
-            Waiting on you
-          </span>
-        )}
-      </div>
-
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 p-3">
-        {beat.facts.map((f) => (
-          <div key={f.k} className="contents">
-            <dt className="text-[11.5px] text-ink-3">{f.k}</dt>
-            <dd className="text-[11.5px] text-ink">{f.v}</dd>
-          </div>
-        ))}
-      </dl>
-
-      <div className="flex items-center gap-2 border-t border-line p-2.5">
-        {answered ? (
-          <span
-            className={`flex items-center gap-1.5 text-[12px] font-medium ${answered === 'approved' ? 'text-[var(--bui-green)]' : 'text-ink-2'}`}
-          >
-            {answered === 'approved' ? <Check size={13} /> : <X size={13} />}
-            {answered === 'approved' ? `Approved — ${meta.app}` : 'Declined'}
-          </span>
-        ) : (
-          <>
-            <button
-              type="button"
-              onClick={onApprove}
-              className="rounded-control bg-ink px-3 py-1.5 text-[12.5px] font-medium text-surface transition-transform duration-150 active:scale-[0.97]"
-            >
-              {beat.confirm}
-            </button>
-            <button
-              type="button"
-              onClick={onDecline}
-              className="rounded-control px-3 py-1.5 text-[12.5px] font-medium text-ink-2 transition-colors duration-100 hover:bg-fill hover:text-ink"
-            >
-              Not now
-            </button>
-          </>
-        )}
-      </div>
-    </div>
-  )
-}
-
 /* ── Answer ───────────────────────────────────────────────
    A live answer grows only when another model delta reaches the browser. Each
    newly arrived word resolves out of blur and the caret sits at the true wire
@@ -245,11 +174,19 @@ export function Say({ text, streaming }: { text: string; streaming?: boolean }) 
 
   return (
     <div
-      className="text-[13.5px] leading-[1.7] text-ink"
+      className="group text-[13.5px] leading-[1.7] text-ink"
       style={{ animation: 'bui-stream-in 420ms cubic-bezier(0.23,1,0.32,1) both' }}
     >
       <Markdown>{text}</Markdown>
       <Sources sources={sources} />
+      {/* Under the answer rather than floating beside it: the answer is as wide
+          as the column, so there is no margin to sit in, and a control overlaid
+          on the last line covers the text it belongs to. Only on a settled
+          answer — the streaming branch returns above — because copying a reply
+          that is still arriving gets you half of it. */}
+      <div className="mt-1.5 flex items-center gap-0.5">
+        <CopyButton text={text} />
+      </div>
     </div>
   )
 }
@@ -530,6 +467,11 @@ const MODELS = [
   { key: 'deep', name: 'Deep', tag: 'Long runs' },
 ]
 
+/* Stable identities for the empty case. A fresh `[]` in a default parameter is a
+   new array on every render, which defeats every memo below it. */
+const NO_FILES: readonly File[] = []
+const NO_REJECTIONS: readonly Rejection[] = []
+
 /** The `@token` under the caret, if the caret is inside one. */
 function tokenAt(draft: string) {
   const at = draft.lastIndexOf('@')
@@ -542,6 +484,7 @@ function tokenAt(draft: string) {
 
 export function Composer({
   value, onChange, onSubmit, placeholder, autoFocus, running, onStop,
+  files = NO_FILES, rejected = NO_REJECTIONS, onAttach, onRemoveFile,
 }: {
   value: string
   onChange: (next: string) => void
@@ -551,11 +494,22 @@ export function Composer({
   /** A run is going. The send control becomes the way to end it. */
   running?: boolean
   onStop?: () => void
+  /**
+   * Files this message will carry. Owned by the screen, not by the composer —
+   * the screen is what clears them once a run has actually started, and a
+   * composer holding its own copy would keep showing chips for a send that was
+   * declined.
+   */
+  files?: readonly File[]
+  rejected?: readonly Rejection[]
+  onAttach?: (incoming: readonly File[]) => void
+  onRemoveFile?: (index: number) => void
 }) {
   const input = useRef<HTMLTextAreaElement>(null)
   const controls = useRef<HTMLDivElement>(null)
   const measure = useRef<HTMLSpanElement>(null)
   const modelBtn = useRef<HTMLButtonElement>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
 
   const [expanded, setExpanded] = useState(false)
   const [sourceOpen, setSourceOpen] = useState(false)
@@ -641,14 +595,51 @@ export function Composer({
     onSubmit()
   }
 
+  const openPicker = () => {
+    setSourceOpen(false)
+    fileInput.current?.click()
+  }
+
+  /* Reading `files` off the event is what makes this work for a screenshot as
+     well as for a copied file — the clipboard carries both under the same key,
+     and a screenshot is the reason this exists. Left un-prevented when there
+     are none, so ordinary text still pastes. */
+  const paste = (event: React.ClipboardEvent) => {
+    const pasted = Array.from(event.clipboardData?.files ?? [])
+    if (pasted.length === 0 || !onAttach) return
+    event.preventDefault()
+    onAttach(pasted.map((file, index) => namedForClipboard(file, Date.now() + index)))
+  }
+
   return (
     <div className="relative">
       {/* ── source menu — grows up from the composer's top edge ── */}
-      {menu && rows.length > 0 && (
+      {menu && (rows.length > 0 || sourceOpen) && (
         <div
           className="absolute inset-x-0 bottom-full z-10 mb-2 max-h-[264px] overflow-y-auto rounded-card bg-surface p-1 shadow-overlay"
           style={{ animation: 'bui-pop-in 180ms cubic-bezier(0.23,1,0.32,1) both', transformOrigin: 'bottom center' }}
         >
+          {/* A file is a source too — the same `+`, one row above the apps.
+              Only on the button, never on `@`: typing `@sh` is reaching for
+              Shopify, and offering a file picker there is an interruption.
+              Divo saves it into this chat's container workspace, which is what
+              lets the run open it, so the row says so rather than "Upload". */}
+          {sourceOpen && onAttach && (
+            <button
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={openPicker}
+              className="flex h-9 w-full items-center gap-2.5 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
+            >
+              <span className="flex w-10 shrink-0 items-center justify-center">
+                <Paperclip size={14} className="text-ink-2" />
+              </span>
+              <span className="shrink-0 text-[12.5px] font-medium text-ink">Attach files</span>
+              <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">
+                Or drop them anywhere on this chat
+              </span>
+            </button>
+          )}
           {rows.map((source, i) => (
             <button
               key={source.key}
@@ -702,7 +693,7 @@ export function Composer({
       <div
         onClick={() => input.current?.focus()}
         className={`relative cursor-text border border-line bg-surface p-1.5 shadow-btn transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
-          expanded ? 'rounded-[22px]' : 'rounded-full'
+          expanded || files.length > 0 ? 'rounded-[22px]' : 'rounded-full'
         }`}
       >
         {/* Hidden mirror of the draft — its natural width decides the layout. */}
@@ -713,6 +704,24 @@ export function Composer({
         >
           {value}
         </span>
+
+        {/* Reset before opening, so choosing the same file twice in a row still
+            fires a change event — otherwise removing a file and re-picking it
+            does nothing at all. */}
+        <input
+          ref={fileInput}
+          type="file"
+          multiple
+          className="hidden"
+          onClick={(event) => { (event.target as HTMLInputElement).value = '' }}
+          onChange={(event) => {
+            const picked = Array.from(event.target.files ?? [])
+            if (picked.length > 0) onAttach?.(picked)
+            input.current?.focus()
+          }}
+        />
+
+        <FileChips files={files} onRemove={(index) => onRemoveFile?.(index)} />
 
         <div
           ref={controls}
@@ -737,6 +746,7 @@ export function Composer({
             rows={1}
             value={value}
             onChange={(event) => onChange(event.target.value)}
+            onPaste={paste}
             onKeyDown={(event) => {
               if (menu && rows.length > 0) {
                 if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -760,7 +770,14 @@ export function Composer({
                 send()
               }
             }}
-            placeholder={placeholder}
+            /* A file with nothing asked of it is the one message guaranteed to
+               be useless — Divo has been shown something and asked nothing, and
+               answering it costs a whole turn to say so. Lark solves this by
+               holding the file until the next message arrives; a composer holds
+               it for free, so send stays off and the field says why. */
+            placeholder={files.length > 0 && !ready
+              ? `Ask about the attached file${files.length === 1 ? '' : 's'}`
+              : placeholder}
             aria-label="Message Divo"
             className={`min-h-7 w-full min-w-0 resize-none bg-transparent px-1 py-[5px] text-[13px] leading-[18px] text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 ${
               expanded ? 'col-span-full col-start-1 row-start-1' : 'col-start-2 row-start-1'
@@ -806,6 +823,8 @@ export function Composer({
           </button>
         </div>
       </div>
+
+      <RejectionNote rejected={rejected} />
     </div>
   )
 }

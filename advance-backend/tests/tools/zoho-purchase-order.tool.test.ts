@@ -12,6 +12,13 @@ const validFields = {
   purchaseorder_number: 'PO-QA-001',
   line_items: [{ item_id: 'item-1', name: 'Packaging', quantity: 10, rate: 42 }],
 };
+const providerValidFields = {
+  vendor_id: 'vendor-1',
+  date: '2026-08-14',
+  delivery_date: '2026-08-20',
+  purchaseorder_number: 'PO-QA-001',
+  line_items: [{ item_id: 'item-1', name: 'Packaging', quantity: 10, rate: 42 }],
+};
 
 function makeStore() {
   const rows = new Map<string, StagedPurchaseOrder>();
@@ -111,7 +118,9 @@ describe('Zoho Books purchase orders', () => {
     assert.equal(result.ok && result.value.success, true);
     assert.equal(mutations.length, 0);
     assert.equal(store.rows.size, 1);
+    assert.deepEqual([...store.rows.values()][0]?.payload, providerValidFields);
     assert.match(result.ok ? result.value.stagedSummary! : '', /Nothing has been created or sent/);
+    assert.match(result.ok ? result.value.stagedSummary! : '', /Expected delivery: 2026-08-20/);
   });
 
   it('replays the stored draft once and reports that it remains unsent', async () => {
@@ -122,7 +131,7 @@ describe('Zoho Books purchase orders', () => {
 
     const created = await tool.execute({ connectionId, op: 'create_purchase_order', stagingId }, ctx);
     assert.equal(created.ok, true);
-    assert.deepEqual(mutations[0].body, validFields);
+    assert.deepEqual(mutations[0].body, providerValidFields);
     assert.equal(mutations[0].params.ignore_auto_number_generation, 'true');
     assert.equal(store.rows.get(stagingId)?.createdPurchaseOrderId, 'po-1');
     assert.match(created.ok ? created.value.message! : '', /nothing has been sent to the vendor/i);

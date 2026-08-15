@@ -357,7 +357,8 @@ describe('ApprovalResumerService', () => {
 
     assert.deepEqual(harness.executed, []);
     assert.equal(harness.completions.length, 0);
-    assert.match(harness.finalTexts[0] ?? '', /requester company/i);
+    assert.match(JSON.stringify(harness.failures[0] ?? ''), /requester company/i);
+    assert.equal(harness.finalTexts.length, 0);
   });
 
   it('does not execute anything when the manager rejects the stored action', async () => {
