@@ -451,11 +451,11 @@ const Exchanged = memo(function Exchanged({
           liveLabel={liveLabel}
         />
 
-        {rest.map(({ beat, index }) => {
+        {rest.map(({ beat, key }) => {
           if (beat.t === 'say') {
             return (
               <Say
-                key={index}
+                key={key}
                 text={beat.text}
                 streaming={!state.finished && beat.narration !== true}
               />
@@ -463,9 +463,9 @@ const Exchanged = memo(function Exchanged({
           }
           if (beat.t === 'block') {
             const { block } = beat
-            if (block.kind === 'table') return <Preview key={index} block={block} />
-            if (block.kind === 'artifact') return <Artifact key={index} block={block} />
-            return <Chart key={index} block={block} />
+            if (block.kind === 'table') return <Preview key={key} block={block} />
+            if (block.kind === 'artifact') return <Artifact key={key} block={block} />
+            return <Chart key={key} block={block} />
           }
           return null
         })}

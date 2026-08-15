@@ -26,6 +26,7 @@ import type { RunState } from './player'
 function stepBeat(row: LedgerRow): Beat {
   return {
     t: 'step',
+    ...(row.id ? { id: row.id } : {}),
     tool: toolMarkFor(row),
     title: row.count > 1 ? `${row.label} ×${row.count}` : row.label,
     ...(row.outcome ? { chip: row.outcome } : {}),
@@ -58,40 +59,48 @@ function stepBeat(row: LedgerRow): Beat {
  */
 function sayBeats(text: string): Beat[] {
   const answer = text.trim()
-  return answer ? [{ t: 'say', text: answer }] : []
+  /* One id for the whole run, because there is one reply and it is the same
+     reply from its first word to its last. Keyed by position instead, it moved
+     as the log above it grew, and the answer a reader was mid-sentence through
+     was torn down and rebuilt — re-parsing its markdown and replaying its
+     arrival animation — because a row above it had been reclassified. */
+  return answer ? [{ t: 'say', id: 'answer', text: answer }] : []
 }
 
 /**
- * The work log, minus the answer being written into it.
+ * The work log — everything the run did on the way, and nothing it landed on.
  *
- * The ledger's `say` rows are the model's prose arriving live — and the last
- * run of them *is* the answer, streaming in a sentence at a time. The final
- * event then carries that same answer, complete. Printing both is how "hi" came
- * back as "Hi! How can I help you today?" twice, one line apart.
+ * The ledger's `say` rows are the model's prose in sentence-sized pieces, and
+ * some of them are the reply: the run says "Three invoices are overdue" and
+ * that same sentence arrives again, complete, on the answer stream. Printing
+ * both is how "hi" came back as "Hi! How can I help you today?" twice, one line
+ * apart.
  *
- * Only the trailing ones are dropped. A `say` before a tool call is narration
- * the answer does not repeat — "let me check the invoices first" — and losing it
- * would make the run look like it worked in silence. What survives is marked as
- * narration, which is how the thread knows to file it with the work rather than
- * beside the answer. On Lark the question never arises: the log is a card and
- * the answer is a separate message, so the two never sit in one column.
+ * Which is which is not this module's judgement to make, and it used to make it
+ * anyway — dropping trailing `say` rows whenever the answer stream happened to
+ * be non-empty. That is a fact about the wire, and the backend clears the answer
+ * stream on every tool call, so the flag flipped several times a turn and the
+ * same sentence moved between the log and the answer and back. The run knows
+ * which sentences it went on working after; it now says so, and this reads it.
  */
-function ledgerBeats(ledger: readonly LedgerRow[], answered: boolean): Beat[] {
-  const rows = [...ledger]
-  if (answered) {
-    while (rows.length > 0 && rows[rows.length - 1]!.kind === 'say') rows.pop()
-  }
-  return rows.map((row, index) => {
-    if (row.kind === 'say') return { t: 'say', text: row.label, narration: true }
-    /* Unlike a tool call, a thought has no end event — the model stops thinking
-       by doing something else. So it counts as still going while it is the
-       newest thing in the ledger, which is what earns it the scrolling window
-       rather than the folded line. The caller still has to agree the run itself
-       is open; the last row of a finished run is not thinking. */
-    if (row.kind === 'thought') {
-      return { t: 'think', text: row.label, running: index === rows.length - 1 }
+function ledgerBeats(ledger: readonly LedgerRow[]): Beat[] {
+  return ledger.flatMap((row, index): Beat[] => {
+    const id = row.id ?? `row:${index}`
+    // Prose the run landed on is the reply, and the reply is drawn under this
+    // log rather than inside it.
+    if (row.kind === 'say') {
+      return row.aside ? [{ t: 'say', id, text: row.label, narration: true }] : []
     }
-    return stepBeat(row)
+    /* A thought has no end event — the model stops thinking by doing something
+       else — so the run marks the row settled at the moment it does. This used
+       to be guessed from the row being last in the list, which made a thought
+       flicker between its live window and its folded line every time the list
+       was reshaped for an unrelated reason. The caller still has to agree the
+       run itself is open: a record kept mid-thought is not still thinking. */
+    if (row.kind === 'thought') {
+      return [{ t: 'think', id, text: row.label, running: row.status === 'running' }]
+    }
+    return [stepBeat(row)]
   })
 }
 
@@ -99,26 +108,49 @@ function ledgerBeats(ledger: readonly LedgerRow[], answered: boolean): Beat[] {
  * The run so far, as beats.
  *
  * The backend sends a snapshot of the whole timeline each tick, not a delta, so
- * each snapshot simply replaces the beats — no reconciliation, no keys to get
- * wrong, and a dropped frame costs a redraw rather than a corrupted log.
+ * each snapshot simply replaces the beats. Rows carry their own identity, so a
+ * dropped frame costs a redraw rather than a corrupted log, and a row that did
+ * not change is not redrawn at all.
  */
 export function beatsFrom(
   timeline: Timeline | null,
   final: { text: string } | null,
   liveAnswer = '',
 ): Beat[] {
-  const answer = final?.text?.trim() ?? liveAnswer
-  const beats = ledgerBeats(timeline?.ledger ?? [], answer.length > 0)
-
-  beats.push(...sayBeats(answer))
+  const beats = ledgerBeats(timeline?.ledger ?? [])
+  beats.push(...sayBeats(final?.text?.trim() ?? liveAnswer))
   return beats
+}
+
+/**
+ * A stored ledger, read back the best way it can be.
+ *
+ * Runs recorded before the reducer marked asides cannot say which sentences
+ * were ones — so for those, and only those, the old reading applies: everything
+ * but the last unbroken run of talking was said on the way. It was a poor rule
+ * live, because the thing it keyed off changed several times a turn; on a
+ * finished run nothing moves, and it recovers narration that would otherwise
+ * disappear from every conversation older than this change.
+ *
+ * Scoped to the record seam on purpose. The live path has the run's own answer
+ * and must never fall back to guessing at it. This deletes itself once no
+ * stored run predates the mark.
+ */
+function asRecorded(rows: readonly LedgerRow[]): LedgerRow[] {
+  if (rows.some(row => row.aside)) return [...rows]
+  const lastSpoken = rows.reduce(
+    (found, row, index) => (row.kind === 'tool' ? index : found),
+    -1,
+  )
+  return rows.map((row, index) => (
+    row.kind === 'say' && index < lastSpoken ? { ...row, aside: true as const } : row
+  ))
 }
 
 /** The same beats, rebuilt from what a finished run wrote down. */
 function beatsFromRecord(text: string, run: ThreadRunRecord | undefined): Beat[] {
-  const answer = text.trim()
-  const beats = ledgerBeats(run?.ledger ?? [], answer.length > 0)
-  beats.push(...sayBeats(answer))
+  const beats = ledgerBeats(asRecorded(run?.ledger ?? []))
+  beats.push(...sayBeats(text))
   return beats
 }
 

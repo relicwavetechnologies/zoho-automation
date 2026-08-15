@@ -120,8 +120,8 @@ function CommandGroup({
      exactly the row still doing the work. */
   const running = streaming && steps.some(({ beat }) => beat.running === true)
 
-  const rows = steps.map(({ beat, index }) => (
-    <Step key={index} beat={beat} live={streaming && beat.running === true} />
+  const rows = steps.map(({ beat, key }) => (
+    <Step key={key} beat={beat} live={streaming && beat.running === true} />
   ))
 
   if (steps.length === 0) return null
@@ -311,9 +311,11 @@ function TimelineBody({
            do not carry a reliable status; ours do, and a run with two calls in
            flight has two live segments however they are ordered. */
         if (segment.kind === 'tools') {
+          /* Named by the call it opens with rather than by where the burst
+             sits, so a burst that gains a row above it is the same burst. */
           return (
             <CommandGroup
-              key={`tools:${segment.steps[0]!.index}`}
+              key={`tools:${segment.steps[0]!.key}`}
               steps={segment.steps}
               streaming={streaming}
             />
@@ -322,7 +324,7 @@ function TimelineBody({
         if (segment.step.kind === 'thought') {
           return (
             <ThoughtStep
-              key={`thought:${segment.step.index}`}
+              key={`thought:${segment.step.key}`}
               text={segment.step.text}
               live={streaming && segment.step.live}
             />
@@ -335,7 +337,7 @@ function TimelineBody({
         // the brightest thing in the turn.
         return (
           <div
-            key={`talk:${segment.step.index}`}
+            key={`talk:${segment.step.key}`}
             className="py-1 text-[13px] leading-[1.65] text-ink-2"
             /* Each sentence resolves out of blur as it lands. These genuinely
                arrive one at a time — unlike the answer, which is complete when

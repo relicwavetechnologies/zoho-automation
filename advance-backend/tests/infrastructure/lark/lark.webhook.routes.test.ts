@@ -1138,6 +1138,9 @@ describe('Lark webhook admission', () => {
     // The ledger accumulates, so the settled last frame carries the finished
     // tool whether or not its "running" frame ever made it out.
     assert.deepEqual(adapter.__statusUpdates.at(-1).timeline.ledger, [{
+      // The call's own id, so a surface redrawing from the next snapshot can
+      // tell this row from the one it drew a moment ago.
+      id: 'call-1',
       kind: 'tool',
       // The tool table's name, not a vendor guessed from the id's prefix: the
       // run used Drive, and "Google" was as close as the old regex could get.

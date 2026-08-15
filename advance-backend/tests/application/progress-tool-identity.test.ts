@@ -49,6 +49,7 @@ describe('what the reader ends up seeing', () => {
     run.apply(parseProgressEvent(gmailSearch)!);
 
     assert.deepEqual(run.timeline().ledger, [{
+      id: 'c1',
       kind: 'tool',
       label: 'Gmail',
       count: 1,

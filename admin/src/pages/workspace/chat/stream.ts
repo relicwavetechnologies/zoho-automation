@@ -24,10 +24,32 @@ export type LedgerRow = {
    * pre-filtered.
    */
   kind?: 'tool' | 'say' | 'thought'
+  /**
+   * Which row this is, across every snapshot of the run.
+   *
+   * The backend sends a whole timeline each tick, so without this the only way
+   * to tell one tick's rows from the last one's is where they sit in the array
+   * — and rows do not stay put. A sentence being reclassified inserts one into
+   * the middle, which renumbers everything below it, and React tears down and
+   * rebuilds rows that never changed. Every animation on them replays; that is
+   * the flicker.
+   */
+  id?: string
+  /**
+   * A `say` row the model went on working after: an aside, not the reply.
+   *
+   * The reply is drawn under the log, from the answer stream, so the log draws
+   * asides and nothing else. This surface used to work it out for itself by
+   * asking whether the answer stream happened to be empty — a fact about the
+   * wire, not about the run, and one the backend flips on every tool call. The
+   * same sentence moved between the log and the answer, and back, several times
+   * a turn.
+   */
+  aside?: true
   label: string
   count: number
-  outcome?: string
   status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'
+  outcome?: string
   children?: LedgerRow[]
   /**
    * Who was called, in the wire's own words.

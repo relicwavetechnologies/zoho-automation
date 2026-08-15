@@ -32,10 +32,22 @@
  */
 import type { Beat } from './transcripts'
 
+/**
+ * What a step is called by whoever draws it.
+ *
+ * `key` is the beat's own identity where it has one, and its position where it
+ * does not — the scripted transcripts have no run behind them and never change
+ * shape. Position alone was not enough: a snapshot can insert a step above
+ * another, which renumbers every step below it, and a renderer keyed that way
+ * rebuilds rows that never changed and replays their arrival animations.
+ *
+ * `index` is kept because it is still the beat's place in the run, which is
+ * what the caller uses to put the trace and the answer back in order.
+ */
 export type TraceStep =
-  | { kind: 'thought'; index: number; text: string; live: boolean }
-  | { kind: 'narration'; index: number; text: string }
-  | { kind: 'tool'; index: number; beat: Extract<Beat, { t: 'step' }> }
+  | { kind: 'thought'; key: string; index: number; text: string; live: boolean }
+  | { kind: 'narration'; key: string; index: number; text: string }
+  | { kind: 'tool'; key: string; index: number; beat: Extract<Beat, { t: 'step' }> }
 
 export type TraceSegment =
   /** One stretch of talking — a thought or a narration, never both. */
@@ -55,25 +67,26 @@ export type TraceSegment =
  */
 export function splitTrace(beats: readonly Beat[]): {
   trace: TraceStep[]
-  rest: { beat: Beat; index: number }[]
+  rest: { beat: Beat; key: string; index: number }[]
 } {
   const trace: TraceStep[] = []
-  const rest: { beat: Beat; index: number }[] = []
+  const rest: { beat: Beat; key: string; index: number }[] = []
 
   beats.forEach((beat, index) => {
+    const key = beat.id ?? `beat:${index}`
     if (beat.t === 'step') {
-      trace.push({ kind: 'tool', index, beat })
+      trace.push({ kind: 'tool', key, index, beat })
       return
     }
     if (beat.t === 'think') {
-      trace.push({ kind: 'thought', index, text: beat.text, live: beat.running === true })
+      trace.push({ kind: 'thought', key, index, text: beat.text, live: beat.running === true })
       return
     }
     if (beat.t === 'say' && beat.narration === true) {
-      trace.push({ kind: 'narration', index, text: beat.text })
+      trace.push({ kind: 'narration', key, index, text: beat.text })
       return
     }
-    rest.push({ beat, index })
+    rest.push({ beat, key, index })
   })
 
   return { trace, rest }

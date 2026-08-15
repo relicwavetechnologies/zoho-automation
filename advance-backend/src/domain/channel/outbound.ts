@@ -45,6 +45,27 @@ export type ChannelPlanStepStatus = 'pending' | 'running' | 'done' | 'failed' | 
 export interface ChannelLedgerRow {
   /** Defaults to `tool`; rows written before this field existed are tool rows. */
   readonly kind?:     'tool' | 'say' | 'thought';
+  /**
+   * What this row is, for as long as the run remembers it.
+   *
+   * A surface draws a list, and a list needs to know which entry is which one
+   * from last time. Without this the only thing to key off is position, and
+   * position is not identity: a sentence that gets reclassified, or a row that
+   * appears above another, renumbers everything after it and the renderer tears
+   * down rows that never changed. The reducer already had this — it keys its own
+   * map by it — and was dropping it on the way out.
+   */
+  readonly id?:       string;
+  /**
+   * For a `say` row: the model went on to do something after saying it, so the
+   * sentence was an aside rather than the reply it landed on.
+   *
+   * The reply has its own place on every surface, so this is what tells a work
+   * log which sentences are its to draw. It is deliberately absent — not
+   * `false` — while the turn is still open: nothing has followed the sentence
+   * *yet*, and a run that ends right here ended on it.
+   */
+  readonly aside?:    true;
   readonly label:     string;
   readonly count:     number;
   readonly outcome?:  string;

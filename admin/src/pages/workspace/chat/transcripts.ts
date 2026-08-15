@@ -67,9 +67,23 @@ export type ArtifactBlock = {
 
 export type Block = TableBlock | ChartBlock | ArtifactBlock
 
+/**
+ * Which beat this is, for as long as the run remembers it.
+ *
+ * Carried from the ledger row it was built from, so a beat keeps one identity
+ * across every snapshot of a run. Position cannot do this job: a snapshot can
+ * insert a beat above another — a sentence being reclassified does exactly that
+ * — and a renderer keyed on position then rebuilds every row below the change,
+ * replaying arrival animations on rows that never moved.
+ *
+ * Optional because the scripted transcripts below have no run behind them, and
+ * nothing about them ever changes.
+ */
+type Identified = { id?: string }
+
 export type Beat =
   /** A tool step. Runs for `ms`, showing `lines`, then folds to `done`. */
-  | {
+  | (Identified & {
       t: 'step'
       tool: ToolKey
       title: string
@@ -90,9 +104,9 @@ export type Beat =
        * that is what this carries.
        */
       running?: boolean
-    }
+    })
   /** Blocks the run until a person answers. Nothing after it has happened. */
-  | {
+  | (Identified & {
       t: 'approve'
       tool: ToolKey
       title: string
@@ -101,7 +115,7 @@ export type Beat =
       confirm: string
       /** What the run reports if the reader declines. */
       declined: string
-    }
+    })
   /**
    * Prose the model wrote.
    *
@@ -111,7 +125,7 @@ export type Beat =
    * time they reach a component, and the surface prints the run's thinking-out-
    * loud and its conclusion at identical weight, one after the other.
    */
-  | { t: 'say'; text: string; narration?: boolean }
+  | (Identified & { t: 'say'; text: string; narration?: boolean })
   /**
    * The model reasoning to itself, not addressing anyone.
    *
@@ -119,9 +133,9 @@ export type Beat =
    * differently: a thought folds to the single word "Thought" and a sentence
    * does not, and one of them never leaves the container's own surface.
    */
-  | { t: 'think'; text: string; running?: boolean }
+  | (Identified & { t: 'think'; text: string; running?: boolean })
   /** A result rendered under the answer. */
-  | { t: 'block'; block: Block }
+  | (Identified & { t: 'block'; block: Block })
 
 export type Transcript = {
   id: string

@@ -72,6 +72,46 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
   let sayTurn = 0;
   let protectedDataUsed = false;
 
+  const put = (id: string, row: Omit<ChannelLedgerRow, 'id'>): void => {
+    ledger.set(id, { ...row, id });
+  };
+
+  /**
+   * The model stopped thinking, because it did something else.
+   *
+   * A thought has no end event of its own — it ends by being followed. That is
+   * observable exactly here, where the following event arrives, and nowhere
+   * else: a renderer handed the finished list can only guess from position, and
+   * position is not the same fact. It used to guess, and got it wrong whenever
+   * the list was reshaped for an unrelated reason.
+   */
+  const settleThoughts = (): void => {
+    for (const [id, row] of ledger) {
+      if (row.kind === 'thought' && row.status === 'running') {
+        ledger.set(id, { ...row, status: 'done' });
+      }
+    }
+  };
+
+  /**
+   * The model carried on working, so everything it had said becomes an aside.
+   *
+   * Returns whether anything was actually reclassified. It matters to the
+   * caller: a sentence that has just changed meaning is a state change a reader
+   * is looking straight at, and holding it for the next throttled frame leaves
+   * the surface showing the old reading for up to a second.
+   */
+  const closeSayTurn = (): boolean => {
+    let closed = false;
+    for (const [id, row] of ledger) {
+      if (row.kind === 'say' && !row.aside) {
+        ledger.set(id, { ...row, aside: true });
+        closed = true;
+      }
+    }
+    return closed;
+  };
+
   /**
    * A tool that reported work underneath itself: subagents become children of
    * the row that spawned them, and a declared checklist becomes the run's plan.
@@ -158,10 +198,13 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
       phase = 'Writing';
       state = 'writing';
       liveLabel = 'Preparing your response…';
+      // Talking is doing something other than thinking, so it ends the thought
+      // that led to it.
+      settleThoughts();
       // Keyed by turn as well as block, because a block index restarts at zero
       // in each new assistant message — without the turn, the second thing the
       // model says would overwrite the first instead of following it.
-      ledger.set(`say:${sayTurn}:${event.index}`, {
+      put(`say:${sayTurn}:${event.index}`, {
         kind: 'say',
         label: event.text,
         count: 1,
@@ -171,16 +214,19 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
       phase = 'Thinking';
       state = 'thinking';
       liveLabel = 'Thinking…';
+      // A new block of reasoning ends the one before it: they are separate rows,
+      // and only the newest is still being written.
+      settleThoughts();
       // Keyed the same way a `say` is, and in the same turn space, so a run that
       // thinks and then talks keeps them in the order it produced them. The two
       // must not share a key prefix: a thought and a sentence can carry the same
       // block index within one message, and one would silently replace the
       // other.
-      ledger.set(`thought:${sayTurn}:${event.index}`, {
+      put(`thought:${sayTurn}:${event.index}`, {
         kind: 'thought',
         label: event.text,
         count: 1,
-        status: 'done',
+        status: 'running',
       });
     } else if (event.type === 'tool_start') {
       const tool = toolRowLabels(event.toolName, event.toolId);
@@ -188,14 +234,18 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
       state = 'working';
       liveLabel = tool.liveLabel;
       actionCount += 1;
+      settleThoughts();
       // A tool call closes whatever the model was saying; what it says next
-      // belongs after this row, not merged into the sentence before it.
+      // belongs after this row, not merged into the sentence before it. It also
+      // settles what those sentences *were*: the model went on working, so they
+      // were asides and not the reply.
       sayTurn += 1;
+      const reclassified = closeSayTurn();
       // The outcome starts as what the call is *about* — the command, the file,
       // the capability — because "what it produced" is not known yet and a bare
       // "In progress" beside a ● is the restatement the card is built to avoid.
       const about = callSubject(event.toolName, event.toolId, event.detail);
-      ledger.set(event.callId, {
+      put(event.callId, {
         kind: 'tool',
         label: tool.label,
         count: 1,
@@ -207,6 +257,11 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
         toolName: event.toolName,
         ...(event.toolId ? { toolId: event.toolId } : {}),
       });
+      // A sentence that has just stopped being the reply is the one thing on
+      // screen a reader is actively looking at. Waiting for the next throttled
+      // frame would leave it drawn as the reply for up to a second after it
+      // stopped being one.
+      if (reclassified) return 'immediate';
     } else if (event.type === 'tool_progress') {
       applyProgressDetail(event.callId, event);
       phase = 'Working';
@@ -239,6 +294,9 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
     phase = 'Writing';
     state = 'writing';
     liveLabel = 'Preparing your response…';
+    // Nothing is still being reasoned about once the run is writing its reply,
+    // and a record kept with a thought left open would replay as one.
+    settleThoughts();
   };
 
   const timeline = (): ChannelTimeline => ({

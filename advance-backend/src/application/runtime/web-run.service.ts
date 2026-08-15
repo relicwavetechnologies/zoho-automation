@@ -194,14 +194,23 @@ export class WebRunService {
           liveAnswer.reset();
           return;
         }
-        // Text before a tool call was narration, not the terminal answer. It
-        // remains in the sentence-sized timeline `say` row; clear the live
-        // answer lane so the next assistant turn starts from an honest blank.
-        if (event.type === 'tool_start' && answerStarted) {
+        // Text before a tool call was an aside, not the terminal answer, and the
+        // live answer lane has to give it up so the next assistant turn starts
+        // from an honest blank.
+        //
+        // The timeline goes first, and the order is the whole point: the same
+        // prose is on screen twice over — as the reply, and as the `say` rows
+        // the reducer has just marked `aside`. Resetting the lane first would
+        // take it out of the reply before the log had claimed it, and the reader
+        // would watch a sentence they were mid-way through vanish from the page
+        // entirely. This way it is filed into the log and then released, which
+        // is the direction it actually travelled.
+        const settlesAside = event.type === 'tool_start' && answerStarted;
+        publishTimeline(timeline.apply(event) === 'immediate');
+        if (settlesAside) {
           answerStarted = false;
           liveAnswer.reset();
         }
-        publishTimeline(timeline.apply(event) === 'immediate');
       },
       // Asked for at the moment the answer is written down, so the work log a
       // reader watched happen is still attached to it tomorrow. Without this a
