@@ -13,21 +13,73 @@
 import { useId } from 'react'
 import '@/styles/beautiful.css'
 
-/* A 3×3 pixel grid with a chevron wavefront running through it. The cycle is
-   shorter than the sweep, so two fronts are always in flight and the thing
-   never appears to stall — which is the whole job of a loader on a run that can
-   legitimately take thirty seconds. */
-const WAVE = Array.from({ length: 9 }, (_, i) => {
+/**
+ * A chevron wavefront, driving right.
+ *
+ * Delay rises with the column and with distance from the middle row, so the
+ * light arrives as a slanted front rather than a column at a time. The cycle is
+ * shorter than the sweep, which means a second front enters before the first
+ * has left and the mark never appears to stall — the whole job of a loader on a
+ * run that can legitimately take a minute.
+ */
+const DRIVE = Array.from({ length: 9 }, (_, i) => {
   const row = Math.floor(i / 3)
   const col = i % 3
   return (col + Math.abs(row - 1)) * 90
 })
 
-export function PixelGrid() {
+/**
+ * The perimeter of the same grid, clockwise from the top-left.
+ *
+ *     0 1 2
+ *     3 4 5      →  0 1 2 5 8 7 6 3
+ *     6 7 8
+ *
+ * Ring order, not reading order, and that is the whole pattern: cell 3 lights
+ * LAST, after 6, because it is the step before the lap closes. Sorted into
+ * index order the light would sweep down the grid in rows, which is `drive`
+ * with extra steps.
+ *
+ * The centre is `null` — off the path, never lit. It is what makes this read as
+ * one thing travelling rather than as eight cells blinking: a still middle is
+ * the reference the movement is measured against.
+ *
+ * 110ms apart across a 950ms cycle, so eight steps span 880ms and the comet
+ * laps with a short dark beat before coming round. Spacing them to fill the
+ * cycle exactly would put the head back on cell 0 as the tail left it, and an
+ * unbroken ring of light is a spinner, not a comet.
+ */
+const ORBIT_ORDER = [0, 1, 2, 5, 8, 7, 6, 3]
+const ORBIT = Array.from({ length: 9 }, (_, i) => {
+  const step = ORBIT_ORDER.indexOf(i)
+  return step === -1 ? null : step * 110
+})
+
+const PATTERNS = { drive: DRIVE, orbit: ORBIT } as const
+
+/**
+ * The mark for "Divo itself is working" — one 3×3 grid, two patterns.
+ *
+ * Used in exactly two places, and the pattern is how they differ:
+ *
+ *   `drive` — the head of the run log. You are looking straight at this one
+ *             while it works, so it gets the busier read.
+ *   `orbit` — a thread in the rail. It sits in a list of otherwise static rows
+ *             and has to say "this one is live" from the corner of the eye,
+ *             which a lap round a still centre does at 15px and a wavefront
+ *             does not.
+ *
+ * Not for a row inside the log — a step there shows its own tool's mark, and a
+ * burst or an agent shows `DotsLoader`.
+ *
+ * The source this is taken from carries a third pattern, `dots`: the `drive`
+ * wavefront with the cells rounded off. Nothing selects it, so it is not here.
+ */
+export function PixelGrid({ pattern = 'drive' }: { pattern?: keyof typeof PATTERNS }) {
   return (
-    <span aria-hidden className="bui-pixels">
-      {WAVE.map((delay, i) => (
-        <i key={i} style={{ animationDelay: `${delay}ms` }} />
+    <span aria-hidden data-pattern={pattern} className="bui-pixels">
+      {PATTERNS[pattern].map((delay, i) => (
+        <i key={i} {...(delay === null ? {} : { style: { animationDelay: `${delay}ms` } })} />
       ))}
     </span>
   )

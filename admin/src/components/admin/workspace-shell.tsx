@@ -615,7 +615,7 @@ function ChatRow({
             it marks the chat rather than annotating its timestamp.
           */}
           <span className="ws-recent-head">
-            {chat.running && <PixelGrid />}
+            {chat.running && <PixelGrid pattern="orbit" />}
             <b>{chat.title}</b>
           </span>
           {/*
