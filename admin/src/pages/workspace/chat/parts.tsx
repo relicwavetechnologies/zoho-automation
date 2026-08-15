@@ -12,12 +12,12 @@
  * corner, no badge that says "running". The live row simply looks alive and
  * the settled ones do not.
  */
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowUp, ArrowUpRight, Check, ChevronDown, ChevronRight, Paperclip, Plus } from 'lucide-react'
 import { ToolMark, tool, type ToolKey } from './tools'
-import { RevealCursor, firstWordIn, rehypeWords, wordIndexOf } from './reveal'
+import { rehypeWords } from './words'
 import { DataTable } from './answer/table.view'
 import { parseDrawnTable, readGrid, textOf } from './answer/table'
 import { Sources, SourceLink } from './answer/links.view'
@@ -195,61 +195,24 @@ export function Say({ text, streaming }: { text: string; streaming?: boolean }) 
  * The answer accumulated from real provider deltas so far.
  *
  * The current prefix is reparsed because the remainder does not exist in the
- * browser yet. `rehypeWords` gives newly arrived words the existing resolving
- * animation, while the cursor exposes every word actually received and no word
- * beyond it.
+ * browser yet, and `rehypeWords` puts each word of it in an element of its own.
+ * That is all the arrival animation needs: a word that has just reached the
+ * browser is an element React has just mounted, and `.bui-word` animates on
+ * mount. Nothing here has to be told how far the answer has got, because the
+ * document it is handed *is* how far the answer has got.
  */
 function LiveSay({ text }: { text: string }) {
-  const total = useMemo(
-    () => text.split(/(\s+)/).filter(part => part.trim().length > 0).length,
-    [text],
-  )
   const document = useMemo(() => (
     <ReactMarkdown
       remarkPlugins={REMARK_PLUGINS}
-      rehypePlugins={REVEAL_PLUGINS}
-      components={REVEAL_COMPONENTS}
+      rehypePlugins={STREAM_PLUGINS}
+      components={MARKDOWN_COMPONENTS}
     >
       {text}
     </ReactMarkdown>
   ), [text])
 
-  const cursor = useMemo(() => ({ shown: total, streaming: true }), [total])
-
-  return (
-    <div className="bui-stream text-[13.5px] leading-[1.7] text-ink">
-      <RevealCursor.Provider value={cursor}>{document}</RevealCursor.Provider>
-    </div>
-  )
-}
-
-/**
- * How far the wire has got.
- *
- * It travels by context so the component drawing a word can stay at module
- * scope while each real answer snapshot supplies the received word count.
- * Keeping the components map stable also lets React preserve already-arrived
- * words while it mounts the new tail with the stream-in animation.
- */
-const RevealWord: Components['span'] = ({ node, children, ...rest }) => {
-  const { shown, streaming } = useContext(RevealCursor)
-  const index = wordIndexOf(node?.properties)
-  // Not one of ours — a span the model's own markdown asked for.
-  if (index === null) return <span {...rest}>{children}</span>
-  if (index >= shown) return null
-  return (
-    <span
-      data-word={index}
-      className="bui-word"
-      /* The caret rides inside the newest word rather than at the end of the
-         document, so it sits where the text actually stops. Parked after the
-         container it would land under the answer, on its own line, wherever
-         the last block happened to end. */
-    >
-      {children}
-      {streaming && index === shown - 1 && <i className="bui-caret" />}
-    </span>
-  )
+  return <div className="bui-stream text-[13.5px] leading-[1.7] text-ink">{document}</div>
 }
 
 /**
@@ -283,9 +246,7 @@ const MARKDOWN_COMPONENTS: Components = {
      wrote words for keeps them. `SourceLink` owns that judgement so a link in a
      table cell and a link in a sentence cannot end up disagreeing about it. */
   a: ({ children, href, node }) => (
-    <SourceLink href={href ?? ''} text={textOf(node)} word={firstWordIn(node)}>
-      {children}
-    </SourceLink>
+    <SourceLink href={href ?? ''} text={textOf(node)}>{children}</SourceLink>
   ),
   blockquote: ({ children }) => (
     <blockquote className="my-2.5 border-l-2 border-line pl-3 text-ink-2">{children}</blockquote>
@@ -312,7 +273,7 @@ const MARKDOWN_COMPONENTS: Components = {
   pre: ({ children, node }) => {
     const drawn = parseDrawnTable(textOf(node))
     if (drawn) {
-      return <DataTable table={{ ...drawn, hrefs: [] }} properties={node?.properties} />
+      return <DataTable table={{ ...drawn, hrefs: [] }} />
     }
     return (
       <pre className="my-2.5 overflow-x-auto rounded-control bg-inset p-3 shadow-hairline">{children}</pre>
@@ -323,7 +284,7 @@ const MARKDOWN_COMPONENTS: Components = {
      `<td>` renderer only ever sees one cell. */
   table: ({ children, node }) => {
     const grid = readGrid(node)
-    if (grid) return <DataTable table={grid} properties={node?.properties} />
+    if (grid) return <DataTable table={grid} />
     return (
       <div className="my-3 overflow-x-auto rounded-control bg-surface shadow-hairline">
         <table className="w-full border-collapse text-[12px]">{children}</table>
@@ -340,12 +301,11 @@ const MARKDOWN_COMPONENTS: Components = {
 }
 
 const REMARK_PLUGINS = [remarkGfm]
-/* Runs after the markdown is already a tree, so numbering the words cannot
-   change what the document means. */
-const REVEAL_PLUGINS = [rehypeWords]
-/* One map, made once. Its identity is what keeps a word's element — and so the
-   animation that word is part-way through — alive from one tick to the next. */
-const REVEAL_COMPONENTS: Components = { ...MARKDOWN_COMPONENTS, span: RevealWord }
+/* Only while the answer is still arriving. A settled answer is present rather
+   than arriving, so wrapping its words would be several hundred elements bought
+   for an animation that already finished. Runs after the markdown is a tree, so
+   it cannot change what the document means. */
+const STREAM_PLUGINS = [rehypeWords]
 
 export function Markdown({ children }: { children: string }) {
   return (

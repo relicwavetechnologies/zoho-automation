@@ -220,8 +220,22 @@
 }
 
 /* Where the text has got to. Steady rather than blinking: it is already moving
-   several times a second, and a blink on top reads as two things happening. */
-.bui-caret {
+   several times a second, and a blink on top reads as two things happening.
+
+   Drawn on the last word rather than parked after the answer, so it sits where
+   the text actually stops instead of alone on a line under the final block. It
+   is an `::after` on that word, which is why nothing in React has to know which
+   word is last — the plugin marks it while it is already walking the tree.
+
+   Scoped to `.bui-stream`, so it appears only while the answer is arriving. A
+   settled answer is not still being written and a caret on it would say it was.
+
+   This spent a while not rendering at all: it used to be a component gated on
+   the last word's index matching a count taken by splitting the markdown source
+   on whitespace, and that count all but always ran ahead of the tree's own
+   numbering. See `words.ts` for why that whole mechanism is gone. */
+.bui-stream [data-tail]::after {
+  content: '';
   display: inline-block;
   width: 2px;
   height: 0.85em;
@@ -230,20 +244,6 @@
   border-radius: 1px;
   background: currentColor;
   animation: bui-fade-in 150ms ease-out both;
-}
-
-/* A block nobody has reached yet is not drawn at all.
-   Unrevealed words render as nothing, so a heading whose turn has not come
-   would otherwise stand there as a blank line — the document's furniture
-   arriving before any of its content. `:has` asks the only question that
-   matters: is there a revealed word in here yet.
-
-   A table answers that question about itself. It is drawn from its own data
-   rather than out of words, so it carries one index on the element instead of
-   many inside it, and a rule that only looked at descendants would hide the
-   very blocks that had arrived. */
-.bui-stream > *:not([data-word]):not(:has([data-word])) {
-  display: none;
 }
 
 /* ── The answer's data table ──────────────────────────────

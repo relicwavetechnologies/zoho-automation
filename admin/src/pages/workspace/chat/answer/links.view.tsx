@@ -20,7 +20,6 @@ import {
 } from 'lucide-react'
 import { ToolMark } from '../tools'
 import { markForUrl } from '../tool-identity'
-import { useRevealedIndex } from '../reveal'
 import {
   fileNameOf, initialOf, isBareLink, isNavigable, targetOf, tintOf,
   type FileFamily, type Source,
@@ -86,27 +85,22 @@ function FileMark({ family, size = 13 }: { family: FileFamily; size?: number }) 
  * else.
  */
 export function SourceLink({
-  href, text, word = null, children,
+  href, text, children,
 }: {
   href: string
   text: string
-  /** Where the words it replaces sat in the reveal, when it replaces any. */
-  word?: number | null
   children?: ReactNode
 }) {
-  const revealed = useRevealedIndex(word)
   const target = targetOf(href)
 
-  if (target.kind === 'file') return revealed ? <FileLink href={href} target={target} word={word} /> : null
+  if (target.kind === 'file') return <FileLink href={href} target={target} />
 
   if (target.kind === 'site' && isBareLink(text, href)) {
     /* An address printed in full is the least readable thing on a line. The
        chip says the same thing in the width of a word. */
-    if (!revealed) return null
     return (
       <a
         href={href}
-        data-word={word ?? undefined}
         target="_blank"
         rel="noreferrer noopener"
         className="mx-[1px] inline-flex max-w-full translate-y-[2px] items-center gap-1 rounded-[5px] bg-fill px-1.5 py-[1px] align-baseline text-[11.5px] text-ink-2 no-underline transition-colors duration-100 hover:bg-field hover:text-ink"
@@ -159,10 +153,9 @@ export function SourceLink({
  * glyph confirms the copy happened. A link that silently does nothing is worse
  * than no link, and a silent copy is only marginally better.
  */
-function FileLink({ href, target, word }: {
+function FileLink({ href, target }: {
   href: string
   target: Extract<ReturnType<typeof targetOf>, { kind: 'file' }>
-  word: number | null
 }) {
   const [copied, setCopied] = useState(false)
   const settle = useRef<number | undefined>(undefined)
@@ -174,7 +167,6 @@ function FileLink({ href, target, word }: {
   return (
     <a
       href={href}
-      data-word={word ?? undefined}
       {...(navigable ? { target: '_blank', rel: 'noreferrer noopener' } : {})}
       title={navigable ? href : `${href} — click to copy this path`}
       onClick={event => {

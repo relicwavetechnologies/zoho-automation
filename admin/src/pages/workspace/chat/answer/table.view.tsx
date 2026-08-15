@@ -9,7 +9,6 @@
  * answer, and a chart is a second way to look at it.
  */
 import { useMemo, useState } from 'react'
-import { useRevealed } from '../reveal'
 import { PlotView } from './chart'
 import { plotOf, readColumns, type Column, type ParsedTable } from './table'
 import { SourceLink } from './links.view'
@@ -18,21 +17,12 @@ import { SourceLink } from './links.view'
 const FOLD_AT = 14
 const FOLDED = 10
 
-export function DataTable({
-  table,
-  properties,
-}: {
-  table: ParsedTable
-  properties?: Record<string, unknown>
-}) {
-  const revealed = useRevealed(properties)
+export function DataTable({ table }: { table: ParsedTable }) {
   const [open, setOpen] = useState(false)
   const [charted, setCharted] = useState(false)
 
   const columns = useMemo(() => readColumns(table.columns, table.rows), [table])
   const plot = useMemo(() => plotOf(columns, table.rows), [columns, table.rows])
-
-  if (!revealed) return null
 
   const folded = table.rows.length > FOLD_AT && !open
   const rows = folded ? table.rows.slice(0, FOLDED) : table.rows
@@ -40,9 +30,6 @@ export function DataTable({
 
   return (
     <figure
-      /* Carries the reveal index so the container can tell a block that has
-         arrived from one whose turn has not come. */
-      data-word={properties?.['data-word'] as string | undefined}
       className="my-3 overflow-hidden rounded-control bg-surface shadow-hairline"
       style={{ animation: 'bui-fade-up 380ms cubic-bezier(0.23,1,0.32,1) both' }}
     >
