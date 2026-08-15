@@ -49,19 +49,48 @@ export function Shimmer({ children }: { children: React.ReactNode }) {
  * because "Gmail is working" beats "something is working", and swapping the
  * mark for dots throws away the most useful thing on the row.
  *
+ * Two rhythms, chosen by what the row means:
+ *
+ *   `wave`    — the work log. Dots fade on a diagonal stagger. Says "busy"
+ *               without claiming progress, which is the honest reading for a
+ *               step that may sit unchanged for a minute.
+ *   `scatter` — an agent, and the header over a group of them. Three of the six
+ *               lit at any instant, with the trio jumping around the grid.
+ *               Busier on purpose: several of these sit stacked in one card,
+ *               and on the calmer wave a column of them reads as a static list
+ *               of labels rather than as four agents actually working.
+ *
  * Phase offsets are all NEGATIVE, which starts each dot already in progress so
  * the grid is at its correct phase on the very first frame. Positive delays
  * would leave dots sitting unanimated until their turn came round, which
  * flashes on mount.
  *
+ * `wave` runs the diagonal — brightness travels top-left to bottom-right rather
+ * than row by row. `scatter` keeps exactly three of six lit: each dot is lit
+ * for half of a 1.8s cycle and these are the six even 300ms phases, so one
+ * switches off exactly as another switches on. The ORDER is deliberately
+ * jumbled so the lit trio scatters across the grid instead of sweeping down it
+ * — sorting them into index order keeps the count and destroys the effect.
+ *
  * The box is a TEXT LINE BOX, not a square: 20px is `text-[13px]`'s line height,
  * which is what keeps the glyph optically centred on the label beside it with
- * no per-caller nudging. A square box is shorter than the line it sits in and
- * rides visibly high.
+ * no per-caller nudging, and aligned to the first line in a row whose text runs
+ * to three. A square box is shorter than the line it sits in and rides visibly
+ * high.
  */
-const WAVE_DELAYS = [-0, -105, -70, -175, -140, -245]
+const DELAYS: Record<DotsRhythm, number[]> = {
+  wave: [-0, -105, -70, -175, -140, -245],
+  scatter: [-0, -900, -1200, -300, -600, -1500],
+}
 
-export function DotsLoader({ className }: { className?: string }) {
+export type DotsRhythm = 'wave' | 'scatter'
+
+export function DotsLoader({
+  className, variant = 'wave',
+}: {
+  className?: string
+  variant?: DotsRhythm
+}) {
   return (
     <span
       aria-hidden
@@ -75,10 +104,12 @@ export function DotsLoader({ className }: { className?: string }) {
         gap: '1.5px',
       }}
     >
-      {WAVE_DELAYS.map((delay, i) => (
+      {DELAYS[variant].map((delay, i) => (
         <span
           key={i}
-          className="bui-dot size-[2.5px] rounded-full bg-current"
+          className={`size-[2.5px] rounded-full bg-current ${
+            variant === 'scatter' ? 'bui-dot-scatter' : 'bui-dot'
+          }`}
           style={{ animationDelay: `${delay}ms` }}
         />
       ))}

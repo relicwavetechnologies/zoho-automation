@@ -118,6 +118,33 @@ describe('what a beat is called', () => {
 })
 
 /*
+ * The row that spawns agents is the only one whose content is underneath it.
+ * Read as an ordinary step it lost every agent's state, task and clock — four
+ * identical grey words behind a chevron — so it gets its own beat.
+ */
+describe('a call that farmed its work out', () => {
+  it('becomes the agents rather than a step about them', () => {
+    const row: LedgerRow = {
+      id: 'c9', kind: 'tool', label: 'Subagents', count: 1, status: 'running',
+      toolName: 'divo_subagents',
+      children: [
+        { label: 'scout', status: 'running', outcome: 'read the export', elapsed: '12s' },
+        { label: 'reviewer', status: 'done', outcome: 'check the totals' },
+      ],
+    }
+    const [beat] = beatsFrom(ledger(row), null)
+    assert.equal(beat!.t, 'agents')
+    assert.equal(beat!.id, 'c9')
+    assert.deepEqual(beat!.t === 'agents' && beat.run.agents.map(a => a.role), ['scout', 'reviewer'])
+  })
+
+  it('leaves every other call a step', () => {
+    const [beat] = beatsFrom(ledger(call('c1', 'Files')), null)
+    assert.equal(beat!.t, 'step')
+  })
+})
+
+/*
  * Conversations older than this change were recorded before the run marked its
  * asides. Reading them by the new rule alone would drop every mid-run sentence
  * out of history — so a record with no mark on it is read the old way, which is

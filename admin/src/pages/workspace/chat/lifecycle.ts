@@ -48,12 +48,16 @@ export type TraceStep =
   | { kind: 'thought'; key: string; index: number; text: string; live: boolean }
   | { kind: 'narration'; key: string; index: number; text: string }
   | { kind: 'tool'; key: string; index: number; beat: Extract<Beat, { t: 'step' }> }
+  /** A call that farmed its work out. Never folds into a burst — see below. */
+  | { kind: 'agents'; key: string; index: number; beat: Extract<Beat, { t: 'agents' }> }
 
 export type TraceSegment =
   /** One stretch of talking — a thought or a narration, never both. */
   | { kind: 'talk'; step: Extract<TraceStep, { kind: 'thought' | 'narration' }> }
   /** Consecutive calls that ran back to back with no talking between them. */
   | { kind: 'tools'; steps: Extract<TraceStep, { kind: 'tool' }>[] }
+  /** The agents a call spawned, always on their own. */
+  | { kind: 'agents'; step: Extract<TraceStep, { kind: 'agents' }> }
 
 /**
  * The run, split into what it did and what it produced.
@@ -78,6 +82,10 @@ export function splitTrace(beats: readonly Beat[]): {
       trace.push({ kind: 'tool', key, index, beat })
       return
     }
+    if (beat.t === 'agents') {
+      trace.push({ kind: 'agents', key, index, beat })
+      return
+    }
     if (beat.t === 'think') {
       trace.push({ kind: 'thought', key, index, text: beat.text, live: beat.running === true })
       return
@@ -92,11 +100,22 @@ export function splitTrace(beats: readonly Beat[]): {
   return { trace, rest }
 }
 
-/** Ported from the desktop's `PiTraceTimeline.coalesceSegments`, rule for rule. */
+/**
+ * Ported from the desktop's `PiTraceTimeline.coalesceSegments`, rule for rule.
+ *
+ * With the desktop's one exception: a call that spawned agents does not join a
+ * burst. A burst folds to a single "Ran 3 commands" line, and folding this one
+ * in would hide a live list of four agents behind a count and a chevron — the
+ * one row in the log whose whole content is underneath it. It also breaks the
+ * burst around itself, so the calls before and after it stay in the order they
+ * happened rather than closing up over the top of it.
+ */
 export function coalesceSegments(steps: readonly TraceStep[]): TraceSegment[] {
   const segments: TraceSegment[] = []
   for (const step of steps) {
-    if (step.kind === 'tool') {
+    if (step.kind === 'agents') {
+      segments.push({ kind: 'agents', step })
+    } else if (step.kind === 'tool') {
       const last = segments[segments.length - 1]
       if (last && last.kind === 'tools') last.steps.push(step)
       else segments.push({ kind: 'tools', steps: [step] })

@@ -17,6 +17,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Waypoints } from 'lucide-react'
 import { ToolMark } from './tools'
+import { AgentRunView } from './agents.view'
 import { burstMarks, summarizeBurst } from './burst'
 import { DivoMark, DotsLoader, PixelGrid, Shimmer } from './loader'
 import { Markdown, Step } from './parts'
@@ -229,7 +230,9 @@ export function PiTraceTimeline({
   const [pinned, setPinned] = useState<boolean | null>(null)
   const open = pinned ?? streaming
   const segments = coalesceSegments(steps)
-  const tools = steps.filter((step) => step.kind === 'tool').length
+  // A call that spawned agents is still a call the run made, and leaving it out
+  // made the count disagree with the log directly under it.
+  const tools = steps.filter((step) => step.kind === 'tool' || step.kind === 'agents').length
   const working = streaming
 
   // A turn that answered without doing anything has no log and no header —
@@ -320,6 +323,9 @@ function TimelineBody({
               streaming={streaming}
             />
           )
+        }
+        if (segment.kind === 'agents') {
+          return <AgentRunView key={`agents:${segment.step.key}`} run={segment.step.beat.run} />
         }
         if (segment.step.kind === 'thought') {
           return (

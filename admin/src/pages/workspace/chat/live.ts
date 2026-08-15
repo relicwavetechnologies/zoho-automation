@@ -15,6 +15,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Beat } from './transcripts'
+import { agentRunOf, isAgentRow } from './agents'
 import { toolMarkFor } from './tool-identity'
 import {
   ask, stop, watch,
@@ -37,10 +38,11 @@ function stepBeat(row: LedgerRow): Beat {
     ...(row.status === 'running' ? { running: true } : {}),
     // The stream decides when a step ends, so its duration is never guessed.
     ms: 0,
-    lines: (row.children ?? []).map(child => ({
-      text: child.label,
-      ...(child.outcome ? { detail: child.outcome } : {}),
-    })) as Beat extends { t: 'step'; lines: infer L } ? L : never,
+    /* Empty, always. The only tool that ever reported work underneath itself is
+       the one that spawns agents, and that row is not a step — see the `agents`
+       branch below. These lines exist for the scripted transcripts, which write
+       them by hand. */
+    lines: [],
     done: row.outcome ?? (row.status === 'failed' ? 'Failed' : 'Done'),
   }
 }
@@ -100,6 +102,8 @@ function ledgerBeats(ledger: readonly LedgerRow[]): Beat[] {
     if (row.kind === 'thought') {
       return [{ t: 'think', id, text: row.label, running: row.status === 'running' }]
     }
+    // The one row whose content is underneath it rather than in its label.
+    if (isAgentRow(row)) return [{ t: 'agents', id, run: agentRunOf(row) }]
     return [stepBeat(row)]
   })
 }

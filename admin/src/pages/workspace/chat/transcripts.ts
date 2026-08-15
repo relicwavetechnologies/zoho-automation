@@ -17,6 +17,7 @@
  * Nothing here calls the network. Every number below is invented.
  */
 import type { ToolKey } from './tools'
+import type { AgentRun } from './agents'
 
 /** A line the step reports while it is running. */
 export type StepLine = {
@@ -105,6 +106,17 @@ export type Beat =
        */
       running?: boolean
     })
+  /**
+   * A step that farmed its work out to other agents.
+   *
+   * Its own variant rather than a `step` with children, because the two are
+   * read differently: a step folds to one sentence about what it produced, and
+   * this one has no single sentence — it is several runs happening at once, and
+   * the list IS the content. Flattened into a step's generic detail lines it
+   * lost every agent's state, task and clock, and the row was captioned by the
+   * fallback tool mark.
+   */
+  | (Identified & { t: 'agents'; run: AgentRun })
   /** Blocks the run until a person answers. Nothing after it has happened. */
   | (Identified & {
       t: 'approve'

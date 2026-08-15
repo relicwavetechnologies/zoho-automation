@@ -6,6 +6,10 @@ import type { Beat } from './transcripts'
 const call = (title: string, key: Extract<Beat, { t: 'step' }>['tool'] = 'zohoBooks'): Beat => ({
   t: 'step', tool: key, title, ms: 0, lines: [], done: 'Done',
 })
+const agents = (): Beat => ({
+  t: 'agents',
+  run: { running: true, agents: [], done: 0, total: 0, active: 0, failed: 0 },
+})
 const thought = (text: string): Beat => ({ t: 'think', text })
 const narration = (text: string): Beat => ({ t: 'say', text, narration: true })
 const answer = (text: string): Beat => ({ t: 'say', text })
@@ -79,5 +83,17 @@ describe('collecting a run of calls into a burst', () => {
 
   it('has nothing to collect in a turn that did nothing', () => {
     assert.deepEqual(coalesceSegments([]), [])
+  })
+
+  /* A burst folds to "Ran 3 commands". Folding the agents in would hide a live
+     list of four of them behind a count and a chevron — the one row in the log
+     whose whole content is underneath it. It breaks the burst rather than
+     joining it, so the calls either side keep the order they happened in. */
+  it('never folds the agents a call spawned into a burst', () => {
+    const { trace } = splitTrace([call('Files'), agents(), call('Zoho Books')])
+    assert.deepEqual(
+      coalesceSegments(trace).map(s => s.kind === 'tools' ? s.steps.length : s.kind),
+      [1, 'agents', 1],
+    )
   })
 })

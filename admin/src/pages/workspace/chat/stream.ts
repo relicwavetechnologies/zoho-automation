@@ -15,6 +15,24 @@ export const API_BASE_URL =
   (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL
   ?? 'http://localhost:8000'
 
+/**
+ * One agent working under a step that farmed work out.
+ *
+ * Its own shape, not another `LedgerRow`: an agent has a role, a task and a
+ * clock, and none of a tool call's count, vendor or nesting. Typed as a row it
+ * carried four fields that could never mean anything here, and the renderer
+ * reached past them every time.
+ */
+export type LedgerChild = {
+  /** The agent's role — "scout", "reviewer". This names it on screen. */
+  label: string
+  status: LedgerRow['status']
+  /** What it was asked to do. */
+  outcome?: string
+  /** How long it has been working, while it still is. */
+  elapsed?: string
+}
+
 /** One row of the run's activity log, as the backend sends it. */
 export type LedgerRow = {
   /**
@@ -50,7 +68,7 @@ export type LedgerRow = {
   count: number
   status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'
   outcome?: string
-  children?: LedgerRow[]
+  children?: LedgerChild[]
   /**
    * Who was called, in the wire's own words.
    *

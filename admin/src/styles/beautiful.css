@@ -202,11 +202,30 @@
   animation: bui-dot-wave 1.05s ease-in-out infinite;
 }
 
+/* The busier rhythm, for a row that is a whole agent working. THREE of the six
+   dots are lit at any instant and which three keeps changing, so the cluster
+   looks alive rather than like a single travelling pixel.
+
+   Exactly three, not roughly three: each dot is lit for half the cycle and the
+   six phases are spread evenly at 1/6 intervals, so the count is invariant —
+   one dot switches off exactly as another switches on. The scattered LOOK comes
+   from which grid cell gets which phase (see `DELAYS` in `loader.tsx`), not
+   from randomness, which CSS cannot do and which would flicker anyway. */
+@keyframes bui-dot-scatter {
+  0%,  44%  { opacity: 1;    transform: scale(1.1); }
+  50%, 94%  { opacity: 0.12; transform: scale(1); }
+  100%      { opacity: 1;    transform: scale(1.1); }
+}
+
+.bui-dot-scatter {
+  animation: bui-dot-scatter 1.8s ease-in-out infinite;
+}
+
 /* Held mid-sweep rather than stopped: someone who has asked for less motion
    still needs to see that the row is live, and a frozen dot grid is
    indistinguishable from a settled one. */
 @media (prefers-reduced-motion: reduce) {
-  .bui-dot { animation: none; opacity: 0.65; }
+  .bui-dot, .bui-dot-scatter { animation: none; opacity: 0.65; }
   .bui-pixels i { animation: none; opacity: 0.65; }
 }
 
