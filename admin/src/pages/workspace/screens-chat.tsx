@@ -39,7 +39,7 @@ import {
 } from './chat/threads'
 import { generateThreadTitle } from './chat/title'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
-import { TRANSCRIPTS } from './chat/transcripts'
+import { EXAMPLES } from './chat/examples'
 import { ToolMark } from './chat/tools'
 import '@/styles/beautiful.css'
 
@@ -374,7 +374,7 @@ function Welcome({ onPick }: { onPick: (prompt: string) => void }) {
       </div>
 
       <div className="flex flex-col gap-1.5">
-        {TRANSCRIPTS.map((item, i) => (
+        {EXAMPLES.map((item, i) => (
           <button
             key={item.id}
             type="button"

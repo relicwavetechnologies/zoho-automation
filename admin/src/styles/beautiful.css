@@ -56,9 +56,6 @@
   /* Semantic, straight off the app's tokens. */
   --bui-green: var(--cur-success);
   --bui-red: var(--cur-error);
-  /* Warnings borrow the timeline's amber. It is the one warm token in the set
-     that is not the brand, which is exactly what a "look at this" dot wants. */
-  --bui-orange: var(--cur-tl-done);
 
   /* The accent is ink, not the brand — see the note above. */
   --bui-accent-tint: var(--cur-surface-strong);

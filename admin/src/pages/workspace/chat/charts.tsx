@@ -12,7 +12,7 @@
  * still. A chart that keeps moving after it has arrived is decoration.
  */
 import { useMemo, useState } from 'react'
-import type { ChartBlock } from './transcripts'
+import type { ChartBlock } from './beats'
 
 /* Indian grouping, because every figure in these runs is INR. */
 const money = (v: number) => `₹${Math.round(v).toLocaleString('en-IN')}`

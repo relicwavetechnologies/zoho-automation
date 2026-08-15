@@ -52,7 +52,11 @@ const ACTION_MARKS: Record<string, ToolKey> = {
   todo: 'todo',
   divotodos: 'todo',
   divoartifact: 'artifact',
-  divosubagents: 'think',
+  /* No entry for `divo_subagents`. It had one — it borrowed the `think` mark,
+     which is why the log captioned a fan-out of four agents "Thinking" — and
+     it is the one tool that never reaches this table now: `live.ts` reads that
+     row as agents rather than as a step, and agents carry a mark derived from
+     each one's role. */
   divoskillresolve: 'skill',
   divomemoryrecall: 'divo',
   divomemory: 'divo',

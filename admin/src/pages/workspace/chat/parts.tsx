@@ -25,32 +25,20 @@ import { sourcesIn } from './answer/links'
 import { FileChips, RejectionNote } from './attach.view'
 import { namedForClipboard, type Rejection } from './attach'
 import { CopyButton } from './copy'
-import type { ArtifactBlock, Beat, StepLine, TableBlock } from './transcripts'
+import type { ArtifactBlock, Beat, TableBlock } from './beats'
 
 /* ── Step ─────────────────────────────────────────────────
-   Two states, one shape. Live: open, lines streaming, the label shimmering.
-   Settled: one line, foldable back open by anyone who wants the detail.
-   Both carry the vendor mark, in the same slot at the same size — it is how the
-   row is identified at a glance, and identity should not depend on whether the
-   work has finished yet. */
+   Two states, one shape. Live: open, the label shimmering, the chip carrying
+   what the call is aimed at. Settled: one line, foldable back open by anyone
+   who wants the detail. Both carry the vendor mark, in the same slot at the
+   same size — it is how the row is identified at a glance, and identity should
+   not depend on whether the work has finished yet.
 
-function Line({ line, index }: { line: StepLine; index: number }) {
-  const tone =
-    line.tone === 'add' ? 'text-[var(--bui-green)]'
-      : line.tone === 'warn' ? 'text-ink-2'
-        : 'text-ink-2'
-  return (
-    <span
-      className={`flex gap-1.5 text-[12px] leading-[1.65] ${tone} ${line.tone === 'mono' ? 'font-mono text-[11.5px]' : ''}`}
-      style={{ animation: `bui-fade-up 320ms cubic-bezier(0.23,1,0.32,1) ${index * 130}ms both` }}
-    >
-      {line.tone === 'warn' && (
-        <span aria-hidden className="mt-[7px] size-1 shrink-0 rounded-full bg-[var(--bui-orange)]" />
-      )}
-      <span className="min-w-0">{line.text}</span>
-    </span>
-  )
-}
+   A step used to stream a list of detail lines while it ran, which is why the
+   fold exists at all. Nothing has produced one since the surface started
+   reading a real run: the only tool that reports work underneath itself is the
+   one that spawns agents, and those get drawn as agents. What is left in the
+   fold is the call's own target and the app it belongs to. */
 
 export function Step({
   beat, live,
@@ -143,9 +131,6 @@ export function Step({
                 {beat.chip}
               </span>
             )}
-            {beat.lines.map((line, i) => (
-              <Line key={line.text} line={line} index={live ? i : 0} />
-            ))}
             {/* The app's name, in text. The mark is already on the row header
                 two lines up — repeating it here was the logo showing up twice
                 inside one step for no added information. */}

@@ -31,12 +31,19 @@ const CANONICAL_TOOL_IDS = [
 /** CANONICAL_TOOL_IDS in the backend, plus runCommand. Update both together. */
 const EXPECTED_TOOL_COUNT = 39
 
-/** The container's own tools, as they arrive on a ledger row's `toolName`. */
+/**
+ * The container's own tools, as they arrive on a ledger row's `toolName`.
+ *
+ * Every one that becomes a step in the log. `divo_subagents` is deliberately
+ * absent: it is the one row `live.ts` does not read as a step, so it never
+ * reaches this table, and each agent under it carries a mark derived from its
+ * own role instead. It used to be here borrowing the `think` mark, which is why
+ * a fan-out of four agents was captioned "Thinking".
+ */
 const CONTAINER_TOOLS = [
   'read', 'write', 'edit', 'bash', 'divo_gateway', 'divo_skill_resolve',
   'divo_memory_recall', 'divo_memory', 'divo_memory_review',
   'divo_knowledge_review', 'divo_teach_clarify', 'divo_todos', 'divo_artifact',
-  'divo_subagents',
 ]
 
 describe('tool mark coverage', () => {

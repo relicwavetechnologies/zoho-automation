@@ -18,7 +18,7 @@
 import type { LedgerChild, LedgerRow } from './stream'
 
 /** The tool that spawns agents. There is exactly one, and this is its name. */
-export const AGENTS_TOOL = 'divo_subagents'
+const AGENTS_TOOL = 'divo_subagents'
 
 export type AgentState = 'working' | 'done' | 'failed'
 

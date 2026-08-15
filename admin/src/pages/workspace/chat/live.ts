@@ -14,7 +14,7 @@
  * a cursor over it — which is why none of them needed touching.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Beat } from './transcripts'
+import type { Beat } from './beats'
 import { agentRunOf, isAgentRow } from './agents'
 import { toolMarkFor } from './tool-identity'
 import {
@@ -38,11 +38,6 @@ function stepBeat(row: LedgerRow): Beat {
     ...(row.status === 'running' ? { running: true } : {}),
     // The stream decides when a step ends, so its duration is never guessed.
     ms: 0,
-    /* Empty, always. The only tool that ever reported work underneath itself is
-       the one that spawns agents, and that row is not a step — see the `agents`
-       branch below. These lines exist for the scripted transcripts, which write
-       them by hand. */
-    lines: [],
     done: row.outcome ?? (row.status === 'failed' ? 'Failed' : 'Done'),
   }
 }
@@ -188,11 +183,8 @@ export function runExchangeId(startedAtMs: number): string {
   return `run:${startedAtMs}`
 }
 
-function settledState(beats: Beat[], elapsed: number): RunState {
+function settledState(elapsed: number): RunState {
   return {
-    played: beats.map((_, index) => index),
-    gate: null,
-    declined: null,
     finished: true,
     startedAt: null,
     elapsed,
@@ -215,7 +207,7 @@ export function exchangesFrom(turns: readonly ThreadTurn[]): Exchange[] {
         id: turn.id,
         prompt: turn.text,
         beats: [],
-        state: settledState([], 0),
+        state: settledState(0),
       })
       continue
     }
@@ -226,7 +218,7 @@ export function exchangesFrom(turns: readonly ThreadTurn[]): Exchange[] {
       exchanges[exchanges.length - 1] = {
         ...open,
         beats,
-        state: settledState(beats, elapsed),
+        state: settledState(elapsed),
         ...(turn.run?.failure ? { error: turn.run.failure.message } : {}),
       }
     } else {
@@ -234,7 +226,7 @@ export function exchangesFrom(turns: readonly ThreadTurn[]): Exchange[] {
         id: turn.id,
         prompt: '',
         beats,
-        state: settledState(beats, elapsed),
+        state: settledState(elapsed),
         ...(turn.run?.failure ? { error: turn.run.failure.message } : {}),
       })
     }
@@ -420,7 +412,7 @@ export function useThreadRun(input: {
       beats,
       /* Read once, here, from the same clock the header was ticking off. The
          duration is only news when the run is over. */
-      state: settledState(beats, (Date.now() - startedAt.current) / 1000),
+      state: settledState((Date.now() - startedAt.current) / 1000),
       ...(error ? { error } : {}),
     }])
     setPrompt(null)
@@ -477,17 +469,15 @@ export function useThreadRun(input: {
     [prompt, timeline, final, liveAnswer],
   )
 
-  /* The timeline is a snapshot of work already reported, so every received
-     beat is visible. Web writes no longer create a client-side approval gate;
-     configured company governance remains a backend concern. */
+  /* No longer keyed on the beats. It used to enumerate them — one index per
+     beat, to say which had been played — so every answer delta handed the
+     thread a fresh state object and redrew the whole exchange to report that a
+     list it already had was still fully visible. */
   const liveState = useMemo<RunState>(() => ({
-    played: liveBeats.map((_, index) => index),
-    gate: null,
-    declined: null,
     finished: !running,
     startedAt: startedAt.current,
     elapsed: 0,
-  }), [liveBeats, running])
+  }), [running])
 
   const exchanges = useMemo(() => (prompt === null
     ? settled

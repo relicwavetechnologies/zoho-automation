@@ -83,7 +83,7 @@ const DELAYS: Record<DotsRhythm, number[]> = {
   scatter: [-0, -900, -1200, -300, -600, -1500],
 }
 
-export type DotsRhythm = 'wave' | 'scatter'
+type DotsRhythm = 'wave' | 'scatter'
 
 export function DotsLoader({
   className, variant = 'wave',

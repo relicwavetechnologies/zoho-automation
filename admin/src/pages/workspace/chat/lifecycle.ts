@@ -30,7 +30,7 @@
  * `components/pi/` — the rules are worth testing on their own, and the view
  * they drive pulls in a stylesheet that a test runner cannot load.
  */
-import type { Beat } from './transcripts'
+import type { Beat } from './beats'
 
 /**
  * What a step is called by whoever draws it.
