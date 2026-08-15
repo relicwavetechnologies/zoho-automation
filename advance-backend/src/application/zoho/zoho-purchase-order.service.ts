@@ -51,6 +51,16 @@ type AttachmentResult = { outcome: 'attached' | 'unconfirmed' | 'refused'; messa
 const text = (record: Record<string, unknown>, ...keys: string[]): string =>
   keys.map(key => record[key]).find(value => typeof value === 'string' && value.trim()) as string | undefined ?? '';
 
+function providerPurchaseOrderPayload(fields: Record<string, unknown>): Record<string, unknown> {
+  const payload = { ...fields };
+  const expectedDeliveryDate = text(payload, 'expected_delivery_date');
+  if (expectedDeliveryDate && !text(payload, 'delivery_date')) {
+    payload['delivery_date'] = expectedDeliveryDate;
+  }
+  delete payload['expected_delivery_date'];
+  return payload;
+}
+
 const connectionAuth = (input: CallContext) => ({
   userId: input.userId,
   connectionId: input.connectionId,
@@ -98,7 +108,7 @@ export function createZohoPurchaseOrderService(deps: {
       if (!deps.staging) {
         return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'Purchase-order staging is not configured on this deployment.' }));
       }
-      const payload = { ...input.fields };
+      const payload = providerPurchaseOrderPayload(input.fields);
       input.onProgress?.('Checking the draft purchase order…');
       const organization = await chooseOrganization(deps.booksClient, input);
       if (!organization) {
