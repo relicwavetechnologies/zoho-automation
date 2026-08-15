@@ -47,6 +47,8 @@ export interface ApprovalGateInput {
    * form that has since been closed.
    */
   resumeOnApproval?: boolean;
+  /** Requester-confirmed action whose lifecycle continues through this decision. */
+  parentBusinessActionId?: string;
   /** Optional, non-authoritative runtime execution provenance for audit/match checks. */
   execution?: {
     readonly version: 1;
@@ -232,6 +234,7 @@ export class ApprovalGateService {
           approvalOrigin:         runContext.channel === 'lark' && execution
             ? 'cloud_pi'
             : approvalOriginFromChatId(sourceChatId),
+          sourceChannel:          runContext.channel,
           statusMessageId:        statusMessageId ?? null,
           chatId: scopedChatId,
           sourceChatId,
@@ -250,6 +253,7 @@ export class ApprovalGateService {
           // Whether a yes finishes this or merely unblocks a retry. Read by
           // both decision surfaces; absent means the old behaviour.
           autoResume:             input.resumeOnApproval === true,
+          parentBusinessActionId: input.parentBusinessActionId ?? null,
           execution: execution ?? null,
         },
         // The row is the source of truth; delivery is a side effect of it.
@@ -1308,8 +1312,8 @@ function executionMetadataMatches(
   // Retrying an approved manager-gated request creates a fresh Pi tool-call
   // ID, but it must remain usable for the same exact desktop run and args.
   // `chatId` already carries that thread/run partition and argsHash is checked
-  // above. actionId remains audit-only here; local approval intents bind it
-  // strictly because their prepare/commit pair never creates a new tool call.
+  // above. actionId remains audit-only here; requester-confirmation actions
+  // bind it strictly because their prepare/decide pair creates no new tool call.
   return actual['version'] === expected.version
     && actual['threadId'] === expected.threadId
     && actual['runId'] === expected.runId;

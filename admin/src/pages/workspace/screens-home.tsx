@@ -19,6 +19,8 @@ import {
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { Composer as ChatComposer } from './chat/parts'
+import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
+import { stageHandoff } from './chat/handoff'
 import '@/styles/beautiful.css'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
 import {
@@ -479,20 +481,32 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
  */
 function Composer({ go }: { go: (screen: string) => void }) {
   const [prompt, setPrompt] = useState('')
+  const attach = useAttachments()
+  const { over, dropProps } = useFileDrop(attach.add)
+  useDropGuard()
+
   const submit = () => {
     const trimmed = prompt.trim()
     if (!trimmed) return
-    try { window.sessionStorage.setItem('divo.chat.pendingPrompt', trimmed) } catch { /* private mode */ }
+    stageHandoff(trimmed, attach.files)
     go('chat')
   }
 
   return (
-    <div className="bui-scope ws-comp-slot">
+    /* Only the composer's own slot takes a drop here, not the whole page. Home
+       is a dashboard of panels rather than one conversation, so a veil across
+       all of it would claim a target the panels do not have. */
+    <div className="bui-scope ws-comp-slot relative" {...dropProps}>
+      <DropVeil visible={over} />
       <ChatComposer
         value={prompt}
         onChange={setPrompt}
         onSubmit={submit}
         placeholder="Ask Divo to export, compare, clean up, draft, or investigate…"
+        files={attach.files}
+        rejected={attach.rejected}
+        onAttach={attach.add}
+        onRemoveFile={attach.remove}
       />
     </div>
   )

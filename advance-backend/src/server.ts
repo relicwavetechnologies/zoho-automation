@@ -640,9 +640,14 @@ export const createServer = (c: Container): DivoServerApplication => {
       threads: c.webThreads,
       logger:  c.logger,
       maxUploadBytes: c.env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
+      // The same client the Lark voice-note path uses, so a recording is heard
+      // identically whichever surface it was handed over on.
+      ...(voiceTranscriber ? { transcriber: voiceTranscriber } : {}),
     }),
   );
 
+  // Installed Desktop clients retain their client-owned confirmation route.
+  // Web and Lark proceed through the governed tool path instead.
   app.use(
     '/api/desktop',
     createDesktopApprovalRoutes({
@@ -650,6 +655,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       memberJwtSecret: c.env.MEMBER_JWT_SECRET,
       logger:          c.logger,
       inbox:           c.approvalInbox,
+      businessActions: c.businessActions,
     }),
   );
 

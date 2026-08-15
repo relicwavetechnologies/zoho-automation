@@ -45,6 +45,8 @@ export interface CreateApprovalInput {
   requestedBy?:     string;
   idempotencyKey:   string;
   expiresAt:        Date;
+  /** Requester confirmations are already visible in Divo and need no delivery handshake. */
+  initialStatus?:   'dispatching' | 'pending';
 }
 
 export interface CreateOrReuseApprovalResult {
@@ -342,6 +344,62 @@ export class RuntimeApprovalRepository {
   }
 
   /**
+   * The requester has confirmed the exact action, but company policy now owns
+   * the next decision. The action remains a durable replay barrier while its
+   * linked governance approval is pending.
+   */
+  async markAwaitingGovernance(id: string, resultJson: unknown): Promise<Result<boolean, Error>> {
+    try {
+      const changed = await this.prisma.runtimeApproval.updateMany({
+        where: { id, status: 'executing', kind: 'business_action' },
+        data: {
+          status: 'awaiting_governance',
+          executionResultJson: resultJson as any,
+        },
+      });
+      return ok(changed.count === 1);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.markAwaitingGovernance', e));
+    }
+  }
+
+  /** Finish the requester-owned action after its linked manager decision runs. */
+  async completeLinkedBusinessAction(id: string, resultJson: unknown): Promise<Result<boolean, Error>> {
+    try {
+      const changed = await this.prisma.runtimeApproval.updateMany({
+        where: { id, status: 'awaiting_governance', kind: 'business_action' },
+        data: {
+          status: 'consumed',
+          executionResultJson: resultJson as any,
+        },
+      });
+      return ok(changed.count === 1);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.completeLinkedBusinessAction', e));
+    }
+  }
+
+  /** Reject or fail a requester-owned action whose governance decision ended it. */
+  async failLinkedBusinessAction(
+    id: string,
+    status: 'rejected' | 'failed',
+    resultJson: unknown,
+  ): Promise<Result<boolean, Error>> {
+    try {
+      const changed = await this.prisma.runtimeApproval.updateMany({
+        where: { id, status: 'awaiting_governance', kind: 'business_action' },
+        data: {
+          status,
+          executionResultJson: resultJson as any,
+        },
+      });
+      return ok(changed.count === 1);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.failLinkedBusinessAction', e));
+    }
+  }
+
+  /**
    * Stores a durable checkpoint while an approved multi-call batch is running.
    * This deliberately cannot change a pending/approved record, so a progress
    * write can never manufacture an execution grant.
@@ -454,7 +512,7 @@ export class RuntimeApprovalRepository {
     const durable = await client.runtimeApproval.findFirst({
       where: {
         idempotencyKey: key,
-        status: { in: ['executing', 'consumed'] },
+        status: { in: ['executing', 'awaiting_governance', 'consumed'] },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -504,7 +562,7 @@ export class RuntimeApprovalRepository {
     const durable = await client.runtimeApproval.findMany({
       where: {
         idempotencyKey: key,
-        status: { in: ['executing', 'consumed'] },
+        status: { in: ['executing', 'awaiting_governance', 'consumed'] },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -598,7 +656,7 @@ export class RuntimeApprovalRepository {
         requestedBy: input.requestedBy ?? null,
         idempotencyKey: input.idempotencyKey,
         expiresAt: input.expiresAt,
-        status: 'dispatching',
+        status: input.initialStatus ?? 'dispatching',
       },
     });
   }

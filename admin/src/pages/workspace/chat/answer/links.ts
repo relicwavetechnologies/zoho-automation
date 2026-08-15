@@ -22,6 +22,105 @@ export function domainOf(href: string): string | null {
   return host.includes('.') ? host : null
 }
 
+/* ── What a link is ───────────────────────────────────────
+   The question this module used to ask was "is the link's text bare?", and the
+   mark was only reached on the yes branch. Since most links the model writes
+   have real prose, most links arrived with no identity at all — an underline
+   that said nothing about where it went.
+
+   So bareness is no longer the question. It survives as one detail of one kind
+   of link: whether a site's prose is worth keeping or is just the URL again. */
+
+/**
+ * The families a file is drawn as. Deliberately few — this picks a glyph, and a
+ * reader distinguishing a spreadsheet from a document is the whole benefit. A
+ * per-extension table would be a lot of entries buying nothing.
+ */
+export type FileFamily = 'doc' | 'sheet' | 'slide' | 'image' | 'archive' | 'code' | 'file'
+
+const FAMILY_BY_EXTENSION: Record<string, FileFamily> = {
+  pdf: 'doc', doc: 'doc', docx: 'doc', rtf: 'doc', odt: 'doc', txt: 'doc', md: 'doc',
+  xls: 'sheet', xlsx: 'sheet', csv: 'sheet', tsv: 'sheet', ods: 'sheet',
+  ppt: 'slide', pptx: 'slide', key: 'slide', odp: 'slide',
+  png: 'image', jpg: 'image', jpeg: 'image', gif: 'image', webp: 'image', svg: 'image',
+  bmp: 'image', tiff: 'image', heic: 'image',
+  zip: 'archive', tar: 'archive', gz: 'archive', rar: 'archive', '7z': 'archive',
+  json: 'code', yaml: 'code', yml: 'code', xml: 'code', html: 'code', ts: 'code',
+  tsx: 'code', js: 'code', jsx: 'code', py: 'code', sh: 'code', sql: 'code',
+}
+
+export type LinkTarget =
+  /** An address on the web. */
+  | { kind: 'site'; domain: string }
+  /** A path in the run's workspace, or anything else that names a file. */
+  | { kind: 'file'; name: string; family: FileFamily }
+  | { kind: 'mail'; address: string }
+  /** An anchor, a scheme we do not draw, or something we cannot read. */
+  | { kind: 'plain' }
+
+const extensionOf = (value: string): string => {
+  const name = value.split(/[?#]/)[0] ?? ''
+  const dot = name.lastIndexOf('.')
+  return dot === -1 ? '' : name.slice(dot + 1).toLowerCase()
+}
+
+/** The last segment of a path, whichever slash the writer used. */
+export function fileNameOf(href: string): string {
+  const cleaned = href.trim().replace(/^file:\/\//, '').replace(/\\/g, '/').split(/[?#]/)[0] ?? ''
+  const segments = cleaned.split('/').filter(Boolean)
+  return segments[segments.length - 1] ?? cleaned
+}
+
+/**
+ * What this href points at.
+ *
+ * File detection is ported from the desktop's `isFileMarkdownHref`, rule for
+ * rule, because the two surfaces are shown the same answers by the same run and
+ * a path that is a chip on one and dead text on the other is the divergence
+ * this whole renderer exists to avoid.
+ */
+export function targetOf(href: string): LinkTarget {
+  const value = href.trim()
+  if (!value || value.startsWith('#')) return { kind: 'plain' }
+
+  if (/^mailto:/i.test(value)) {
+    const address = value.slice(7).split('?')[0] ?? ''
+    return address ? { kind: 'mail', address } : { kind: 'plain' }
+  }
+
+  const domain = domainOf(value)
+  if (domain) return { kind: 'site', domain }
+  // Any other scheme — tel:, data:, a protocol we do not draw.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !/^file:/i.test(value)) return { kind: 'plain' }
+
+  const extension = extensionOf(value)
+  const looksLikePath =
+    /^file:/i.test(value)
+    || value.startsWith('/')
+    || value.startsWith('./')
+    || value.startsWith('../')
+    || (value.includes('/') && extension !== '')
+    || extension !== ''
+  if (!looksLikePath) return { kind: 'plain' }
+
+  return {
+    kind: 'file',
+    name: fileNameOf(value),
+    family: FAMILY_BY_EXTENSION[extension] ?? 'file',
+  }
+}
+
+/**
+ * Whether a browser can follow this href at all.
+ *
+ * A workspace path cannot be navigated to from a page — the file is in the
+ * run's container, not on this origin — so the link offers the path instead of
+ * a broken navigation.
+ */
+export function isNavigable(href: string): boolean {
+  return /^(https?:|mailto:|tel:)/i.test(href.trim())
+}
+
 /** A link whose text is just its own address, and so has nothing to lose. */
 export function isBareLink(text: string, href: string): boolean {
   const value = text.trim().replace(/\/+$/, '')

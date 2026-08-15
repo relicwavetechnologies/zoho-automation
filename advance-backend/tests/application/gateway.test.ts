@@ -7,10 +7,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { GatewayDispatcher } from '../../src/application/gateway/gateway-dispatcher.ts';
 import { ToolExecutor } from '../../src/application/gateway/tool-executor.ts';
-import {
-  InMemoryApprovalIntentRepository,
-  LocalApprovalIntentService,
-} from '../../src/application/gateway/local-approval-intent.service.ts';
+import { BusinessActionService } from '../../src/application/approval/business-action.service.ts';
 import { ToolRegistry } from '../../src/application/tools/tool-registry.ts';
 import type { Tool } from '../../src/application/tools/tool.contract.ts';
 import { createWebSearchTool } from '../../src/application/tools/families/web-search.tool.ts';
@@ -24,11 +21,11 @@ import type { PermissionService } from '../../src/application/permissions/permis
 import type { PermissionQuery, PermissionResult } from '../../src/application/permissions/permission.types.ts';
 import type { GatewayMemberContext } from '../../src/application/gateway/gateway.types.ts';
 import type { MediaOcrService } from '../../src/application/gateway/media-ocr.service.ts';
-import type { Clock } from '../../src/shared/clock.ts';
 import { MODEL_FACING_RESULT_MAX_BYTES } from '../../src/application/gateway/model-facing-result-limit.ts';
 import { KnowledgeMutationError } from '../../src/application/knowledge/knowledge-mutation.errors.ts';
 import { GOOGLE_SCOPE } from '../../src/domain/google/google-workspace-scope.ts';
 import { AIRTABLE_SCOPE } from '../../src/application/airtable/airtable-mcp-manifest.ts';
+import { InMemoryBusinessActionApprovals } from './business-action.test-support.ts';
 
 const member: GatewayMemberContext = {
   companyId: 'co-test',
@@ -133,28 +130,13 @@ function makeSkillCatalog(skills: CatalogSkill[]): SkillCatalogService {
   } as unknown as SkillCatalogService;
 }
 
-function makeLocalApprovals(
+function makeBusinessActions(
   toolExecutor: ToolExecutor,
-  clock: Clock = { now: () => new Date(), nowMs: () => Date.now() },
-  intentTtlMs?: number,
-  deps: {
-    permissions?: PermissionService;
-    skillCatalog?: SkillCatalogService;
-  } = {},
-): LocalApprovalIntentService {
-  return new LocalApprovalIntentService({
+): BusinessActionService {
+  return new BusinessActionService({
+    approvals: new InMemoryBusinessActionApprovals().asRepository(),
     toolExecutor,
-    permissions: deps.permissions ?? makePermissionService(),
-    skillCatalog: deps.skillCatalog ?? ({
-      authorizesTool: async () => true,
-    } as unknown as SkillCatalogService),
-    skillAccessEnforcement: {
-      listGrantedSkillIds: async () => new Set(['allowed-skill']),
-    },
-    repository: new InMemoryApprovalIntentRepository(),
-    clock,
     logger: noopLogger,
-    ...(intentTtlMs !== undefined ? { intentTtlMs } : {}),
   });
 }
 
@@ -1343,6 +1325,71 @@ describe('ToolExecutor', () => {
     assert.equal(executions, 0);
   });
 
+  it('authorizes a Books create only with its matching module scope', async () => {
+    let executions = 0;
+    const billsConnectionId = '00000000-0000-4000-8000-000000000004';
+    const invoicesConnectionId = '00000000-0000-4000-8000-000000000005';
+    const registry = new ToolRegistry();
+    registry.register({
+      id: asToolId('zohoBooks'),
+      family: 'zoho',
+      actionGroups: new Set(['create']),
+      argsSchema: z.object({ connectionId: z.string().uuid(), op: z.literal('create_bill') }),
+      resultSchema: z.object({ result: z.string() }),
+      description: 'Zoho Books module-scope test',
+      parameterDocs: 'connectionId, op',
+      permissionCheck: () => ok('create'),
+      execute: async () => {
+        executions += 1;
+        return ok({ result: 'created' });
+      },
+    });
+    const executor = new ToolExecutor({
+      toolRegistry: registry,
+      permissions: makePermissionService(makeAllowedPerm('zohoBooks', ['create'])),
+      connectionRegistry: {
+        listAccessibleZohoConnections: async () => ok([
+          {
+            connectionId: billsConnectionId,
+            provider: 'zoho',
+            label: 'Bills writer',
+            ownerType: 'company',
+            access: 'read_write',
+            scopes: ['ZohoBooks.bills.CREATE'],
+            connectedAt: new Date(),
+          },
+          {
+            connectionId: invoicesConnectionId,
+            provider: 'zoho',
+            label: 'Invoices writer',
+            ownerType: 'company',
+            access: 'read_write',
+            scopes: ['ZohoBooks.invoices.CREATE'],
+            connectedAt: new Date(),
+          },
+        ]),
+      } as never,
+      logger: noopLogger,
+      clock: { now: () => new Date(), nowMs: () => Date.now() },
+    });
+
+    const allowed = await executor.invoke({
+      member,
+      toolId: 'zohoBooks',
+      args: { op: 'create_bill', connectionId: billsConnectionId },
+    });
+    const denied = await executor.invoke({
+      member,
+      toolId: 'zohoBooks',
+      args: { op: 'create_bill', connectionId: invoicesConnectionId },
+    });
+
+    assert.equal(allowed.status, 'success');
+    assert.equal(denied.status, 'invalid_args');
+    assert.match(denied.error?.message ?? '', /selected Zoho account is not eligible/i);
+    assert.equal(executions, 1);
+  });
+
   it('returns safe connected-account choices instead of guessing between accounts', async () => {
     let executions = 0;
     const registry = new ToolRegistry();
@@ -1511,522 +1558,6 @@ describe('ToolExecutor', () => {
       approvalId: 'approval-1',
       status: 'completed',
     });
-  });
-});
-
-describe('LocalApprovalIntentService', () => {
-  it('classifies reads without executing or creating an approval intent', async () => {
-    let executions = 0;
-    const registry = new ToolRegistry();
-    registry.register(makeFakeTool({
-      execute: async (args) => {
-        executions++;
-        return ok({ result: `echo:${args.query}` });
-      },
-    }));
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions: makePermissionService(),
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-
-    const result = await makeLocalApprovals(executor).prepare({
-      member,
-      skillId: 'allowed-skill',
-      toolId: 'fakeTool',
-      args: { query: 'preview only' },
-    });
-
-    assert.equal(result.ok, true);
-    assert.equal((result.data as any).action, 'read');
-    assert.equal((result.data as any).requiresApproval, false);
-    assert.equal((result.data as any).intentId, undefined);
-    assert.equal(executions, 0);
-  });
-
-  it('commits the exact validated write args once and rejects replay', async () => {
-    const executed: unknown[] = [];
-    const registry = new ToolRegistry();
-    registry.register(makeFakeTool({
-      actionGroups: new Set(['update']),
-      permissionCheck: () => ok('update'),
-      execute: async (args) => {
-        executed.push(args);
-        return ok({ result: `echo:${args.query}` });
-      },
-    }));
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['update'])),
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-    const approvals = makeLocalApprovals(executor);
-
-    const prepared = await approvals.prepare({
-      member,
-      skillId: 'allowed-skill',
-      toolId: 'fakeTool',
-      // Zod strips the unrecognized property, binding the intent to normalized args.
-      args: { query: 'original', ignored: 'not executable' },
-    });
-    assert.equal(prepared.ok, true);
-    assert.equal((prepared.data as any).requiresApproval, true);
-    assert.equal((prepared.data as any).action, 'update');
-    assert.match((prepared.data as any).intentId, /^[0-9a-f-]{36}$/);
-    assert.match((prepared.data as any).argsHash, /^[0-9a-f]{64}$/);
-    assert.equal((prepared.data as any).presentation.kind, 'generic.fakeTool.update');
-
-    const intentId = (prepared.data as any).intentId as string;
-    const committed = await approvals.commit({ member, intentId });
-    assert.equal(committed.ok, true);
-    assert.deepEqual(executed, [{ query: 'original' }]);
-
-    const replay = await approvals.commit({ member, intentId });
-    assert.equal(replay.ok, false);
-    assert.equal(replay.status, 'approval_intent_consumed');
-    assert.equal(executed.length, 1);
-  });
-
-  it('treats a revoked skill binding as advisory while rechecking backend permission', async () => {
-    let authorized = true;
-    let executions = 0;
-    const registry = new ToolRegistry();
-    registry.register(makeFakeTool({
-      actionGroups: new Set(['update']),
-      permissionCheck: () => ok('update'),
-      execute: async () => {
-        executions++;
-        return ok({ result: 'unexpected' });
-      },
-    }));
-    const permissions = makePermissionService(makeAllowedPerm('fakeTool', ['update']));
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions,
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-    const approvals = makeLocalApprovals(executor, undefined, undefined, {
-      permissions,
-      skillCatalog: {
-        authorizesTool: async () => authorized,
-      } as unknown as SkillCatalogService,
-    });
-    const prepared = await approvals.prepare({
-      member,
-      skillId: 'allowed-skill',
-      toolId: 'fakeTool',
-      args: { query: 'bound write' },
-    });
-    authorized = false;
-
-    const committed = await approvals.commit({
-      member,
-      intentId: (prepared.data as any).intentId,
-    });
-
-    assert.equal(committed.status, 'success');
-    assert.equal(executions, 1);
-  });
-
-  it('returns deterministic Google Workspace and Zoho presentation payloads for the UI registry', async () => {
-    const registry = new ToolRegistry();
-    registry.register({
-      ...makeFakeTool(),
-      id: asToolId('googleGmail'),
-      family: 'google',
-      actionGroups: new Set(['send']),
-      argsSchema: z.object({
-        connectionId: z.string(),
-        op: z.literal('call'),
-        nativeTool: z.literal('send_gmail_message'),
-        input: z.record(z.unknown()),
-      }),
-      permissionCheck: () => ok('send'),
-    } as Tool<unknown, unknown>);
-    registry.register({
-      ...makeFakeTool(),
-      id: asToolId('zohoCrm'),
-      family: 'zoho',
-      actionGroups: new Set(['update']),
-      argsSchema: z.object({
-        connectionId: z.string(),
-        op: z.literal('update'),
-        module: z.string(),
-        recordId: z.string(),
-        fields: z.record(z.unknown()),
-      }),
-      permissionCheck: () => ok('update'),
-    } as Tool<unknown, unknown>);
-    const permissions = makePermissionService({
-      ...makeAllowedPerm('googleGmail', ['send']),
-      allowedToolIds: new Set([asToolId('googleGmail'), asToolId('zohoCrm')]),
-      allowedActionsByTool: new Map([
-        [asToolId('googleGmail'), new Set(['send'] as const)],
-        [asToolId('zohoCrm'), new Set(['update'] as const)],
-      ]),
-    });
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions,
-      connectionRegistry: {
-        listAccessibleGoogleConnections: async () => ok([{
-          connectionId: 'google-1',
-          provider: 'google_workspace',
-          label: 'Google approval fixture',
-          ownerType: 'user',
-          ownerUserId: member.userId,
-          access: 'read_write',
-          scopes: [GOOGLE_SCOPE.gmailSend],
-          connectedAt: new Date(),
-        }]),
-        listAccessibleZohoConnections: async () => ok([{
-          connectionId: 'zoho-1',
-          provider: 'zoho',
-          label: 'Zoho approval fixture',
-          ownerType: 'user',
-          ownerUserId: member.userId,
-          access: 'read_write',
-          scopes: ['ZohoCRM.modules.UPDATE'],
-          connectedAt: new Date(),
-        }]),
-      } as never,
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-    const approvals = makeLocalApprovals(executor);
-
-    const gmail = await approvals.prepare({
-      member,
-      skillId: 'allowed-skill',
-      toolId: 'googleGmail',
-      args: {
-        connectionId: 'google-1',
-        op: 'call',
-        nativeTool: 'send_gmail_message',
-        input: {
-          to: ['maya@example.com'],
-          subject: 'Q3 rollout',
-          body: 'Hi Maya',
-        },
-      },
-    });
-    assert.deepEqual((gmail.data as any).presentation, {
-      kind: 'google.gmail.send_gmail_message',
-      provider: 'google',
-      title: 'Review email before sending',
-      action: 'send',
-      operation: 'send_gmail_message',
-      details: {
-        connectionId: 'google-1',
-        nativeTool: 'send_gmail_message',
-        input: {
-          to: ['maya@example.com'],
-          subject: 'Q3 rollout',
-          body: 'Hi Maya',
-        },
-      },
-    });
-
-    const zoho = await approvals.prepare({
-      member,
-      skillId: 'allowed-skill',
-      toolId: 'zohoCrm',
-      args: {
-        connectionId: 'zoho-1',
-        op: 'update',
-        module: 'Deals',
-        recordId: 'D-1842',
-        fields: { Stage: 'Closed Won', Amount: 925000 },
-      },
-    });
-    assert.deepEqual((zoho.data as any).presentation, {
-      kind: 'zoho.crm.update',
-      provider: 'zoho',
-      title: 'Review Zoho CRM update',
-      action: 'update',
-      operation: 'update',
-      details: {
-        connectionId: 'zoho-1',
-        module: 'Deals',
-        recordId: 'D-1842',
-        fields: { Stage: 'Closed Won', Amount: 925000 },
-      },
-    });
-  });
-
-  it('renders knowledge review intents without internal target or asset IDs', async () => {
-    const registry = new ToolRegistry();
-    registry.register({
-      ...makeFakeTool(),
-      id: asToolId('knowledge'),
-      family: 'memory',
-      actionGroups: new Set(['create']),
-      argsSchema: z.object({
-        operation: z.literal('propose'),
-        kind: z.literal('file'),
-        action: z.literal('publish'),
-        scope: z.literal('department'),
-        departmentId: z.string(),
-        logicalKey: z.string(),
-        content: z.object({
-          assetId: z.string(),
-          fileName: z.string(),
-          mimeType: z.string(),
-          sizeBytes: z.number(),
-          sha256: z.string(),
-        }),
-      }),
-      permissionCheck: () => ok('create'),
-    } as Tool<any, any>);
-    const permissions = makePermissionService(makeAllowedPerm('knowledge', ['create']));
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions,
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-    const prepared = await makeLocalApprovals(executor).prepare({
-      member,
-      departmentId: 'dept-internal-id',
-      skillId: 'allowed-skill',
-      toolId: 'knowledge',
-      args: {
-        operation: 'propose',
-        kind: 'file',
-        action: 'publish',
-        scope: 'department',
-        departmentId: 'dept-internal-id',
-        logicalKey: 'qa-runbook',
-        content: {
-          assetId: 'asset-internal-id',
-          fileName: 'QA Runbook.pdf',
-          mimeType: 'application/pdf',
-          sizeBytes: 4096,
-          sha256: 'a'.repeat(64),
-        },
-      },
-    });
-
-    assert.deepEqual((prepared.data as any).presentation, {
-      kind: 'knowledge.file.publish',
-      provider: 'divo',
-      title: 'Review selected department file change',
-      action: 'create',
-      operation: 'propose',
-      details: {
-        target: 'Selected department',
-        resource: 'file',
-        change: 'publish',
-        logicalKey: 'qa-runbook',
-        exactContent: {
-          fileName: 'QA Runbook.pdf',
-          mimeType: 'application/pdf',
-          sizeBytes: 4096,
-          sha256: 'a'.repeat(64),
-        },
-      },
-    });
-    assert.doesNotMatch(JSON.stringify((prepared.data as any).presentation), /internal-id/);
-  });
-
-  it('binds an intent to the preparing session and department', async () => {
-    const registry = new ToolRegistry();
-    registry.register(makeFakeTool({ permissionCheck: () => ok('create') }));
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['create'])),
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-    const approvals = makeLocalApprovals(executor);
-    const prepared = await approvals.prepare({
-      member,
-      departmentId: 'dept-1',
-      skillId: 'allowed-skill',
-      toolId: 'fakeTool',
-      args: { query: 'bound' },
-    });
-    const intentId = (prepared.data as any).intentId as string;
-
-    const wrongSession = await approvals.commit({
-      member: { ...member, sessionId: 'sess-other' },
-      departmentId: 'dept-1',
-      intentId,
-    });
-    assert.equal(wrongSession.status, 'approval_intent_not_found');
-
-    const wrongDepartment = await approvals.commit({
-      member,
-      departmentId: 'dept-2',
-      intentId,
-    });
-    assert.equal(wrongDepartment.status, 'approval_intent_not_found');
-
-    const committed = await approvals.commit({ member, departmentId: 'dept-1', intentId });
-    assert.equal(committed.ok, true);
-  });
-
-  it('binds a local approval intent to one exact desktop thread, run, and action', async () => {
-    const executed: unknown[] = [];
-    const registry = new ToolRegistry();
-    registry.register(makeFakeTool({
-      permissionCheck: () => ok('create'),
-      execute: async (args) => {
-        executed.push(args);
-        return ok({ result: `echo:${args.query}` });
-      },
-    }));
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['create'])),
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-    const approvals = makeLocalApprovals(executor);
-    const execution = {
-      version: 1 as const,
-      threadId: 'thread-a',
-      runId: 'run-a',
-      actionId: 'tool-call-a',
-    };
-    const prepared = await approvals.prepare({
-      member,
-      skillId: 'allowed-skill',
-      toolId: 'fakeTool',
-      args: { query: 'isolated' },
-      execution,
-    });
-    const intentId = (prepared.data as any).intentId as string;
-
-    const wrongRun = await approvals.commit({
-      member,
-      intentId,
-      execution: { ...execution, runId: 'run-b' },
-    });
-    assert.equal(wrongRun.status, 'approval_intent_not_found');
-
-    const wrongAction = await approvals.commit({
-      member,
-      intentId,
-      execution: { ...execution, actionId: 'tool-call-b' },
-    });
-    assert.equal(wrongAction.status, 'approval_intent_not_found');
-
-    const committed = await approvals.commit({ member, intentId, execution });
-    assert.equal(committed.ok, true);
-    assert.deepEqual(executed, [{ query: 'isolated' }]);
-  });
-
-  it('expires uncommitted intents using the injected clock', async () => {
-    let nowMs = Date.parse('2026-07-10T00:00:00.000Z');
-    const clock: Clock = { now: () => new Date(nowMs), nowMs: () => nowMs };
-    const registry = new ToolRegistry();
-    registry.register(makeFakeTool({ permissionCheck: () => ok('delete') }));
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['delete'])),
-      logger: noopLogger,
-      clock,
-    });
-    const approvals = makeLocalApprovals(executor, clock, 1_000);
-    const prepared = await approvals.prepare({
-      member,
-      skillId: 'allowed-skill',
-      toolId: 'fakeTool',
-      args: { query: 'expire me' },
-    });
-    assert.equal((prepared.data as any).expiresAt, '2026-07-10T00:00:01.000Z');
-
-    nowMs += 1_000;
-    const expired = await approvals.commit({
-      member,
-      intentId: (prepared.data as any).intentId,
-    });
-    assert.equal(expired.status, 'approval_intent_expired');
-  });
-
-  it('rejects a concurrent commit while the first exact action is running', async () => {
-    let releaseExecution!: () => void;
-    const executionStarted = new Promise<void>((resolve) => { releaseExecution = resolve; });
-    let allowCompletion!: () => void;
-    const completion = new Promise<void>((resolve) => { allowCompletion = resolve; });
-    const registry = new ToolRegistry();
-    registry.register(makeFakeTool({
-      permissionCheck: () => ok('send'),
-      execute: async (args) => {
-        releaseExecution();
-        await completion;
-        return ok({ result: `echo:${args.query}` });
-      },
-    }));
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['send'])),
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-    const approvals = makeLocalApprovals(executor);
-    const prepared = await approvals.prepare({
-      member,
-      skillId: 'allowed-skill',
-      toolId: 'fakeTool',
-      args: { query: 'once' },
-    });
-    const intentId = (prepared.data as any).intentId as string;
-
-    const firstCommit = approvals.commit({ member, intentId });
-    await executionStarted;
-    const concurrent = await approvals.commit({ member, intentId });
-    assert.equal(concurrent.status, 'approval_intent_busy');
-    allowCompletion();
-    assert.equal((await firstCommit).ok, true);
-  });
-
-  it('keeps the local intent retryable while manager approval is pending', async () => {
-    let checks = 0;
-    let executions = 0;
-    const registry = new ToolRegistry();
-    registry.register(makeFakeTool({
-      permissionCheck: () => ok('create'),
-      execute: async () => {
-        executions++;
-        return ok({ result: 'done' });
-      },
-    }));
-    const executor = new ToolExecutor({
-      toolRegistry: registry,
-      permissions: makePermissionService(makeAllowedPerm('fakeTool', ['create'])),
-      approvalGate: {
-        check: async () => ++checks === 1
-          ? { kind: 'pending', approvalId: 'manager-1', message: 'Waiting for manager' }
-          : { kind: 'allowed' },
-        completeExecution: async () => true,
-        failExecution: async () => true,
-      } as never,
-      logger: noopLogger,
-      clock: { now: () => new Date(), nowMs: () => Date.now() },
-    });
-    const approvals = makeLocalApprovals(executor);
-    const prepared = await approvals.prepare({
-      member,
-      departmentId: 'dept-1',
-      skillId: 'allowed-skill',
-      toolId: 'fakeTool',
-      args: { query: 'manager-gated' },
-    });
-    const intentId = (prepared.data as any).intentId as string;
-
-    const pending = await approvals.commit({ member, departmentId: 'dept-1', intentId });
-    assert.equal(pending.status, 'approval_required');
-    assert.equal(executions, 0);
-
-    const approved = await approvals.commit({ member, departmentId: 'dept-1', intentId });
-    assert.equal(approved.ok, true);
-    assert.equal(executions, 1);
-    assert.equal((await approvals.commit({ member, departmentId: 'dept-1', intentId })).status, 'approval_intent_consumed');
   });
 });
 
@@ -3525,7 +3056,7 @@ describe('GatewayDispatcher', () => {
       toolRegistry: registry,
       skillCatalog: makeSkillCatalog([allowedSkill]),
       toolExecutor,
-      localApprovalIntents: makeLocalApprovals(toolExecutor),
+      businessActions: makeBusinessActions(toolExecutor),
       logger: noopLogger,
     });
 
@@ -3533,7 +3064,7 @@ describe('GatewayDispatcher', () => {
       op: 'tools.invoke',
       payload: { skillId: 'allowed-skill', toolId: 'fakeTool', args: { query: 'write' } },
     }, member);
-    assert.equal(bypass.status, 'local_approval_required');
+    assert.equal(bypass.status, 'requester_confirmation_required');
     assert.equal(bypass.ok, false);
     assert.equal((bypass.data as any).requiresApproval, true);
     assert.match((bypass.data as any).intentId, /^[0-9a-f-]{36}$/);
@@ -3547,7 +3078,7 @@ describe('GatewayDispatcher', () => {
     assert.equal(executions, 1);
   });
 
-  it('requires local review for knowledge proposals but not a duplicate review for apply', async () => {
+  it('requires requester review for knowledge proposals but not a duplicate review for apply', async () => {
     let executions = 0;
     const registry = new ToolRegistry();
     registry.register({
@@ -3578,7 +3109,7 @@ describe('GatewayDispatcher', () => {
       toolRegistry: registry,
       skillCatalog: makeSkillCatalog([knowledgeSkill]),
       toolExecutor,
-      localApprovalIntents: makeLocalApprovals(toolExecutor),
+      businessActions: makeBusinessActions(toolExecutor),
       logger: noopLogger,
     });
 
@@ -3590,7 +3121,7 @@ describe('GatewayDispatcher', () => {
         args: { operation: 'propose', query: 'exact proposal' },
       },
     }, member);
-    assert.equal(proposal.status, 'local_approval_required');
+    assert.equal(proposal.status, 'requester_confirmation_required');
     assert.equal(executions, 0);
 
     const apply = await dispatcher.dispatch({
@@ -3605,7 +3136,7 @@ describe('GatewayDispatcher', () => {
     assert.equal(executions, 1);
   });
 
-  it('executes Lark writes without desktop-local approval', async () => {
+  it('lets Web and Lark proceed directly after conversational review', async () => {
     let executions = 0;
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({
@@ -3628,19 +3159,25 @@ describe('GatewayDispatcher', () => {
       toolRegistry: registry,
       skillCatalog: makeSkillCatalog([allowedSkill]),
       toolExecutor,
+      businessActions: makeBusinessActions(toolExecutor),
       logger: noopLogger,
     });
 
-    const response = await dispatcher.dispatch({
+    const lark = await dispatcher.dispatch({
       op: 'tools.invoke',
       payload: { skillId: 'allowed-skill', toolId: 'fakeTool', args: { query: 'create' } },
     }, { ...member, channel: 'lark' });
+    assert.equal(lark.ok, true);
 
-    assert.equal(response.ok, true);
-    assert.equal(executions, 1);
+    const web = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: { skillId: 'allowed-skill', toolId: 'fakeTool', args: { query: 'create' } },
+    }, { ...member, channel: 'web' });
+    assert.equal(web.ok, true);
+    assert.equal(executions, 2);
   });
 
-  it('returns backend HITL for a governed Lark write without executing it', async () => {
+  it('sends Web and Lark directly to central HITL when company policy requires it', async () => {
     let executions = 0;
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({
@@ -3675,35 +3212,37 @@ describe('GatewayDispatcher', () => {
       toolRegistry: registry,
       skillCatalog: makeSkillCatalog([allowedSkill]),
       toolExecutor,
+      businessActions: makeBusinessActions(toolExecutor),
       logger: noopLogger,
     });
 
-    const response = await dispatcher.dispatch({
+    const web = await dispatcher.dispatch({
       op: 'tools.invoke',
       payload: { skillId: 'allowed-skill', toolId: 'fakeTool', args: { query: 'create' } },
-    }, {
-      ...member,
-      channel: 'lark',
-      larkTenantKey: 'tenant-1',
-    });
+    }, { ...member, channel: 'web' });
+    assert.equal(web.status, 'approval_required');
 
-    assert.equal(response.status, 'approval_required');
-    assert.equal(response.ok, false);
+    const lark = await dispatcher.dispatch({
+      op: 'tools.invoke',
+      payload: { skillId: 'allowed-skill', toolId: 'fakeTool', args: { query: 'create' } },
+    }, { ...member, channel: 'lark', larkTenantKey: 'tenant-1' });
+    assert.equal(lark.status, 'approval_required');
+    assert.equal(lark.ok, false);
+    assert.deepEqual(lark.approval, {
+        approvalId: 'approval-lark-create',
+        message: 'Finance Manager has an approval request waiting in Divo.',
+        status: 'pending',
+        authority: 'department_manager',
+        approverName: 'Finance Manager',
+        scope: 'once',
+        requestState: 'pending',
+        nextAction: 'wait_for_approval',
+        retry: 'retry_exact_after_approval',
+      });
     assert.equal(executions, 0);
-    assert.deepEqual(response.approval, {
-      approvalId: 'approval-lark-create',
-      message: 'Finance Manager has an approval request waiting in Divo.',
-      status: 'pending',
-      authority: 'department_manager',
-      approverName: 'Finance Manager',
-      scope: 'once',
-      requestState: 'pending',
-      nextAction: 'wait_for_approval',
-      retry: 'retry_exact_after_approval',
-    });
   });
 
-  it('executes user-owned Mail Ops mutations directly for Lark only', async () => {
+  it('executes user-owned Mail Ops mutations directly for backend-driven channels only', async () => {
     let replacements = 0;
     const registry = new ToolRegistry();
     registry.register(createMailAutomationsTool({
@@ -3741,12 +3280,7 @@ describe('GatewayDispatcher', () => {
       toolRegistry: registry,
       skillCatalog,
       toolExecutor,
-      localApprovalIntents: makeLocalApprovals(
-        toolExecutor,
-        undefined,
-        undefined,
-        { permissions, skillCatalog },
-      ),
+      businessActions: makeBusinessActions(toolExecutor),
       logger: noopLogger,
     });
     const request = {
@@ -3778,12 +3312,19 @@ describe('GatewayDispatcher', () => {
     assert.equal(lark.ok, true);
     assert.equal(replacements, 1);
 
+    const web = await dispatcher.dispatch(
+      request,
+      { ...member, channel: 'web' },
+    );
+    assert.equal(web.ok, true);
+    assert.equal(replacements, 2);
+
     const desktop = await dispatcher.dispatch(
       request,
       { ...member, channel: 'desktop' },
     );
-    assert.equal(desktop.status, 'local_approval_required');
-    assert.equal(replacements, 1);
+    assert.equal(desktop.status, 'requester_confirmation_required');
+    assert.equal(replacements, 2);
   });
 
   it('does not reintroduce desktop-local approval for future Lark Mail Ops mutations', async () => {
@@ -3819,12 +3360,7 @@ describe('GatewayDispatcher', () => {
       toolRegistry: registry,
       skillCatalog,
       toolExecutor,
-      localApprovalIntents: makeLocalApprovals(
-        toolExecutor,
-        undefined,
-        undefined,
-        { permissions, skillCatalog },
-      ),
+      businessActions: makeBusinessActions(toolExecutor),
       logger: noopLogger,
     });
     const response = await dispatcher.dispatch({
@@ -4119,7 +3655,7 @@ describe('GatewayDispatcher', () => {
     assert.equal(plan.phases.every((phase) => phase.skill === undefined), true);
   });
 
-  it('batch-preflights invocation args and permissions without execution or local approval intents', async () => {
+  it('batch-preflights invocation args and permissions without execution or requester decisions', async () => {
     let executions = 0;
     const registry = new ToolRegistry();
     registry.register(makeFakeTool({ execute: async () => { executions += 1; return ok({ result: 'should not run' }); } }));
@@ -4129,7 +3665,7 @@ describe('GatewayDispatcher', () => {
     });
     const dispatcher = new GatewayDispatcher({
       permissions: makePermissionService(), toolRegistry: registry, skillCatalog: makeSkillCatalog([allowedSkill]), toolExecutor,
-      localApprovalIntents: makeLocalApprovals(toolExecutor), logger: noopLogger,
+      businessActions: makeBusinessActions(toolExecutor), logger: noopLogger,
     });
     const result = await dispatcher.dispatch({
       op: 'tools.preflight',

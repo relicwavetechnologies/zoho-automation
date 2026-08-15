@@ -20,16 +20,19 @@
  * It exists because the admin only ever showed the operational half of Divo —
  * runs, cost, approvals after the fact — and never the thing people actually
  * do with it. The shape is the one Lark already has: you ask, the work happens
- * in the open, Divo stops before it writes anything, and what comes back is an
- * answer rather than a wall of rows.
+ * in the open, governed tools apply the same backend policy, and what comes
+ * back is an answer rather than a wall of rows.
  */
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, useParams } from 'react-router-dom'
 import { Chart } from './chat/charts'
-import { Approval, Artifact, Composer, Preview, Say } from './chat/parts'
+import { Artifact, Composer, Preview, Say } from './chat/parts'
 import { splitTrace } from './chat/lifecycle'
 import { PiTraceTimeline } from './chat/trace'
 import { PinSpacer } from './chat/pin'
+import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
+import { CopyButton } from './chat/copy'
+import { clearHandoff, peekHandoff } from './chat/handoff'
 import { useThreadRun, type Exchange } from './chat/live'
 import {
   isThreadId, newThreadId, renameThread, threadStarted, threadsChanged,
@@ -40,43 +43,35 @@ import { TRANSCRIPTS } from './chat/transcripts'
 import { ToolMark } from './chat/tools'
 import '@/styles/beautiful.css'
 
-/** The prompt Home hands over when somebody types there and hits send. */
-const HANDOFF_KEY = 'divo.chat.pendingPrompt'
-
-/**
- * Read the prompt Home staged, without consuming it.
- *
- * Reading and clearing in one step looked tidier and silently lost the handoff:
- * StrictMode mounts a component, unmounts it, and mounts it again, so the first
- * mount took the value and the second — the one that survives — found an empty
- * key and rendered a blank composer. The clear now happens at the only moment
- * that proves the prompt arrived somewhere, which is when the run starts.
- */
-function peekHandoff() {
-  try {
-    return window.sessionStorage.getItem(HANDOFF_KEY) ?? ''
-  } catch {
-    /* private mode — no handoff, just an empty composer */
-    return ''
-  }
-}
-
-function clearHandoff() {
-  try {
-    window.sessionStorage.removeItem(HANDOFF_KEY)
-  } catch { /* private mode — nothing was stored to begin with */ }
-}
-
 /**
  * `/chat` is not a page, it is a request for a new one.
  *
  * Minting the id here and redirecting means every conversation — including the
  * one you have not typed into yet — has an address. `replace` so that Back
  * leaves the chat rather than bouncing off `/chat` into a second new thread.
+ *
+ * That makes `/chat` the one place a thread id comes into being, which is why
+ * the sidebar's New chat and the delete-the-open-chat path both just navigate
+ * here rather than minting their own. Two call sites minting is two copies of
+ * one rule.
  */
 export function WorkspaceChat() {
   const { threadId } = useParams<{ threadId: string }>()
-  const minted = useMemo(newThreadId, [])
+  /* Keyed on the thread rather than on the mount, and that is the whole
+     correctness of this component.
+
+     Both `/chat` and `/chat/:threadId` render this same element at the same
+     position in the tree, so React reconciles instead of remounting when the
+     match flips between them — the instance, and everything memoised in it,
+     survives. With `[]` the id was therefore minted once per page load and then
+     never again: opening a chat consumed it, and New chat afterwards redirected
+     to the thread the reader was already in. It looked like a dead button, and
+     a reload "fixed" it exactly once.
+
+     `threadId` changes on every arrival at `/chat` from somewhere else, so this
+     mints exactly when a new thread is actually being asked for, and stays
+     stable across the renders that redirect — which is what stops it looping. */
+  const minted = useMemo(newThreadId, [threadId])
   if (!isThreadId(threadId)) {
     return <Navigate to={`/chat/${minted}`} replace />
   }
@@ -95,6 +90,13 @@ function ChatThread({ threadId }: { threadId: string }) {
   const [scrolled, setScrolled] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
   const column = useRef<HTMLDivElement>(null)
+
+  /* Files waiting to go with the next message, wherever they came from. Held by
+     the screen rather than the composer because the screen is what knows a run
+     actually started, which is the only moment they may be cleared. */
+  const attach = useAttachments()
+  const { over, dropProps } = useFileDrop(attach.add)
+  useDropGuard()
 
   const live = useThreadRun({ threadId, token })
   /* `send` is rebuilt whenever the run's state changes, so depending on it
@@ -149,15 +151,23 @@ function ChatThread({ threadId }: { threadId: string }) {
       })
   }
 
-  const begin = (text: string) => {
+  /* `files` is a parameter with a default rather than always the composer's,
+     because the handoff carries its own: they arrive with the prompt from Home
+     and were never in this screen's attachment state, so reading that state
+     here would send the message without them. */
+  const begin = (text: string, files: readonly File[] = attach.files) => {
     const trimmed = text.trim()
     if (!trimmed) return
     // Armed only if a run genuinely started. A send declined because one is
     // already open would otherwise leave the pin armed, to fire against
     // whatever exchange happens to appear next.
-    const started = sendRef.current(trimmed)
+    const started = sendRef.current(trimmed, files)
     pinNext.current = started
     if (!started) return
+    // Only once the run is real. Clearing on the attempt would throw away the
+    // files a declined send never carried, and the person would have to find
+    // and drag them again.
+    attach.clear()
     nameThread(trimmed)
     /* The chat now exists, whatever the server thinks. It is created by the run
        that was just asked for, so for the length of that round trip this is the
@@ -169,12 +179,12 @@ function ChatThread({ threadId }: { threadId: string }) {
 
   const handedOff = useRef(false)
   useEffect(() => {
-    if (handedOff.current || !handoff || !token || live.loading) return
+    if (handedOff.current || !handoff.prompt || !token || live.loading) return
     handedOff.current = true
     clearHandoff()
-    /* Through the same door as a send typed here, so a prompt carried over from
+    /* Through the same door as a send typed here, so a message carried over from
        Home pins exactly as it would have if it had been typed on this page. */
-    begin(handoff)
+    begin(handoff.prompt, handoff.files)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handoff, token, live.loading])
 
@@ -225,7 +235,11 @@ function ChatThread({ threadId }: { threadId: string }) {
   const empty = !live.loading && live.exchanges.length === 0
 
   return (
-    <div className="bui-scope flex h-full min-h-0 flex-col bg-page">
+    /* The drop target is the whole conversation, composer included. A file is
+       being given to Divo rather than typed into a field, so anywhere you can
+       see the chat is somewhere you can let go of it. */
+    <div className="bui-scope relative flex h-full min-h-0 flex-col bg-page" {...dropProps}>
+      <DropVeil visible={over} />
       <div
         ref={scroller}
         className="min-h-0 flex-1 overflow-y-auto"
@@ -249,8 +263,6 @@ function ChatThread({ threadId }: { threadId: string }) {
                    thread would defeat the memo on all of them — a new label per
                    tool call would redraw the entire conversation. */
                 liveLabel={exchange.state.finished ? null : live.liveLabel}
-                onApprove={live.approve}
-                onDecline={live.decline}
               />
             ))
           )}
@@ -274,6 +286,10 @@ function ChatThread({ threadId }: { threadId: string }) {
             autoFocus={empty}
             running={live.running}
             onStop={live.stopRun}
+            files={attach.files}
+            rejected={attach.rejected}
+            onAttach={attach.add}
+            onRemoveFile={attach.remove}
           />
         </div>
       </div>
@@ -399,16 +415,13 @@ function Welcome({ onPick }: { onPick: (prompt: string) => void }) {
  * hold their identity, so now they are drawn once and left alone.
  */
 const Exchanged = memo(function Exchanged({
-  exchange, liveLabel, onApprove, onDecline,
+  exchange, liveLabel,
 }: {
   exchange: Exchange
   /** What the run says it is doing. Null once it has settled. */
   liveLabel?: string | null
-  onApprove: () => void
-  onDecline: () => void
 }) {
   const { prompt, beats, state } = exchange
-  const seen = new Set(state.played)
   /* Everything that happened on the way is the trace; everything else stays in
      the conversation, in the order the run put it there. */
   const { trace, rest } = splitTrace(beats)
@@ -418,10 +431,14 @@ const Exchanged = memo(function Exchanged({
        child of the thread column, because that is where the spacer looks. */
     <div data-exchange-id={exchange.id} className="flex flex-col gap-5">
       {prompt && (
-        <div className="flex justify-end pl-16">
+        /* The bubble and its control are one group, so hovering anywhere on
+           your own message offers the copy — aiming at a 24px target that only
+           appears once you are already on it is a worse trade than it sounds. */
+        <div className="group flex flex-col items-end gap-0.5 pl-16">
           <p className="rounded-card bg-field px-3 py-2 text-[13.5px] leading-[1.5] text-ink">
             {prompt}
           </p>
+          <CopyButton text={prompt} />
         </div>
       )}
 
@@ -429,25 +446,12 @@ const Exchanged = memo(function Exchanged({
         <PiTraceTimeline
           steps={trace}
           streaming={!state.finished}
-          awaitingApproval={state.gate !== null}
           startedAt={state.startedAt}
           elapsed={state.elapsed}
-          declined={state.declined !== null}
           liveLabel={liveLabel}
         />
 
         {rest.map(({ beat, index }) => {
-          if (beat.t === 'approve') {
-            return (
-              <Approval
-                key={index}
-                beat={beat}
-                onApprove={onApprove}
-                onDecline={onDecline}
-                answered={state.declined ? 'declined' : seen.has(index) ? 'approved' : null}
-              />
-            )
-          }
           if (beat.t === 'say') {
             return (
               <Say
@@ -465,12 +469,6 @@ const Exchanged = memo(function Exchanged({
           }
           return null
         })}
-
-        {state.declined && (
-          <p className="rounded-card bg-inset px-3 py-2.5 text-[12.5px] leading-relaxed text-ink-2 shadow-hairline">
-            {state.declined}
-          </p>
-        )}
 
         {exchange.error && (
           <p className="text-[13px] text-rose-600 dark:text-rose-400">{exchange.error}</p>

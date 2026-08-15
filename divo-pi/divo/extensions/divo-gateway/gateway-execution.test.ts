@@ -48,8 +48,7 @@ describe("gateway execution protocol", () => {
 		assert.equal(resultMode, "local-file");
 	});
 
-	it("never opens desktop-local approval from the cloud runtime", async () => {
-		const requests: GatewayRequestBody[] = [];
+	it("never opens client-local approval from a backend-driven runtime", async () => {
 		const original: GatewayRequestBody = {
 			op: "tools.invoke",
 			departmentId: "dept-1",
@@ -61,27 +60,30 @@ describe("gateway execution protocol", () => {
 				actionId: "tool-write",
 			},
 		};
-		const result = await executeGatewayRequest(config, original, "call-write", {
-			...ctx,
-			runtimeChannel: "lark",
-		}, {
-			callGateway: async (_config, request) => {
-				requests.push(request);
-				return {
-					body: {
-						ok: false,
-						status: "local_approval_required",
-						data: { intentId: "intent-1", presentation: { operation: "send" } },
-					},
-					httpStatus: 200,
-				};
-			},
-			approveIntent: async () => {
-				throw new Error("Lark must not open desktop approval");
-			},
-		});
+		for (const runtimeChannel of ["lark", "web"] as const) {
+			const requests: GatewayRequestBody[] = [];
+			const result = await executeGatewayRequest(config, original, "call-write", {
+				...ctx,
+				runtimeChannel,
+			}, {
+				callGateway: async (_config, request) => {
+					requests.push(request);
+					return {
+						body: {
+							ok: false,
+							status: "requester_confirmation_required",
+							data: { intentId: "intent-1", presentation: { operation: "send" } },
+						},
+						httpStatus: 200,
+					};
+				},
+				approveIntent: async () => {
+					throw new Error(`${runtimeChannel} must not open client-local approval`);
+				},
+			});
 
-		assert.equal(result.body.status, "local_approval_required");
-		assert.deepEqual(requests, [original]);
+			assert.equal(result.body.status, "requester_confirmation_required", runtimeChannel);
+			assert.deepEqual(requests, [original], runtimeChannel);
+		}
 	});
 });

@@ -9,10 +9,6 @@ import { createRunTimelineReducer } from '../channels/run-timeline.reducer';
 import type { ChannelIdentityRepoPort } from '../../infrastructure/persistence/channel-identity.repository';
 import type { DepartmentRepoPort } from '../../infrastructure/persistence/department.repository';
 import type {
-  ApprovalInboxItem,
-  ApprovalInboxService,
-} from '../approval/approval-inbox.service';
-import type {
   LarkPiRuntimeAttachment,
   LarkPiRuntimeService,
 } from './lark-pi-runtime.service';
@@ -47,16 +43,6 @@ export type WebRunEvent =
       readonly text: string;
       readonly actions?: readonly InteractiveAction[];
       readonly timeline: ChannelTimeline;
-      /**
-       * Approvals this run raised that are still waiting on the reader.
-       *
-       * Carried on the answer rather than left in a separate inbox, because on
-       * Lark the buttons arrive in the same conversation — a reader who has to
-       * know to go and look somewhere else has not been asked, they have been
-       * filed. Decided through the existing member-authed approval routes; the
-       * authority check is the approval row's, not this stream's.
-       */
-      readonly awaitingApproval?: readonly ApprovalInboxItem[];
     }
   /** The run did not produce an answer. Terminal. */
   | { readonly type: 'error'; readonly message: string; readonly code: string };
@@ -88,8 +74,6 @@ export interface WebRunServiceDeps {
   readonly identity?: Pick<ChannelIdentityRepoPort, 'resolveByUserId'>;
   /** Rejects a stale preference before it can be minted into a runtime lease. */
   readonly departments?: Pick<DepartmentRepoPort, 'getMembership'>;
-  /** Optional: without it the run still answers, it just cannot show buttons. */
-  readonly approvals?: Pick<ApprovalInboxService, 'list'>;
   /**
    * Where a run that produced no answer is written down.
    *
@@ -262,13 +246,10 @@ export class WebRunService {
 
     if (done.result.protectedDataUsed === true) timeline.observedProtectedData();
 
-    const awaitingApproval = await this.approvalsRaisedBy(input, startedAtMs);
-
     yield {
       type: 'final',
       text: done.result.text,
       ...(done.result.actions?.length ? { actions: done.result.actions } : {}),
-      ...(awaitingApproval.length ? { awaitingApproval } : {}),
       timeline: timeline.timeline(),
     };
   }
@@ -373,32 +354,6 @@ export class WebRunService {
     }
   }
 
-  /**
-   * What this run asked permission for and has not been answered on.
-   *
-   * Filtered by when the run started rather than by run id: a member's older
-   * pending approvals belong in their inbox, not stapled to an answer they are
-   * reading now. An approval subsystem failure is not allowed to lose the
-   * answer — the run succeeded, and the inbox is still reachable on its own.
-   */
-  private async approvalsRaisedBy(
-    input: WebRunInput,
-    startedAtMs: number,
-  ): Promise<readonly ApprovalInboxItem[]> {
-    if (!this.deps.approvals) return [];
-    try {
-      const inbox = await this.deps.approvals.list({
-        userId: String(input.runContext.userId),
-        companyId: String(input.runContext.companyId),
-      });
-      return inbox.requestedByMe.filter(item =>
-        Date.parse(item.requestedAt) >= startedAtMs
-        && (item.status === 'pending' || item.status === 'dispatching'));
-    } catch (error) {
-      this.deps.logger.warn('web_run.approvals_unavailable', { error: String(error) });
-      return [];
-    }
-  }
 }
 
 /**

@@ -107,10 +107,12 @@ import {
 } from './lark-untagged-policy';
 import { appendLarkMentionContext, listLarkMentionOpenIds } from './lark-mention-context';
 import {
-  isSupportedLarkMedia,
+  isSupportedContainerMedia,
+  unsupportedDocumentNotice,
+} from '../../../application/runtime/container-media';
+import {
   isAwaitingItsQuestion,
   unreadableImageNotice,
-  unsupportedDocumentNotice,
   MAX_INLINE_IMAGE_BYTES,
 } from './lark-media-support';
 import { conversationKeyForMessage } from '../../../domain/conversation/conversation-key';
@@ -2196,7 +2198,7 @@ async function processInBackground(
       incoming,
     );
     await deps.conversationAttachments.record(
-      attachments.filter(isSupportedLarkMedia).map(attachment => ({
+      attachments.filter(isSupportedContainerMedia).map(attachment => ({
         companyId:       identity.companyId,
         userId:          identity.userId,
         channel:         'lark',
@@ -2244,7 +2246,7 @@ async function processInBackground(
     const { LarkFileClient: RuntimeFileClient } = await import('./clients/lark-file.client');
     const runtimeFileClient = new RuntimeFileClient(deps.env, log);
     const runtimeAttachments: LarkPiRuntimeAttachment[] = attachments
-      .filter(isSupportedLarkMedia)
+      .filter(isSupportedContainerMedia)
       .map(attachment => ({
         kind: attachment.type,
         name: attachment.fileName,
@@ -2260,8 +2262,8 @@ async function processInBackground(
     if (isAwaitingItsQuestion({
       chatType: incoming.chatType,
       text: incoming.text,
-      supportedAttachmentCount: attachments.filter(isSupportedLarkMedia).length,
-      unsupportedAttachmentCount: attachments.filter(a => !isSupportedLarkMedia(a)).length,
+      supportedAttachmentCount: attachments.filter(isSupportedContainerMedia).length,
+      unsupportedAttachmentCount: attachments.filter(a => !isSupportedContainerMedia(a)).length,
     })) {
       if (!deps.piRuntime.stagePendingAttachments) {
         throw new Error('The Divo runtime cannot safely retain a pending attachment.');
@@ -3386,7 +3388,7 @@ async function prepareLarkAttachmentContexts(input: {
     // A format with no handler is refused before anything happens to it. The
     // refusal travels as prompt context so Divo says it in its own voice
     // rather than as a card bolted onto an otherwise confident answer.
-    if (!isSupportedLarkMedia(att)) {
+    if (!isSupportedContainerMedia(att)) {
       log.info('webhook.attachment.unsupported', {
         fileName: att.fileName,
         mimeType: att.mimeType,

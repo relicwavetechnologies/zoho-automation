@@ -177,7 +177,7 @@ async function dockerObjectExists(kind, name) {
  * output away, followed by the inspect that re-fetched it. Every Docker CLI
  * call is a process spawn on a path that runs before every single turn.
  */
-async function resolveImageId(image) {
+export async function resolveImageId(image = IMAGE) {
 	let result;
 	try {
 		result = await docker(["image", "inspect", image]);
@@ -315,19 +315,26 @@ export async function ensureProfileVolume(profileName) {
  * always takes the full path. So the four probes skipped here re-answer a
  * question this process has already answered once, every turn, forever.
  *
- * The image and the container itself are still inspected every time. Those two
- * answer questions the warm process cannot: whether a deploy moved the tag out
- * from under it, and whether the container still carries our ownership labels.
+ * The container itself is still inspected every time, because it answers a
+ * question the warm process cannot: whether it still carries our ownership
+ * labels.
+ *
+ * `imageId` is resolved by the caller rather than here. It answers the other
+ * question a warm process cannot — whether a deploy moved the tag out from
+ * under it — and it depends on nothing else the turn has computed, so making it
+ * an argument lets the caller overlap that Docker round trip with work this
+ * function must wait for anyway. Passing a falsy id means the tag names
+ * nothing, which refuses the run before any object is created.
  */
-export async function ensureRuntime(profile, { ephemeral = false, provisioned = false } = {}) {
+export async function ensureRuntime(profile, { ephemeral = false, provisioned = false, imageId } = {}) {
 	const resources = resourcesFor(profile);
 	let wasRunning = false;
 	let created = false;
-	// Resolve the immutable image ID on every activation. A mutable tag can move
-	// after a deploy or rebuild while a warm container still runs old code.
-	// Checked before anything else so a missing image refuses the run without
-	// first creating volumes and a network for work that cannot start.
-	const imageId = await resolveImageId(IMAGE);
+	// Told apart from a missing image on purpose. A caller that forgot the
+	// argument would otherwise be sent to rebuild an image that is already there.
+	if (imageId === undefined) {
+		throw new Error("ensureRuntime requires an imageId resolved by the caller");
+	}
 	if (!imageId) {
 		throw new Error(
 			`Image ${IMAGE} is missing. Build it with: docker build -t ${IMAGE} .`,

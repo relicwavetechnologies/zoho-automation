@@ -2,11 +2,7 @@ import fs from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import {
-	fetchMemberSession,
-	fetchRuntimeContext,
-	selectDepartment,
-} from "./auth.mjs";
+import { selectDepartment } from "./auth.mjs";
 import {
 	buildRuntimeEnvironmentPatch,
 	prepareDivoPiRun,
@@ -65,8 +61,23 @@ export function validateBootstrap(value) {
 	) {
 		throw new Error("Bootstrap interruptionTask is invalid");
 	}
-	if (value.trustedSession !== undefined) {
-		value.trustedSession = validateTrustedSession(value.trustedSession);
+	// Required, not optional. The controller has already resolved who this run
+	// belongs to — it had to, to pick the profile and the container — and every
+	// path that writes a bootstrap passes the answer along. Treating it as
+	// optional left a fallback that asked the backend the same question a second
+	// time from inside the container, over a route a container is no longer
+	// allowed to call. A missing one is a controller bug, and should read as one.
+	value.trustedSession = validateTrustedSession(value.trustedSession);
+	// Same reasoning, same author: the controller fetched this from the backend
+	// for this turn, so a container that did not receive it has nowhere left to
+	// get one and would otherwise run with no persona and no capabilities while
+	// looking like it worked.
+	if (
+		!value.runtimeContext
+		|| typeof value.runtimeContext !== "object"
+		|| Array.isArray(value.runtimeContext)
+	) {
+		throw new Error("Bootstrap runtime context is invalid");
 	}
 	return value;
 }
@@ -176,17 +187,21 @@ async function resolvePiOptions() {
 	const bootstrap = await readBootstrap(
 		process.env.DIVO_BOOTSTRAP_PATH ?? DEFAULT_BOOTSTRAP_PATH,
 	);
-	const session = bootstrap.trustedSession ?? await fetchMemberSession(bootstrap);
+	const session = bootstrap.trustedSession;
 	assertPinnedIdentity(session, bootstrap);
 	const department = selectDepartment(
 		session.departments,
 		bootstrap.departmentId,
 	);
-	const runtimeContext = await fetchRuntimeContext({
-		...bootstrap,
-		department,
-		departments: session.departments,
-	});
+	// Already answered. The controller fetched this before it chose the image and
+	// staged the skills, and re-stages it with every turn's bootstrap, so asking
+	// the backend again from in here bought nothing but a round trip.
+	const runtimeContext = {
+		...bootstrap.runtimeContext,
+		departments: session.departments
+			.map((candidate) => candidate.name?.trim())
+			.filter(Boolean),
+	};
 	return {
 		bootstrap,
 		options: piOptions({ bootstrap, department, runtimeContext }),

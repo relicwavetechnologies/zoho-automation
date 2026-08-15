@@ -6,7 +6,7 @@
   "piCodingAgent": "0.80.3",
   "piMcpAdapter": "2.11.0",
   "provider": "deepseek",
-  "model": "deepseek-v4-flash",
+  "model": "deepseek-v4-pro",
   "thinkingLevel": "medium",
   "extensions": [
     "divo-llm",

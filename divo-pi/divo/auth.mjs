@@ -67,12 +67,37 @@ export function readSessionEnvironment(filePath) {
 	};
 }
 
+/**
+ * Who a person's own token belongs to. The CLI's question, asked at sign-in and
+ * when a stored profile is opened — never per turn.
+ */
 export async function fetchMemberSession({ backendUrl, token }) {
 	const response = await requestJson(`${normalizeBackendUrl(backendUrl)}/api/desktop/auth/me`, {
 		headers: { Authorization: `Bearer ${token}` },
 	});
 	if (!response.success || !response.data?.userId || !response.data.companyId) {
 		throw new Error(response.message ?? "Failed to validate the existing Divo member session");
+	}
+	return response.data;
+}
+
+/**
+ * Who a run belongs to, and what it may act as.
+ *
+ * A separate question from `fetchMemberSession` even though both hand the
+ * backend a bearer token, and the reason is worth stating: this one is asked
+ * once per turn, so its answer is on the member's critical path, and it is
+ * asked by a container rather than by a person, so its answer is reachable by
+ * whatever the model decided to run. `/me` was wrong on both counts — it costs
+ * a desktop shell's worth of queries and carries the member's mail accounts.
+ */
+export async function fetchRuntimeSession({ backendUrl, lease }) {
+	const response = await requestJson(
+		`${normalizeBackendUrl(backendUrl)}/api/desktop/auth/runtime-session`,
+		{ headers: { Authorization: `Bearer ${lease}` } },
+	);
+	if (!response.success || !response.data?.userId || !response.data.companyId) {
+		throw new Error(response.message ?? "Divo backend did not validate a Pi runtime lease");
 	}
 	return response.data;
 }

@@ -205,7 +205,7 @@ describe("Divo local broker protocol", () => {
 							? {
 								body: {
 									ok: false,
-									status: "local_approval_required",
+									status: "requester_confirmation_required",
 									data: { intentId: "intent-1", presentation: { action: "create" } },
 								},
 								httpStatus: 200,

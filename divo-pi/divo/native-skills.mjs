@@ -110,61 +110,77 @@ export function nativeSkillBootstrapDigest(bootstrap, scope) {
 		.digest("hex");
 }
 
-export function nativeSkillLifecycleEvent({
-	bootstrap,
-	digest,
-	staged,
-	fetchMs,
-	stageMs,
-	ephemeral,
-	sessionScope,
-}) {
-	return {
-		event: "native_skills.ready",
-		registryRevision: bootstrap.registryRevision,
-		skillCount: bootstrap.skills.length,
-		digest: digest.slice(0, 12),
-		staged,
-		fetchMs,
-		stageMs,
-		audience: ephemeral ? "shared" : "private",
-		sessionScope,
-	};
-}
+const BUNDLED_SKILLS_ONLY = { registryRevision: 0, skills: [] };
 
-export async function fetchNativeSkillBootstrap({
-	backendUrl,
-	token,
-	departmentId,
-	fetchImpl = fetch,
-}) {
-	if (!departmentId) throw new Error("Native skills require a selected department");
-	const query = new URLSearchParams({
-		capabilityVersion: "3",
-		departmentId,
-		nativeSkills: "1",
-	});
+async function requestRuntimeContext({ backendUrl, token, departmentId, nativeSkills, fetchImpl }) {
+	const query = new URLSearchParams({ capabilityVersion: "3" });
+	if (departmentId) query.set("departmentId", departmentId);
+	if (nativeSkills) query.set("nativeSkills", "1");
 	const response = await fetchImpl(
 		`${normalizeBackendUrl(backendUrl)}/api/desktop/auth/runtime-context?${query}`,
 		{ headers: { Authorization: `Bearer ${token}` } },
 	);
 	const body = await response.json().catch(() => undefined);
-	if (!response.ok || body?.success !== true || !body.data?.nativeSkillBootstrap) {
-		const error = new Error(body?.message ?? `Native skill bootstrap failed (${response.status})`);
+	if (!response.ok || body?.success !== true || !body.data) {
+		const error = new Error(body?.message ?? `Runtime context failed (${response.status})`);
 		error.status = response.status;
 		throw error;
 	}
-	return validateNativeSkillBootstrap(body.data.nativeSkillBootstrap);
+	return body.data;
 }
 
-export async function fetchNativeSkillBootstrapOrEmpty(input) {
-	try {
-		return await fetchNativeSkillBootstrap(input);
-	} catch (error) {
-		if (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500) throw error;
-		console.error(`[Pi] Native skill bootstrap unavailable; using bundled skills only: ${error.message}`);
-		return { registryRevision: 0, skills: [] };
+/**
+ * Everything the backend has to say about this run, fetched once.
+ *
+ * The container used to fetch this for itself, at startup and again on every
+ * warm turn, while the controller was separately fetching the very same route
+ * for the skill bootstrap. Two calls, same handler, same department, both on
+ * the member's critical path. This is the one that survives; the container
+ * reads the answer out of its bootstrap.
+ *
+ * The two halves of the answer fail differently, and that difference is the
+ * reason this returns a pair rather than one object. Divo cannot run a turn
+ * without knowing its persona, its capabilities or its surface, so a context
+ * that cannot be read fails the turn. Skills it can do without — bundled ones
+ * remain — so a skill catalogue that will not answer degrades instead. That is
+ * what the second attempt below is for: `nativeSkills=1` runs code a plain
+ * request does not, so it can fail on its own, and before this merge that
+ * failure cost bundled-skills-only rather than the whole turn. Asking again
+ * without it keeps that true.
+ */
+export async function fetchRunContext({
+	backendUrl,
+	token,
+	departmentId,
+	fetchImpl = fetch,
+}) {
+	// No department means no native skills to ask for — the backend refuses the
+	// combination — so this is one plain request, not a failed one and a retry.
+	if (departmentId) {
+		try {
+			const data = await requestRuntimeContext({
+				backendUrl, token, departmentId, nativeSkills: true, fetchImpl,
+			});
+			return {
+				runtimeContext: data,
+				nativeSkills: data.nativeSkillBootstrap
+					? validateNativeSkillBootstrap(data.nativeSkillBootstrap)
+					: BUNDLED_SKILLS_ONLY,
+			};
+		} catch (error) {
+			// A refusal is an answer: the member may not use this department, or
+			// the lease does not match it. Asking a weaker question would paper
+			// over that and run the turn with capabilities they were denied.
+			if (Number.isInteger(error?.status) && error.status >= 400 && error.status < 500) throw error;
+			console.error(`[Pi] Native skill bootstrap unavailable; using bundled skills only: ${error.message}`);
+		}
 	}
+	return {
+		runtimeContext: await requestRuntimeContext({
+			backendUrl, token, departmentId, nativeSkills: false, fetchImpl,
+		}),
+		nativeSkills: BUNDLED_SKILLS_ONLY,
+	};
 }
 
 const NATIVE_SKILL_STAGING_SCRIPT = String.raw`

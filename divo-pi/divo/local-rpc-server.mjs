@@ -2,29 +2,35 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	prompt,
+	promptWithRuntimeLease,
+	resolveRuntimeLease,
+	runRuntimeSessionLifecycle,
+} from "./local-rpc-controller.mjs";
+import { createHeadlessExtensionResponder } from "./approval-responder.mjs";
+import { createNdjsonStreamWriter } from "./ndjson-stream-writer.mjs";
+import {
 	MAX_RUNTIME_ATTACHMENTS,
 	MAX_RUNTIME_ATTACHMENT_BYTES,
 	MAX_RUNTIME_REQUEST_BYTES,
-	createHeadlessExtensionResponder,
 	decodeAttachmentFileName,
-	deleteProtectedRuntimeSession,
-	prompt,
-	promptWithRuntimeLease,
-	runRuntimeSessionLifecycle,
-	reconcileOwnedContainers,
-	resolveRuntimeLease,
 	resolveStagedAttachments,
-	shutdownWarmContainers,
-	stageRuntimeFile,
 	validateAttachmentFileId,
 	validateAttachmentRequestId,
+} from "./runtime-attachments.mjs";
+import { stageRuntimeFile } from "./runtime-attachment-staging.mjs";
+import {
+	deleteProtectedRuntimeSession,
+	reconcileOwnedContainers,
+} from "./runtime-docker.mjs";
+import {
 	validateProfileName,
 	validateRuntimeModel,
 	validateSessionLifecycleOperation,
 	validateSessionScope,
 	validateThread,
-} from "./local-rpc-controller.mjs";
-import { createNdjsonStreamWriter } from "./ndjson-stream-writer.mjs";
+} from "./runtime-identity.mjs";
+import { shutdownWarmContainers } from "./runtime-warm-process.mjs";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4317;

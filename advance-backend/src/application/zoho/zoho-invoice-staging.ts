@@ -17,8 +17,11 @@
  * impossible to express.
  */
 
-import { WriteNotDispatchedError } from '../../shared/errors';
 import { formatAmount } from './zoho-format.utils';
+import {
+  classifyZohoBooksWriteFailure,
+  type ZohoBooksWriteFailure,
+} from './zoho-books-write';
 import {
   derivedLineTotal,
   invoiceLineItems,
@@ -152,46 +155,10 @@ export interface StagedInvoiceStore {
  * explains it, so the member is told what actually went wrong rather than a
  * catch-all.
  */
-export type WriteFailure =
-  /** Never left this process: no connection, a revoked token, no organisation. */
-  | { readonly kind: 'not_dispatched'; readonly why: string }
-  /** Zoho read the payload and refused it. Nothing was written. */
-  | { readonly kind: 'rejected'; readonly status: number; readonly why: string }
-  /** Dispatched, and the answer was lost. The invoice may exist. */
-  | { readonly kind: 'unknown'; readonly why: string };
+export type WriteFailure = ZohoBooksWriteFailure;
 
 export function classifyWriteFailure(error: unknown): WriteFailure {
-  const message = error instanceof Error ? error.message : String(error);
-
-  // Nothing was dispatched. Reading these as "might have written" would strand
-  // a draft that never reached Zoho and send the member hunting for an invoice
-  // that does not exist.
-  if (error instanceof WriteNotDispatchedError) {
-    return { kind: 'not_dispatched', why: message };
-  }
-
-  const status = /Zoho Books (\d{3})/.exec(message)?.[1];
-  if (!status) {
-    // No HTTP status at all: the socket died, DNS failed, the request was
-    // aborted. The request may well have been delivered and executed.
-    return { kind: 'unknown', why: 'the connection to Zoho failed before it answered' };
-  }
-
-  const code = Number(status);
-  if (code === 408) {
-    return { kind: 'unknown', why: 'Zoho timed out, which does not say whether it finished writing first' };
-  }
-  if (code === 429) {
-    // Thrown by a gateway that need not have been the last hop before Books.
-    return { kind: 'unknown', why: 'Zoho rate-limited the request, which does not prove it was never processed' };
-  }
-  if (code >= 500) {
-    return { kind: 'unknown', why: `Zoho returned a ${code} after receiving the invoice` };
-  }
-  if (code >= 400) {
-    return { kind: 'rejected', status: code, why: `Zoho refused the invoice with a ${code} and wrote nothing` };
-  }
-  return { kind: 'unknown', why: `Zoho answered with an unexpected ${code}` };
+  return classifyZohoBooksWriteFailure(error, { receivedObject: 'the invoice' });
 }
 
 /**

@@ -41,7 +41,7 @@ import type {
 } from './run-progress';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
-const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
+const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-pro';
 const MAX_CONTROLLER_STREAM_LINE_BYTES = 2 * 1_024 * 1_024;
 
 function asyncIterableBody(source: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {

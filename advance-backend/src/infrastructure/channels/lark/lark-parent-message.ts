@@ -14,11 +14,10 @@ import type { Logger } from '../../../shared/logger';
 import { Client as LarkSdkClient, Domain, LoggerLevel } from '@larksuiteoapi/node-sdk';
 import {
   unsupportedDocumentNotice,
-  quotedDocumentNotice,
-  isSupportedLarkMedia,
-  larkAudioMimeType,
-  MAX_INLINE_IMAGE_BYTES,
-} from './lark-media-support';
+  isSupportedContainerMedia,
+  audioMimeType,
+} from '../../../application/runtime/container-media';
+import { quotedDocumentNotice, MAX_INLINE_IMAGE_BYTES } from './lark-media-support';
 import type { ChannelIdentityRepoPort } from '../../persistence/channel-identity.repository';
 import type { ReferencedMessage } from '../../../domain/channel/incoming-message';
 import { extractInteractiveCardText } from './lark-message-content';
@@ -106,12 +105,12 @@ export async function fetchParentMessage(input: {
     } else if (msgType === 'file') {
       const fileName = (content['file_name'] as string) ?? 'attachment';
       const fileKey = content['file_key'];
-      const audioMimeType = larkAudioMimeType(fileName);
-      if (audioMimeType && typeof fileKey === 'string' && fileKey) {
+      const audioMime = audioMimeType(fileName);
+      if (audioMime && typeof fileKey === 'string' && fileKey) {
         audioAttachment = {
           fileKey,
           fileName,
-          mimeType: audioMimeType,
+          mimeType: audioMime,
           durationMs: null,
           source: 'file',
         };
@@ -119,7 +118,7 @@ export async function fetchParentMessage(input: {
         // Divo read a quoted document when it arrived, so point at that
         // workspace copy rather than downloading it again. Formats with no
         // reader are refused outright instead of inviting filename guesses.
-        text = isSupportedLarkMedia({ type: 'file', fileName })
+        text = isSupportedContainerMedia({ type: 'file', fileName })
           ? quotedDocumentNotice(fileName)
           : unsupportedDocumentNotice(fileName);
       }

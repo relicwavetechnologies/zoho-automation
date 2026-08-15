@@ -357,6 +357,22 @@ async function issueDesktopSession(
   return { token, sessionId, userId, companyId, role, expiresAt };
 }
 
+/**
+ * Which of these routes a container may reach with a runtime lease.
+ *
+ * Named rather than inlined because it is a privilege boundary, not a routing
+ * detail: everything reachable from here is reachable from inside a container
+ * running a model's tool calls, so the list is the answer to "what can a
+ * compromised run read". It excludes `/me` deliberately — that payload carries
+ * the member's email, name, avatar and every connected Lark and Google account,
+ * and a run has never read any of it. `/runtime-session` answers the question
+ * the runtime was actually asking.
+ */
+export function allowsPiRuntimeLease(req: Pick<Request, 'method' | 'path'>): boolean {
+  return req.method === 'GET'
+    && (req.path === '/runtime-session' || req.path === '/runtime-context');
+}
+
 export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
   const router = Router();
   const log = deps.logger.child({ service: 'desktop-auth' });
@@ -365,9 +381,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     prisma:    deps.prisma,
     jwtSecret: deps.memberJwtSecret,
     logger:    deps.logger,
-    allowPiRuntimeLease: req =>
-      req.method === 'GET'
-      && (req.path === '/me' || req.path === '/runtime-context'),
+    allowPiRuntimeLease: allowsPiRuntimeLease,
   });
 
   const callbackAllowlist = parseCallbackOriginAllowlist(deps.env?.BACKEND_PUBLIC_URL_ALLOWLIST);
@@ -1499,17 +1513,6 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           userId, companyId,
           companyName: company?.name ?? null,
           role: res.locals['aiRole'],
-          runtime: isRuntimeChannel(res.locals['channel'])
-            ? {
-                channel: res.locals['channel'],
-                instanceId: res.locals['runtimeInstanceId'],
-                threadId: res.locals['runtimeThreadId'],
-                runId: res.locals['runtimeRunId'],
-                chatId: res.locals['runtimeChatId'],
-                contextAudience: res.locals['runtimeContextAudience'],
-                departmentId: res.locals['runtimeDepartmentId'] ?? null,
-              }
-            : null,
           email: user?.email,
           name:  user?.name,
           // Null for anybody who has never signed in through Lark, which every
@@ -1798,6 +1801,65 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
   });
 
   /**
+   * What a runtime lease resolves to.
+   *
+   * The container starts every turn by asking who the lease belongs to. It used
+   * to ask `/me`, which is the desktop shell's boot payload: a member's email,
+   * name, avatar and every Lark and Google connection they can reach, assembled
+   * from roughly eight queries. A container needs one of those things — the
+   * departments it may act in — and reads none of the rest, so the other seven
+   * were latency and reachable member data bought for nothing.
+   *
+   * The round trip itself stays. It is not a lookup that could be replaced by
+   * trusting the request body: `memberAuth` is what verifies the lease's
+   * signature and re-checks that the session behind it is still live and the
+   * membership still active. Deleting the hop would delete revocation, and the
+   * controller has no caller authentication of its own to put in its place.
+   *
+   * So what changes is the shape, not the trust: the answer is now exactly the
+   * run's own facts, which the middleware has already established, plus the one
+   * query the runtime actually reads.
+   */
+  router.get('/runtime-session', memberAuth, async (_req: Request, res: Response) => {
+    try {
+      if (res.locals['isPiRuntimeLease'] !== true || !isRuntimeChannel(res.locals['channel'])) {
+        res.status(403).json({ success: false, message: 'A Pi runtime lease is required' });
+        return;
+      }
+      const userId = res.locals['userId'] as string;
+      const companyId = res.locals['companyId'] as string;
+      const memberships = await deps.prisma.departmentMembership.findMany({
+        where:  { userId, status: 'active', department: { companyId } },
+        select: { department: { select: { id: true, name: true } } },
+      });
+      res.json({
+        success: true,
+        data: {
+          userId,
+          companyId,
+          role: res.locals['aiRole'],
+          runtime: {
+            channel:         res.locals['channel'],
+            instanceId:      res.locals['runtimeInstanceId'],
+            threadId:        res.locals['runtimeThreadId'],
+            runId:           res.locals['runtimeRunId'],
+            chatId:          res.locals['runtimeChatId'],
+            contextAudience: res.locals['runtimeContextAudience'],
+            departmentId:    res.locals['runtimeDepartmentId'] ?? null,
+          },
+          // Name travels with the id because the container labels the department
+          // it acted in. Role and manager status deliberately do not: the
+          // runtime's authority comes from the gateway's own permission
+          // resolution, never from a claim it was handed at startup.
+          departments: memberships.map(m => ({ id: m.department.id, name: m.department.name })),
+        },
+      });
+    } catch (e) {
+      res.status(500).json({ success: false, message: String(e) });
+    }
+  });
+
+  /**
    * Desktop boot context. This intentionally stays outside gateway discovery:
    * it is fetched at session lifecycle boundaries and cached locally by Jan,
    * rather than fetched by Pi for each agent run.
@@ -1901,24 +1963,47 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
 
       const config = membership.department.agentConfig;
       const active = config?.isActive === true;
-      let nativeSkillBootstrap;
-      if (nativeSkillsRequested) {
-        const companyRole = String(res.locals['aiRole'] ?? 'MEMBER');
-        const permissionResult = await deps.permissions.resolve({
+      const companyRole = String(res.locals['aiRole'] ?? 'MEMBER');
+
+      /**
+       * What this member may do here, resolved once for the whole request.
+       *
+       * Two bootstraps are built below and both need the same three answers.
+       * They used to ask for them separately, so a runtime request — the one on
+       * a turn's critical path — resolved permissions twice, listed the granted
+       * skill ids twice and read the registry revision twice, for six calls
+       * where three would do.
+       *
+       * The two permission queries differed only in `channel`, and that is not
+       * a difference: `PermissionService.resolve` does not read the field, and
+       * it is not part of the cache key either, so both calls were computing
+       * the same answer from the same inputs. The test below pins the count, so
+       * if `channel` ever starts deciding something this stops being silent.
+       */
+      let resolutionOnce: Promise<[
+        Awaited<ReturnType<typeof deps.permissions.resolve>>,
+        Awaited<ReturnType<typeof deps.skillAccessEnforcement.listGrantedSkillIds>>,
+        Awaited<ReturnType<typeof deps.skillCatalog.registryRevision>>,
+      ]> | undefined;
+      const resolveMemberScope = () => (resolutionOnce ??= Promise.all([
+        deps.permissions.resolve({
           companyId: asCompanyId(companyId),
           userId: asUserId(userId),
           companyRole: asCompanyRoleSlug(companyRole),
           departmentId: asDepartmentId(membership.department.id),
           channel: 'lark',
-        });
+        }),
+        deps.skillAccessEnforcement.listGrantedSkillIds(companyId, userId),
+        deps.skillCatalog.registryRevision(companyId),
+      ]));
+
+      let nativeSkillBootstrap;
+      if (nativeSkillsRequested) {
+        const [permissionResult, grantedSkillIds, registryRevision] = await resolveMemberScope();
         if (!permissionResult.ok) {
           res.status(403).json({ success: false, message: 'Runtime skill access denied' });
           return;
         }
-        const [grantedSkillIds, registryRevision] = await Promise.all([
-          deps.skillAccessEnforcement.listGrantedSkillIds(companyId, userId),
-          deps.skillCatalog.registryRevision(companyId),
-        ]);
         const visibleSkills = await deps.skillCatalog.listVisible({
           companyId,
           departmentId: membership.department.id,
@@ -1983,23 +2068,14 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       }
       let capabilityBootstrap;
       try {
-        const companyRole = String(res.locals['aiRole'] ?? 'MEMBER');
-        const permissionResult = await deps.permissions.resolve({
-          companyId: asCompanyId(companyId),
-          userId: asUserId(userId),
-          companyRole: asCompanyRoleSlug(companyRole),
-          departmentId: asDepartmentId(membership.department.id),
-          channel: 'desktop',
-        });
+        const finance = isFinanceDepartment(membership.department.name, membership.department.slug);
+        const [[permissionResult, grantedSkillIds, registryRevision], zohoConnectionsResult] = await Promise.all([
+          resolveMemberScope(),
+          finance
+            ? deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId })
+            : Promise.resolve(null),
+        ]);
         if (permissionResult.ok) {
-          const finance = isFinanceDepartment(membership.department.name, membership.department.slug);
-          const [grantedSkillIds, registryRevision, zohoConnectionsResult] = await Promise.all([
-            deps.skillAccessEnforcement.listGrantedSkillIds(companyId, userId),
-            deps.skillCatalog.registryRevision(companyId),
-            finance
-              ? deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId })
-              : Promise.resolve(null),
-          ]);
           const visibleSkills = await deps.skillCatalog.listVisible({
             companyId,
             departmentId: membership.department.id,

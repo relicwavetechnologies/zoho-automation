@@ -20,4 +20,13 @@ describe('Zoho scope classification', () => {
     assert.equal(hasZohoScope(['ZohoBooks.fullaccess.READ'], 'books', 'create'), false);
     assert.equal(hasZohoScope(['ZohoBooks.fullaccess.all'], 'books', 'create'), true);
   });
+
+  it('accepts only the matching module scope for Books mutations', () => {
+    assert.equal(hasZohoScope(['ZohoBooks.bills.CREATE'], 'books', 'create', 'bills'), true);
+    assert.equal(hasZohoScope(['ZohoBooks.bills.ALL'], 'books', 'create', 'bills'), true);
+    assert.equal(hasZohoScope(['ZohoBooks.bills.CREATE'], 'books', 'create', 'invoices'), false);
+    assert.equal(hasZohoScope(['ZohoBooks.invoices.CREATE'], 'books', 'create', 'invoices'), true);
+    assert.equal(hasZohoScope(['ZohoBooks.purchaseorders.CREATE'], 'books', 'create', 'purchaseorders'), true);
+    assert.equal(hasZohoScope(['ZohoBooks.purchaseorders.READ'], 'books', 'create', 'purchaseorders'), false);
+  });
 });

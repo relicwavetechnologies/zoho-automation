@@ -66,6 +66,20 @@ describe('Zoho Finance system skill provisioning', () => {
     assert.match(specialist.markdown, /taxable value rather than the GST-inclusive total/i);
     assert.match(specialist.markdown, /Obtain confirmation/i);
     assert.match(specialist.markdown, /provider rejection is new evidence/i);
+    assert.match(specialist.markdown, /numeric account_id or item_id resolved from current Zoho data/i);
+    assert.match(specialist.markdown, /quantity and rate/i);
+    assert.match(specialist.markdown, /Ordinary GST belongs on each taxable line as tax_id/i);
+    assert.match(specialist.markdown, /Never send a top-level taxes array/i);
+  });
+
+  it('keeps live finance facts ahead of conversation history', () => {
+    const bill = ZOHO_FINANCE_SYSTEM_SKILLS.find(skill => skill.slug === 'zoho-books-bill');
+    assert.ok(bill);
+    assert.match(bill.markdown, /current run bootstrap and current tool response/i);
+    assert.match(bill.markdown, /Earlier chat, memory, and summaries are not current connection evidence/i);
+    assert.match(bill.markdown, /current loaded skill\/tool contract override chat history/i);
+    assert.match(bill.markdown, /provider rejection is a payload or accounting-rule response/i);
+    assert.match(bill.markdown, /Never relabel one as the other/i);
   });
 
   it('teaches purchase orders to resolve unregistered-vendor RCM before staging', () => {

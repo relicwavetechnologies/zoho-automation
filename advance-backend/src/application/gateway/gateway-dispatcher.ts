@@ -8,7 +8,7 @@ import type { Logger } from '../../shared/logger';
 import { asCompanyId, asDepartmentId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { ToolExecutor } from './tool-executor';
-import type { LocalApprovalIntentService } from './local-approval-intent.service';
+import type { BusinessActionService } from '../approval/business-action.service';
 import { mediaImageOcrPayloadSchema, type MediaOcrService } from './media-ocr.service';
 import type {
   ConnectionProvider,
@@ -43,7 +43,7 @@ import type {
 } from './gateway.types';
 import {
   gatewayFailure,
-  gatewayLocalApprovalRequired,
+  gatewayRequesterConfirmationRequired,
   gatewaySuccess,
   connectionsListPayloadSchema,
   isGatewayOp,
@@ -80,6 +80,7 @@ import {
   withWorkDiscoveryPermissions as withGatewayDiscoveryPermissions,
 } from './work-resolution.service';
 import type { WorkContractBootstrapPort } from './work-contract-bootstrap.port';
+import { requiresRequesterConfirmation } from '../approval/business-action-routing';
 import {
   WorkBootstrapService,
   connectionProvidersForToolIds,
@@ -101,7 +102,7 @@ export interface GatewayDispatcherDeps {
   readonly toolRegistry: ToolRegistry;
   readonly skillCatalog: SkillCatalogService;
   readonly toolExecutor: ToolExecutor;
-  readonly localApprovalIntents?: LocalApprovalIntentService;
+  readonly businessActions?: BusinessActionService;
   readonly connectionRegistry?: ConnectionRegistryPort;
   readonly workContractBootstrap?: WorkContractBootstrapPort;
   readonly mediaOcr?: MediaOcrService;
@@ -940,18 +941,19 @@ export class GatewayDispatcher {
     const operation = effectiveArgs['operation'];
     // `knowledge.apply` can only consume an exact, versioned mutation whose
     // requester review and any manager/admin approval were already recorded by
-    // the central knowledge authority. A second generic local confirmation
-    // on desktop would review the same payload again and still could not
-    // broaden access. Lark mutations use their backend-owned HITL flow instead
-    // of desktop's local confirmation intent.
+    // the central knowledge authority. A second generic requester
+    // confirmation would review the same payload again and still could not
+    // broaden access.
     const isReviewedKnowledgeApply = parsed.data.toolId === 'knowledge'
       && operation === 'apply';
-    const needsLocalApproval = prepared.data.action !== 'read'
-      && member.channel !== 'lark'
-      && !isReviewedKnowledgeApply;
-    if (needsLocalApproval) {
-      if (!this.deps.localApprovalIntents) {
-        const response = gatewayFailure('tool_error', 'Local approval intents are not configured');
+    const needsRequesterConfirmation = requiresRequesterConfirmation({
+      action: prepared.data.action,
+      ...(member.channel ? { channel: member.channel } : {}),
+      reviewAlreadyRecorded: isReviewedKnowledgeApply,
+    });
+    if (needsRequesterConfirmation) {
+      if (!this.deps.businessActions) {
+        const response = gatewayFailure('tool_error', 'Business action confirmation is not configured');
         this.recordToolInvocationAudit(
           member,
           departmentId,
@@ -962,10 +964,13 @@ export class GatewayDispatcher {
         );
         return response;
       }
-      const intent = await this.deps.localApprovalIntents.createIntentForPreparedInvocation(
-        { ...input, ...(parsed.data.skillId ? { skillId: parsed.data.skillId } : {}) },
-        prepared.data,
-      );
+      const intent = await this.deps.businessActions.prepare({
+        member,
+        ...(departmentId ? { departmentId } : {}),
+        ...(parsed.data.skillId ? { skillId: parsed.data.skillId } : {}),
+        ...(execution ? { execution } : {}),
+        prepared: prepared.data,
+      });
       if (!intent.ok || !intent.data) {
         this.recordToolInvocationAudit(
           member,
@@ -977,7 +982,7 @@ export class GatewayDispatcher {
         );
         return intent;
       }
-      const response = gatewayLocalApprovalRequired(intent.data);
+      const response = gatewayRequesterConfirmationRequired(intent.data);
       this.recordToolInvocationAudit(
         member,
         departmentId,
@@ -1749,8 +1754,8 @@ export class GatewayDispatcher {
     if (isOpaqueSheetCall(parsed.data.args)) {
       return gatewayFailure('bad_request', 'Saved Sheet references are available only through Lark tools.invoke or tools.preflight');
     }
-    if (!this.deps.localApprovalIntents) {
-      return gatewayFailure('tool_error', 'Local approval intents are not configured');
+    if (!this.deps.businessActions) {
+      return gatewayFailure('tool_error', 'Business action confirmation is not configured');
     }
     const permission = await this.resolvePerm(member, departmentId);
     if (!permission) return this.permissionDenied('Permission resolution failed');
@@ -1762,13 +1767,20 @@ export class GatewayDispatcher {
       parsed.data.toolId,
     );
 
-    return this.deps.localApprovalIntents.prepare({
+    const prepared = await this.deps.toolExecutor.prepare({
       member,
       ...(departmentId ? { departmentId } : {}),
-      ...(parsed.data.skillId ? { skillId: parsed.data.skillId } : {}),
       toolId: parsed.data.toolId,
       args: parsed.data.args,
       ...(execution ? { execution } : {}),
+    });
+    if (!prepared.ok || !prepared.data) return prepared;
+    return this.deps.businessActions.prepare({
+      member,
+      ...(departmentId ? { departmentId } : {}),
+      ...(parsed.data.skillId ? { skillId: parsed.data.skillId } : {}),
+      ...(execution ? { execution } : {}),
+      prepared: prepared.data,
     });
   }
 
@@ -1785,16 +1797,18 @@ export class GatewayDispatcher {
         .join('; ');
       return gatewayFailure('bad_request', `Invalid tools.commit payload — ${issues}`);
     }
-    if (!this.deps.localApprovalIntents) {
-      return gatewayFailure('tool_error', 'Local approval intents are not configured');
+    if (!this.deps.businessActions) {
+      return gatewayFailure('tool_error', 'Business action confirmation is not configured');
     }
 
-    return this.deps.localApprovalIntents.commit({
+    const decided = await this.deps.businessActions.decide({
       member,
-      ...(departmentId ? { departmentId } : {}),
-      intentId: parsed.data.intentId,
-      ...(execution ? { execution } : {}),
+      actionId: parsed.data.intentId,
+      decision: 'approved',
     });
+    return decided.handled
+      ? decided.response
+      : gatewayFailure('approval_intent_not_found', 'Business action was not found.');
   }
 
   private async handleAutomationPlanCreate(

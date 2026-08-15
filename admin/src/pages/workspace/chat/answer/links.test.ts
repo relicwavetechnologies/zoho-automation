@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { domainOf, isBareLink, sourcesIn, tintOf } from './links'
+import {
+  domainOf, isBareLink, isNavigable, sourcesIn, targetOf, tintOf,
+} from './links'
 
 describe('the site a link points at', () => {
   it('reads the host and drops what is not part of it', () => {
@@ -56,5 +58,80 @@ describe('the tint on a site with no mark of its own', () => {
   it('is stable per domain', () => {
     assert.equal(tintOf('reuters.com'), tintOf('reuters.com'))
     assert.notEqual(tintOf('reuters.com'), tintOf('sec.gov'))
+  })
+})
+
+describe('what a link points at', () => {
+  it('reads a web address as a site', () => {
+    assert.deepEqual(
+      targetOf('https://books.zoho.com/app/inv/9'),
+      { kind: 'site', domain: 'books.zoho.com' },
+    )
+  })
+
+  it('reads a workspace path as a file, whatever shape it arrives in', () => {
+    // The exact case that rendered as dead text: a filename the run wrote with
+    // no scheme and no leading slash.
+    for (const href of [
+      'divo-test2-hsbc-bank-charges-qa.pdf',
+      './out/divo-test2-hsbc-bank-charges-qa.pdf',
+      '/workspace/.divo/inbox/divo-test2-hsbc-bank-charges-qa.pdf',
+      'file:///workspace/divo-test2-hsbc-bank-charges-qa.pdf',
+    ]) {
+      assert.deepEqual(
+        targetOf(href),
+        { kind: 'file', name: 'divo-test2-hsbc-bank-charges-qa.pdf', family: 'doc' },
+        href,
+      )
+    }
+  })
+
+  it('tells the families apart, because that is what the glyph is for', () => {
+    const family = (href: string) => {
+      const target = targetOf(href)
+      return target.kind === 'file' ? target.family : null
+    }
+    assert.equal(family('q3.xlsx'), 'sheet')
+    assert.equal(family('deck.pptx'), 'slide')
+    assert.equal(family('shot.png'), 'image')
+    assert.equal(family('bundle.zip'), 'archive')
+    assert.equal(family('run.py'), 'code')
+    // Unknown extension is still a file — it just has nothing specific to say.
+    assert.equal(family('notes.xyz'), 'file')
+  })
+
+  it('reads an address as mail', () => {
+    assert.deepEqual(
+      targetOf('mailto:rahul@emiactech.com?subject=hi'),
+      { kind: 'mail', address: 'rahul@emiactech.com' },
+    )
+  })
+
+  it('claims nothing about an anchor or an undrawable scheme', () => {
+    for (const href of ['#cite-1', '#section', 'tel:+911234567890', 'data:text/plain,hi', '']) {
+      assert.equal(targetOf(href).kind, 'plain', href)
+    }
+  })
+
+  it('does not turn a bare word into a file', () => {
+    // "approve" and "Test 2" appear as link text constantly. Treating any of
+    // them as a path would put a document glyph in the middle of a sentence.
+    for (const href of ['approve', 'some words', 'Test 2']) {
+      assert.equal(targetOf(href).kind, 'plain', href)
+    }
+  })
+})
+
+describe('whether the browser can follow a link', () => {
+  it('follows the web and the mail client', () => {
+    assert.equal(isNavigable('https://zoho.com'), true)
+    assert.equal(isNavigable('mailto:a@b.com'), true)
+  })
+
+  it('will not pretend a container path is reachable', () => {
+    // The file lives in the run's container, not on this origin, so navigating
+    // there produces a 404 in place of an answer.
+    assert.equal(isNavigable('/workspace/.divo/inbox/q3.pdf'), false)
+    assert.equal(isNavigable('q3.pdf'), false)
   })
 })

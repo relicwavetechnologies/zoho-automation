@@ -379,6 +379,7 @@ function formatCapabilityBootstrap(
 	if (nativeSkills) {
 		lines.push(
 			"- Match the task against Pi's available_skills metadata. Read only the exact relevant SKILL.md with Pi's read tool.",
+			"- A capability family marked skill=required is never a simple direct-action exception. Read its exact matching skill in the current turn before planning or calling its tool; earlier conversation and compaction summaries do not count.",
 			"- Do not call divo_skill_resolve for ordinary routing when the relevant native skill is present.",
 			"- No skill is a valid outcome for ordinary conversation or a simple direct capability call.",
 		);
