@@ -25,6 +25,7 @@ const execFileAsync = promisify(execFile);
 export const IMAGE = process.env.DIVO_PI_IMAGE ?? "divo-pi-local:phase0";
 export const RESOURCE_PREFIX = process.env.DIVO_PI_RESOURCE_PREFIX ?? "divo-pi-local";
 const RUNTIME_CONTAINER_MODE = "exec-v2";
+const DEEPSEEK_TOOL_SURFACE_ENV = "DIVO_DEEPSEEK_TOOL_SURFACE";
 
 /** The unprivileged workspace user every container process runs as. */
 export const WORKSPACE_UID_GID = "10001:10001";
@@ -505,6 +506,22 @@ export function buildBootstrapWriteArgs(container) {
 	];
 }
 
+/**
+ * Pass the controller-owned rollout decision only to the Pi processes that use
+ * it. Keeping it on `docker exec` means an operator can turn retrieval on or
+ * off without replacing every durable member container.
+ */
+export function buildDeepSeekToolSurfaceEnvArgs(
+	value = process.env.DIVO_DEEPSEEK_TOOL_SURFACE,
+) {
+	if (value === undefined || value === null || String(value).trim() === "") return [];
+	const normalized = String(value).trim().toLowerCase();
+	if (normalized !== "on" && normalized !== "off") {
+		throw new Error(`${DEEPSEEK_TOOL_SURFACE_ENV} must be "on" or "off"`);
+	}
+	return ["--env", `${DEEPSEEK_TOOL_SURFACE_ENV}=${normalized}`];
+}
+
 export function buildInterruptionWriteArgs(container) {
 	return [
 		"exec",
@@ -518,10 +535,14 @@ export function buildInterruptionWriteArgs(container) {
 	];
 }
 
-export function buildContainerPrepareArgs(container) {
+export function buildContainerPrepareArgs(
+	container,
+	toolSurface = process.env.DIVO_DEEPSEEK_TOOL_SURFACE,
+) {
 	return [
 		"exec",
 		"--interactive",
+		...buildDeepSeekToolSurfaceEnvArgs(toolSurface),
 		"--user",
 		WORKSPACE_UID_GID,
 		container,
@@ -544,10 +565,14 @@ export function buildContainerRecordInterruptionArgs(container) {
 	];
 }
 
-export function buildContainerRunArgs(container) {
+export function buildContainerRunArgs(
+	container,
+	toolSurface = process.env.DIVO_DEEPSEEK_TOOL_SURFACE,
+) {
 	return [
 		"exec",
 		"--interactive",
+		...buildDeepSeekToolSurfaceEnvArgs(toolSurface),
 		container,
 		"node",
 		"divo/container-entry.mjs",

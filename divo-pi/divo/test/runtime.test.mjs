@@ -136,6 +136,18 @@ describe("Divo Pi runtime boundary", () => {
 		assert.equal(buildRuntimeEnvironmentPatch(groupValues).DIVO_THREAD_WORK_DIR, null);
 	});
 
+	it("re-patches the DeepSeek tool-surface rollout on a warm Pi process", () => {
+		assert.equal(
+			buildRuntimeEnvironmentPatch(values, { DIVO_DEEPSEEK_TOOL_SURFACE: "on" })
+				.DIVO_DEEPSEEK_TOOL_SURFACE,
+			"on",
+		);
+		assert.equal(
+			buildRuntimeEnvironmentPatch(values).DIVO_DEEPSEEK_TOOL_SURFACE,
+			null,
+		);
+	});
+
 	it("pins Divo provider, model, extensions, skills, tools, and session", () => {
 		const args = buildPiArguments(values);
 		assert.deepEqual(args.slice(args.indexOf("--provider"), args.indexOf("--provider") + 4), [

@@ -528,6 +528,7 @@ export const RUNTIME_ENVIRONMENT_PATCH_KEYS = [
 	"DIVO_BACKEND_URL",
 	"DIVO_MEMBER_TOKEN",
 	"DIVO_DEPARTMENT_ID",
+	"DIVO_DEEPSEEK_TOOL_SURFACE",
 	"DIVO_RUNTIME_CONTEXT_PATH",
 	"DIVO_RUN_CONTEXT_PATH",
 	"DIVO_SKILL_DIRS",
@@ -545,8 +546,8 @@ export const RUNTIME_ENVIRONMENT_PATCH_KEYS = [
 	"DIVO_HOME",
 ];
 
-export function buildRuntimeEnvironmentPatch(values) {
-	const environment = buildChildEnvironment({}, values);
+export function buildRuntimeEnvironmentPatch(values, baseEnvironment = {}) {
+	const environment = buildChildEnvironment(baseEnvironment, values);
 	const patch = {};
 	for (const key of RUNTIME_ENVIRONMENT_PATCH_KEYS) {
 		patch[key] = Object.hasOwn(environment, key) ? environment[key] : null;

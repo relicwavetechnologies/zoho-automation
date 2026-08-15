@@ -43,6 +43,10 @@ import {
 	registerGeneratedNativeToolCatalogue,
 	type NativeContractCache,
 } from "./native-tools/catalogue.ts";
+import {
+	registerDeepSeekToolSurface,
+	toolIdsForDeepSeekPreload,
+} from "./native-tools/deepseek-tool-surface.ts";
 import { registerNativeSemrushTool } from "./native-tools/semrush.ts";
 import {
 	formatSkillResolveResult,
@@ -119,6 +123,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	const semrushToolName = registerNativeSemrushTool(pi, typedToolInvoker);
 	const nativeCatalogue = registerGeneratedNativeToolCatalogue(pi, typedToolInvoker);
 	const nativeToolNames = [semrushToolName, ...nativeCatalogue.registered];
+	const deepseekToolSurface = registerDeepSeekToolSurface(pi);
 	// Capabilities that are not a governed tool call and would otherwise vanish
 	// with the mega-tool: connected accounts, and reading an attached image.
 	registerTypedPlatformTools(pi, createGatewayPlatformInvoker());
@@ -166,6 +171,16 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 					console.error(`[divo-native-tools] enriched ${refreshed.join(",")}`);
 				}
 			}
+			const resolvedToolIds = [
+				...result.results.flatMap((skill) => skill.toolIds ?? []),
+				...(result.bootstrap?.tools.map((tool) => tool.id) ?? []),
+				...result.results.flatMap((skill) =>
+					skill.orchestrationPlan?.phases.map((phase) => phase.toolId) ?? []),
+			];
+			const activated = deepseekToolSurface.activateToolIds(resolvedToolIds);
+			if (activated.length > 0) {
+				console.error(`[divo-deepseek-tools] skill activation ${activated.join(",")}`);
+			}
 			return {
 				content: [{ type: "text", text: formatSkillResolveResult(result) }],
 				details: result,
@@ -173,19 +188,46 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	let preparedDepartmentContext: Awaited<ReturnType<typeof readDepartmentPersonaContext>> | undefined;
+	pi.on("input", async (event, ctx) => {
+		// A queued steer/follow-up belongs to the currently running agent loop.
+		// Do not replace its tool surface mid-call; the search tool remains the
+		// safe recovery path if that queued message needs a different capability.
+		if (event.streamingBehavior !== undefined) return { action: "continue" };
+		preparedDepartmentContext = await readDepartmentPersonaContext();
+		const availableTools = preparedDepartmentContext?.capabilityBootstrap?.availableTools;
+		deepseekToolSurface.prepareTurn({
+			prompt: event.text,
+			model: ctx.model,
+			...(availableTools
+				? { allowedToolIds: availableTools.map((tool) => tool.toolId) }
+				: {}),
+		});
+		return { action: "continue" };
+	});
 
-	pi.on("before_agent_start", async (event, ctx) => {
+	pi.on("before_agent_start", async (event) => {
 		refreshDivoRuntime(pi);
 		const correlation = await readDivoRunCorrelation().catch(() => undefined);
-		reportInactiveNativeTools(pi, nativeToolNames);
+		const toolSurfaceSelection = deepseekToolSurface.currentSelection();
+		if (toolSurfaceSelection.mode === "eager") {
+			reportInactiveNativeTools(pi, nativeToolNames);
+		} else {
+			reportInactiveNativeTools(pi, toolSurfaceSelection.selectedToolNames);
+		}
 		// The complete outer catalogue is already live. Fetch only to preload
 		// prompt-relevant provider-native input schemas for reachable Google and
 		// Airtable tools; failure leaves their safe describe-then-call contract.
-		const departmentContext = await readDepartmentPersonaContext();
-		const reachableToolIds = providerNativeContractToolIds(
-			departmentContext?.capabilityBootstrap?.availableTools
-				?.map((tool) => tool.toolId) ?? [],
+		const departmentContext = preparedDepartmentContext
+			?? await readDepartmentPersonaContext();
+		preparedDepartmentContext = undefined;
+		const permittedToolIds = departmentContext?.capabilityBootstrap?.availableTools
+			?.map((tool) => tool.toolId) ?? [];
+		const preloadCandidates = toolIdsForDeepSeekPreload(
+			permittedToolIds,
+			toolSurfaceSelection,
 		);
+		const reachableToolIds = providerNativeContractToolIds(preloadCandidates);
 		if (reachableToolIds.length > 0) {
 			try {
 				const fetched = await fetchNativeContractBootstrap(
@@ -212,9 +254,9 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			}
 		}
 		const { systemPrompt, skillSummary } = composeRunSystemPrompt({
-			// Eager registration refreshes Pi's base prompt with each new tool's
-			// guidelines. The event snapshot predates that refresh.
-			basePrompt: ctx.getSystemPrompt(),
+			// Input-time tool retrieval happens before this base-prompt snapshot,
+			// so it contains guidance only for the exact active DeepSeek surface.
+			basePrompt: event.systemPrompt,
 			departmentContext,
 			skills: event.systemPromptOptions.skills,
 			cliAvailable: localCliAvailable(),

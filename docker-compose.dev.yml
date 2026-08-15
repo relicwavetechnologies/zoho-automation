@@ -156,6 +156,7 @@ services:
       DIVO_PI_IMAGE: ${DIVO_DEV_PI_IMAGE:?DIVO_DEV_PI_IMAGE is required}
       DIVO_PI_RESOURCE_PREFIX: divo-pi-dev
       DIVO_PI_ADD_HOST_GATEWAY: "false"
+      DIVO_DEEPSEEK_TOOL_SURFACE: ${DIVO_DEEPSEEK_TOOL_SURFACE:-on}
       HOME: /tmp
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock

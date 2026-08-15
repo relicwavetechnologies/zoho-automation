@@ -29,6 +29,7 @@ import {
 	ensureRuntime,
 	buildBootstrapWriteArgs,
 	buildContainerCreateArgs,
+	buildDeepSeekToolSurfaceEnvArgs,
 	buildContainerPrepareArgs,
 	buildContainerRecordInterruptionArgs,
 	buildContainerRunArgs,
@@ -398,7 +399,7 @@ test("a running owned container receives bootstrap through docker exec", () => {
 
 test("a warm runtime can prepare the cached Pi process through docker exec", () => {
 	assert.deepEqual(
-		buildContainerPrepareArgs("divo-pi-local-abhishek"),
+		buildContainerPrepareArgs("divo-pi-local-abhishek", null),
 		[
 			"exec",
 			"--interactive",
@@ -411,7 +412,7 @@ test("a warm runtime can prepare the cached Pi process through docker exec", () 
 		],
 	);
 	assert.deepEqual(
-		buildContainerRunArgs("divo-pi-local-abhishek"),
+		buildContainerRunArgs("divo-pi-local-abhishek", null),
 		[
 			"exec",
 			"--interactive",
@@ -419,6 +420,23 @@ test("a warm runtime can prepare the cached Pi process through docker exec", () 
 			"node",
 			"divo/container-entry.mjs",
 		],
+	);
+});
+
+test("DeepSeek tool retrieval reaches both cold and warm Pi processes", () => {
+	assert.deepEqual(buildDeepSeekToolSurfaceEnvArgs(" ON "), [
+		"--env",
+		"DIVO_DEEPSEEK_TOOL_SURFACE=on",
+	]);
+	assert.deepEqual(buildDeepSeekToolSurfaceEnvArgs(null), []);
+	assert.throws(() => buildDeepSeekToolSurfaceEnvArgs("maybe"), /must be "on" or "off"/);
+	assert.deepEqual(
+		buildContainerRunArgs("divo-pi-local-abhishek", "on").slice(0, 5),
+		["exec", "--interactive", "--env", "DIVO_DEEPSEEK_TOOL_SURFACE=on", "divo-pi-local-abhishek"],
+	);
+	assert.deepEqual(
+		buildContainerPrepareArgs("divo-pi-local-abhishek", "off").slice(0, 6),
+		["exec", "--interactive", "--env", "DIVO_DEEPSEEK_TOOL_SURFACE=off", "--user", "10001:10001"],
 	);
 });
 

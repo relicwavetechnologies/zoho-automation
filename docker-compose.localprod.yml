@@ -73,6 +73,7 @@ services:
       # over the public URL. Here the backend is a container on this machine, so
       # the spawned Pi needs a route to the host to call it back.
       DIVO_PI_ADD_HOST_GATEWAY: "true"
+      DIVO_DEEPSEEK_TOOL_SURFACE: ${DIVO_DEEPSEEK_TOOL_SURFACE:-on}
       MAX_ACTIVE_RUNS: 2
       HOME: /tmp
     volumes:
