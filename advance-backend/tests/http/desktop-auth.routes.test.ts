@@ -1605,10 +1605,26 @@ describe('desktop auth routes', () => {
   it('returns only active, current, user-owned personal memory without requiring a department', async () => {
     const calls: unknown[] = [];
     const router = createDesktopAuthRoutes(makeDeps({
-      memory: {
-        getPersonalSnapshot: async (input: unknown) => {
-          calls.push(input);
-          return ['User prefers concise weekly summaries.'];
+      prisma: {
+        knowledgeResource: {
+          findMany: async (input: unknown) => {
+            calls.push(input);
+            return [
+              {
+                id: 'memory-1',
+                companyId: 'company-1',
+                ownerUserId: 'user-1',
+                scope: 'personal',
+                kind: 'memory',
+                status: 'active',
+                logicalKey: 'memory.concise',
+                currentVersion: 2,
+                updatedAt: new Date('2026-08-14T10:00:00.000Z'),
+                department: null,
+                versions: [{ version: 2, contentJson: { facts: ['User prefers concise weekly summaries.'] } }],
+              },
+            ];
+          },
         },
       },
     }));
@@ -1627,18 +1643,34 @@ describe('desktop auth routes', () => {
     });
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0], {
-      userId: 'user-1',
-      companyId: 'company-1',
-      limit: 12,
-      maxFactChars: 500,
-      maxTotalChars: 2_200,
+      where: {
+        companyId: 'company-1',
+        ownerUserId: 'user-1',
+        scope: 'personal',
+        kind: 'memory',
+        status: 'active',
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 100,
+      include: {
+        department: { select: { name: true } },
+        versions: {
+          orderBy: { version: 'desc' },
+          take: 1,
+          select: { version: true, contentJson: true },
+        },
+      },
     });
   });
 
-  it('makes canonical personal-memory failure visible instead of returning an empty snapshot', async () => {
+  it('logs canonical personal-memory failure while returning a safe empty snapshot', async () => {
+    const { events, logger } = captureLogger();
     const router = createDesktopAuthRoutes(makeDeps({
-      memory: {
-        getPersonalSnapshot: async () => { throw new Error('database unavailable'); },
+      logger,
+      prisma: {
+        knowledgeResource: {
+          findMany: async () => { throw new Error('database unavailable'); },
+        },
       },
     }));
     const result = await callRoute(router, 'GET', '/runtime-context', {
@@ -1647,6 +1679,7 @@ describe('desktop auth routes', () => {
 
     assert.equal(result.status, 200);
     assert.deepEqual(result.body.data.personalMemory, []);
+    assert.deepEqual(events, ['runtime_context.personal_memory_failed']);
   });
 
   it('does not expose a persona for an inaccessible department', async () => {
