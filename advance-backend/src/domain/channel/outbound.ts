@@ -29,6 +29,31 @@ export type ChannelPlanStepStatus = 'pending' | 'running' | 'done' | 'failed' | 
  * `children` is one level deep, for work a step farms out: a subagent's tasks
  * sit under the `divo_subagents` row rather than becoming peers of it.
  */
+
+/**
+ * One agent working under a step that farmed work out.
+ *
+ * It has its own shape rather than being another `ChannelLedgerRow`, because it
+ * is not one and never was: it has no count, no vendor, no children of its own,
+ * and it is not a tool call — it is an agent, with a role, a task, and a clock.
+ * Typed as a row, every surface drawing one had to carry fields that could not
+ * mean anything here and reach past them for the three that could.
+ */
+export interface ChannelLedgerChild {
+  /** The agent's role. This is what names it on screen. */
+  readonly label:    string;
+  /** What it was asked to do. */
+  readonly outcome?: string;
+  readonly status:   ChannelPlanStepStatus;
+  /**
+   * How long it has been working, while it still is.
+   *
+   * Deliberately outside every redraw fingerprint downstream: it changes once a
+   * second by design, and a card that repaints because a number ticked is a
+   * card that repaints for no reader.
+   */
+  readonly elapsed?: string;
+}
 /**
  * One entry in the run's log, in the order it happened.
  *
@@ -70,7 +95,7 @@ export interface ChannelLedgerRow {
   readonly count:     number;
   readonly outcome?:  string;
   readonly status:    ChannelPlanStepStatus;
-  readonly children?: ReadonlyArray<ChannelLedgerRow>;
+  readonly children?: ReadonlyArray<ChannelLedgerChild>;
   /**
    * Who was called, in the wire's own words rather than the reader's.
    *

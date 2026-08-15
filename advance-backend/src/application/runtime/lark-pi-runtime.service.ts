@@ -1583,10 +1583,12 @@ function safeProgressDetail(event: Record<string, unknown>): RunProgressDetail {
         const label = safeProgressString(row?.['label'], 80);
         if (!label) return [];
         const detail = safeProgressString(row?.['detail'], 80);
+        const elapsed = safeProgressString(row?.['elapsed'], 16);
         return [{
           label,
           status: safeStepStatus(row?.['status'], 'running'),
           ...(detail ? { detail } : {}),
+          ...(elapsed ? { elapsed } : {}),
         }];
       })
     : [];

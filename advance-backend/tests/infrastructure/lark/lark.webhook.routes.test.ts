@@ -1206,9 +1206,11 @@ describe('Lark webhook admission', () => {
     const last = adapter.__statusUpdates.at(-1).timeline;
 
     const subagentRow = last.ledger.find((row: any) => row.label === 'Subagents');
+    // No `count`: an agent is not a tool call, and the three fields it does
+    // have are the three it has ever had.
     assert.deepEqual(subagentRow.children, [
-      { label: 'scout', count: 1, status: 'running', outcome: 'reading the export' },
-      { label: 'reviewer', count: 1, status: 'done', outcome: 'checked totals' },
+      { label: 'scout', status: 'running', outcome: 'reading the export' },
+      { label: 'reviewer', status: 'done', outcome: 'checked totals' },
     ]);
 
     // The checklist belongs to the run, not to the call that declared it, so it

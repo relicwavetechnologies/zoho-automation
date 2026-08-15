@@ -181,7 +181,11 @@ export class LarkStatusCoordinator {
       row.label,
       row.count,
       row.outcome ?? '',
-      row.children?.map(child => this.ledgerPreview(child)).join(',') ?? '',
+      /* The child's elapsed label is deliberately not here. It ticks once a
+         second, and folding it in made every subagent run repaint the card on
+         a clock rather than on news — dozens of Lark edits to move a digit
+         nobody was watching. */
+      row.children?.map(c => `${c.status}:${c.label}:${c.outcome ?? ''}`).join(',') ?? '',
     ].join(':');
   }
 

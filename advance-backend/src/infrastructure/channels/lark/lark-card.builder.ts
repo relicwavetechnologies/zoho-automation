@@ -6,6 +6,7 @@
 import { LARK_CARD_LIMITS } from '../../../domain/channel/surface-capabilities';
 import type {
   ChannelBranding,
+  ChannelLedgerChild,
   ChannelLedgerRow,
   ChannelPlanStepStatus,
   ChannelRunState,
@@ -273,6 +274,25 @@ function activityLine(row: ChannelLedgerRow, indent: string): string {
 }
 
 /**
+ * `　└ ◐ **scout**  read the pipeline export · 1m 30s` — one agent under the
+ * step that farmed the work out.
+ *
+ * The clock is appended here rather than travelling glued to the task, which is
+ * what the card actually wanted and what a card is for. The web draws the same
+ * two facts stacked instead, and neither surface has to unpick the other's
+ * sentence to do it.
+ */
+function childLine(child: ChannelLedgerChild, indent: string): string {
+  const marker = STEP_MARKERS[child.status];
+  const task = child.outcome?.trim() ? truncateOutcome(child.outcome) : '';
+  const clock = child.elapsed?.trim() ?? '';
+  const detail = [task, clock].filter(Boolean).join(' · ');
+  return `${indent}${marker} **${child.label}**${
+    detail ? `  <font color='grey'>${detail}</font>` : ''
+  }`;
+}
+
+/**
  * Repeated identical steps, folded into one row that counts them.
  *
  * Paging a table nineteen times is one act, and printing it as nineteen rows
@@ -403,7 +423,7 @@ function activityMarkdown(timeline: ChannelTimeline): string | undefined {
   for (const row of visible) {
     lines.push(activityLine(row, ''));
     for (const child of row.children ?? []) {
-      lines.push(activityLine(child, '　└ '));
+      lines.push(childLine(child, '　└ '));
     }
   }
   return lines.join('\n');

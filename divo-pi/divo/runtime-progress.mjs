@@ -166,25 +166,22 @@ function progressElapsedLabel(value) {
 	return `${hours}h ${minutes % 60}m`;
 }
 
-function progressChildDetail(child) {
-	const elapsed = child?.state === "running"
-		? progressElapsedLabel(child?.startedAt)
-		: undefined;
-	if (!elapsed) return progressLabel(child?.task, PROGRESS_DETAIL_MAX);
-	const suffix = `working ${elapsed}`;
-	const task = progressLabel(
-		child?.task,
-		Math.max(16, PROGRESS_DETAIL_MAX - suffix.length - 3),
-	);
-	return task ? `${task} · ${suffix}` : suffix;
-}
-
 /**
  * Subagent children, from the details `divo_subagents` already streams.
  *
- * Only the role, the task and the state cross this boundary. A child's output,
- * usage and event log are the run's internals, and the status card is shown in
- * a chat window — anything forwarded here is something a bystander may read.
+ * Only the role, the task, the state and how long it has been going cross this
+ * boundary. A child's output, usage and event log are the run's internals, and
+ * the status card is shown in a chat window — anything forwarded here is
+ * something a bystander may read.
+ *
+ * The task and the clock travel as two fields because they are two facts. They
+ * used to be glued into one `"read the export · working 1m 30s"` string, which
+ * is a layout decision made in the container: a surface that wants the task on
+ * its own line and the duration in a dimmer weight beside the state has to
+ * split the sentence back apart on a separator it can only guess at, and a task
+ * containing a `·` breaks it. It also cost the task its own width — the clock
+ * was subtracted from the same 64 characters — so a long task got trimmed to
+ * make room for a number the surface may not even draw.
  */
 function progressChildren(details) {
 	const children = details?.children;
@@ -193,8 +190,18 @@ function progressChildren(details) {
 		const label = progressLabel(child?.role);
 		if (!label) return [];
 		const status = CHILD_STATE_STATUS[child?.state] ?? "running";
-		const detail = progressChildDetail(child);
-		return [{ label, status, ...(detail ? { detail } : {}) }];
+		const detail = progressLabel(child?.task, PROGRESS_DETAIL_MAX);
+		// Only while it is going. A finished child's elapsed time is a number
+		// nobody asked for, and the run's own duration already covers the turn.
+		const elapsed = child?.state === "running"
+			? progressElapsedLabel(child?.startedAt)
+			: undefined;
+		return [{
+			label,
+			status,
+			...(detail ? { detail } : {}),
+			...(elapsed ? { elapsed } : {}),
+		}];
 	});
 	return rows.length > 0 ? rows : undefined;
 }

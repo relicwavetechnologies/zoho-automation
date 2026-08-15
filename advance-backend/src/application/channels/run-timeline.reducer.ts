@@ -133,9 +133,9 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
           ...current,
           children: detail.children.map(child => ({
             label: child.label,
-            count: 1,
             status: child.status,
             ...(child.detail ? { outcome: child.detail } : {}),
+            ...(child.elapsed ? { elapsed: child.elapsed } : {}),
           })),
         });
       }

@@ -584,7 +584,9 @@ test("subagent children ride the details the extension already streams", () => {
 		callId: "call-9",
 		toolName: "divo_subagents",
 		children: [
-			{ label: "scout", status: "running", detail: "read the pipeline export · working 1m 30s" },
+			// The task and the clock are two fields: a surface lays them out, the
+			// container does not lay them out for it.
+			{ label: "scout", status: "running", detail: "read the pipeline export", elapsed: "1m 30s" },
 			{ label: "reviewer", status: "done", detail: "check last week's numbers" },
 		],
 	});

@@ -105,8 +105,11 @@ describe('lark-card.builder buildStatusCard', () => {
         ledger: [{
           label: 'Subagents', count: 1, status: 'running' as const,
           children: [
-            { label: 'scout', count: 1, outcome: 'reading the export', status: 'running' as const },
-            { label: 'reviewer', count: 1, outcome: 'checking totals', status: 'done' as const },
+            {
+              label: 'scout', outcome: 'reading the export',
+              status: 'running' as const, elapsed: '1m 30s',
+            },
+            { label: 'reviewer', outcome: 'checking totals', status: 'done' as const },
           ],
         }],
       },
@@ -115,8 +118,11 @@ describe('lark-card.builder buildStatusCard', () => {
 
     assert.equal(lines.length, 3);
     assert.match(lines[0]!, /^● \*\*Subagents\*\*/);
-    assert.match(lines[1]!, /^　└ ● \*\*scout\*\*/);
-    assert.match(lines[2]!, /^　└ ✓ \*\*reviewer\*\*/);
+    // The card joins the task and the clock; they travel as two fields, so the
+    // web can stack them instead and neither surface unpicks the other's
+    // sentence.
+    assert.match(lines[1]!, /^　└ ● \*\*scout\*\*.*reading the export · 1m 30s/);
+    assert.match(lines[2]!, /^　└ ✓ \*\*reviewer\*\*.*checking totals/);
   });
 
   // A ✓ already says "done"; writing "Done" beside it is the padding this

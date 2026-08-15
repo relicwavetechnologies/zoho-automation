@@ -10,9 +10,13 @@ import type { ChannelPlanStepStatus } from '../../domain/channel/outbound';
 
 /** One subagent working under a tool call. */
 export interface RunProgressChild {
+  /** The agent's role — "scout", "reviewer" — which is what names it on screen. */
   readonly label: string;
   readonly status: ChannelPlanStepStatus;
+  /** What it was asked to do, in the words the run gave it. */
   readonly detail?: string;
+  /** How long it has been going, while it still is. Absent once it settles. */
+  readonly elapsed?: string;
 }
 
 /** One line of the checklist the run declared. */

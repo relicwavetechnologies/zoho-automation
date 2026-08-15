@@ -46,13 +46,56 @@ test('status updates are not deduped when subagent child rows change', async () 
         label: 'Subagents',
         count: 1,
         status: 'running' as const,
-        children: [{ label: 'scout', count: 1, status: 'running' as const, outcome: 'reading' }],
+        children: [{ label: 'scout', status: 'running' as const, outcome: 'reading' }],
       }],
     },
   });
   await coordinator.close();
 
   assert.deepEqual(calls, ['send', 'update']);
+});
+
+/*
+ * An agent's elapsed time changes once a second by design. It used to travel
+ * glued onto the task — `"reading the export · working 1m 30s"` — so every
+ * second of every subagent run looked like news, and the card was repainted on
+ * a clock rather than on anything a reader would notice. A long fan-out spent
+ * dozens of Lark edits moving a digit.
+ */
+test('an agent’s clock ticking is not a reason to repaint the card', async () => {
+  const calls: string[] = [];
+  const coordinator = new LarkStatusCoordinator({
+    chatId: 'oc_test',
+    logger: logger as never,
+    minUpdateIntervalMs: 0,
+    client: {
+      async sendMessage() { calls.push('send'); return { messageId: 'om_status' }; },
+      async updateMessage() { calls.push('update'); },
+    },
+  });
+
+  const atElapsed = (elapsed: string) => coordinator.update({
+    timeline: {
+      phase: 'Working',
+      state: 'working' as const,
+      liveLabel: 'Running a subagent…',
+      actionCount: 1,
+      startedAtMs: 0,
+      ledger: [{
+        label: 'Subagents',
+        count: 1,
+        status: 'running' as const,
+        children: [{ label: 'scout', status: 'running' as const, outcome: 'reading', elapsed }],
+      }],
+    },
+  });
+
+  await atElapsed('12s');
+  await atElapsed('13s');
+  await atElapsed('14s');
+  await coordinator.close();
+
+  assert.deepEqual(calls, ['send']);
 });
 
 /*
