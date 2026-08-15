@@ -9,7 +9,7 @@
 
 import type { Logger } from '../../shared/logger';
 import type { ConversationAttachmentService } from '../../application/conversation-attachments/conversation-attachment.service';
-import type { ZohoAttachmentSourcePort } from '../../application/tools/families/zoho-books.tool';
+import type { ZohoAttachmentSourcePort } from '../../application/zoho/zoho-attachment.service';
 import type { LarkFileClient } from '../channels/lark/clients/lark-file.client';
 
 const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
