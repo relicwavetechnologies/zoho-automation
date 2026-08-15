@@ -23,6 +23,7 @@ import { systemClock } from './shared/clock';
 import { getPrismaClient } from './infrastructure/persistence/prisma.client';
 import { getRedisClient } from './infrastructure/cache/redis.client';
 import { RedisCache } from './infrastructure/cache/redis-cache';
+import { SiteIconService } from './application/icons/site-icon.service';
 import { RedisRateLimitStore } from './infrastructure/governance/redis-rate-limit.store';
 import { PrismaConnectionGovernanceRepository } from './infrastructure/persistence/connection-governance.repository';
 import { CompanyRoleRepository } from './infrastructure/persistence/company-role.repository';
@@ -344,6 +345,8 @@ export interface Container {
   prisma: ReturnType<typeof getPrismaClient>;
   /** Hot-path app cache: permissions, OAuth tokens, agent defs. → REDIS_CACHE_URL */
   cache: CachePort;
+  /** Favicons for cited domains, fetched by us so no third party learns them. */
+  siteIcons: SiteIconService;
   /** Short-lived security/workflow keys: nonces, run effects, uploads. → REDIS_MEMORY_URL (legacy env name) */
   ephemeralCache: CachePort;
   /** Resolved Redis URL for the BullMQ queue — exposed so workers can share the same URL. */
@@ -511,6 +514,10 @@ export async function buildContainer(
 
   const cache       = new RedisCache(getRedisClient(cacheRedisUrl));
   const ephemeralCache = new RedisCache(getRedisClient(ephemeralRedisUrl));
+  /* On the hot cache rather than the ephemeral one: an icon is worth keeping
+     for a month, and it is the only thing here whose value is the bytes rather
+     than a permission or a token. */
+  const siteIcons = new SiteIconService({ cache, logger });
   const runOrigins = new RunOriginStore(ephemeralCache);
   const connectionRateLimits = new ConnectionRateLimitService({
     repository: new PrismaConnectionGovernanceRepository(prisma),
@@ -2772,6 +2779,7 @@ export async function buildContainer(
     logger,
     prisma,
     cache,
+    siteIcons,
     ephemeralCache,
     queueRedisUrl,
     permissions,

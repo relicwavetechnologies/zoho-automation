@@ -2,6 +2,7 @@ import express, { type Express } from 'express';
 import { randomUUID } from 'node:crypto';
 import type { Container } from './composition';
 import { createHealthRoutes } from './http/health.routes';
+import { createSiteIconRoutes } from './http/icons/site-icon.routes';
 import { createErrorBoundary } from './http/error-boundary';
 import {
   createLarkWebhookRoutes,
@@ -425,6 +426,14 @@ export const createServer = (c: Container): DivoServerApplication => {
       : {}),
     knowledgeOperations: c.knowledgeOperations,
   }));
+
+  /* Site icons, deliberately before the authenticated mounts: an `<img>` cannot
+     carry a bearer token, so this one is reached without a session. It takes a
+     domain rather than a URL and cannot be aimed anywhere — see the route. */
+  app.use(
+    '/api/icon',
+    createSiteIconRoutes({ icons: c.siteIcons, logger: c.logger }),
+  );
 
   app.use(
     '/api/admin/auth',
