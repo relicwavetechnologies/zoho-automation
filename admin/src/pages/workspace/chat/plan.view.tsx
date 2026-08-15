@@ -21,10 +21,10 @@
  *             because `plan.ts` decides that, not this file.
  *   pending — a dashed ring and nothing else. Not yet a fact.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Check, Minus, Plus, X } from 'lucide-react'
 import type { Plan, PlanStep } from './plan'
-import { planStatus } from './plan'
+import { fitsBesideThread, planStatus } from './plan'
 import '@/styles/beautiful.css'
 
 /**
@@ -103,11 +103,11 @@ function StepRow({ step }: { step: PlanStep }) {
 
   return (
     <li
-      className={`flex items-center gap-2.5 rounded-control transition-[background-color,box-shadow] duration-300 ${
+      className={`flex items-start gap-2.5 rounded-control transition-[background-color,box-shadow] duration-300 ${
         /* The active step is boxed, and that is the panel's one piece of
            emphasis. Everything else is a row of text; this is a thing being
            worked on. */
-        step.active ? 'bg-fill px-2.5 py-2 shadow-hairline' : 'px-2.5 py-1'
+        step.active ? 'bg-fill px-2.5 py-2 shadow-hairline' : 'px-2.5 py-1.5'
       }`}
     >
       <StepMark step={step} />
@@ -141,20 +141,36 @@ function StepRow({ step }: { step: PlanStep }) {
  */
 export function PlanPanel({ plan }: { plan: Plan }) {
   const [open, setOpen] = useState(true)
+  const frame = useRef<HTMLElement | null>(null)
 
-  /* A new run reopens it. Collapsing is a judgement about the plan in front of
-     you — twelve steps, too tall — and carrying it into the next run means a
-     reader who tidied one plan away never sees another. Keyed on the number of
-     steps rather than on a run id, because the panel is only ever handed one
-     run's plan and a new one almost always has a different shape. */
-  useEffect(() => { setOpen(true) }, [plan.total])
+  /* A new run reopens it — if there is room. Collapsing is a judgement about the
+     plan in front of you, so carrying a manual one into the next run would mean
+     a reader who tidied one plan away never sees another.
+
+     The room test is what stops this covering the conversation. The thread is a
+     720px column in the middle of the pane, so the panel only clears it when the
+     gutter either side is wider than the panel and its margin; below that it
+     sits over the text. Rather than overlap, it opens collapsed — the ring and
+     the count still say how far through the run is, in the width of a word, and
+     the reader can open it if they want the steps.
+
+     Measured off the pane rather than the window, because the rail beside it
+     takes a couple of hundred pixels and a window that looks wide enough often
+     is not. Read once per plan, not on every resize: an observer here would
+     fight the reader's own toggle every time they dragged the window. */
+  useEffect(() => {
+    const pane = frame.current?.parentElement?.clientWidth ?? 0
+    // Nothing measured yet means nothing to be cautious about — open.
+    setOpen(pane === 0 || fitsBesideThread(pane))
+  }, [plan.total])
 
   return (
     <aside
+      ref={frame}
       /* Positioned against the chat pane, under the header bar. `absolute`
          rather than `fixed` so it belongs to the conversation and cannot end up
          floating over the rail or another screen. */
-      className="pointer-events-none absolute right-4 top-[52px] z-20 flex w-[300px] max-w-[calc(100%-2rem)] justify-end"
+      className="pointer-events-none absolute right-4 top-[52px] z-20 flex w-[264px] max-w-[calc(100%-2rem)] justify-end"
       style={{ animation: 'bui-fade-up 320ms cubic-bezier(0.23,1,0.32,1) both' }}
     >
       <div className="pointer-events-auto w-full overflow-hidden rounded-card bg-surface shadow-overlay">
@@ -176,7 +192,7 @@ export function PlanPanel({ plan }: { plan: Plan }) {
         {open && (
           /* Capped and scrollable. Twelve steps is the tool's own limit and
              twelve rows is taller than most of the answers this sits beside. */
-          <ul className="flex max-h-[46vh] flex-col gap-0.5 overflow-y-auto px-1.5 pb-2">
+          <ul className="flex max-h-[46vh] flex-col gap-1 overflow-y-auto px-1.5 pb-2.5">
             {plan.steps.map((step, index) => (
               /* Keyed by position, which is genuinely this list's identity: the
                  checklist is replaced whole on every call and its order is the

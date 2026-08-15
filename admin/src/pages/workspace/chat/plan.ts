@@ -151,3 +151,28 @@ export function planStatus(plan: Plan): string {
      Naming it beats leaving "2 steps left" above a plan nothing is working on. */
   return left === 0 ? 'Done' : `Stopped · ${left} left`
 }
+
+/**
+ * Does the panel clear the conversation, in a pane this wide?
+ *
+ * The numbers mirror `screens-chat.tsx`: the thread is a 720px column centred in
+ * the pane, with 20px of padding inside it — so the text stops 340px from the
+ * centre, not 360. That padding is the whole reason this is a function rather
+ * than a subtraction written inline; measuring to the column's edge instead of
+ * its text collapses the panel on windows where it visibly fits fine.
+ *
+ * Duplicated rather than measured because the column is not this component's to
+ * reach into, and a wrong answer costs a panel that opens collapsed — not a
+ * broken layout.
+ */
+const THREAD_HALF = 720 / 2 - 20
+const PANEL_WIDTH = 264
+/** `right-4`. */
+const PANEL_OFFSET = 16
+/** Below this the two read as touching, which is what started all this. */
+const MIN_GAP = 24
+
+export function fitsBesideThread(paneWidth: number): boolean {
+  return paneWidth / 2 - THREAD_HALF - PANEL_OFFSET - PANEL_WIDTH >= MIN_GAP
+}
+

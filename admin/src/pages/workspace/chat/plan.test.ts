@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { planOf, planStatus } from './plan'
+import { fitsBesideThread, planOf, planStatus } from './plan'
 import type { Timeline } from './stream'
 
 const timeline = (
@@ -103,5 +103,36 @@ describe('which step is live', () => {
     const items = [{ title: 'Draft the reply', status: 'done' as const }]
     assert.equal(planStatus(planOf(timeline(items), true)!), 'Finishing up')
     assert.equal(planStatus(planOf(timeline(items), false)!), 'Done')
+  })
+})
+
+/**
+ * The panel floats over the conversation, so "does it fit" decides whether it
+ * opens showing its steps or collapsed to the ring and the count. Pure
+ * arithmetic, and easy to get wrong in the direction nobody notices — a panel
+ * that collapses on a window where it plainly fits.
+ */
+describe('whether the plan panel clears the thread', () => {
+  it('fits on a wide window', () => {
+    assert.equal(fitsBesideThread(1440), true)
+    assert.equal(fitsBesideThread(1920), true)
+  })
+
+  it('fits at the width the spacing complaint came from', () => {
+    // 1324px leaves a 42px gap. Measuring to the column's edge rather than to
+    // its text makes this 302 against 312 and collapses it, which is exactly
+    // the first attempt at this and the reason the padding is in the formula.
+    assert.equal(fitsBesideThread(1324), true)
+  })
+
+  it('gives up on a laptop-width pane rather than sitting on the text', () => {
+    // At 1180 the panel would overlap the conversation by 30px.
+    assert.equal(fitsBesideThread(1180), false)
+    assert.equal(fitsBesideThread(1024), false)
+  })
+
+  it('turns over exactly where the gap runs out', () => {
+    assert.equal(fitsBesideThread(1288), true)
+    assert.equal(fitsBesideThread(1286), false)
   })
 })
