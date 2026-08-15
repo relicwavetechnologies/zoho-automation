@@ -11,11 +11,11 @@
  * flat event stream back into turns is the hard part, and it was already
  * right.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
-  ArrowLeft, Ban, Brain, Building2, Check, ChevronDown, CircleAlert, Clock, Coins,
-  KeyRound, Link2, Lock, Search, ShieldCheck, Sparkles, TriangleAlert, Users, Wrench,
+  ArrowLeft, Ban, Brain, Building2, Check, ChevronDown, CircleAlert, Clock, Code2, Coins,
+  KeyRound, Link2, Lock, ShieldCheck, Sparkles, TriangleAlert, Users, Wrench,
 } from 'lucide-react'
 import {
   Bar, ClickRow, Empty, Fade, NoAccess, PageHeader, Panel, Seg, Skel, SkelRows, Spark,
@@ -30,7 +30,7 @@ import { useProxyAudit, useProxyModels } from '@/cursor/use-proxy'
 import {
   ROLE_LABEL, ago, displayName, initialsOf, useDepartmentDetail, useRuns,
 } from './data/use-company'
-import { foldRepeats, readStep } from './data/trace-step'
+import { describeTraceStep, foldRepeats, readStep, summarizeTraceValue } from './data/trace-step'
 import { runTitle } from './data/use-my-activity'
 import { useTeamUsage } from './data/use-team'
 
@@ -42,7 +42,7 @@ const RunStatusBadge = ({ status }: { status: string }) => (
 )
 
 /** How a channel is named in prose, as opposed to in a filter chip. */
-const CHANNEL_WORD: Record<string, string> = { lark: 'in a Lark chat', desktop: 'on the desktop', api: 'over the API' }
+const CHANNEL_WORD: Record<string, string> = { lark: 'in a Lark chat', desktop: 'on the desktop', web: 'in the web app', api: 'over the API' }
 
 type Props = { replay: number; toast: Toast; go: (s: string) => void }
 
@@ -66,12 +66,18 @@ export function CompanyRunDetail({ replay, go }: Props) {
   const { token, session } = useAdminAuth()
   const [r1, r2] = useStaged([240, 520], replay)
   const [open, setOpen] = useState<string | null>(null)
-  const [showRaw, setShowRaw] = useState(true)
+  const [showRaw, setShowRaw] = useState(false)
   const { data: run, isLoading, isError } = useRunDetail(runId, token)
 
   // Only a company or super admin is served raw I/O; anyone else gets the
   // summary and a locked panel, matching what the backend will actually return.
   const maySeeRaw = session?.role === 'COMPANY_ADMIN' || session?.role === 'SUPER_ADMIN'
+
+  useEffect(() => {
+    document.title = run
+      ? `${runTitle({ summary: run.latestSummary, channel: run.channel })} - AI Ops - Divo`
+      : 'Run - AI Ops - Divo'
+  }, [run])
 
   if (isLoading) {
     return (
@@ -105,11 +111,39 @@ export function CompanyRunDetail({ replay, go }: Props) {
   }
 
   const steps = run.turns.reduce((n, t) => n + t.tools.length, 0)
+  const runBriefs = run.turns.flatMap((turn, turnIndex) =>
+    turn.tools.map((tool, stepIndex) => {
+      const view = readStep(tool.n, tool.i)
+      return {
+        key: `${turnIndex}-${stepIndex}`,
+        turn: turnIndex + 1,
+        view,
+        brief: describeTraceStep(view, tool.o, Boolean(tool._error)),
+      }
+    }),
+  )
+  const visibleRunBriefs = runBriefs
+    .filter((item, index) => index < 8 || item.brief.tone === 'error')
+    .slice(0, 12)
+  const hiddenRunBriefs = Math.max(0, runBriefs.length - visibleRunBriefs.length)
+  const firstStepId = (() => {
+    for (let turnIndex = 0; turnIndex < run.turns.length; turnIndex += 1) {
+      const failedIndex = run.turns[turnIndex]!.tools.findIndex((tool) => tool._error)
+      if (failedIndex >= 0) return `${turnIndex}-${failedIndex}`
+    }
+    const turnIndex = run.turns.findIndex((turn) => turn.tools.length > 0)
+    return turnIndex >= 0 ? `${turnIndex}-0` : null
+  })()
+  const toggleRaw = () => {
+    const next = !showRaw
+    setShowRaw(next)
+    if (next && !open && firstStepId) setOpen(firstStepId)
+  }
   const turnCost = (turn: RunTurnView) => turn.model?.costUsd ?? 0
   const totalCost = run.totals.costUsd
 
   return (
-    <>
+    <div className="ws-run-detail">
       <div className="crumbs">
         <button type="button" className="btn" style={{ height: 30, padding: '0 11px' }} onClick={() => go('co-aiops')}>
           <ArrowLeft size={13} />AI Ops
@@ -117,15 +151,16 @@ export function CompanyRunDetail({ replay, go }: Props) {
       </div>
 
       <PageHeader
-        eyebrow="Run"
+        eyebrow="AI Ops"
         title={runTitle({ summary: run.latestSummary, channel: run.channel })}
-        description={`Asked by ${run.userName ?? 'someone unattributed'} · ${CHANNEL_WORD[run.channel] ?? run.channel} · ${run.entrypoint}`}
-        actions={
-          <button type="button" className="btn" onClick={() => setShowRaw((v) => !v)}>
-            {showRaw ? <Lock size={14} /> : <Search size={14} />}
-            {showRaw ? 'Hide raw' : 'Show raw'}
+        description={`Run ${run.shortId} · Asked by ${run.userName ?? 'someone unattributed'} · ${CHANNEL_WORD[run.channel] ?? run.channel} · ${run.entrypoint}`}
+        badge={<RunStatusBadge status={run.statusLabel} />}
+        actions={maySeeRaw ? (
+          <button type="button" className="btn ws-raw-toggle" aria-pressed={showRaw} onClick={toggleRaw}>
+            {showRaw ? <Lock size={14} /> : <Code2 size={14} />}
+            {showRaw ? 'Hide raw' : 'Raw'}
           </button>
-        }
+        ) : null}
       />
 
       {!r1 ? <Skel w="100%" h={26} /> : (
@@ -143,7 +178,29 @@ export function CompanyRunDetail({ replay, go }: Props) {
       )}
 
       <div className="ws-stack">
-        <Panel title="Where the money went" description="Cost per turn, in order">
+        {visibleRunBriefs.length > 0 ? (
+          <Panel title="Task summary" description="What happened, step by step">
+            <div className="ws-panel-body">
+              <ol className="ws-run-briefs">
+                {visibleRunBriefs.map(({ key, turn, view, brief }) => (
+                  <li key={key} className="ws-run-brief" data-tone={brief.tone}>
+                    <span>Turn {turn}</span>
+                    <p>{brief.text}</p>
+                    <small>{view.title}{view.operation ? ` · ${view.operation}` : ''}</small>
+                  </li>
+                ))}
+                {hiddenRunBriefs > 0 ? (
+                  <li className="ws-run-brief" data-tone="more">
+                    <span>More</span>
+                    <p>{hiddenRunBriefs} more steps are in the execution timeline below.</p>
+                  </li>
+                ) : null}
+              </ol>
+            </div>
+          </Panel>
+        ) : null}
+
+        <Panel title="Cost breakdown" description="Model cost by turn">
           <div className="ws-panel-body">
             {!r1 ? <Skel w="100%" h={40} /> : totalCost === 0 ? (
               <p className="ws-sub" style={{ lineHeight: 1.5 }}>
@@ -182,7 +239,7 @@ export function CompanyRunDetail({ replay, go }: Props) {
           </div>
         </Panel>
 
-        <Panel title="What Divo actually did">
+        <Panel title="Execution timeline" description="Steps Divo took during this run">
           <div className="ws-panel-body">
             {!r2 ? <SkelRows n={5} icon={false} /> : run.turns.length === 0 ? (
               <Empty title="No trace for this run" body="Step detail is kept for 7 days; cost and token history is kept indefinitely." />
@@ -196,9 +253,6 @@ export function CompanyRunDetail({ replay, go }: Props) {
                         <>
                           <span className="ws-turn-m">{turn.model.modelName}</span>
                           <span className="ws-turn-m">{compact(turn.model.input)} in · {compact(turn.model.output)} out</span>
-                          {/* Orange is for cost that exists. Repeating $0.00 in
-                              the brand colour on every turn spends the loudest
-                              thing on the page saying nothing happened. */}
                           {turn.model.costUsd > 0
                             ? <span className="ws-turn-c">{money(turn.model.costUsd)}</span>
                             : <span className="ws-turn-m">no charge</span>}
@@ -215,6 +269,8 @@ export function CompanyRunDetail({ replay, go }: Props) {
                       ).map(({ step: { tool, i, view }, count }) => {
                         const id = `${ti}-${i}`
                         const isOpen = open === id
+                        const outcome = summarizeTraceValue(tool.o)
+                        const brief = describeTraceStep(view, tool.o, Boolean(tool._error))
                         return (
                           <div className="ws-step" key={id} data-open={isOpen || undefined}>
                             <button
@@ -228,9 +284,6 @@ export function CompanyRunDetail({ replay, go }: Props) {
                               {view.operation ? <span className="ws-step-op">{view.operation}</span> : null}
                               {view.detail ? <span className="ws-step-d">{view.detail}</span> : null}
                               {count > 1 ? <span className="ws-step-x">×{count}</span> : null}
-                              {/* No badge when the action cannot be established.
-                                  The old one read the transport name, so every
-                                  row claimed READ — including the writes. */}
                               {tool._error
                                 ? <span className="badge b-err"><span className="dot" />Failed</span>
                                 : view.action
@@ -240,18 +293,29 @@ export function CompanyRunDetail({ replay, go }: Props) {
 
                             {isOpen ? (
                               <div className="ws-step-b">
+                                <div className="ws-step-summary">
+                                  <div className="ws-step-brief" data-tone={brief.tone}>
+                                    <span>{brief.label}</span>
+                                    <p>{brief.text}</p>
+                                  </div>
+                                  {view.detail ? (
+                                    <div>
+                                      <span>Request</span>
+                                      <p>{view.detail}</p>
+                                    </div>
+                                  ) : null}
+                                  <div>
+                                    <span>Result</span>
+                                    <p>{outcome ?? (tool._error ? 'This step failed.' : 'Completed. Raw data has the recorded payload.')}</p>
+                                  </div>
+                                </div>
                                 {!maySeeRaw ? (
                                   <div className="gate">
                                     <Lock size={13} />
                                     Raw input and output are held back by the backend unless your session carries{' '}
                                     <b>canViewRawExecutionData</b>. The summary above is what every admin sees.
                                   </div>
-                                ) : !showRaw ? (
-                                  <div className="gate">
-                                    <Lock size={13} />
-                                    Hidden by you — use <b>Show raw</b> above. Nothing is being withheld by the backend.
-                                  </div>
-                                ) : (
+                                ) : showRaw ? (
                                   <div className="raw">
                                     <div className="lbl">
                                       Input{view.viaGateway ? ' · sent through the gateway' : ''}
@@ -260,7 +324,7 @@ export function CompanyRunDetail({ replay, go }: Props) {
                                     <div className="lbl">Output</div>
                                     <pre>{JSON.stringify(tool.o, null, 2)}</pre>
                                   </div>
-                                )}
+                                ) : null}
                               </div>
                             ) : null}
                           </div>
@@ -283,7 +347,7 @@ export function CompanyRunDetail({ replay, go }: Props) {
           </div>
         </Panel>
       </div>
-    </>
+    </div>
   )
 }
 
@@ -430,26 +494,26 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
           <div className="ws-cols">
             <Panel title="Last 30 days">
               <div className="ws-panel-body">
-                {!r2 || spend.isLoading ? <Skel w="100%" h={110} /> : (
+                {!r2 || spend.isLoading ? <Skel w="100%" h={76} block /> : (
                   <Fade>
-                    <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
-                      <div>
+                    <div className="ws-person-stats">
+                      <div className="ws-person-stat">
                         <div className="ws-lbl">Cost</div>
-                        <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(spent)}</div>
+                        <div className="ws-num" style={{ color: 'var(--cur-primary)' }}>{money(spent)}</div>
                       </div>
-                      <div>
+                      <div className="ws-person-stat">
                         <div className="ws-lbl">Tasks</div>
-                        <div className="ws-num" style={{ marginTop: 8 }}>{detail?.runs ?? 0}</div>
+                        <div className="ws-num">{detail?.runs ?? 0}</div>
                       </div>
-                      <div>
+                      <div className="ws-person-stat">
                         <div className="ws-lbl">Avg per task</div>
-                        <div className="ws-num" style={{ marginTop: 8 }}>
+                        <div className="ws-num">
                           {detail?.runs ? money(detail.avgPerRun) : '—'}
                         </div>
                       </div>
                     </div>
-                    {detail?.sparkline.length ? (
-                      <div style={{ marginTop: 22 }}><Spark data={detail.sparkline} /></div>
+                    {detail?.sparkline.some((value) => value > 0) ? (
+                      <div className="ws-person-spark"><Spark data={detail.sparkline} /></div>
                     ) : null}
                   </Fade>
                 )}
@@ -457,7 +521,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
             </Panel>
 
             <Panel title="Connected accounts" description="What Divo may act through on their behalf">
-              {!r2 || directory.isLoading ? <SkelRows n={3} /> : !person ? null : (
+              {!r2 || directory.isLoading ? <SkelRows n={2} /> : !person ? null : (
                 <Fade>
                   <div className="ws-rows">
                     {/* The directory reports these two and only these two. Listing a
@@ -485,8 +549,14 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
           </div>
 
           <Panel title="Recent runs" source="companyRuns">
-            {!r2 || runs.loading ? <SkelRows n={4} icon={false} /> : runs.data.length === 0 ? (
-              <Empty title="Nothing has run for them" body="They have permissions but Divo has not done anything on their behalf." />
+            {!r2 || runs.loading ? <SkelRows n={2} icon={false} /> : runs.data.length === 0 ? (
+              <div className="ws-empty-mini">
+                <span className="ic"><CircleAlert size={15} /></span>
+                <div>
+                  <b>No runs yet</b>
+                  <p>Permissions are set, but Divo has not acted for them.</p>
+                </div>
+              </div>
             ) : (
               <Fade>
                 <div className="ws-rows">

@@ -29,7 +29,6 @@ import type { PermissionService } from '../../application/permissions/permission
 import type { SkillCatalogService } from '../../application/skills/skill-catalog.service';
 import type { SkillAccessEnforcementPort } from '../../application/skills/skill-access.port';
 import type { ManagerPersonaRuntimeService } from '../../application/persona-learning/manager-persona-runtime.service';
-import type { MemoryService } from '../../application/knowledge/semantic-memory.port';
 import { getCanonicalPersonalMemorySnapshot } from '../../application/knowledge/knowledge-resource-query.service';
 import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
 import { zohoServicesForScopes } from '../../domain/zoho/zoho-scope';
@@ -75,7 +74,6 @@ export interface DesktopAuthRoutesDeps {
   skillCatalog:           SkillCatalogService;
   skillAccessEnforcement: SkillAccessEnforcementPort;
   managerPersonaRuntime:  ManagerPersonaRuntimeService;
-  memory?: Pick<MemoryService, 'getPersonalSnapshot'>;
   logger:                 Logger;
   env:                    TypedEnv;
   memberJwtSecret:        string;
@@ -1895,22 +1893,23 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
     }
-    const personalMemoryLoad: Promise<string[]> = deps.memory
-      ? deps.memory.getPersonalSnapshot({
+    const personalMemoryLoad = getCanonicalPersonalMemorySnapshot(
+      deps.prisma,
+      {
         userId,
         companyId,
         limit: 12,
         maxFactChars: 500,
         maxTotalChars: 2_200,
-      }).catch((error: unknown) => {
-        log.warn('runtime_context.personal_memory_failed', {
-          error: String(error),
-          userId,
-          companyId,
-        });
-        return [];
-      })
-      : Promise.resolve([]);
+      },
+    ).catch((error: unknown) => {
+      log.warn('runtime_context.personal_memory_failed', {
+        error: String(error),
+        userId,
+        companyId,
+      });
+      return [];
+    });
 
     if (!departmentId) {
       res.json({

@@ -61,6 +61,7 @@ const PITCH: Record<Provider, string> = {
 }
 
 const DISMISSED_KEY = 'divo.home.dismissed'
+const RUN_CHANNEL_LABEL: Record<string, string> = { lark: 'Lark', desktop: 'Desktop', web: 'Web', api: 'API' }
 
 /** Cards the reader has closed. Kept locally — nothing on the backend stores this. */
 function useDismissed() {
@@ -529,7 +530,7 @@ function RunList({ runs }: { runs: MyRun[] }) {
                 ) : null}
               </b>
               <p>
-                {ago(r.startedAt)} · {r.channel === 'lark' ? 'Lark' : 'Desktop'}
+                {ago(r.startedAt)} · {RUN_CHANNEL_LABEL[r.channel] ?? r.channel}
                 {duration ? ` · ${duration}` : ''}
                 {r.errorMessage ? ` · ${r.errorMessage}` : ''}
               </p>

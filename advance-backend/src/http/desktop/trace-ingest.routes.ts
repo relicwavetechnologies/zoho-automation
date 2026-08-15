@@ -128,6 +128,83 @@ function capValue(value: unknown, cap: number): unknown {
   return { _truncated: true, _bytes: text.length, preview: text.slice(0, cap) };
 }
 
+const RECALLED_KNOWLEDGE_BLOCK = /<recalled_knowledge\b[^>]*>[\s\S]*?<\/recalled_knowledge>/gi;
+const INTERNAL_CONTEXT_SUMMARY = /\b(Backend-recalled (reference|personal) facts|RETRIEVAL_STATUS:|RETRIEVAL_COVERAGE:|CONFLICT_PRECEDENCE:)\b/i;
+const XMLISH_TAG = /<\/?[a-z][a-z0-9_-]*(\s[^>]*)?>/i;
+const ATTACHED_FILES = /\[ATTACHED_FILES\]\s*\[[\s\S]*?\]\s*/i;
+const QUOTED_FILE_NAME = /"name"\s*:\s*"([^"]+)"/i;
+const PATH_FILE_NAME = /\/([^/"]+\.[a-z0-9]{2,6})(?=["\s,]|$)/i;
+const DOMAIN = /([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)/i;
+const TITLE_MAX = 96;
+const FILE_WORDS = new Set(['api', 'crm', 'csv', 'gst', 'hdfc', 'hsbc', 'id', 'irdai', 'pdf', 'qa', 'seo', 'tds']);
+
+function compactRunTitle(text: string): string | undefined {
+  const clean = text.replace(/\s+/g, ' ').replace(/[.?!,:;]+$/g, '').trim();
+  if (!clean) return undefined;
+  return clean.length > TITLE_MAX ? `${clean.slice(0, TITLE_MAX - 1).trimEnd()}…` : clean;
+}
+
+function titleCaseFileName(raw: string): string | undefined {
+  const decoded = (() => { try { return decodeURIComponent(raw); } catch { return raw; } })();
+  const leaf = decoded.split(/[\\/]/).pop()?.trim();
+  if (!leaf) return undefined;
+  const extension = leaf.match(/\.([a-z0-9]{2,6})$/i)?.[1]?.toLowerCase();
+  const base = leaf
+    .replace(/\.[a-z0-9]{2,6}$/i, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\b(divo|test\d*)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!base) return extension ? extension.toUpperCase() : undefined;
+  const words = base.split(' ').map((word) => {
+    const lower = word.toLowerCase();
+    if (FILE_WORDS.has(lower)) return lower.toUpperCase();
+    return lower.length <= 2 ? lower : `${lower[0]!.toUpperCase()}${lower.slice(1)}`;
+  });
+  if (extension) words.push(extension.toUpperCase());
+  return compactRunTitle(words.join(' '));
+}
+
+function promptTitleFromText(text: string): string | undefined {
+  const seoDomain = text.match(/\bdaily\s+SEO\s+competitive\s+report\s+(?:on|for)\s+/i)
+    ? text.match(DOMAIN)?.[1]
+    : undefined;
+  if (seoDomain) return `Daily SEO report for ${seoDomain.toLowerCase()}`;
+
+  const trimmed = text
+    .replace(/^Task:\s*/i, '')
+    .replace(/^You are running read-only Divo governed research for\s+/i, '')
+    .replace(/^a\s+/i, '')
+    .replace(/\bExecute exactly\b[\s\S]*$/i, '')
+    .replace(/\bUse the\b[\s\S]*$/i, '')
+    .trim();
+  if (!trimmed || /^[{\[]/.test(trimmed)) return undefined;
+  if (/^(asked in lark|something you asked divo)$/i.test(trimmed)) return undefined;
+  return compactRunTitle(trimmed);
+}
+
+function attachedFileTitle(text: string): string | undefined {
+  if (!/\[ATTACHED_FILES\]/i.test(text)) return undefined;
+  const afterManifest = text.replace(ATTACHED_FILES, ' ').trim();
+  if (afterManifest && !afterManifest.startsWith('{') && !afterManifest.startsWith('[')) {
+    const promptTitle = promptTitleFromText(afterManifest);
+    if (promptTitle) return promptTitle;
+  }
+  const named = text.match(QUOTED_FILE_NAME)?.[1];
+  const file = named && /\.[a-z0-9]{2,6}$/i.test(named) ? named : text.match(PATH_FILE_NAME)?.[1] ?? named;
+  const label = file ? titleCaseFileName(file) : undefined;
+  return label ? `Review ${label}` : 'Review attached files';
+}
+
+function publicRunSummary(summary: string | undefined, fallback?: string): string | undefined {
+  const text = summary
+    ?.replace(RECALLED_KNOWLEDGE_BLOCK, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text || INTERNAL_CONTEXT_SUMMARY.test(text) || XMLISH_TAG.test(text)) return fallback;
+  return attachedFileTitle(text) ?? promptTitleFromText(text) ?? fallback;
+}
+
 // ─── Ingest core (exported for testing) ─────────────────────────────────────
 
 export type TraceBatch = z.infer<typeof batchSchema>;
@@ -452,6 +529,14 @@ async function persistEvent(
     }
 
     // Boundary events (run/turn start/end).
+    const boundarySummary = protectedRun
+      ? ev.kind === 'run_end'
+        ? ev.status === 'error'
+          ? 'Protected Shopify run failed; details redacted'
+          : 'Protected Shopify run completed; details redacted'
+        : 'Protected Shopify run summary redacted'
+      : publicRunSummary(ev.summary, ev.kind === 'run_end' ? fallbackRunSummary : undefined);
+
     await runs.appendEvent({
       executionId: ctx.executionId,
       sequence:    ev.seq,
@@ -459,9 +544,7 @@ async function persistEvent(
       eventType:   ev.kind,
       actorType:   'engine',
       title:       ev.title ?? ev.kind,
-      ...(protectedRun
-        ? { summary: 'Protected Shopify run summary redacted' }
-        : ev.summary ? { summary: ev.summary } : {}),
+      ...(boundarySummary ? { summary: boundarySummary } : {}),
       ...(ev.status  ? { status:  ev.status }  : {}),
     });
 
@@ -470,12 +553,12 @@ async function persistEvent(
         await runs.fail(
           ctx.executionId,
           'pi_run_error',
-          protectedRun ? 'Protected Shopify run failed; details redacted' : ev.summary ?? 'Run failed',
+          protectedRun ? 'Protected Shopify run failed; details redacted' : boundarySummary ?? 'Run failed',
         );
       } else {
         await runs.complete(
           ctx.executionId,
-          protectedRun ? 'Protected Shopify run completed; details redacted' : ev.summary ?? fallbackRunSummary,
+          boundarySummary,
         );
       }
     }
