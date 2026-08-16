@@ -6,6 +6,7 @@ import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { ChannelPlanStepStatus, InteractiveAction } from '../../domain/channel/outbound';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
+import { boundProgressText, PROGRESS_LIST_LIMITS } from './progress-limits';
 import { isRuntimeChannel, type RuntimeChannel } from '../../domain/channel/runtime-channel';
 import { webThreadTitle } from '../../domain/channel/web-thread';
 import { canonicalToolIdForToolName } from '../../domain/tools/tool-id';
@@ -1776,30 +1777,17 @@ function renderRecalledKnowledge(
   ].join('\n');
 }
 
+/**
+ * An identifier off the wire, clamped.
+ *
+ * Clamped rather than bounded: these are matched, not read, so they must not
+ * pick up the ellipsis `boundProgressText` adds — a truncated id that looks
+ * truncated still compares unequal to the row it belongs to.
+ */
 function safeProgressString(value: unknown, maxLength = 120): string | undefined {
   if (typeof value !== 'string') return undefined;
   const normalized = value.replace(/\s+/g, ' ').trim();
   return normalized ? normalized.slice(0, maxLength) : undefined;
-}
-
-/**
- * The same guard, keeping the end of the value instead of the beginning.
- *
- * Only reasoning is read this way, and only because reasoning is the one thing
- * on this wire that is re-sent in full and grows: cut it from the front and the
- * value stops changing once it passes the bound, so the thinking window on the
- * far end shows one static paragraph for the rest of the run. The reader
- * concludes the agent has hung. See `progressThought` in `runtime-progress.mjs`,
- * which is where this is normally decided; this is the backstop.
- */
-function safeProgressTail(value: unknown, maxLength: number): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const normalized = value.replace(/\s+/g, ' ').trim();
-  if (!normalized) return undefined;
-  if (normalized.length <= maxLength) return normalized;
-  const tail = normalized.slice(-(maxLength - 1));
-  // On a word boundary: a window opening mid-word reads as corrupted.
-  return `…${tail.slice(tail.indexOf(' ') + 1)}`;
 }
 
 const STEP_STATUSES: ReadonlySet<string> = new Set([
@@ -1823,12 +1811,12 @@ function safeStepStatus(value: unknown, fallback: ChannelPlanStepStatus): Channe
 function safeProgressDetail(event: Record<string, unknown>): RunProgressDetail {
   const rawChildren = event['children'];
   const children = Array.isArray(rawChildren)
-    ? rawChildren.slice(0, MAX_PROGRESS_CHILDREN).flatMap((entry): RunProgressChild[] => {
+    ? rawChildren.slice(0, PROGRESS_LIST_LIMITS.children).flatMap((entry): RunProgressChild[] => {
         const row = entry as Record<string, unknown> | null;
-        const label = safeProgressString(row?.['label'], 80);
+        const label = boundProgressText(row?.['label'], 'label');
         if (!label) return [];
-        const detail = safeProgressString(row?.['detail'], 80);
-        const elapsed = safeProgressString(row?.['elapsed'], 16);
+        const detail = boundProgressText(row?.['detail'], 'detail');
+        const elapsed = boundProgressText(row?.['elapsed'], 'elapsed');
         return [{
           label,
           status: safeStepStatus(row?.['status'], 'running'),
@@ -1840,15 +1828,15 @@ function safeProgressDetail(event: Record<string, unknown>): RunProgressDetail {
 
   const rawTodos = event['todos'];
   const todos = Array.isArray(rawTodos)
-    ? rawTodos.slice(0, MAX_PROGRESS_TODOS).flatMap((entry): RunProgressTodo[] => {
+    ? rawTodos.slice(0, PROGRESS_LIST_LIMITS.todos).flatMap((entry): RunProgressTodo[] => {
         const row = entry as Record<string, unknown> | null;
-        const title = safeProgressString(row?.['title'], 80);
+        const title = boundProgressText(row?.['title'], 'label');
         if (!title) return [];
         return [{ title, status: safeStepStatus(row?.['status'], 'pending') }];
       })
     : [];
 
-  const detail = safeProgressString(event['detail'], 64);
+  const detail = boundProgressText(event['detail'], 'detail');
 
   return {
     ...(children.length > 0 ? { children } : {}),
@@ -1888,7 +1876,7 @@ export function parseProgressEvent(value: unknown): RunProgressEvent | undefined
   }
   if (type === 'starting') {
     const stage = event['stage'];
-    const label = safeProgressString(event['label']);
+    const label = boundProgressText(event['label'], 'label');
     if ((stage === 'workspace' || stage === 'container') && label) {
       return { type, stage, label };
     }
@@ -1898,17 +1886,13 @@ export function parseProgressEvent(value: unknown): RunProgressEvent | undefined
   // every other string crossing this boundary is — the container is trusted to
   // run the work, not to decide how much of a chat card it may occupy.
   if (type === 'say' || type === 'thought') {
-    /* Reasoning is a paragraph, not a sentence, and it is not on a card — so it
-       keeps the container's own larger bound. Capping it at a `say`'s 200 here
-       would undo that on the way in and freeze the row at its first two
-       sentences, which is the failure this pair of numbers exists to avoid. */
-    /* A thought keeps its end, everything else keeps its beginning — see
-       `safeProgressTail`. The container already trims to this bound, so this
-       normally cuts nothing; it matters on the day the two bounds disagree,
-       because cutting a thought from the front is what freezes the window. */
-    const text = type === 'thought'
-      ? safeProgressTail(event['text'], 1_200)
-      : safeProgressString(event['text'], 200);
+    /* Which end of a thought survives is the bound's own property, not a
+       decision made here: a thought keeps its end and everything else keeps its
+       beginning, written down once in `progress-limits.ts` for both sides of
+       the wire. The container has already applied the same rule, so this
+       normally cuts nothing — it matters on the day the two copies of that
+       table disagree, and the parity test exists so that day is loud. */
+    const text = boundProgressText(event['text'], type === 'thought' ? 'thought' : 'say');
     if (!text) return undefined;
     const rawIndex = event['index'];
     return {
@@ -1922,7 +1906,7 @@ export function parseProgressEvent(value: unknown): RunProgressEvent | undefined
   if (type === 'tool_start') {
     const callId = safeProgressString(event['callId'], 100);
     const toolName = safeProgressString(event['toolName'], 80);
-    const detail = safeProgressString(event['detail'], 64);
+    const detail = boundProgressText(event['detail'], 'detail');
     if (!callId || !toolName) return undefined;
     // A governed call is identified by the tool it ran. The container sends the
     // id explicitly only when its arguments carry one; typed tools do not, and

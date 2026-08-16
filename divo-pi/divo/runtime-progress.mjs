@@ -2,7 +2,15 @@
  * Pure projection from Pi's internal event vocabulary to Divo's bounded
  * runtime progress protocol. No Docker, lease, process, or transport state
  * belongs in this module.
+ *
+ * Bounded, but it does not decide the bounds — `runtime-progress-limits.mjs`
+ * does, and the backend reads the same table from its own mirror of it.
  */
+import {
+	boundedProgressText,
+	PROGRESS_BOUNDS,
+	PROGRESS_LIST_LIMITS,
+} from "./runtime-progress-limits.mjs";
 
 function progressToolId(toolName, args) {
 	const direct = args?.toolId;
@@ -22,63 +30,23 @@ export function isGovernedDivoTool(toolName) {
 	return typeof toolName === "string" && toolName.startsWith("divo_");
 }
 
-const PROGRESS_LABEL_MAX = 80;
-const PROGRESS_CHILDREN_MAX = 8;
-const PROGRESS_TODOS_MAX = 12;
-
-const PROGRESS_DETAIL_MAX = 64;
-const PROGRESS_SAY_MAX = 200;
 /**
- * Reasoning gets far more room than a sentence, because it is not one.
+ * Every bound this projection applies comes from the table, including which end
+ * of the value survives. Nothing here picks a number.
  *
- * 200 was the right bound for a `say`: a Lark card shows a line of what the
- * model told you, and more would take the card over. A thought is neither of
- * those things — it is not on a card at all, and it is routinely a paragraph.
+ * It used to pick six, and the far side of the wire picked six more; two pairs
+ * disagreed. See `runtime-progress-limits.mjs` for why that was harmless right
+ * up until it was not.
  */
-const PROGRESS_THOUGHT_MAX = 1200;
+const bound = (value, name) => boundedProgressText(value, PROGRESS_BOUNDS[name]);
 
-function progressLabel(value, maxLength = PROGRESS_LABEL_MAX) {
-	if (typeof value !== "string") return undefined;
-	const flat = value.replace(/\s+/g, " ").trim();
-	if (!flat) return undefined;
-	return flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat;
-}
-
-/**
- * A thought, kept from its **end** rather than its beginning.
- *
- * Everything else here is truncated from the front, and for everything else
- * that is right: a label, a tool detail and a `say` are each a whole short
- * thing, and the front of one is the useful part.
- *
- * Reasoning is not. It accumulates from the start of the block and is re-sent
- * in full on every delta, so truncating it from the front means that once it
- * passes the bound the value **stops changing for the rest of the run**. It is
- * not a slow window, it is a frozen one: a model that reasoned for 80 seconds
- * and 21,000 characters published the same opening paragraph roughly eighty
- * times, and the surface faithfully drew it. The reader sees a run that has
- * plainly stopped, and reaches for the stop button.
- *
- * Raising the bound only moves where it freezes, which is what happened last
- * time — 200 became 1200, and 1200 froze after the first six percent instead of
- * the first one. The end of the text is the part that is still moving, so that
- * is the part that crosses.
- *
- * The leading ellipsis is load-bearing. It says the window is a view onto
- * something longer rather than the whole of what the model thought.
- */
-function progressThought(value) {
-	if (typeof value !== "string") return undefined;
-	const flat = value.replace(/\s+/g, " ").trim();
-	if (!flat) return undefined;
-	if (flat.length <= PROGRESS_THOUGHT_MAX) return flat;
-	const tail = flat.slice(-(PROGRESS_THOUGHT_MAX - 1));
-	// Start on a word boundary. Cutting to a fixed length lands mid-word, and a
-	// window whose first word is a fragment reads as corrupted rather than
-	// scrolled. `indexOf` of a missing space is -1, so a single unbroken run of
-	// characters keeps the whole tail rather than losing all of it.
-	return `…${tail.slice(tail.indexOf(" ") + 1)}`;
-}
+/* Identifiers, clamped rather than bounded: they are matched on the far side,
+   never read, so they must not pick up the ellipsis every bound in the table
+   ends with. Neither has ever come close to its clamp. */
+const CALL_ID_MAX = 100;
+const TOOL_NAME_MAX = 80;
+const safeToolName = (value) =>
+	typeof value === "string" && value ? value.slice(0, TOOL_NAME_MAX) : "tool";
 
 /**
  * What a tool call is about, taken from the arguments it was called with.
@@ -97,14 +65,14 @@ function progressToolDetail(toolName, args) {
 	const fileName = (value) =>
 		typeof value === "string" ? value.split("/").filter(Boolean).at(-1) : undefined;
 
-	if (toolName === "bash") return progressLabel(args.command, PROGRESS_DETAIL_MAX);
+	if (toolName === "bash") return bound(args.command, "detail");
 	if (toolName === "read" || toolName === "write" || toolName === "edit") {
-		return progressLabel(fileName(args.file_path ?? args.path), PROGRESS_DETAIL_MAX);
+		return bound(fileName(args.file_path ?? args.path), "detail");
 	}
 	// The tool id already travels as its own field, and the backend holds the
 	// table that turns it into a product name — so only the operation goes here.
 	// Sending the raw id too would print it twice, untranslated.
-	if (isGovernedDivoTool(toolName)) return progressLabel(governedOperation(args), PROGRESS_DETAIL_MAX);
+	if (isGovernedDivoTool(toolName)) return bound(governedOperation(args), "detail");
 	return undefined;
 }
 
@@ -218,15 +186,15 @@ function progressElapsedLabel(value) {
 function progressChildren(details) {
 	const children = details?.children;
 	if (!Array.isArray(children) || children.length === 0) return undefined;
-	const rows = children.slice(0, PROGRESS_CHILDREN_MAX).flatMap((child) => {
-		const label = progressLabel(child?.role);
+	const rows = children.slice(0, PROGRESS_LIST_LIMITS.children).flatMap((child) => {
+		const label = bound(child?.role, "label");
 		if (!label) return [];
 		const status = CHILD_STATE_STATUS[child?.state] ?? "running";
-		const detail = progressLabel(child?.task, PROGRESS_DETAIL_MAX);
+		const detail = bound(child?.task, "detail");
 		// Only while it is going. A finished child's elapsed time is a number
 		// nobody asked for, and the run's own duration already covers the turn.
 		const elapsed = child?.state === "running"
-			? progressElapsedLabel(child?.startedAt)
+			? bound(progressElapsedLabel(child?.startedAt), "elapsed")
 			: undefined;
 		return [{
 			label,
@@ -242,8 +210,8 @@ function progressChildren(details) {
 function progressTodos(details) {
 	const items = details?.items;
 	if (!Array.isArray(items) || items.length === 0) return undefined;
-	const rows = items.slice(0, PROGRESS_TODOS_MAX).flatMap((item) => {
-		const title = progressLabel(item?.title);
+	const rows = items.slice(0, PROGRESS_LIST_LIMITS.todos).flatMap((item) => {
+		const title = bound(item?.title, "label");
 		if (!title) return [];
 		const status = typeof item?.status === "string" ? item.status : "pending";
 		return [{ title, status }];
@@ -265,7 +233,7 @@ function progressDetail(details) {
 	const todos = progressTodos(details);
 	if (todos) return { todos };
 	// Some tools can name their work only after returning structured details.
-	const name = progressLabel(details.name, PROGRESS_DETAIL_MAX);
+	const name = bound(details.name, "detail");
 	if (name && typeof details.revision === "number") return { detail: name };
 	return undefined;
 }
@@ -276,12 +244,12 @@ export function projectRuntimeProgress(event) {
 		return { type: "thinking" };
 	}
 	if (event.type === "tool_execution_start") {
-		const toolName = typeof event.toolName === "string" ? event.toolName : "tool";
+		const toolName = safeToolName(event.toolName);
 		const toolId = progressToolId(toolName, event.args);
 		const detail = progressToolDetail(toolName, event.args);
 		return {
 			type: "tool_start",
-			callId: String(event.toolCallId ?? ""),
+			callId: String(event.toolCallId ?? "").slice(0, CALL_ID_MAX),
 			toolName,
 			...(toolId ? { toolId } : {}),
 			...(detail ? { detail } : {}),
@@ -294,8 +262,8 @@ export function projectRuntimeProgress(event) {
 		if (!detail) return undefined;
 		return {
 			type: "tool_progress",
-			callId: String(event.toolCallId ?? ""),
-			toolName: typeof event.toolName === "string" ? event.toolName : "tool",
+			callId: String(event.toolCallId ?? "").slice(0, CALL_ID_MAX),
+			toolName: safeToolName(event.toolName),
 			...detail,
 		};
 	}
@@ -305,8 +273,8 @@ export function projectRuntimeProgress(event) {
 		// under a parent already marked done.
 		return {
 			type: "tool_end",
-			callId: String(event.toolCallId ?? ""),
-			toolName: typeof event.toolName === "string" ? event.toolName : "tool",
+			callId: String(event.toolCallId ?? "").slice(0, CALL_ID_MAX),
+			toolName: safeToolName(event.toolName),
 			isError: event.isError === true,
 			...(progressDetail(event.result?.details) ?? {}),
 		};
@@ -319,9 +287,9 @@ export function projectRuntimeProgress(event) {
 		// doing. What the model says between its tool calls is the only thing on
 		// the card written for a person rather than derived from one, so it is
 		// forwarded rather than flattened into a bare "writing" flag.
-		const said = progressLabel(
+		const said = bound(
 			settledSentences(assistantBlockText(event.assistantMessageEvent)),
-			PROGRESS_SAY_MAX,
+			"say",
 		);
 		if (!said) return { type: "writing" };
 		return {
@@ -352,8 +320,9 @@ export function projectRuntimeProgress(event) {
 		 * So it leaves as its own event kind, capped and sentence-cut exactly
 		 * like `say`, and each surface decides. The Lark card drops it.
 		 */
-		const thought = progressThought(
+		const thought = bound(
 			settledSentences(assistantThinkingText(event.assistantMessageEvent)),
+			"thought",
 		);
 		if (!thought) return { type: "thinking" };
 		return {
