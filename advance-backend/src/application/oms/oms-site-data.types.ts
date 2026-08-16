@@ -334,6 +334,7 @@ function sanitizeOneWebsiteInput(input: string): OmsSanitizedWebsiteRow {
     ? { host: emailHost, kind: 'email' as const }
     : hostFromUrlOrHostname(candidate);
   if (!parsed) return { input, status: 'invalid', reason: 'Not a valid email, URL, or website hostname.' };
+  if ('reason' in parsed) return { input, status: 'invalid', reason: parsed.reason };
   const hostname = parsed.host.replace(/\.$/, '').toLowerCase();
   if (!website.safeParse(hostname).success) {
     return { input, status: 'invalid', reason: 'Hostname must be a public domain, not an IP, localhost, or malformed value.' };
@@ -359,16 +360,22 @@ function stripWrapper(value: string): string {
 }
 
 function hostFromEmail(value: string): string | undefined {
-  const address = value.replace(/^mailto:/i, '');
+  const isMailto = /^mailto:/i.test(value);
+  const address = isMailto
+    ? value.replace(/^mailto:/i, '').split(/[?#]/, 1)[0] ?? ''
+    : value;
   const match = /^[^@\s]+@([^@\s/?#]+)$/i.exec(address);
   return match?.[1];
 }
 
-function hostFromUrlOrHostname(value: string): { host: string; kind: 'url' | 'hostname' } | undefined {
+function hostFromUrlOrHostname(value: string): { host: string; kind: 'url' | 'hostname'; reason?: never } | { reason: string } | undefined {
   const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+  if (hasScheme && !/^https?:\/\//i.test(value)) return { reason: 'Only http and https URLs are accepted.' };
   const looksUrl = hasScheme || /[/?#]/.test(value);
   try {
     const url = new URL(hasScheme ? value : `https://${value}`);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return { reason: 'Only http and https URLs are accepted.' };
+    if (url.username || url.password) return { reason: 'URLs with usernames or passwords are not accepted.' };
     return url.hostname ? { host: url.hostname, kind: looksUrl ? 'url' : 'hostname' } : undefined;
   } catch {
     return undefined;

@@ -52,7 +52,7 @@ export const createOmsSiteDataTool = (deps: {
   description: 'Sanitize OMS website inputs or search the company-approved OMS website inventory through a governed, read-only backend capability.',
   parameterDocs: [
     'operation: sanitize_website_inputs, search_sites, get_site_profiles, or list_catalog_values.',
-    'sanitize_website_inputs: pass pasted emails, URLs, or hostnames in inputs; returns deterministic OMS-ready website hostnames without calling OMS.',
+    'sanitize_website_inputs: pass pasted emails, http/https URLs, or hostnames in inputs; returns deterministic OMS-ready website hostnames without calling OMS. Credential-bearing URLs and non-web URL schemes are rejected.',
     'search_sites: use one or more vetted website, niche, classification, price, quality, traffic, or authority criteria; returns the standard inventory view.',
     'search_sites quality filters: maxSpamScore (lower is better, use it for clean/safe site requests), minDomainRating, minDomainAuthority, minPageAuthority.',
     'search_sites spam score: OMS stores "never measured" as a negative spam score. Setting maxSpamScore, or ranking cleanest-first, automatically excludes those unmeasured sites, so such a result is the set of sites with a MEASURED spam score, not every matching site. Set minSpamScore yourself to override.',

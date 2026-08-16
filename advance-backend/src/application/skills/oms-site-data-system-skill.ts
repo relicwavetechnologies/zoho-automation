@@ -19,7 +19,7 @@ Use this skill only for the company-approved OMS website inventory capability an
 
 1. Resolve this skill before OMS inventory work. Use the returned Divo tool recipe exactly; never call the OMS webhook, database, curl, browser automation, or a local API key directly.
 2. Use the operation that matches the request:
-   - \`sanitize_website_inputs\` for pasted emails, URLs, or hostnames that need to become OMS-ready website hostnames before lookup. This operation is deterministic and does not call OMS.
+   - \`sanitize_website_inputs\` for pasted emails, HTTP(S) URLs, or hostnames that need to become OMS-ready website hostnames before lookup. This operation is deterministic and does not call OMS. It rejects credential-bearing URLs and non-web URL schemes.
    - \`search_sites\` for a filtered shortlist by niche, content category, country, quality, classification, price, traffic, or authority.
    - \`get_site_profiles\` for 1–20 exact bare website hostnames.
    - \`list_catalog_values\` to inspect available values before narrowing a shortlist.

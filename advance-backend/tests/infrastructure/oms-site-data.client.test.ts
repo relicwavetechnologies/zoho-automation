@@ -22,6 +22,54 @@ describe('OmsSiteDataClient', () => {
     ]);
   });
 
+  it('handles real pasted email and URL shapes without following embedded URLs', () => {
+    const rows = sanitizeOmsWebsiteInputs([
+      ' <Sales@Example.COM>, ',
+      'mailto:support@Example.org?subject=Hi',
+      'HTTP://WWW.Example.NET./path?utm=1',
+      'example.com:443/path',
+      'example.com/path?redirect=https://evil.com',
+      'sales@example.com, admin@test.co.in; https://foo.com/a',
+    ]);
+
+    assert.deepEqual(rows, [
+      { input: 'Sales@Example.COM', status: 'sanitized', inputKind: 'email', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'mailto:support@Example.org?subject=Hi', status: 'sanitized', inputKind: 'email', hostname: 'example.org', website: 'www.example.org' },
+      { input: 'HTTP://WWW.Example.NET./path?utm=1', status: 'sanitized', inputKind: 'url', hostname: 'www.example.net', website: 'www.example.net' },
+      { input: 'example.com:443/path', status: 'sanitized', inputKind: 'url', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'example.com/path?redirect=https://evil.com', status: 'sanitized', inputKind: 'url', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'sales@example.com', status: 'sanitized', inputKind: 'email', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'admin@test.co.in', status: 'sanitized', inputKind: 'email', hostname: 'test.co.in', website: 'www.test.co.in' },
+      { input: 'https://foo.com/a', status: 'sanitized', inputKind: 'url', hostname: 'foo.com', website: 'www.foo.com' },
+    ]);
+  });
+
+  it('rejects unsafe or malformed website inputs instead of guessing a host', () => {
+    const rows = sanitizeOmsWebsiteInputs([
+      'john@@example.com',
+      'https://user:pass@example.com/path',
+      'https://example.com@evil.com/path',
+      'ftp://example.com/file',
+      'javascript://example.com/%0aalert',
+      'https://127.0.0.1',
+      'http://localhost:3000',
+      'www.-bad.com',
+      'foo..com',
+    ]);
+
+    assert.deepEqual(rows, [
+      { input: 'john@@example.com', status: 'invalid', reason: 'URLs with usernames or passwords are not accepted.' },
+      { input: 'https://user:pass@example.com/path', status: 'invalid', reason: 'URLs with usernames or passwords are not accepted.' },
+      { input: 'https://example.com@evil.com/path', status: 'invalid', reason: 'URLs with usernames or passwords are not accepted.' },
+      { input: 'ftp://example.com/file', status: 'invalid', reason: 'Only http and https URLs are accepted.' },
+      { input: 'javascript://example.com/%0aalert', status: 'invalid', reason: 'Only http and https URLs are accepted.' },
+      { input: 'https://127.0.0.1', status: 'invalid', reason: 'Hostname must be a public domain, not an IP, localhost, or malformed value.' },
+      { input: 'http://localhost:3000', status: 'invalid', reason: 'Hostname must be a public domain, not an IP, localhost, or malformed value.' },
+      { input: 'www.-bad.com', status: 'invalid', reason: 'Hostname must be a public domain, not an IP, localhost, or malformed value.' },
+      { input: 'foo..com', status: 'invalid', reason: 'Hostname must be a public domain, not an IP, localhost, or malformed value.' },
+    ]);
+  });
+
   it('uses the fixed POST contract, exact op filter key, and no browser/session headers', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new OmsSiteDataClient({
