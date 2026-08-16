@@ -58,7 +58,7 @@ function HtmlDocument({ body }: { body: string }) {
       // control that matters — see the note in `document.ts`.
       sandbox={DOCUMENT_SANDBOX}
       srcDoc={buildDocument(body, theme)}
-      className="h-full w-full border-0 bg-page"
+      className="h-full w-full border-0 bg-canvas"
     />
   )
 }

@@ -1,111 +1,18 @@
 /*
-  Chat surface token bridge.
+  The chat surface's own CSS: motion, the loaders, the answer's table and
+  document type. No colour is decided here.
 
-  The `/chat` primitives are ported from the Beautiful UI component set, which
-  ships its own `--ink / --surface / --line` palette. **None of those values
-  are used here.** Every token below is an alias onto a `--cur-*` token that
-  `cursor.css` already defines, so the chat surface is not themed at all — it
-  inherits the workspace's theme in both light and dark, and re-skinning the
-  admin re-skins the chat for free.
+  It used to open with a sixty-line token bridge aliasing every `--bui-*` name
+  onto a `--cur-*` value, because the workspace owned the greys and the chat had
+  to borrow them. `palette.css` now owns them and both surfaces read from it, so
+  the bridge is gone rather than reversed — there is no longer a direction for
+  it to point in.
 
-  Three wrong turns on the way here, all worth recording because each looked
-  reasonable at the time.
-
-  Copying the library's greys in verbatim made the chat a cool-grey island
-  inside the admin — the same product in two colour temperatures depending on
-  the route.
-
-  Rebuilding those greys by hand was worse: hand-picked warm greys read as
-  brown at 12px, and with Cursor Orange promoted to a general accent, every
-  chip, dot and chart line picked up a tint until the surface looked sepia.
-
-  Aliasing onto the shadcn tokens in `global.css` looked like the fix and was
-  not. Those are the WARM set, kept for pages that were never designed. The
-  workspace runs on `--cur-*`, which `cursor.css` deliberately makes true
-  neutral grey — "so the one warm thing on screen is the brand". Pointing at
-  `--background` put a brown chat surface next to a `#0d0d0d` sidebar.
-
-  So: the scale is the library's — three ink weights and two hairlines, finer
-  than the shadcn set, which is what a dense trace needs. Every value is the
-  workspace's.
-
-  One rule on top: orange is the brand and it stays scarce. It is not the
-  accent here. Nothing in the chat surface is orange, because on this screen
-  every step, chip and dot would qualify and none of them are the brand.
+  Worth keeping from that block, because the reasoning outlived it: the chat's
+  accent is ink, not the brand. On this screen every step, chip and dot would
+  qualify as "the important one" and none of them is Divo. Orange marks the
+  product; blue marks the one thing on a line that is clickable.
 */
-
-.cur {
-  /* Surfaces — the workspace's own planes, canvas → soft → surface. */
-  --bui-page: var(--cur-canvas);
-  --bui-canvas: var(--cur-canvas);
-  --bui-surface: var(--cur-surface);
-  --bui-inset: var(--cur-canvas-soft);
-  --bui-hover: var(--cur-canvas-soft);
-  --bui-hover-2: var(--cur-surface-strong);
-  --bui-field: var(--cur-surface-strong);
-
-  /* Ink. The app already defines four weights; the trace uses three of them,
-     so nothing here is a colour someone picked for this screen. */
-  --bui-ink: var(--cur-ink);
-  --bui-ink-2: var(--cur-body);
-  --bui-ink-3: var(--cur-muted);
-
-  --bui-line: var(--cur-hairline);
-  --bui-line-strong: var(--cur-hairline-strong);
-
-  /* Semantic, straight off the app's tokens. */
-  --bui-green: var(--cur-success);
-  --bui-red: var(--cur-error);
-
-  /* The accent is ink, not the brand — see the note above. */
-  --bui-accent-tint: var(--cur-surface-strong);
-  --bui-accent-ink: var(--cur-ink);
-
-  /* A link is the one thing on this surface that has to look clickable before
-     it is read, so it is the one thing that takes the app's blue accent rather
-     than an ink weight. Not a new colour: `--cur-accent` is what the sidebar's
-     active rail already uses, and `cursor.css` defines it in both themes. The
-     scarcity rule above is about orange, the brand — which this is not. */
-  --bui-link: var(--cur-accent);
-  /* The resting underline. A token rather than an opacity modifier on the class:
-     Tailwind cannot compute alpha over a CSS variable, so `.../35` compiled to
-     nothing at all and the underline quietly stayed at full strength. */
-  --bui-link-soft: color-mix(in oklab, var(--cur-accent) 42%, transparent);
-
-  /* Tooltips invert onto the app's CTA ink. */
-  --bui-tip-bg: var(--cur-cta);
-  --bui-tip-fg: var(--cur-on-cta);
-  --bui-tip-muted: var(--cur-muted-soft);
-
-  /* Depth is hairline-first, like the rest of the workspace: a ring, plus at
-     most a hint of lift.
-
-     `--cur-shadow-card` cannot be composed into these directly. It is `none`
-     in dark, and `none` inside a comma-separated `box-shadow` list makes the
-     WHOLE declaration invalid — which silently deleted every card ring on the
-     chat surface in dark mode. `--bui-lift` carries the same intent through a
-     value that is always a legal shadow. */
-  --bui-lift: 0 1px 2px rgb(38 37 30 / 0.045);
-  --bui-shadow-hairline: 0 0 0 1px var(--bui-line);
-  --bui-shadow-btn: 0 0 0 1px var(--bui-line-strong), var(--bui-lift);
-  --bui-shadow-card: 0 0 0 1px var(--bui-line), var(--bui-lift);
-  --bui-shadow-raised: 0 0 0 1px var(--bui-line-strong), var(--bui-lift);
-  --bui-shadow-overlay: 0 0 0 1px var(--bui-line-strong), var(--shadow-elevated);
-}
-
-/* The one value dark has to restate. In dark the workspace separates planes by
-   value rather than by shadow (`--cur-shadow-card: none`), so the lift goes
-   away — but as a transparent shadow, which keeps the rings above valid. */
-.dark .cur {
-  --bui-lift: 0 0 transparent;
-}
-
-/* Everything else resolves through a `--cur-*` variable that `cursor.css`
-   already flips under `.dark .cur`, so dark mode follows the app with nothing
-   to keep in sync.
-
-   Scoped to `.cur` rather than `:root` for the same reason: the `--cur-*`
-   values only exist inside it, and the chat surface always renders there. */
 
 /* ── Motion ───────────────────────────────────────────────
    The chat surface says "I am working" with movement, not with a spinner
@@ -430,8 +337,8 @@ svg.bui-mark {
   min-width: 118px;
   padding: 6px 8px;
   border-radius: 8px;
-  background: var(--bui-tip-bg);
-  color: var(--bui-tip-fg);
+  background: var(--bui-tooltip-bg);
+  color: var(--bui-tooltip-fg);
   box-shadow: var(--bui-shadow-overlay);
   animation: bui-fade-in 120ms ease-out both;
 }

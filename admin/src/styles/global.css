@@ -1,4 +1,5 @@
 @import "./font.css";
+@import "./palette.css";
 @import "./cursor.css";
 
 @tailwind base;
@@ -6,136 +7,36 @@
 @tailwind utilities;
 
 /*
-  Cursor design language (see admin/html-plans mock).
-  Single source of truth for the whole admin: swapping these token *values*
-  re-skins every shadcn-based component — pages keep their class names.
+  The document's own defaults, and nothing else.
 
-  The look = warm cream canvas (never pure white), warm ink (never pure black),
-  a single, scarce Cursor Orange used only for brand/CTAs/cost, and hairline-only
-  depth (borders, not shadows). Values are the hsl() equivalents of the mock's
-  hex palette. Light is the primary mode; dark is a coherent warm-dark derivation
-  (the mock is light-only) that keeps the same orange + pastel timeline.
+  This file used to carry a third palette: forty shadcn HSL tokens —
+  `--background`, `--primary`, `--accent`, five chart hues, five pastel timeline
+  stages — declared in light and dark, described in a comment as the "single
+  source of truth for the whole admin". It was not. Nothing read it.
 
-  The `--tl-*` tokens are the pastel AI-timeline stages, used ONLY by the agent
-  trace (TraceStage) — do not reuse them as generic UI colors.
+  Not "little" read it. A scan of every `.ts`/`.tsx` in the app found zero uses
+  of the Tailwind classes those tokens back — no `bg-primary`, no `text-muted-
+  foreground`, no `bg-card` — and zero `var(--background)` outside
+  `tailwind.config.js`. The `--sidebar-*` group was worse: declared in the
+  Tailwind config, never defined anywhere at all, so `bg-sidebar` had been
+  compiling to `hsl()` since the day it was added.
+
+  Its only real consumers were the four rules below, which is why the four rules
+  below are now written in plain CSS against the palette. A colour in this app
+  is a `--bui-*` value in `palette.css`, in hex, once. There is no second
+  notation to convert into and no second table to keep in step — which is the
+  actual reason the old set drifted into being warm cream while the workspace it
+  claimed to govern had been made neutral grey.
 */
 
 @layer base {
-  :root {
-    /* shell → content → card, three warm steps toward white */
-    --background: 48 16% 96%;        /* canvas       #f7f7f4 */
-    --foreground: 50 12% 13%;        /* ink          #26251e */
-    --mat: 48 22% 97%;               /* canvas-soft  #fafaf7 */
-    --mat-foreground: 50 12% 13%;
-    --card: 0 0% 100%;               /* surface      #ffffff */
-    --card-foreground: 50 12% 13%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 50 12% 13%;
-
-    /* Cursor Orange — brand + CTAs + cost only (#f54e00) */
-    --primary: 19 100% 48%;
-    --primary-foreground: 0 0% 100%;
-
-    /* accent is the SUBTLE hover/fill surface here (not the brand hue): Cursor
-       keeps orange scarce, so shadcn hover states resolve to warm grey. */
-    --accent: 48 14% 90%;            /* surface-strong #e6e5e0 */
-    --accent-foreground: 50 12% 13%;
-    --secondary: 48 14% 90%;         /* badges / avatars */
-    --secondary-foreground: 50 12% 13%;
-    --muted: 48 16% 93%;             /* subtle fill */
-    --muted-foreground: 45 8% 47%;   /* secondary text #807d72 */
-
-    --destructive: 345 64% 49%;      /* error  #cf2d56 */
-    --destructive-foreground: 0 0% 100%;
-    --success: 159 63% 33%;          /* success #1f8a65 */
-    --success-foreground: 0 0% 100%;
-    --warning: 35 80% 46%;
-    --warning-foreground: 0 0% 100%;
-    --emphasis: 50 12% 13%;          /* ink card (MetricCard tone="emphasis") */
-    --emphasis-foreground: 48 16% 96%;
-
-    --border: 48 12% 88%;            /* hairline        #e6e5e0 */
-    --input: 48 12% 82%;             /* hairline-strong #cfcdc4 */
-    --ring: 19 100% 48%;             /* crisp branded focus ring */
-    --radius: 0.75rem;               /* 12px cards; md/sm derive to 10/8px CTAs */
-
-    /* Cursor is hairline-first: soft = a whisper of ring, elevated keeps a
-       little lift for popovers/dialogs that genuinely float. */
-    --shadow-soft: 0 1px 0 0 hsl(45 8% 47% / 0.05), 0 0 0 1px hsl(45 8% 47% / 0.05);
-    --shadow-elevated: 0 8px 24px -10px hsl(40 8% 10% / 0.16), 0 0 0 1px hsl(45 8% 47% / 0.06);
-    --sidebar-width: 240px;
-    --sidebar-width-collapsed: 76px;
-
-    /* pastel AI-timeline stages — agent trace ONLY (via TraceStage) */
-    --tl-thinking: 19 56% 72%;       /* #dfa88f */
-    --tl-grep: 124 29% 71%;          /* #9fc9a2 */
-    --tl-read: 214 51% 75%;          /* #9fbbe0 */
-    --tl-edit: 267 44% 76%;          /* #c0a8dd */
-    --tl-done: 35 59% 47%;           /* #c08532 */
-
-    --chart-1: 19 100% 48%;          /* primary */
-    --chart-2: 159 63% 33%;          /* success green */
-    --chart-3: 267 44% 76%;          /* edit purple */
-    --chart-4: 214 51% 75%;          /* read blue */
-    --chart-5: 45 8% 47%;            /* muted */
-  }
-
-  .dark {
-    /* warm-dark derivation: same warmth, inverted lightness */
-    --background: 40 8% 8%;
-    --foreground: 48 15% 92%;
-    --mat: 40 8% 10%;
-    --mat-foreground: 48 15% 92%;
-    --card: 40 7% 12%;
-    --card-foreground: 48 15% 92%;
-    --popover: 40 7% 12%;
-    --popover-foreground: 48 15% 92%;
-
-    --primary: 19 100% 52%;
-    --primary-foreground: 0 0% 100%;
-
-    --accent: 40 6% 18%;
-    --accent-foreground: 48 15% 92%;
-    --secondary: 40 6% 18%;
-    --secondary-foreground: 48 15% 92%;
-    --muted: 40 6% 16%;
-    --muted-foreground: 45 7% 58%;
-
-    --destructive: 345 65% 58%;
-    --destructive-foreground: 0 0% 100%;
-    --success: 159 55% 45%;
-    --success-foreground: 0 0% 100%;
-    --warning: 35 75% 55%;
-    --warning-foreground: 40 8% 10%;
-    --emphasis: 48 15% 92%;
-    --emphasis-foreground: 40 8% 10%;
-
-    --border: 42 8% 20%;
-    --input: 42 8% 26%;
-    --ring: 19 100% 52%;
-
-    --shadow-soft: 0 0 0 1px hsl(0 0% 100% / 0.06);
-    --shadow-elevated: 0 8px 24px -8px hsl(0 0% 0% / 0.6), 0 0 0 1px hsl(0 0% 100% / 0.08);
-
-    /* pastels read fine on warm-dark — keep identical */
-    --tl-thinking: 19 56% 72%;
-    --tl-grep: 124 29% 71%;
-    --tl-read: 214 51% 75%;
-    --tl-edit: 267 44% 76%;
-    --tl-done: 35 59% 47%;
-
-    --chart-1: 19 100% 52%;
-    --chart-2: 159 55% 45%;
-    --chart-3: 267 44% 76%;
-    --chart-4: 214 51% 75%;
-    --chart-5: 45 7% 58%;
-  }
-}
-
-@layer base {
+  /*
+    A default border colour on everything, so a `border` utility with no colour
+    draws a hairline rather than Tailwind's near-black.
+  */
   * {
-    @apply border-border;
-    caret-color: hsl(var(--foreground));
+    border-color: var(--bui-line);
+    caret-color: var(--bui-ink);
   }
 
   html,
@@ -147,31 +48,38 @@
   }
 
   body {
-    @apply bg-background text-foreground antialiased;
+    background: var(--bui-canvas);
+    color: var(--bui-ink);
     font-family: "Inter", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    font-feature-settings: "rlig" 1, "calt" 1;
+    /* The reference's own settings. `cv11` and `ss01` are Inter's disambiguating
+       alternates — the shapes that keep 1/l/I apart at 12px, which is the size
+       most of this app is set in. */
+    font-feature-settings: "cv11", "ss01";
+    letter-spacing: -0.01em;
+    -webkit-font-smoothing: antialiased;
   }
 
   a {
     @apply text-inherit no-underline;
   }
 
+  /*
+    Focus is the accent, drawn as an outline rather than a ring.
+
+    The ring it replaces was two box-shadows and needed a token for the colour
+    behind the offset — a third thing to keep correct on every plane the app
+    has. An outline is drawn outside the box by the browser, so the offset needs
+    no backing colour and the rule works on the sidebar, a card and a dark
+    surface without knowing which it is on.
+  */
   :focus-visible {
-    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+    outline: 2px solid var(--bui-accent);
+    outline-offset: 2px;
   }
 
   /* jan renders crisp, uniformly-weighted lucide icons */
   svg {
     stroke-width: 2;
-  }
-}
-
-@layer utilities {
-  .shadow-soft {
-    box-shadow: var(--shadow-soft);
-  }
-  .shadow-elevated {
-    box-shadow: var(--shadow-elevated);
   }
 }
 

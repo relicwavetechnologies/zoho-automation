@@ -112,8 +112,7 @@ export function DropVeil({ visible }: { visible: boolean }) {
   if (!visible) return null
   return (
     <div
-      className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center p-4"
-      style={{ background: 'color-mix(in oklab, var(--bui-page) 72%, transparent)' }}
+      className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-veil p-4"
     >
       <div
         className="flex flex-col items-center gap-2 rounded-card border border-dashed px-8 py-6"

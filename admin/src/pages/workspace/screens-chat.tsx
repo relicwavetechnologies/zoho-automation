@@ -310,7 +310,7 @@ function ChatThread({ threadId }: { threadId: string }) {
     {/* The drop target is the whole conversation, composer included. A file is
         being given to Divo rather than typed into a field, so anywhere you can
         see the chat is somewhere you can let go of it. */}
-    <div className="bui-scope relative flex h-full min-h-0 flex-col bg-page" {...dropProps}>
+    <div className="bui-scope relative flex h-full min-h-0 flex-col bg-canvas" {...dropProps}>
       <DropVeil visible={over} />
       {/* Over the conversation, not in it. The work log answers "what has it
           done"; this answers "how far through is it", and an answer that
@@ -366,7 +366,7 @@ function ChatThread({ threadId }: { threadId: string }) {
         />
       </div>
 
-      <div className="shrink-0 bg-page">
+      <div className="shrink-0 bg-canvas">
         <div className="mx-auto w-full max-w-[720px] px-5 py-3">
           <Composer
             value={draft}
@@ -427,7 +427,7 @@ function Header({ title, scrolled }: { title: string; scrolled: boolean }) {
   const { tabs, open } = useArtifacts()
   return (
     <header
-      className={`ws-chat-head sticky top-0 z-10 shrink-0 bg-page/70 backdrop-blur-md transition-[border-color] duration-200 ${
+      className={`ws-chat-head sticky top-0 z-10 shrink-0 bg-veil backdrop-blur-md transition-[border-color] duration-200 ${
         scrolled ? 'border-b border-line' : 'border-b border-transparent'
       }`}
     >

@@ -17,8 +17,10 @@
 */
 
 .cur {
-  /* cursor.css never defined a warning token — pages fall back inline. Define it once. */
-  --ws-warning: #b7791f;
+  /* The palette's orange, under the name twenty-eight rules here already use.
+     It was two hand-picked ambers — #b7791f light, #d9a441 dark — which is one
+     colour more than the palette has and neither of them was it. */
+  --ws-warning: var(--bui-orange);
   /*
     What a chart is drawn in.
 
@@ -35,7 +37,6 @@
   --ws-float: 0 16px 40px -12px rgba(0, 0, 0, 0.24), 0 0 0 1px var(--cur-hairline);
 }
 .dark .cur {
-  --ws-warning: #d9a441;
   --ws-scrim: rgba(0, 0, 0, 0.62);
   --ws-float: 0 16px 40px -8px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--cur-hairline-strong);
 }
@@ -1954,14 +1955,20 @@
    route cannot look different.
 
    This block was written twice. The older copy sat *after* this one and so won
-   every property they shared — including stripping the fallbacks back off, so
-   the safety net above has been inert since the day it was added. Merged: the
-   geometry is the one that has actually been rendering, the fallbacks are back,
-   and there is one block to change. */
+   every property they shared. Merged: the geometry is the one that has actually
+   been rendering, and there is one block to change.
+
+   It reads `--bui-*` rather than `--cur-*`, and that is the actual fix for the
+   problem the fallbacks were papering over. A toast is portalled to
+   `document.body`, outside `.cur`, where every `--cur-*` value is undefined —
+   so each declaration fell through to its fallback, and the fallbacks that had
+   been chosen were the dark-mode hexes. A light-mode toast has been rendering
+   as a dark card. `palette.css` puts the palette on `:root`, which a portal can
+   see, so there is nothing left to fall back to. */
 .cur-toast[data-sonner-toaster] { --width: 348px; }
 [data-sonner-toast] {
-  background: var(--cur-surface, #1a1a1a) !important;
-  border: 1px solid var(--cur-hairline-strong, #333333) !important;
+  background: var(--bui-surface) !important;
+  border: 1px solid var(--bui-line-strong) !important;
   border-radius: 12px !important;
   box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.45) !important;
   padding: 12px 14px !important;
@@ -1971,31 +1978,31 @@
 [data-sonner-toast] [data-content] { gap: 3px !important; }
 [data-sonner-toast] [data-title] {
   font-size: 13px !important; font-weight: 500 !important;
-  line-height: 1.45 !important; color: var(--cur-ink, #e8e8e8) !important;
+  line-height: 1.45 !important; color: var(--bui-ink) !important;
 }
 [data-sonner-toast] [data-description] {
   font-size: 12px !important; line-height: 1.5 !important;
-  color: var(--cur-muted, #8f8f8f) !important; margin-top: 3px !important;
+  color: var(--bui-ink-3) !important; margin-top: 3px !important;
 }
 /* One dot, coloured by intent. An icon box and a tinted card were two signals
    for one fact, and neither of them was the sentence. */
 [data-sonner-toast] [data-icon] {
   width: 8px !important; height: 8px !important; border-radius: 50%;
   margin: 6px 0 0 0 !important; align-self: flex-start; flex-shrink: 0;
-  background: var(--cur-muted, #8f8f8f);
+  background: var(--bui-ink-3);
 }
 [data-sonner-toast] [data-icon] svg { display: none; }
-[data-sonner-toast][data-type="error"] [data-icon] { background: var(--cur-error, #e35a7d); }
-[data-sonner-toast][data-type="warning"] [data-icon] { background: var(--cur-primary, #fb5613); }
-[data-sonner-toast][data-type="success"] [data-icon] { background: var(--cur-success, #35b083); }
-[data-sonner-toast][data-type="info"] [data-icon] { background: var(--cur-accent, #3b82f6); }
+[data-sonner-toast][data-type="error"] [data-icon] { background: var(--bui-red); }
+[data-sonner-toast][data-type="warning"] [data-icon] { background: var(--bui-orange); }
+[data-sonner-toast][data-type="success"] [data-icon] { background: var(--bui-green); }
+[data-sonner-toast][data-type="info"] [data-icon] { background: var(--bui-accent); }
 /* The way out of a message whose remedy is elsewhere. Reads as a control
    rather than as a third line of prose. */
 [data-sonner-toast] [data-button] {
   height: 26px !important; padding: 0 11px !important; margin-left: 4px !important;
   border-radius: 999px !important; font-size: 12px !important; font-weight: 500 !important;
-  background: var(--cur-cta, #3a3a3a) !important; color: var(--cur-on-cta, #e8e8e8) !important;
-  border: 1px solid var(--cur-hairline-strong, #333333) !important;
+  background: var(--bui-ink) !important; color: var(--bui-surface) !important;
+  border: 0 !important;
 }
 /* ── Avatar ───────────────────────────────────────────
    Accent rather than brand orange: orange is scarce here and marks the one

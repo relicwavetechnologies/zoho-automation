@@ -132,7 +132,7 @@ function ArtifactPanel() {
   return (
     <aside
       aria-label="Documents"
-      className="flex h-full min-h-0 w-full flex-col border-l border-line bg-page"
+      className="flex h-full min-h-0 w-full flex-col border-l border-line bg-canvas"
     >
       <TabStrip tabs={state.tabs} activeId={tab?.id ?? null} />
       <div className="min-h-0 flex-1 overflow-hidden">

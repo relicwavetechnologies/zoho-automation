@@ -1,158 +1,103 @@
 /** @type {import('tailwindcss').Config} */
+
+/*
+  Names for the palette, and nothing that is not used.
+
+  Every colour below resolves to a `--bui-*` value in `src/styles/palette.css`,
+  which holds Beautiful UI's own hexes for both themes. Tailwind is a naming
+  layer here — it decides nothing.
+
+  Twenty colour groups were removed from this file in one pass: the shadcn set
+  (`primary`, `secondary`, `accent`, `muted`, `card`, `popover`, `destructive`,
+  `emphasis`, `mat`, `success`, `warning`, `input`), five chart hues, five
+  pastel timeline stages, and a `sidebar` group whose tokens were never defined
+  anywhere — `bg-sidebar` had been compiling to a literal `hsl()` with an empty
+  argument. A scan of every `.ts`/`.tsx` found no use of any class they backed.
+
+  What is left is the set the app actually writes: seven surfaces, three ink
+  weights, two hairlines, two fills, the accent, and five shadows.
+*/
 export default {
-    darkMode: ["class"],
-    content: [
-    "./index.html",
-    "./src/**/*.{ts,tsx,js,jsx}"
-  ],
+  darkMode: ["class"],
+  content: ["./index.html", "./src/**/*.{ts,tsx,js,jsx}"],
   theme: {
-  	extend: {
-  		fontFamily: {
-  			sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
-  			studio: ['StudioFeixenSans', 'Inter', 'sans-serif'],
-  			mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace']
-  		},
-  		borderRadius: {
-  			lg: 'var(--radius)',
-  			md: 'calc(var(--radius) - 2px)',
-  			sm: 'calc(var(--radius) - 4px)',
-  			/* chat surface: chip → control → card. Derived from the same
-  			   `--radius` as everything else, so the trace's corners match the
-  			   app's rather than being three more numbers to keep in step. */
-  			chip: 'calc(var(--radius) - 6px)',
-  			control: 'calc(var(--radius) - 4px)',
-  			card: 'calc(var(--radius) - 2px)'
-  		},
-  		boxShadow: {
-  			hairline: 'var(--bui-shadow-hairline)',
-  			btn: 'var(--bui-shadow-btn)',
-  			card: 'var(--bui-shadow-card)',
-  			raised: 'var(--bui-shadow-raised)',
-  			overlay: 'var(--bui-shadow-overlay)'
-  		},
-  		colors: {
-  			background: 'hsl(var(--background))',
-  			foreground: 'hsl(var(--foreground))',
-  			card: {
-  				DEFAULT: 'hsl(var(--card))',
-  				foreground: 'hsl(var(--card-foreground))'
-  			},
-  			mat: {
-  				DEFAULT: 'hsl(var(--mat))',
-  				foreground: 'hsl(var(--mat-foreground))'
-  			},
-  			popover: {
-  				DEFAULT: 'hsl(var(--popover))',
-  				foreground: 'hsl(var(--popover-foreground))'
-  			},
-  			primary: {
-  				DEFAULT: 'hsl(var(--primary))',
-  				foreground: 'hsl(var(--primary-foreground))'
-  			},
-  			secondary: {
-  				DEFAULT: 'hsl(var(--secondary))',
-  				foreground: 'hsl(var(--secondary-foreground))'
-  			},
-  			muted: {
-  				DEFAULT: 'hsl(var(--muted))',
-  				foreground: 'hsl(var(--muted-foreground))'
-  			},
-  			accent: {
-  				DEFAULT: 'hsl(var(--accent))',
-  				foreground: 'hsl(var(--accent-foreground))'
-  			},
-  			destructive: {
-  				DEFAULT: 'hsl(var(--destructive))',
-  				foreground: 'hsl(var(--destructive-foreground))'
-  			},
-  			success: {
-  				DEFAULT: 'hsl(var(--success))',
-  				foreground: 'hsl(var(--success-foreground))'
-  			},
-  			warning: {
-  				DEFAULT: 'hsl(var(--warning))',
-  				foreground: 'hsl(var(--warning-foreground))'
-  			},
-  			emphasis: {
-  				DEFAULT: 'hsl(var(--emphasis))',
-  				foreground: 'hsl(var(--emphasis-foreground))'
-  			},
-  			border: 'hsl(var(--border))',
-  			input: 'hsl(var(--input))',
-  			ring: 'hsl(var(--ring))',
-  			chart: {
-  				'1': 'hsl(var(--chart-1))',
-  				'2': 'hsl(var(--chart-2))',
-  				'3': 'hsl(var(--chart-3))',
-  				'4': 'hsl(var(--chart-4))',
-  				'5': 'hsl(var(--chart-5))'
-  			},
-  			/* pastel AI-timeline stages — agent trace only (see TraceStage) */
-  			timeline: {
-  				thinking: 'hsl(var(--tl-thinking))',
-  				grep: 'hsl(var(--tl-grep))',
-  				read: 'hsl(var(--tl-read))',
-  				edit: 'hsl(var(--tl-edit))',
-  				done: 'hsl(var(--tl-done))'
-  			},
-  			/* Chat-surface neutrals (see styles/beautiful.css). A finer scale
-  			   than the shadcn tokens: three ink weights and two hairlines, which
-  			   is what the trace/tool rows need to stay quiet. Semantic colour
-  			   still comes from the shadcn tokens above — `text-success`,
-  			   `text-destructive`, `text-primary` — so there is one green. */
-  			ink: {
-  				DEFAULT: 'var(--bui-ink)',
-  				2: 'var(--bui-ink-2)',
-  				3: 'var(--bui-ink-3)'
-  			},
-  			surface: 'var(--bui-surface)',
-  			inset: 'var(--bui-inset)',
-  			field: 'var(--bui-field)',
-  			canvas: 'var(--bui-canvas)',
-  			page: 'var(--bui-page)',
-  			line: {
-  				DEFAULT: 'var(--bui-line)',
-  				strong: 'var(--bui-line-strong)'
-  			},
-  			fill: {
-  				DEFAULT: 'var(--bui-hover)',
-  				strong: 'var(--bui-hover-2)'
-  			},
-  			sidebar: {
-  				DEFAULT: 'hsl(var(--sidebar-background))',
-  				foreground: 'hsl(var(--sidebar-foreground))',
-  				primary: 'hsl(var(--sidebar-primary))',
-  				'primary-foreground': 'hsl(var(--sidebar-primary-foreground))',
-  				accent: 'hsl(var(--sidebar-accent))',
-  				'accent-foreground': 'hsl(var(--sidebar-accent-foreground))',
-  				border: 'hsl(var(--sidebar-border))',
-  				ring: 'hsl(var(--sidebar-ring))'
-  			}
-  		},
-  		keyframes: {
-  			'accordion-down': {
-  				from: {
-  					height: '0'
-  				},
-  				to: {
-  					height: 'var(--radix-accordion-content-height)'
-  				}
-  			},
-  			'accordion-up': {
-  				from: {
-  					height: 'var(--radix-accordion-content-height)'
-  				},
-  				to: {
-  					height: '0'
-  				}
-  			}
-  		},
-  		animation: {
-  			'accordion-down': 'accordion-down 0.2s ease-out',
-  			'accordion-up': 'accordion-up 0.2s ease-out'
-  		}
-  	}
+    extend: {
+      fontFamily: {
+        sans: ['Inter', 'ui-sans-serif', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
+        studio: ['StudioFeixenSans', 'Inter', 'sans-serif'],
+        mono: ['JetBrains Mono', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+      },
+      /*
+        chip → control → card, the reference's own three radii, straight off the
+        palette. `sm`/`md`/`lg` are aimed at the same three rather than being
+        derived from a separate `--radius` that then had to be kept in agreement
+        with them by arithmetic.
+      */
+      borderRadius: {
+        sm: 'var(--bui-r-chip)',
+        md: 'var(--bui-r-control)',
+        lg: 'var(--bui-r-card)',
+        chip: 'var(--bui-r-chip)',
+        control: 'var(--bui-r-control)',
+        card: 'var(--bui-r-card)',
+      },
+      boxShadow: {
+        hairline: 'var(--bui-shadow-hairline)',
+        btn: 'var(--bui-shadow-btn)',
+        card: 'var(--bui-shadow-card)',
+        raised: 'var(--bui-shadow-raised)',
+        overlay: 'var(--bui-shadow-overlay)',
+      },
+      colors: {
+        /* Planes. `--bui-page` has no name here on purpose: it is the sidebar's
+           plane and the sidebar is styled in CSS, so a `bg-page` class would be
+           an invitation to put a second surface on the rail's colour — which is
+           what the chat pane was doing, sitting flush against it. */
+        canvas: 'var(--bui-canvas)',
+        /* The content plane, mostly opaque — what a sticky header floats on.
+           Named because `bg-canvas/70` cannot work: see the note in palette.css. */
+        veil: 'var(--bui-veil)',
+        surface: 'var(--bui-surface)',
+        inset: 'var(--bui-inset)',
+        field: 'var(--bui-field)',
+        fill: {
+          DEFAULT: 'var(--bui-hover)',
+          strong: 'var(--bui-hover-2)',
+        },
+        ink: {
+          DEFAULT: 'var(--bui-ink)',
+          2: 'var(--bui-ink-2)',
+          3: 'var(--bui-ink-3)',
+        },
+        line: {
+          DEFAULT: 'var(--bui-line)',
+          strong: 'var(--bui-line-strong)',
+        },
+        /* The one chromatic name. Blue: links, focus, the active rail, anything
+           that has to read as actionable before it is read as words. Divo's
+           orange is `--bui-brand` and is deliberately not here — it marks the
+           product, and a Tailwind class is an invitation to spend it. */
+        accent: {
+          DEFAULT: 'var(--bui-accent)',
+          ink: 'var(--bui-accent-ink)',
+          tint: 'var(--bui-accent-tint)',
+        },
+      },
+      keyframes: {
+        'accordion-down': {
+          from: { height: '0' },
+          to: { height: 'var(--radix-accordion-content-height)' },
+        },
+        'accordion-up': {
+          from: { height: 'var(--radix-accordion-content-height)' },
+          to: { height: '0' },
+        },
+      },
+      animation: {
+        'accordion-down': 'accordion-down 0.2s ease-out',
+        'accordion-up': 'accordion-up 0.2s ease-out',
+      },
+    },
   },
   plugins: [require("tailwindcss-animate")],
 }
-

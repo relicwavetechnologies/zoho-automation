@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import { CHART_RUNTIME, DOCUMENT_SANDBOX, buildDocument } from './document'
 
@@ -95,9 +96,55 @@ describe('the document wrapper', () => {
       }
     }
 
-    assert.match(buildDocument('', 'light'), /--surface: #ffffff/)
-    assert.match(buildDocument('', 'dark'), /--surface: #1a1a1a/)
     assert.match(buildDocument('', 'dark'), /data-theme="dark"/)
+  })
+
+  it('carries the same greys as the app, in both themes', () => {
+    /* A document is a standalone file — it cannot read `palette.css`, so it
+       carries a copy of the values. This is the thing that stops the copy
+       drifting, and it is the only reason the copy is allowed to exist.
+
+       Read from the stylesheet rather than restated here: an expectation
+       written out in this file would be a *third* copy, and a third copy drifts
+       from the first two while the test goes on passing. */
+    const palette = readFileSync(
+      new URL('../../../styles/palette.css', import.meta.url), 'utf8',
+    )
+    const block = (selector: string): Record<string, string> => {
+      const body = palette.slice(palette.indexOf(`${selector} {`))
+      const out: Record<string, string> = {}
+      for (const [, name, value] of body.slice(0, body.indexOf('}')).matchAll(/(--bui-[a-z0-9-]+):\s*([^;]+);/g)) {
+        out[name!] = value!.trim()
+      }
+      return out
+    }
+    /* `.dark` restates only what changes, so light is the base and dark is laid
+       over it — exactly how the browser resolves them. */
+    const light = block(':root')
+    const dark = { ...light, ...block('.dark') }
+
+    /* `--accent*` is deliberately absent: it is ink in a document, not the app's
+       blue. See the note above LIGHT. Every other token must match. */
+    const MIRRORS: Record<string, string> = {
+      '--canvas': '--bui-canvas', '--surface': '--bui-surface', '--inset': '--bui-inset',
+      '--field': '--bui-field', '--hover': '--bui-hover',
+      '--ink': '--bui-ink', '--ink-2': '--bui-ink-2', '--ink-3': '--bui-ink-3',
+      '--line': '--bui-line', '--line-strong': '--bui-line-strong',
+      '--green': '--bui-green', '--green-tint': '--bui-green-tint',
+      '--red': '--bui-red', '--red-tint': '--bui-red-tint',
+      '--orange': '--bui-orange', '--orange-tint': '--bui-orange-tint',
+      '--link': '--bui-accent-ink',
+    }
+
+    for (const [theme, values] of [['light', light], ['dark', dark]] as const) {
+      const page = buildDocument('', theme)
+      for (const [own, mirrored] of Object.entries(MIRRORS)) {
+        assert.match(
+          page, new RegExp(`\\${own}: ${values[mirrored]!};`),
+          `${theme} ${own} has drifted from ${mirrored} (${values[mirrored]})`,
+        )
+      }
+    }
   })
 
   it('keeps the categorical hues identical across themes', () => {

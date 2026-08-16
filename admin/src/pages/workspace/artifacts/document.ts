@@ -54,35 +54,45 @@ export type DocumentTheme = 'light' | 'dark'
 /**
  * The palette, in the names the design spec teaches.
  *
- * Deliberately not the app's own `--cur-*`: the document system owns its
- * vocabulary so a document is legible on its own terms, and the app can be
- * re-skinned without rewriting every stored artifact's meaning. The two are kept
- * in step by intent, not by import.
+ * The values are the app's — `src/styles/palette.css`, which holds Beautiful
+ * UI's hexes — but they are written out here rather than imported, and that is
+ * not an oversight. A document is a standalone HTML file: it is downloaded,
+ * mailed, opened next year. It cannot resolve a variable that lives in a
+ * stylesheet it was never shipped with.
+ *
+ * So this is a copy, and copies drift. `document.test.ts` compares it against
+ * `palette.css` and fails when it does — the same arrangement the runtime uses
+ * for the progress bounds that the container and the backend both have to know.
+ *
+ * Two values are deliberately NOT the palette's, and the test knows it:
+ * `--accent` and `--accent-ink` are ink here. A document is a page of prose and
+ * figures where nearly everything could argue for being the important one; the
+ * app's blue is spent on links, and inline code takes a neutral fill instead.
  */
 const LIGHT = `
-  --canvas: #f6f6f5; --surface: #ffffff; --inset: #fbfbfa; --field: #ededec;
-  --hover: #fbfbfa;
-  --ink: #1a1a1a; --ink-2: #4a4a4a; --ink-3: #767674;
-  --line: #e5e5e3; --line-strong: #d8d8d5;
-  --green: #1f8a65; --green-tint: rgba(31, 138, 101, 0.09);
-  --red: #cf2d56; --red-tint: rgba(207, 45, 86, 0.08);
-  --orange: #b45309; --orange-tint: rgba(180, 83, 9, 0.09);
-  --accent: #1a1a1a; --accent-tint: #ededec; --accent-ink: #1a1a1a;
-  --link: #2563eb;
-  --lift: 0 1px 2px rgb(38 37 30 / 0.045);
+  --canvas: #f1f2f3; --surface: #ffffff; --inset: #f7f8f9; --field: #f2f2f3;
+  --hover: #f4f5f6;
+  --ink: #1f2124; --ink-2: #62656b; --ink-3: #9a9da3;
+  --line: #ecedef; --line-strong: #e0e2e5;
+  --green: #189a4d; --green-tint: #e8f5ed;
+  --red: #e3474c; --red-tint: #fcecec;
+  --orange: #ef720c; --orange-tint: #fdf1e5;
+  --accent: #1f2124; --accent-tint: #f2f2f3; --accent-ink: #1f2124;
+  --link: #0170dd;
+  --lift: 0 1px 2px #1018280a;
 `
 
 const DARK = `
-  --canvas: #0f0f0f; --surface: #1a1a1a; --inset: #151515; --field: #262626;
-  --hover: #212121;
-  --ink: #e8e8e8; --ink-2: #b4b4b4; --ink-3: #8f8f8f;
-  --line: #262626; --line-strong: #333333;
-  --green: #35b083; --green-tint: rgba(53, 176, 131, 0.12);
-  --red: #e35a7d; --red-tint: rgba(227, 90, 125, 0.12);
-  --orange: #e0913a; --orange-tint: rgba(224, 145, 58, 0.12);
-  --accent: #e8e8e8; --accent-tint: #262626; --accent-ink: #e8e8e8;
-  --link: #60a5fa;
-  --lift: 0 0 transparent;
+  --canvas: #1c1d1f; --surface: #232427; --inset: #1f2022; --field: #2b2c2f;
+  --hover: #2a2b2e;
+  --ink: #f2f3f4; --ink-2: #a5a8ad; --ink-3: #6c6f75;
+  --line: #2e3033; --line-strong: #3a3c40;
+  --green: #3dbb72; --green-tint: #3dbb7224;
+  --red: #ee5c61; --red-tint: #ee5c6124;
+  --orange: #f68f3c; --orange-tint: #f68f3c24;
+  --accent: #f2f3f4; --accent-tint: #2b2c2f; --accent-ink: #f2f3f4;
+  --link: #7ec0ff;
+  --lift: 0 1px 2px #0003;
 `
 
 /**
@@ -112,7 +122,7 @@ const BASE = `
   body {
     margin: 0; padding: 20px;
     background: var(--canvas); color: var(--ink-2);
-    font-family: Geist, Inter, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
     font-size: 13.5px; line-height: 1.65;
     -webkit-font-smoothing: antialiased;
     overflow-wrap: break-word;
