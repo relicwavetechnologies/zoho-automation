@@ -1,28 +1,57 @@
 /**
+ * Things on their way, drawn as the shape they are about to be.
+ *
+ * One vocabulary for the whole surface. There were two: the thread column drew
+ * *nothing at all* while it loaded — loading was not a state anything modelled,
+ * merely the absence of exchanges, which is also what an empty thread and a
+ * failed read look like — and the document panel drew pulsing bars of its own,
+ * a shade too faint to see, in a treatment nothing else used.
+ *
+ * The shared rules, in one place so the next one to arrive inherits them:
+ *
+ *   **Shaped like the thing arriving.** Not a spinner. The layout must not jump
+ *   when the real content lands; the reader's eye should already be where the
+ *   first line will be.
+ *
+ *   **Still.** Movement on this surface means the agent is working, and reading
+ *   something off the server is not the agent doing anything. Pulsing bars say
+ *   a run has started when none has.
+ *
+ *   **`bg-field`.** One step off the canvas is a smudge, not a placeholder —
+ *   this is the tone the prompt bubble itself is drawn in, so a bar weighs what
+ *   replaces it.
+ *
+ *   **Late.** Held back a beat, because content already in the browser's cache
+ *   lands in a few milliseconds and a skeleton that flashes up and vanishes
+ *   inside one frame reads as a glitch rather than as progress.
+ */
+
+/**
+ * One placeholder line.
+ *
+ * The only primitive. Everything below is an arrangement of these, which is
+ * what keeps two skeletons on this surface looking like one idea.
+ */
+export function Bar({ width, height, className = 'rounded-[4px]' }: {
+  width: string
+  height: number
+  className?: string
+}) {
+  return <span className={`block bg-field ${className}`} style={{ width, height }} />
+}
+
+/** The delay every skeleton opens on. See "Late" above. */
+const HOLD = 'bui-fade-in 200ms ease-out 180ms both'
+
+/**
  * A conversation that is on its way.
- *
- * Loading was not a state anything modelled here — it was the *absence* of
- * exchanges, which is also what an empty thread looks like and what a failed
- * read looks like. So the column drew nothing at all while a thread loaded, and
- * a slow read was indistinguishable from a chat with nothing in it. On a long
- * thread that is a second or more of blank page directly after a click.
- *
- * Shaped like the thing it is about to become rather than like a spinner: a
- * prompt on the right, a few log lines under it, an answer below. The point is
- * that the layout does not jump when the real transcript lands — the reader's
- * eye is already where the first line will be.
  *
  * Deliberately not a count of anything. We do not know how many turns are
  * coming until they arrive, and a skeleton that guesses wrong reflows twice.
  */
 export function ThreadSkeleton() {
   return (
-    <div aria-hidden className="flex flex-col gap-8" style={{
-      /* Held back a beat. A thread already in the browser's cache lands in a
-         few milliseconds, and a skeleton that flashed up and vanished inside
-         one frame reads as a glitch rather than as progress. */
-      animation: 'bui-fade-in 200ms ease-out 180ms both',
-    }}>
+    <div aria-hidden className="flex flex-col gap-8" style={{ animation: HOLD }}>
       <ExchangeSkeleton promptWidth="42%" lines={3} answerLines={3} />
       <ExchangeSkeleton promptWidth="28%" lines={2} answerLines={2} />
     </div>
@@ -60,21 +89,25 @@ function ExchangeSkeleton({ promptWidth, lines, answerLines }: {
 }
 
 /**
- * One placeholder line.
+ * A document that has been opened but not yet read back.
  *
- * `bg-field` and nothing else — no pulse. The surface's rule is that movement
- * means the agent is working, and a thread being read off the server is not the
- * agent doing anything. A wall of throbbing bars would say a run had started.
+ * The tab opens the moment a run announces the document, which is one fetch
+ * ahead of its body — so this is on screen for a real moment, every time.
  *
- * `bg-field` rather than the lighter `bg-fill`, which sits one step off the
- * canvas and read as an empty page with a faint smudge on it. This is the tone
- * the prompt bubble itself is drawn in, so the placeholder is the same weight
- * as the thing replacing it.
+ * Ragged on purpose. Prose does not have justified edges, and a stack of
+ * identical full-width bars reads as a table waiting to load rather than as a
+ * document.
  */
-function Bar({ width, height, className = 'rounded-[4px]' }: {
-  width: string
-  height: number
-  className?: string
-}) {
-  return <span className={`block bg-field ${className}`} style={{ width, height }} />
+export function DocumentSkeleton() {
+  return (
+    <div
+      aria-label="Loading document"
+      className="flex flex-col gap-3 px-5 py-6"
+      style={{ animation: HOLD }}
+    >
+      {[92, 76, 84, 40, 88, 68].map((width, row) => (
+        <Bar key={row} width={`${width}%`} height={12} />
+      ))}
+    </div>
+  )
 }

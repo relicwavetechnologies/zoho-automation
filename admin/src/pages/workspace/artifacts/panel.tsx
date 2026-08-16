@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Code2, Copy, Eye, FileText, PanelRight, X } from 'lucide-react'
 import { Markdown } from '../chat/parts'
+import { DocumentSkeleton } from '../chat/loading.view'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import {
   RENDERABLE_MIME, activeTab, closeTab, focusTab, setOpen, setWidth, useArtifacts,
@@ -263,18 +264,7 @@ function ArtifactSurface({ tab, token }: { tab: ArtifactTab; token: string | nul
         {tab.failed ? (
           <Note>This document could not be loaded. It may have been removed.</Note>
         ) : tab.body === undefined ? (
-          // The tab opened the moment the run announced the document, which is a
-          // fetch ahead of its body. Skeleton lines rather than a spinner: the
-          // shape is what is arriving.
-          <div className="flex flex-col gap-3 px-5 py-6" aria-label="Loading document">
-            {[92, 76, 84, 40, 88, 68].map((width, index) => (
-              <div
-                key={index}
-                className="h-3 animate-pulse rounded bg-fill"
-                style={{ width: `${width}%` }}
-              />
-            ))}
-          </div>
+          <DocumentSkeleton />
         ) : source || !readable ? (
           <>
             {/* A type this build has no renderer for is shown as itself, with a
