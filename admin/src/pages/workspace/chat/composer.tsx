@@ -8,7 +8,7 @@
  * a text field, two popup menus and a measurement mirror it can never use.
  */
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowUp, ArrowUpRight, Check, ChevronDown, Paperclip, Plus } from 'lucide-react'
+import { ArrowUp, ArrowUpRight, Check, ChevronDown, Plus } from 'lucide-react'
 import { ToolMark, tool, type ToolKey } from './tools'
 import { FileChips, RejectionNote } from './attach.view'
 import { namedForClipboard, type Rejection } from './attach'
@@ -31,6 +31,9 @@ import {
 
    `@` opens the source picker over the connected apps — the menu grows upward
    from the composer's top edge, because there is nothing but composer below it.
+   `+` attaches a file and does nothing else; it used to open that same picker
+   with an attach row on top, which made the one control whose shape says "add
+   something to this message" mostly a list of places to point the message at.
 
    Enter sends, Shift+Enter breaks the line. Not the place to be clever. */
 
@@ -67,10 +70,27 @@ export function Composer({
   value, onChange, onSubmit, placeholder, autoFocus, running, onStop,
   models, modelSelection, onModelChange, onReasoningEffortChange, modelLoading,
   files = NO_FILES, rejected = NO_REJECTIONS, onAttach, onRemoveFile,
+  hero, actions,
 }: {
   value: string
   onChange: (next: string) => void
   onSubmit: () => void
+  /**
+   * How much of the landing geometry to wear, from 1 (a box you could write a
+   * paragraph in) down to 0 (the compact bar).
+   *
+   * A number rather than a variant, because Home moves between the two as you
+   * scroll and a variant would swap layouts mid-gesture — one composer
+   * disappearing and another appearing where the reader was mid-sentence. Every
+   * value between is a real state, so the same element simply gets smaller.
+   *
+   * Left off entirely by the chat surface, which is the bar and nothing else.
+   * Passing it also pins the two-row arrangement, so shrinking never re-flows
+   * the controls from under the field to beside it.
+   */
+  hero?: number
+  /** Quick starts, above the field. Only drawn while there is room for them. */
+  actions?: React.ReactNode
   models: readonly SelectableModel[]
   modelSelection: ModelSelection | null
   onModelChange: (model: string) => void
@@ -98,9 +118,19 @@ export function Composer({
   const modelBtn = useRef<HTMLButtonElement>(null)
   const modelMenu = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const root = useRef<HTMLDivElement>(null)
 
-  const [expanded, setExpanded] = useState(false)
-  const [sourceOpen, setSourceOpen] = useState(false)
+  const [measured, setMeasured] = useState(false)
+  /* Landing geometry is always the two-row arrangement, at every size. The
+     alternative is the controls hopping from beside the field to under it
+     partway down a scroll, which is the one movement this whole design is
+     built to avoid. */
+  const expanded = hero !== undefined || measured
+  /* The `@` picker, put away.
+     Its open state is the draft — an `@token` under the caret — so "closed"
+     cannot be the absence of a flag; it has to be one. Clicking away or
+     pressing Escape sets this, and a fresh `@` clears it. */
+  const [sourceDismissed, setSourceDismissed] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
   const [active, setActive] = useState(0)
 
@@ -112,14 +142,36 @@ export function Composer({
     const q = (token?.query ?? '').toLowerCase()
     return SOURCES.filter((s) => s.name.toLowerCase().includes(q))
   }, [token?.query])
-  /* Open either because `+` was pressed, or because an `@` is being typed. */
-  const menu = sourceOpen || token !== null
+  /* Typing an `@` is the only thing that opens it. `+` attaches a file and
+     nothing else — see the button. */
+  const menu = token !== null && !sourceDismissed
 
   useEffect(() => {
     if (autoFocus) input.current?.focus()
   }, [autoFocus])
 
   useEffect(() => { setActive(0) }, [token?.query])
+
+  /* A new `@` is a new question, so it reopens the picker even if the last one
+     was dismissed. Keyed on where the token starts rather than on what has been
+     typed into it: every keystroke changes the query, and reopening on those
+     would make Escape last exactly one letter. */
+  useEffect(() => { setSourceDismissed(false) }, [token?.start])
+
+  /* Pointing at anything outside the composer puts the picker away.
+     It used to stay open until the token stopped being one, so a menu could sit
+     over the page while the reader had plainly gone somewhere else. `mousedown`
+     rather than `click`, so it closes on the press instead of waiting to see
+     what the press turns out to be. */
+  useEffect(() => {
+    if (!menu) return
+    const dismissAway = (event: MouseEvent) => {
+      if (root.current?.contains(event.target as Node)) return
+      setSourceDismissed(true)
+    }
+    document.addEventListener('mousedown', dismissAway)
+    return () => document.removeEventListener('mousedown', dismissAway)
+  }, [menu])
 
   useEffect(() => {
     if (running) setModelOpen(false)
@@ -179,9 +231,13 @@ export function Composer({
     const needsRow =
       value.length > 0
       && (value.includes('\n') || (inline > 0 && mirror.offsetWidth + 8 > inline))
-    if (needsRow !== expanded) setExpanded(needsRow)
+    if (needsRow !== measured) setMeasured(needsRow)
 
-    const MIN = 28
+    /* The landing field is tall before anything is typed — an empty box the
+       size of a paragraph is an invitation, where one line is a search box.
+       It gives that height up as the composer compresses, and from then on the
+       floor is the same single line the chat bar has. */
+    const MIN = 28 + Math.round(38 * (hero ?? 0))
     const MAX = 128
     if (!value) {
       /* An empty field is one line by definition. Measured, it would report
@@ -194,12 +250,11 @@ export function Composer({
     const content = el.scrollHeight
     el.style.height = `${Math.min(Math.max(content, MIN), MAX)}px`
     el.style.overflowY = content > MAX ? 'auto' : 'hidden'
-  }, [value, expanded])
+  }, [value, expanded, hero])
 
   const pickSource = (source: (typeof SOURCES)[number]) => {
     const head = token ? value.slice(0, token.start) : value
     onChange(`${head}@${source.name} `)
-    setSourceOpen(false)
     input.current?.focus()
   }
 
@@ -209,7 +264,6 @@ export function Composer({
   }
 
   const openPicker = () => {
-    setSourceOpen(false)
     fileInput.current?.click()
   }
 
@@ -225,34 +279,13 @@ export function Composer({
   }
 
   return (
-    <div className="relative">
+    <div className="relative" ref={root}>
       {/* ── source menu — grows up from the composer's top edge ── */}
-      {menu && (rows.length > 0 || sourceOpen) && (
+      {menu && rows.length > 0 && (
         <div
           className="absolute inset-x-0 bottom-full z-10 mb-2 max-h-[264px] overflow-y-auto rounded-card bg-surface p-1 shadow-overlay"
           style={{ animation: 'bui-pop-in 180ms cubic-bezier(0.23,1,0.32,1) both', transformOrigin: 'bottom center' }}
         >
-          {/* A file is a source too — the same `+`, one row above the apps.
-              Only on the button, never on `@`: typing `@sh` is reaching for
-              Shopify, and offering a file picker there is an interruption.
-              Divo saves it into this chat's container workspace, which is what
-              lets the run open it, so the row says so rather than "Upload". */}
-          {sourceOpen && onAttach && (
-            <button
-              type="button"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={openPicker}
-              className="flex h-9 w-full items-center gap-2.5 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
-            >
-              <span className="flex w-10 shrink-0 items-center justify-center">
-                <Paperclip size={14} className="text-ink-2" />
-              </span>
-              <span className="shrink-0 text-[12.5px] font-medium text-ink">Attach files</span>
-              <span className="min-w-0 flex-1 truncate text-[12px] text-ink-3">
-                Or drop them anywhere on this chat
-              </span>
-            </button>
-          )}
           {rows.map((source, i) => (
             <button
               key={source.key}
@@ -344,11 +377,27 @@ export function Composer({
       )}
 
       {/* ── the bar ── */}
+      {/* On the landing the box sits on a plate, with a tray under it — one
+          object with two levels rather than a box and some buttons beneath it.
+          The plate fades out as the composer compresses, so the chat-shaped bar
+          it ends as is a single edge again. */}
+      <div
+        className={actions === undefined ? undefined : 'ws-comp-plate'}
+        style={actions === undefined ? undefined : { ['--plate' as string]: hero ?? 1 }}
+      >
       <div
         onClick={() => input.current?.focus()}
-        className={`relative cursor-text border border-line bg-surface p-1.5 shadow-btn transition-[border-color,border-radius] duration-150 focus-within:border-line-strong ${
+        className={`relative cursor-text border border-line bg-surface shadow-btn transition-[border-color] duration-150 focus-within:border-line-strong ${
+          hero === undefined ? 'p-1.5' : ''
+        } ${
           expanded || files.length > 0 ? 'rounded-[22px]' : 'rounded-full'
         }`}
+        /* Interpolated rather than switched between two classes: every value
+           in between is a frame somebody is looking at while they scroll. */
+        style={hero === undefined ? undefined : {
+          padding: `${6 + 5 * hero}px`,
+          borderRadius: `${16 + 4 * hero}px`,
+        }}
       >
         {/* Hidden mirror of the draft — its natural width decides the layout. */}
         <span
@@ -385,12 +434,18 @@ export function Composer({
         >
           <button
             type="button"
-            aria-label="Add a source"
-            aria-expanded={sourceOpen}
-            onClick={() => { setModelOpen(false); setSourceOpen((v) => !v); input.current?.focus() }}
+            aria-label="Attach files"
+            title="Attach files"
+            /* Straight to the picker. It used to open a menu whose first row
+               was this and whose other ten were the apps — a list of places to
+               point a sentence at, offered by a control that looks like "add
+               something to this message". The apps are still reachable the way
+               they always were, by typing `@`, which is where a mention
+               belongs; the button does the one thing its shape promises. */
+            onClick={() => { setModelOpen(false); openPicker() }}
             className={`flex size-7 shrink-0 items-center justify-center justify-self-start rounded-full text-ink-3 transition-[background-color,color,transform] duration-150 hover:bg-fill hover:text-ink active:scale-[0.94] ${
-              sourceOpen ? 'bg-fill text-ink' : ''
-            } ${expanded ? 'col-start-1 row-start-2' : 'col-start-1 row-start-1'}`}
+              expanded ? 'col-start-1 row-start-2' : 'col-start-1 row-start-1'
+            }`}
           >
             <Plus size={16} />
           </button>
@@ -415,7 +470,7 @@ export function Composer({
                 }
               }
               if (event.key === 'Escape') {
-                setSourceOpen(false)
+                setSourceDismissed(true)
                 setModelOpen(false)
                 return
               }
@@ -433,9 +488,12 @@ export function Composer({
               ? `Ask about the attached file${files.length === 1 ? '' : 's'}`
               : placeholder}
             aria-label="Message Divo"
-            className={`min-h-7 w-full min-w-0 resize-none bg-transparent px-1 py-[5px] text-[13px] leading-[18px] text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 ${
+            className={`min-h-7 w-full min-w-0 resize-none bg-transparent px-1 py-[5px] leading-[18px] text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 ${
+              hero === undefined ? 'text-[13px]' : ''
+            } ${
               expanded ? 'col-span-full col-start-1 row-start-1' : 'col-start-2 row-start-1'
             }`}
+            style={hero === undefined ? undefined : { fontSize: `${13 + 1.5 * hero}px` }}
           />
 
           <button
@@ -482,6 +540,24 @@ export function Composer({
             {running ? <span className="size-2.5 rounded-[2px] bg-current" /> : <ArrowUp size={16} />}
           </button>
         </div>
+      </div>
+
+      {/* A tray tucked under the box, reading as part of it rather than as a
+          row of buttons underneath it. What goes here is the kind of thing you
+          reach for before writing rather than while writing — so it sits below
+          the sentence, out of the way of it, and folds shut as the composer
+          compresses because by then the page has the real work on it. */}
+      {actions !== undefined && (
+        <div
+          className="ws-comp-tray"
+          style={{
+            height: `${40 * Math.max(0, Math.min(1, (hero ?? 0) * 1.6 - 0.6))}px`,
+            opacity: Math.max(0, (hero ?? 0) * 2 - 1),
+          }}
+        >
+          <div className="ws-comp-tray-in">{actions}</div>
+        </div>
+      )}
       </div>
 
       <RejectionNote rejected={rejected} />
