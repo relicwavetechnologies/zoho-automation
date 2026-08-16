@@ -55,6 +55,7 @@ import {
 	canReusePiProcess,
 	createIdleContainerScheduler,
 	finalizeRuntimeLifecycle,
+	piProcessBinding,
 	piProcessBindingMatches,
 	piProcessBindingMismatchReason,
 	trackRuntimeReclamation,
@@ -526,6 +527,7 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 		provider: "deepseek",
 		model: "deepseek-v4-flash",
 		nativeSkillDigest: "a".repeat(64),
+		channel: "lark",
 	};
 	assert.equal(piProcessBindingMatches(binding, { ...binding }), true);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, thread: "lark-2" }), false);
@@ -547,6 +549,27 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 			nativeSkillDigest: "b".repeat(64),
 		}),
 		"native_skill_digest_changed",
+	);
+
+	// A container is keyed by profile, so one member's Lark turns and web turns
+	// reach the same one — and the surface decides which tools Pi is launched
+	// with. Reusing across a surface change served the second surface with the
+	// first one's tools, which fails as an absence rather than an error: the
+	// model simply works around a tool it cannot see.
+	assert.equal(piProcessBindingMatches(binding, { ...binding, channel: "web" }), false);
+	assert.equal(
+		piProcessBindingMismatchReason(binding, { ...binding, channel: "web" }),
+		"channel_changed",
+	);
+	// Every launch-time input is in the record. A field added to `scopedManifest`
+	// or to the Pi launch arguments and not to this one is the same bug again.
+	assert.deepEqual(
+		Object.keys(piProcessBinding({
+			profile: "p", thread: "t", backendUrl: "b", departmentId: "d",
+			selectedModel: { provider: "deepseek", model: "m" },
+			nativeSkillDigest: "x", channel: "web",
+		})).sort(),
+		["backendUrl", "channel", "departmentId", "model", "nativeSkillDigest", "profile", "provider", "thread"],
 	);
 });
 

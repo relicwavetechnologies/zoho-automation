@@ -149,6 +149,7 @@ test("fails the call when the document could not be filed anywhere", async () =>
 
 		process.env.DIVO_BACKEND_URL = "https://divo.test";
 		process.env.DIVO_MEMBER_TOKEN = "member-token";
+		process.env.DIVO_RUN_CONTEXT_PATH = join(dir, "run-context.json");
 		globalThis.fetch = (async () => ({ ok: false, status: 503, json: async () => ({}) })) as never;
 
 		const refused = await toolExecute()("artifact-call", {
@@ -160,6 +161,48 @@ test("fails the call when the document could not be filed anywhere", async () =>
 		globalThis.fetch = realFetch;
 		delete process.env.DIVO_BACKEND_URL;
 		delete process.env.DIVO_MEMBER_TOKEN;
+		delete process.env.DIVO_RUN_CONTEXT_PATH;
+		process.chdir(previousCwd);
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("refuses a surface with nowhere to show a document", async () => {
+	const dir = await workspaceWithBrief();
+	const previousCwd = process.cwd();
+	const realFetch = globalThis.fetch;
+	let posted = 0;
+
+	try {
+		process.chdir(dir);
+		process.env.DIVO_BACKEND_URL = "https://divo.test";
+		process.env.DIVO_MEMBER_TOKEN = "member-token";
+		globalThis.fetch = (async () => { posted += 1; return { ok: true, status: 200, json: async () => ({}) }; }) as never;
+
+		// The manifest already withholds this extension from Lark, but that is read
+		// once when Pi is launched and one warm process serves many turns — so a
+		// container started for the web would otherwise carry this tool into a Lark
+		// turn. The run context is rewritten per prompt; this is the only check
+		// that is true of the turn actually running.
+		for (const channel of ["lark", "teams", undefined]) {
+			await writeFile(
+				join(dir, "run-context.json"),
+				JSON.stringify({ version: 1, threadId: "t", runId: "r", ...(channel ? { channel } : {}) }),
+				"utf8",
+			);
+			process.env.DIVO_RUN_CONTEXT_PATH = join(dir, "run-context.json");
+			const refused = await toolExecute()("artifact-call", { path: "artifacts/research-brief.md" });
+			assert.equal(refused?.isError, true, `${channel ?? "no channel"} must be refused`);
+			assert.match(refused?.content[0]?.text ?? "", /nowhere to show/);
+		}
+
+		// And nothing was filed on the way to refusing.
+		assert.equal(posted, 0);
+	} finally {
+		globalThis.fetch = realFetch;
+		delete process.env.DIVO_BACKEND_URL;
+		delete process.env.DIVO_MEMBER_TOKEN;
+		delete process.env.DIVO_RUN_CONTEXT_PATH;
 		process.chdir(previousCwd);
 		await rm(dir, { recursive: true, force: true });
 	}

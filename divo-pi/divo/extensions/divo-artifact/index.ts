@@ -184,6 +184,21 @@ export function buildArtifactDetails(input: {
 }
 
 /**
+ * Surfaces with somewhere to show a document.
+ *
+ * The runtime already withholds this whole extension from any other surface, and
+ * this is the same rule asked again at the moment of the call. That is not
+ * belt-and-braces: the two questions have different granularity. The manifest is
+ * read when Pi is *launched*, and one warm process serves many turns — so a
+ * container started for one surface would otherwise carry its tool list into
+ * every later turn, whatever surface those arrived on.
+ *
+ * A run context is rewritten per prompt, so reading the channel here is the only
+ * check that is true of *this* turn.
+ */
+const SURFACES_WITH_A_PANEL = new Set(["web"]);
+
+/**
  * The store's address, or nothing.
  *
  * Nothing is the honest answer when the container was started without a backend
@@ -322,6 +337,12 @@ export default function divoArtifactExtension(pi: ExtensionAPI) {
 			if (!store) return failure("this run has no document store to file it in", "no store");
 
 			const context = await readRuntimeRunContext().catch(() => undefined);
+			if (!SURFACES_WITH_A_PANEL.has(String(context?.channel))) {
+				return failure(
+					"this surface has nowhere to show a document — put the result in the reply instead",
+					"no surface",
+				);
+			}
 			const stored = await storeArtifact({
 				store,
 				artifactId,

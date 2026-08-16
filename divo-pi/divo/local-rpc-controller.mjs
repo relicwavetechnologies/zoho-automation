@@ -260,6 +260,11 @@ async function runTurn({
 		departmentId,
 		selectedModel,
 		nativeSkillDigest,
+		// A container is keyed by profile, so one member's Lark turns and web
+		// turns reach the same one. The surface decides which tools Pi is
+		// launched with, and a launch cannot be revised — so a surface change
+		// has to replace the process, exactly as a model change does.
+		channel,
 	});
 	if (!ephemeral) await phases.measure("idle", () => effects.activateIdleContainer(profile));
 	const cachedRuntime = getWarmPiProcess(profile);
