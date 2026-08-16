@@ -153,8 +153,13 @@ export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
  * `gateway:company:<c>:requester:<u>:thread:web_…:run:<r>` — a namespacing key
  * rather than a conversation — so a version of this that only looked at the
  * chat ids returned null for every real approval, and the thread card it feeds
- * could never appear on any thread. The execution context is bound to the
- * signed runtime lease, so it is also the trustworthy copy.
+ * could never appear on any thread.
+ *
+ * This is presentation, not authority, and must not be read as either. The
+ * execution context is client-supplied and only shape-checked, so what makes it
+ * safe to route on is not its provenance: it is that the surrounding query is
+ * already scoped to the reader's own decisions, so the worst a forged thread id
+ * can do is put one of your own requests in front of your own composer.
  *
  * Everything is still gated on the web-thread shape. A Lark approval's chat id
  * is an open-chat id and a scheduled run's is a synthetic key; treating either

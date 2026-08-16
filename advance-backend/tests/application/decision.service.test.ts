@@ -132,8 +132,8 @@ function makeService(row: ReturnType<typeof toolActionRow> | null, opts: {
         return { ok: true, messageId: 'om_new' };
       },
     },
-    onResolvedCard: async (messageId, decision, byName, request) => {
-      calls.cards.push({ messageId, decision, byName, request });
+    onResolvedCard: async (input) => {
+      calls.cards.push(input);
     },
   });
   return { service, calls };
@@ -303,8 +303,14 @@ describe('decisions — settling', () => {
 
     assert.deepEqual(calls.cards, [{
       messageId: 'om_123',
-      decision: 'rejected',
+      verdict: 'rejected',
       byName: 'Priya Nair',
+      title: 'Send email',
+      summary: 'Reject',
+      /* A manager approval gets the resolution card its own flow has always
+         drawn; only a decision opened by this module gets one carrying what
+         was answered, which the approval card has no field for. */
+      native: false,
       request: {
         toolId: 'googleGmail',
         action: 'send',
@@ -579,5 +585,23 @@ describe('decisions — a press that arrives too late', () => {
     assert.equal(outcome.settled, false);
     assert.equal(outcome.ok, false);
     assert.equal(calls.resolved.length, 0);
+  });
+});
+
+describe('decisions — the card drawn over a settled one', () => {
+  it('carries the answer when the decision was opened here', () => {
+    /* The approval resolution card can only say approved or rejected. A
+       decision that asked three questions and got three answers would have
+       been reported as a bare "Approved" over the top of them. */
+    const { service, calls } = makeService(decisionRow({ decisionMessageId: 'om_9', channel: 'lark' }));
+    return service.settle(APPROVER, 'decision-1', {
+      responses: [
+        { questionId: 'flavours', chose: ['three'] },
+        { questionId: 'market', chose: ['trucks'] },
+      ],
+    }).then(() => {
+      assert.equal((calls.cards[0] as { native: boolean }).native, true);
+      assert.equal((calls.cards[0] as { summary: string }).summary, 'Three · Food trucks');
+    });
   });
 });

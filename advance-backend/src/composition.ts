@@ -9,6 +9,7 @@ import { RuntimeApprovalRepository } from './infrastructure/persistence/runtime-
 import { DecisionService } from './application/decision/decision.service';
 import { LarkDecisionCourier } from './infrastructure/channels/lark/lark-decision.courier';
 import { LarkDecisionCardHandler } from './infrastructure/channels/lark/lark-decision-card.handler';
+import { buildDecisionResolvedCard } from './infrastructure/channels/lark/lark-decision-card';
 import { buildApprovalResolutionCard } from './application/approval/approval-card-builder';
 import { ApprovalResolverService } from './application/approval/approval-resolver.service';
 import { ApprovalGateService } from './application/approval/approval-gate.service';
@@ -2752,8 +2753,14 @@ export async function buildContainer(
     logger: logger.child({ service: 'decision' }),
     audit: auditService,
     courier: new LarkDecisionCourier(larkAdapter, logger, env.APP_BASE_URL),
-    onResolvedCard: async (messageId, decision, byName) => {
-      await larkAdapter.updateMessageById(messageId, buildApprovalResolutionCard(decision, byName, new Date()));
+    /* Which card is drawn over the settled one. A decision opened through this
+       module carries what was actually answered, and the approval resolution
+       card has no field for it — it can only say approved or rejected. */
+    onResolvedCard: async ({ messageId, verdict, byName, title, summary, native }) => {
+      const card = native
+        ? buildDecisionResolvedCard({ title, verdict, summary, byName, at: new Date() })
+        : buildApprovalResolutionCard(verdict, byName, new Date());
+      await larkAdapter.updateMessageById(messageId, card);
     },
   });
   const decisionCardHandler = new LarkDecisionCardHandler(decisions, logger, env.APP_BASE_URL);

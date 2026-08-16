@@ -26,6 +26,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { FileText } from 'lucide-react'
 import { Navigate, useParams } from 'react-router-dom'
+import { notify } from '@/lib/notify'
 import { Composer } from './chat/composer'
 import { useDecisions } from './data/use-decisions'
 import { firstOpen } from './decisions/decision'
@@ -409,7 +410,14 @@ function ChatThread({ threadId }: { threadId: string }) {
               decision={open}
               sending={decisions.sending === open.id}
               onDismiss={() => setDeferred(open.id)}
-              onSend={(answer) => void decisions.settle(open.id, answer)}
+              onSend={(answer) => void decisions.settle(open.id, answer).then((outcome) => {
+                /* Said out loud, because every refusal here looks exactly like
+                   success otherwise: the card disappears either way. A request
+                   answered on a Lark card two seconds earlier comes back 409,
+                   the row leaves `awaitingMe`, the composer returns — and the
+                   reader has no way to tell that from their own answer landing. */
+                if (!outcome.ok) notify.refused('That could not be recorded', outcome.message)
+              })}
             />
           ) : (
           <Composer

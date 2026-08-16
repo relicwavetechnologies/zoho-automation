@@ -34,10 +34,21 @@ import {
 /**
  * The one place Divo asks a person something and hears back.
  *
- * This replaces `ApprovalInboxService` and the dispatch that used to sit in the
+ * It replaces `ApprovalInboxService` and the dispatch that used to sit in the
  * route above it, where answering a decision meant trying the requester-owned
  * path first and falling through to the governance one — an ordering at the
  * door, standing in for a decision the module should have been making.
+ *
+ * WHAT IS AND IS NOT MIGRATED. Every existing approval is *read* and *settled*
+ * through here: the projection turns any stored row into questions, so the web
+ * card, the Approvals page and the Desktop route all come through this module
+ * today. What has not moved is the *asking*. `ask` has no caller yet — the
+ * seven older paths still write their own rows and draw their own Lark cards,
+ * and the branches for them are still in the webhook. So the Lark half of this
+ * module (the courier, the decision card, `answerOne`, `responseJson`) is
+ * proven by its tests and carries no production traffic until the first of
+ * those is migrated. Said plainly here because a module that reads as finished
+ * is one the next author will not finish.
  *
  * Three things are true of every question that comes through here, and each one
  * used to be re-established per feature:
@@ -162,13 +173,25 @@ export interface DecisionServiceDeps {
   /** Owns requester confirmations end to end, including their execution. */
   readonly businessActions?: Pick<BusinessActionService, 'decide'>;
   readonly courier?: DecisionCourier;
-  /** Stops a delivered card offering buttons for a decision settled elsewhere. */
-  readonly onResolvedCard?: (
-    messageId: string,
-    decision: DecisionVerdict,
-    byName: string,
-    request: Omit<ApprovalCardInput, 'approvalId' | 'approverName'>,
-  ) => Promise<void>;
+  /**
+   * Stops a delivered card offering buttons for a decision settled elsewhere.
+   *
+   * `native` says which card to draw over it. A manager approval gets the
+   * resolution card the gate's own flow has always drawn; a decision opened
+   * here gets one carrying what was actually answered, which the approval card
+   * has no field for. Chosen by the caller rather than here because building a
+   * Lark card is not this module's job.
+   */
+  readonly onResolvedCard?: (input: {
+    readonly messageId: string;
+    readonly verdict: DecisionVerdict;
+    readonly byName: string;
+    readonly title: string;
+    /** What was said, in the labels the person read. */
+    readonly summary: string;
+    readonly native: boolean;
+    readonly request: Omit<ApprovalCardInput, 'approvalId' | 'approverName'>;
+  }) => Promise<void>;
 }
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -317,12 +340,6 @@ export class DecisionService {
     };
   }
 
-  /** One open decision this person may answer, or nothing. */
-  async find(actor: DecisionActor, decisionId: string): Promise<Decision | null> {
-    const loaded = await this.load(actor, decisionId);
-    return loaded.ok ? loaded.projected.decision : null;
-  }
-
   /**
    * Record an answer, and do what the asker said should happen next.
    *
@@ -369,7 +386,7 @@ export class DecisionService {
       this.deps.logger.error('decision.answer_not_stored', { decisionId, error: stored.error.message });
     }
 
-    await this.updateDeliveredCard(row, verdict, actor);
+    await this.updateDeliveredCard(row, projected, verdict, summary, actor);
     this.continue(row, projected.continuation, verdict);
 
     this.deps.audit?.record({
@@ -528,18 +545,23 @@ export class DecisionService {
 
   private async updateDeliveredCard(
     row: RuntimeApprovalRow,
+    projected: ProjectedDecision,
     verdict: DecisionVerdict,
+    summary: string,
     actor: DecisionActor,
   ): Promise<void> {
     if (!row.decisionMessageId || !this.deps.onResolvedCard) return;
     const meta = asRecord(row.metadataJson);
     const payload = asRecord(row.payloadJson);
     const authority = meta['approvalAuthority'];
-    await this.deps.onResolvedCard(
-      row.decisionMessageId,
+    await this.deps.onResolvedCard({
+      messageId: row.decisionMessageId,
       verdict,
-      actor.displayName ?? actor.userId,
-      {
+      byName: actor.displayName ?? actor.userId,
+      title: projected.decision.title,
+      summary,
+      native: projected.rowKind === DECISION_ROW_KIND,
+      request: {
         toolId: row.toolId,
         action: row.actionGroup,
         args: payload['args'],
@@ -550,7 +572,7 @@ export class DecisionService {
           : 'department_manager',
         departmentName: readString(meta['departmentName']) ?? 'Company-wide',
       },
-    ).catch(error => this.deps.logger.warn('decision.card_update_failed', { id: row.id, error: String(error) }));
+    }).catch(error => this.deps.logger.warn('decision.card_update_failed', { id: row.id, error: String(error) }));
   }
 
   /**

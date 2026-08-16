@@ -42,11 +42,17 @@ export function createDesktopApprovalRoutes(deps: DesktopApprovalRoutesDeps): Ro
   router.get('/approvals', memberAuth, async (_req: Request, res: Response) => {
     try {
       const open = await deps.decisions.openRows(actorFrom(res));
-      /* Answered in the shape installed clients already parse, field for field.
-         They read `description.title`, `description.tool`, `description.details`
-         and four names off each row, and a client shipped last month cannot be
-         updated in step with this repo — so the compatibility adapter converts
-         and the new shape stays on the routes written for it. */
+      /* Answered in the shape installed clients already parse. They read
+         `description.title`, `description.tool`, `description.details` and four
+         names off each row, and a client shipped last month cannot be updated
+         in step with this repo — so the compatibility adapter converts and the
+         new shape stays on the routes written for it.
+
+         One value differs from the list this replaced: a requester is named by
+         display name where the old reader preferred their email. Both are on
+         the row and the field is a name, so the newer order is the better one —
+         but it is a change, and worth knowing before somebody reads a Desktop
+         screenshot as evidence of something. */
       res.json({
         awaitingMe: open.awaitingMe.map(asInboxItem),
         requestedByMe: open.requestedByMe.map(asInboxItem),

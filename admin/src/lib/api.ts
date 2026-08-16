@@ -40,6 +40,12 @@ const extractErrorMessage = (raw: string, status: number): string => {
       meta?: { message?: string };
       error?: string | { message?: string };
     };
+    /* `message` first. Both halves are usually present — `{ error: 'expired',
+       message: 'This request expired. Ask for it again.' }` — and `error` is
+       the machine's word for what happened while `message` is the sentence
+       written for the person. Reading the code first meant every carefully
+       worded refusal in the product surfaced as `already_resolved`. */
+    if (typeof parsed.message === "string" && parsed.message) return parsed.message;
     if (typeof parsed.error === "string") return parsed.error;
     if (parsed.error && typeof parsed.error === "object" && typeof parsed.error.message === "string") {
       return parsed.error.message;
