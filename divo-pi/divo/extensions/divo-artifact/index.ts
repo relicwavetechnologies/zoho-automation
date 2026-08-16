@@ -1,21 +1,32 @@
 /**
  * Pi-owned artifact badge for Divo.
  *
- * Artifacts are normal workspace files. The model creates/revises them with
- * write/edit/read. This tool only badges a path so the desktop sidebar knows
- * which file to open and render. Presentation only — no content rewrite,
- * gateway, SaaS, or RBAC authority.
+ * Artifacts are normal workspace files. The model creates and revises them with
+ * write/edit/read; this tool takes the finished file and makes it readable
+ * outside the container.
+ *
+ * That last part is the whole job, and it is why the tool cannot be a pure
+ * badge. The container is torn down when the run ends. A path handed to a reader
+ * who has no filesystem to look in — a browser — names a file that will not
+ * exist by the time they click it. So the body is lifted out here, at the one
+ * moment the model has said the document is finished, and stored against the
+ * member who asked for it.
+ *
+ * Presentation only, still: no gateway, no SaaS, no RBAC authority. It moves one
+ * file the model already wrote, to the reader who already asked for it.
  */
 
-import { access, constants, realpath, stat } from "node:fs/promises";
+import { access, constants, readFile, realpath, stat } from "node:fs/promises";
 import { basename, extname, isAbsolute, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { readRuntimeRunContext } from "../../runtime-run-context.mjs";
 
 export const DIVO_ARTIFACT_TOOL_NAME = "divo_artifact";
 export const DIVO_ARTIFACT_DETAILS_VERSION = 2 as const;
 export const MAX_ARTIFACT_TITLE_CHARS = 160;
+export const MAX_ARTIFACT_ID_CHARS = 120;
 export const MAX_SUMMARY_CHARS = 800;
 export const MAX_PATH_CHARS = 1_200;
 
@@ -52,12 +63,15 @@ const ArtifactParams = Type.Object({
 export type ArtifactMime = "text/markdown";
 
 export type DivoArtifactDetails = {
+	/** This record's shape, not the document's. */
 	version: typeof DIVO_ARTIFACT_DETAILS_VERSION;
 	artifactId: string;
 	title: string;
 	mime: ArtifactMime;
 	path: string;
 	summaryForChat?: string;
+	/** Which revision of the document the store now holds. */
+	storedVersion?: number;
 	updatedAt: string;
 };
 
@@ -87,6 +101,24 @@ export function artifactIdFromPath(filePath: string): string {
 		.replace(/^-+|-+$/g, "")
 		.slice(0, 40);
 	return `${stem || "artifact"}-${hash}`.slice(0, 120);
+}
+
+/**
+ * Reduce a model-supplied id to the shape the store and a URL will both accept.
+ *
+ * Mechanical, never interpretive: strip what cannot travel, keep the rest. A
+ * model that passes `reports/q3 review.md` meant one document, and rejecting the
+ * call over punctuation would lose the document to make a point about it. An id
+ * with nothing left after stripping falls back to the path, which is the only
+ * other thing that identifies the same file.
+ */
+export function safeArtifactId(supplied: string | undefined, filePath: string): string {
+	const cleaned = (supplied ?? "")
+		.trim()
+		.replace(/[^A-Za-z0-9._-]+/g, "-")
+		.replace(/^[^A-Za-z0-9]+/, "")
+		.slice(0, MAX_ARTIFACT_ID_CHARS);
+	return cleaned || artifactIdFromPath(filePath);
 }
 
 export function titleFromPath(filePath: string): string {
@@ -137,6 +169,7 @@ export function buildArtifactDetails(input: {
 	path: string;
 	summaryForChat?: string;
 	updatedAt?: string;
+	storedVersion?: number;
 }): DivoArtifactDetails {
 	return {
 		version: DIVO_ARTIFACT_DETAILS_VERSION,
@@ -145,8 +178,77 @@ export function buildArtifactDetails(input: {
 		mime: input.mime,
 		path: input.path,
 		...(input.summaryForChat ? { summaryForChat: input.summaryForChat } : {}),
+		...(typeof input.storedVersion === "number" ? { storedVersion: input.storedVersion } : {}),
 		updatedAt: input.updatedAt ?? new Date().toISOString(),
 	};
+}
+
+/**
+ * The store's address, or nothing.
+ *
+ * Nothing is the honest answer when the container was started without a backend
+ * to talk to — a local development run, for instance. The tool says so rather
+ * than pretending it filed the document somewhere.
+ */
+export function resolveArtifactStore(
+	env: NodeJS.ProcessEnv = process.env,
+): { backendUrl: string; memberToken: string } | undefined {
+	const backendUrl = env.DIVO_BACKEND_URL?.trim().replace(/\/$/, "");
+	const memberToken = env.DIVO_MEMBER_TOKEN?.trim();
+	if (!backendUrl || !memberToken) return undefined;
+	return { backendUrl, memberToken };
+}
+
+/** Named for the resource. The caller is a member, not a client. */
+const STORE_PATH = "/api/artifacts";
+const STORE_TIMEOUT_MS = 20_000;
+/** Matches the store's own bound. A larger document wants object storage. */
+export const MAX_ARTIFACT_BODY_CHARS = 400_000;
+
+/**
+ * Put the finished document where a reader can open it, and report which
+ * version they will get.
+ *
+ * Awaited, unlike the trace's fire-and-forget POST, and the difference is the
+ * point: a dropped trace event costs a line of a log nobody was reading, while a
+ * dropped artifact costs the deliverable. If this fails the tool fails, so the
+ * model finds out in the same turn and can say so instead of announcing a
+ * document that was never stored.
+ */
+async function storeArtifact(input: {
+	store: { backendUrl: string; memberToken: string };
+	artifactId: string;
+	title: string;
+	mime: ArtifactMime;
+	body: string;
+	threadId?: string;
+	executionRunId?: string;
+}): Promise<{ ok: true; version: number } | { ok: false; error: string }> {
+	try {
+		const response = await fetch(`${input.store.backendUrl}${STORE_PATH}`, {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${input.store.memberToken}`,
+				"Content-Type": "application/json",
+				Accept: "application/json",
+			},
+			body: JSON.stringify({
+				artifactId: input.artifactId,
+				title: input.title,
+				mime: input.mime,
+				body: input.body,
+				...(input.threadId ? { threadId: input.threadId } : {}),
+				...(input.executionRunId ? { executionRunId: input.executionRunId } : {}),
+			}),
+			signal: AbortSignal.timeout(STORE_TIMEOUT_MS),
+		});
+		if (!response.ok) return { ok: false, error: `the document store answered ${response.status}` };
+		const payload = (await response.json()) as { artifact?: { version?: unknown } };
+		const version = payload?.artifact?.version;
+		return { ok: true, version: typeof version === "number" ? version : 1 };
+	} catch (error) {
+		return { ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
 }
 
 export default function divoArtifactExtension(pi: ExtensionAPI) {
@@ -173,33 +275,63 @@ export default function divoArtifactExtension(pi: ExtensionAPI) {
 		parameters: ArtifactParams,
 
 		async execute(_toolCallId, params: ArtifactParams) {
+			/* One shape for every way this can fail, because the model reads the
+			   text and the trace reads the details, and the two disagreeing about
+			   whether a document exists is how a reader ends up being told about
+			   one that does not. */
+			const failure = (reason: string, code: string) => ({
+				content: [{ type: "text" as const, text: `Could not show that document: ${reason}.` }],
+				details: { version: DIVO_ARTIFACT_DETAILS_VERSION, error: code },
+				isError: true,
+			});
+
 			const resolved = await resolveWorkspaceFilePath(params.path);
-			if (!resolved.ok) {
-				return {
-					content: [{ type: "text" as const, text: `Unable to badge artifact: ${resolved.error}.` }],
-					details: { version: DIVO_ARTIFACT_DETAILS_VERSION, error: resolved.error },
-					isError: true,
-				};
-			}
+			if (!resolved.ok) return failure(resolved.error, resolved.error);
 
 			const mime = mimeFromPath(resolved.path);
 			if (!mime) {
-				return {
-					content: [{
-						type: "text" as const,
-						text: "Unable to badge artifact: only markdown (.md / .markdown) files are supported.",
-					}],
-					details: { version: DIVO_ARTIFACT_DETAILS_VERSION, error: "unsupported mime" },
-					isError: true,
-				};
+				return failure(
+					"only markdown (.md / .markdown) files can be shown",
+					"unsupported mime",
+				);
 			}
 
 			const title =
 				params.title?.trim().slice(0, MAX_ARTIFACT_TITLE_CHARS) || titleFromPath(resolved.path);
 			const summaryForChat = params.summaryForChat?.trim() || undefined;
-			const artifactId = (
-				params.artifactId?.trim() || artifactIdFromPath(resolved.path)
-			).slice(0, 120);
+			const artifactId = safeArtifactId(params.artifactId, resolved.path);
+
+			let body: string;
+			try {
+				body = await readFile(resolved.path, "utf8");
+			} catch {
+				return failure("the file could not be read", "unreadable");
+			}
+			if (body.length > MAX_ARTIFACT_BODY_CHARS) {
+				return failure(
+					`the document is ${body.length} characters, past the ${MAX_ARTIFACT_BODY_CHARS} this can carry — split it or summarise it`,
+					"too large",
+				);
+			}
+
+			// The store is what makes the file readable at all once this container
+			// is gone, so a failure here is a failure of the tool. Reporting success
+			// and letting the reader discover an empty panel would be the one
+			// outcome worse than the model knowing it has to say so.
+			const store = resolveArtifactStore();
+			if (!store) return failure("this run has no document store to file it in", "no store");
+
+			const context = await readRuntimeRunContext().catch(() => undefined);
+			const stored = await storeArtifact({
+				store,
+				artifactId,
+				title,
+				mime,
+				body,
+				...(context?.threadId ? { threadId: context.threadId } : {}),
+				...(context?.runId ? { executionRunId: context.runId } : {}),
+			});
+			if (!stored.ok) return failure(stored.error, "not stored");
 
 			const details = buildArtifactDetails({
 				artifactId,
@@ -207,11 +339,12 @@ export default function divoArtifactExtension(pi: ExtensionAPI) {
 				mime,
 				path: resolved.path,
 				summaryForChat,
+				storedVersion: stored.version,
 			});
 
 			const pointer =
 				summaryForChat ??
-				`Opened "${title}" in the sidebar from ${basename(resolved.path)}. Keep the chat reply to a short pointer; do not paste the full body.`;
+				`Opened "${title}" beside the conversation, from ${basename(resolved.path)}. Keep the chat reply to a short pointer; do not paste the full body.`;
 
 			return {
 				content: [{ type: "text" as const, text: pointer }],

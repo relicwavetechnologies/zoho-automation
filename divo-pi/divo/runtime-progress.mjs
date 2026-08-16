@@ -378,6 +378,39 @@ export function projectRuntimeProgress(event) {
  * shared runtime still emits its low-frequency status projection, while a
  * surface capable of rendering live prose can consume these ordered deltas.
  */
+/**
+ * A finished document, announced as itself.
+ *
+ * Deliberately a second projection of the same Pi event rather than a field on
+ * `tool_end`, for the reason the answer stream is: the work log and the
+ * deliverable are read by different things. The log row says the badge tool ran;
+ * this says a document now exists at an address, which is what a surface with a
+ * panel needs and what a surface without one ignores.
+ *
+ * Only for a call that succeeded and actually filed the document — a badge that
+ * failed to store has `isError`, and announcing it would open an empty panel.
+ *
+ * @param {unknown} event
+ */
+export function projectRuntimeArtifact(event) {
+	if (!event || typeof event !== "object") return undefined;
+	if (event.type !== "tool_execution_end") return undefined;
+	if (event.toolName !== "divo_artifact" || event.isError === true) return undefined;
+	const details = event.result?.details;
+	if (!details || typeof details !== "object") return undefined;
+	if (typeof details.artifactId !== "string" || typeof details.title !== "string") return undefined;
+	if (typeof details.mime !== "string") return undefined;
+	return {
+		type: "artifact",
+		artifactId: details.artifactId,
+		title: details.title,
+		mime: details.mime,
+		version: Number.isInteger(details.storedVersion) && details.storedVersion > 0
+			? details.storedVersion
+			: 1,
+	};
+}
+
 export function projectRuntimeAnswerDelta(event) {
 	if (
 		event?.type !== "message_update"

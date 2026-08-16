@@ -37,6 +37,20 @@ export type WebRunEvent =
   | { readonly type: 'answer_delta'; readonly delta: string }
   /** The preceding prose became pre-tool narration, not the final answer. */
   | { readonly type: 'answer_reset' }
+  /**
+   * A document is ready to read beside the thread.
+   *
+   * Carries the address, never the body: the reader may already have this
+   * version open, and re-sending a long report on every revision would put a
+   * document-sized payload on a stream built for sentences.
+   */
+  | {
+      readonly type: 'artifact';
+      readonly artifactId: string;
+      readonly title: string;
+      readonly mime: string;
+      readonly version: number;
+    }
   /** The answer. Terminal. */
   | {
       readonly type: 'final';
@@ -192,6 +206,20 @@ export class WebRunService {
         if (event.type === 'answer_reset') {
           answerStarted = false;
           liveAnswer.reset();
+          return;
+        }
+        // A finished document, forwarded as itself rather than folded into the
+        // timeline. It is the one frame here that is not about how the run is
+        // going: it says a deliverable now exists and can be opened, and the
+        // panel that opens it has no business reading the work log to find out.
+        if (event.type === 'artifact') {
+          push({
+            type: 'artifact',
+            artifactId: event.artifactId,
+            title: event.title,
+            mime: event.mime,
+            version: event.version,
+          });
           return;
         }
         // Text before a tool call was an aside, not the terminal answer, and the

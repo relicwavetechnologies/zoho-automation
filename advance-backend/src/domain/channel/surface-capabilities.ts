@@ -58,22 +58,30 @@ const LARK: SurfaceCapabilities = {
 };
 
 /**
- * The web's capabilities during level 1 — deliberately identical to Lark's
- * except for how the work log arrives.
+ * The web's capabilities — Lark's, plus the two things a browser can do that a
+ * chat card cannot.
  *
- * The web can obviously do more than this. Granting it now would mean the two
- * surfaces were never observed to behave the same, and "one soul" would be a
- * claim rather than something that had been true and was then relaxed on
- * purpose. Level 2 changes these values; if that turns out to need code, the
- * architecture was wrong and this is where we find out.
+ * This started identical to Lark on purpose, so that "one soul" was something
+ * observed rather than claimed. Two values have since been relaxed, and each is
+ * backed by a renderer that exists:
  *
- * `worklog: 'streamed'` is the one honest difference: a browser draws the log
- * natively instead of re-editing a card. It changes nothing the model decides.
+ * `worklog: 'streamed'` — a browser draws the log natively instead of re-editing
+ * a card. It changes nothing the model decides.
+ *
+ * `artifacts: 'inline'` — the web has a panel beside the thread that renders a
+ * document, and the runtime gives a web run the badge tool that fills it. A Lark
+ * run is never given that tool, so its `'none'` is enforced by absence and not
+ * by a rule the model is asked to remember.
+ *
+ * Charts and the table/size caps stay where they are. There is no chart renderer
+ * yet, and raising a cap the browser has not been observed handling is exactly
+ * the shortcut this record exists to prevent.
  */
 const WEB: SurfaceCapabilities = {
   ...LARK,
   key: 'web',
   worklog: 'streamed',
+  artifacts: 'inline',
 };
 
 /** A desktop run answers into a terminal that owns its own rendering. */

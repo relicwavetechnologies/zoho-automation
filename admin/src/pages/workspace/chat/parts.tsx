@@ -25,7 +25,7 @@ import { sourcesIn } from './answer/links'
 import { FileChips, RejectionNote } from './attach.view'
 import { namedForClipboard, type Rejection } from './attach'
 import { CopyButton } from './copy'
-import type { ArtifactBlock, Beat, TableBlock } from './beats'
+import type { Beat, TableBlock } from './beats'
 
 /* ── Step ─────────────────────────────────────────────────
    Two states, one shape. Live: open, the label shimmering, the chip carrying
@@ -349,31 +349,6 @@ export function Preview({ block }: { block: TableBlock }) {
         <div className="border-t border-line px-2.5 py-1.5 text-[11px] text-ink-3">{block.footer}</div>
       )}
     </figure>
-  )
-}
-
-/* ── Artifact ─────────────────────────────────────────────
-   What the run actually produced. The mark is the vendor's, because the file
-   now lives in their system and not in Divo. */
-export function Artifact({ block }: { block: ArtifactBlock }) {
-  return (
-    <button
-      type="button"
-      className="group flex w-full items-center gap-2.5 rounded-card bg-surface p-2.5 text-left shadow-btn transition-colors duration-100 hover:bg-fill"
-      style={{ animation: 'bui-pop-in 320ms cubic-bezier(0.23,1,0.32,1) both' }}
-    >
-      <span className="flex size-8 shrink-0 items-center justify-center rounded-control bg-inset shadow-hairline">
-        <ToolMark name={block.tool} size={17} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-[12.5px] font-medium text-ink">{block.title}</span>
-        <span className="block truncate text-[11px] text-ink-3">{block.meta}</span>
-      </span>
-      <ArrowUpRight
-        size={14}
-        className="shrink-0 text-ink-3 transition-colors duration-100 group-hover:text-ink"
-      />
-    </button>
   )
 }
 

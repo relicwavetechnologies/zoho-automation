@@ -1455,23 +1455,23 @@ model ConnectionAuthorizationIntent {
 /// One Pub/Sub-triggered history cursor and lease per connected Gmail mailbox.
 /// Rules share this subscription so provider sync cost is per mailbox.
 model MailboxSubscription {
-  id                  String                @id @default(uuid())
+  id                  String                  @id @default(uuid())
   companyId           String
-  company             Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  company             Company                 @relation(fields: [companyId], references: [id], onDelete: Cascade)
   userId              String
-  user                User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  connectionId        String                @unique
-  connection          IntegrationConnection @relation(fields: [connectionId, companyId, userId], references: [id, companyId, ownerUserId], onDelete: Cascade)
-  provider            String                @default("google_workspace")
+  user                User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  connectionId        String                  @unique
+  connection          IntegrationConnection   @relation(fields: [connectionId, companyId, userId], references: [id, companyId, ownerUserId], onDelete: Cascade)
+  provider            String                  @default("google_workspace")
   mailboxEmail        String
-  status              String                @default("active")
+  status              String                  @default("active")
   historyId           String?
   /// Where a truncated history pass stopped. Valid only against `historyId`,
   /// which is why the cursor is held still while this is set.
   historyPageToken    String?
-  nextPollAt          DateTime              @default(now())
+  nextPollAt          DateTime                @default(now())
   watchExpirationAt   DateTime?
-  nextWatchRenewalAt  DateTime              @default(now())
+  nextWatchRenewalAt  DateTime                @default(now())
   watchRegisteredAt   DateTime?
   watchClaimToken     String?
   watchClaimedAt      DateTime?
@@ -1479,8 +1479,8 @@ model MailboxSubscription {
   /// Consecutive failed watch registrations. Reconciliation covers a missing
   /// watch, so one failure is a delay rather than an outage; this is what
   /// separates "late" from "give up waiting and tell the owner".
-  watchFailureCount   Int                   @default(0)
-  signalVersion       Int                   @default(0)
+  watchFailureCount   Int                     @default(0)
+  signalVersion       Int                     @default(0)
   lastSignalAt        DateTime?
   lastSignalHistoryId String?
   lastSignalMessageId String?
@@ -1496,8 +1496,8 @@ model MailboxSubscription {
   lastFailedAt        DateTime?
   failureCode         String?
   lastError           String?
-  createdAt           DateTime              @default(now())
-  updatedAt           DateTime              @updatedAt
+  createdAt           DateTime                @default(now())
+  updatedAt           DateTime                @updatedAt
   rules               MailAutomationRule[]
   events              MailEvent[]
   reconciliations     MailboxReconciliation[]
@@ -1617,34 +1617,34 @@ model MailEvent {
 /// arithmetic, and the mail worker's existing Lark DM delivery, which is the
 /// same path a `lark_dm` mail rule already uses.
 model MailBrief {
-  id             String              @id @default(uuid())
-  companyId      String
-  company        Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  userId         String
-  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  subscriptionId String
-  subscription   MailboxSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  id                 String              @id @default(uuid())
+  companyId          String
+  company            Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscriptionId     String
+  subscription       MailboxSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
   /// Local times of day, e.g. `["09:00","16:00"]`.
   ///
   /// A list rather than a single time because twice a day is the default and the
   /// point of the feature. Two rows would have been the alternative, and would
   /// have shown the member two things to manage where they asked for one.
-  timesJson      Json
+  timesJson          Json
   /// IANA name. Required, never guessed — a brief an hour out is worse than none.
-  timeZone       String
+  timeZone           String
   /// Weekdays it runs on, as `MO`…`SU`.
-  daysJson       Json
-  status         String              @default("active")
-  nextRunAt      DateTime?
-  lastRunAt      DateTime?
+  daysJson           Json
+  status             String              @default("active")
+  nextRunAt          DateTime?
+  lastRunAt          DateTime?
   /// The instant the last delivered brief covered up to.
   ///
   /// The next one starts here rather than at "now minus twelve hours", so a run
   /// missed to an outage widens the following brief instead of silently dropping
   /// the mail in the gap. That gap is exactly when somebody most needs to be told.
-  coveredThrough DateTime?
-  claimToken     String?
-  claimedAt      DateTime?
+  coveredThrough     DateTime?
+  claimToken         String?
+  claimedAt          DateTime?
   /// The last brief's own words, as the markdown it was composed from.
   ///
   /// The runner used to compose this, hand it to Lark and drop it, so the only
@@ -1654,11 +1654,11 @@ model MailBrief {
   ///
   /// The text rather than the Lark card: the card is one renderer's envelope,
   /// and the markdown is the source it is built from.
-  lastBriefText  String?
+  lastBriefText      String?
   /// How many messages the last brief named. Zero is a real, deliverable brief.
   lastBriefWantCount Int?
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 
   /// One brief per mailbox per person. Asking for a second is editing the first.
   @@unique([userId, subscriptionId])
@@ -2518,29 +2518,29 @@ model ConversationAttachment {
 /// the exact failure the review is meant to prevent, and no instruction rules
 /// it out.
 model ZohoInvoiceStaging {
-  id             String    @id @default(uuid())
-  companyId      String
-  userId         String
-  connectionId   String
-  organizationId String?
+  id               String    @id @default(uuid())
+  companyId        String
+  userId           String
+  connectionId     String
+  organizationId   String?
   /// The exact body that will be POSTed to Zoho.
-  payloadJson    Json
+  payloadJson      Json
   /// What the member reads before saying yes.
-  summary        String
+  summary          String
   /// Deterministic findings plus the reviewer's verdict, issues and unsourced values.
-  reviewJson     Json
+  reviewJson       Json
   /// Filename to attach once the invoice exists.
-  attachFileName String?
+  attachFileName   String?
   /// Which correction round this is; a re-stage after a fix supersedes its predecessor.
-  attempt        Int       @default(1)
-  supersedesId   String?
+  attempt          Int       @default(1)
+  supersedesId     String?
   /// Set once this payload has been created, so one staging cannot make two invoices.
   createdInvoiceId String?
   /// When the create was dispatched. A claim older than the write ceiling was
   /// left by a process that died holding it, not by a request still running.
-  claimedAt      DateTime?
-  createdAt      DateTime  @default(now())
-  expiresAt      DateTime
+  claimedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  expiresAt        DateTime
 
   @@index([companyId, userId, expiresAt])
   @@index([companyId, connectionId, createdInvoiceId])
@@ -3031,4 +3031,41 @@ model ProxyRequestLog {
   @@index([companyId, createdAt])
   @@index([companyId, userId, createdAt])
   @@index([companyId, channel, createdAt])
+}
+
+/// A durable deliverable Divo wrote for one person, and the only copy of it that
+/// outlives the container.
+///
+/// The agent writes an ordinary markdown file in its workspace and then badges
+/// it with `divo_artifact`. The container is torn down when the run ends, so the
+/// badge alone would name a file nobody can ever open again — this row is the
+/// body, lifted out at badge time and addressable by a browser afterwards.
+///
+/// Keyed by `artifactId`, which the runtime derives from the file path. Revising
+/// the same file re-badges the same key, so an edit updates this row in place and
+/// bumps `version` rather than leaving the reader to guess which of five rows is
+/// the current one.
+///
+/// Scoped to one member, not to a thread: a thread is where it was made, and it
+/// may legitimately be made outside one. Ownership is the company/user pair, and
+/// every read is checked against it.
+model Artifact {
+  id             String   @id @default(uuid())
+  companyId      String
+  userId         String
+  /// Runtime-derived stable key. Same file path, same artifact, new version.
+  artifactId     String
+  /// The conversation it came out of, when there was one.
+  threadId       String?
+  executionRunId String?
+  title          String
+  mime           String   @default("text/markdown")
+  body           String
+  version        Int      @default(1)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([companyId, userId, artifactId])
+  @@index([companyId, userId, updatedAt])
+  @@index([companyId, userId, threadId, updatedAt])
 }

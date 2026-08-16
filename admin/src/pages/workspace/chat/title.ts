@@ -18,7 +18,7 @@
  * Failure is silent and total: no title, and the server's truncated one stays.
  * A chat that is named slightly worse is not worth an error message.
  */
-import { API_BASE_URL } from './stream'
+import { API_BASE_URL } from '@/lib/api-base'
 
 /**
  * Mirrors the desktop's `divo_generate_thread_title`. These are one contract in

@@ -48,6 +48,15 @@ interface Entry {
   latestTimeline: Extract<WebRunEvent, { type: 'timeline' }> | undefined;
   latestAnswer: Extract<WebRunEvent, { type: 'answer' }> | undefined;
   answerOverflowed: boolean;
+  /**
+   * Documents this run has finished, newest version per id.
+   *
+   * Kept rather than published-and-forgotten because prose is disposable and a
+   * document is not: a reader whose laptop slept through the moment a report was
+   * saved would otherwise come back to a thread that never mentions it. Keyed by
+   * id so a revised document replaces itself instead of queueing twice.
+   */
+  readonly artifacts: Map<string, Extract<WebRunEvent, { type: 'artifact' }>>;
   terminal: WebRunEvent | undefined;
   readonly listeners: Set<(event: WebRunEvent) => void>;
   sweepAt: ReturnType<typeof setTimeout> | undefined;
@@ -120,6 +129,7 @@ export class WebRunRegistry {
       latestTimeline: undefined,
       latestAnswer: undefined,
       answerOverflowed: false,
+      artifacts: new Map(),
       terminal: undefined,
       listeners: new Set(),
       sweepAt: undefined,
@@ -158,6 +168,8 @@ export class WebRunRegistry {
         } else if (event.type === 'answer_reset') {
           entry.latestAnswer = { type: 'answer', text: '' };
           entry.answerOverflowed = false;
+        } else if (event.type === 'artifact') {
+          entry.artifacts.set(event.artifactId, event);
         } else {
           if (event.text.length <= MAX_RECONNECT_ANSWER_CHARS) {
             entry.latestAnswer = event;
@@ -213,6 +225,9 @@ export class WebRunRegistry {
     const queue: WebRunEvent[] = [];
     if (entry.latestTimeline) queue.push(entry.latestTimeline);
     if (entry.latestAnswer) queue.push(entry.latestAnswer);
+    // Before the terminal event, so a view that attaches after the run finished
+    // still opens the documents rather than receiving them behind the ending.
+    for (const artifact of entry.artifacts.values()) queue.push(artifact);
     if (entry.terminal) queue.push(entry.terminal);
 
     if (entry.handle.settled) {
@@ -315,6 +330,17 @@ function enqueueViewEvent(queue: WebRunEvent[], event: WebRunEvent): void {
   if (event.type === 'answer') {
     removeQueuedAnswerEvents(queue);
     queue.push(event);
+    return;
+  }
+  if (event.type === 'artifact') {
+    // A view too slow to paint version 3 has no use for versions 1 and 2 of the
+    // same document — it would open the panel, then replace its contents twice
+    // in front of the reader. Only the newest form of each id survives.
+    const index = queue.findIndex(
+      candidate => candidate.type === 'artifact' && candidate.artifactId === event.artifactId,
+    );
+    if (index >= 0) queue[index] = event;
+    else queue.push(event);
     return;
   }
 

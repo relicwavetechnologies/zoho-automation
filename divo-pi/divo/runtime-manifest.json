@@ -13,7 +13,8 @@
     "divo-gateway",
     "divo-subagents",
     "divo-chat-history",
-    "divo-todos"
+    "divo-todos",
+    "divo-artifact"
   ],
   "trustedSkills": [
     "divo-gateway",
@@ -32,6 +33,7 @@
     "divo_knowledge_review",
     "divo_subagents",
     "divo_todos",
+    "divo_artifact",
     "divo_search_chats",
     "divo_read_chat",
     "divo_lark_messaging",

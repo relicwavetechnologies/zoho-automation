@@ -159,6 +159,17 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
     // sentence-sized `say` projection below remains the readable work-log and
     // Lark-card representation of the same model output.
     if (event.type === 'answer_delta' || event.type === 'answer_reset') return 'throttled';
+    /*
+     * A finished document is not a line of the work log.
+     *
+     * Returned before anything below can touch the timeline, because the
+     * fall-through at the end of this chain treats an unrecognised frame as the
+     * run beginning to write — which would flip the card to "Preparing your
+     * response…" in the middle of the work every time a document was saved.
+     * The badge tool's own `tool_end` still draws its row; this frame carries
+     * only the address of the result, for a surface that can show one.
+     */
+    if (event.type === 'artifact') return 'throttled';
     const beginsProtectedRead = event.type === 'tool_start'
       && !!event.toolId
       && isProtectedShopifyToolId(event.toolId);

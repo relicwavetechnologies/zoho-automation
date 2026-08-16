@@ -1731,5 +1731,24 @@ export function parseProgressEvent(value: unknown): RunProgressEvent | undefined
       ...safeProgressDetail(event),
     };
   }
+  if (type === 'artifact') {
+    // The address of a stored document, not the document. Every field is
+    // bounded the same way the rest of this boundary bounds them, and an id
+    // that would not survive a URL is dropped rather than repaired — a repaired
+    // id points at nothing, which is worse than no frame at all.
+    const artifactId = safeProgressString(event['artifactId'], 120);
+    const title = safeProgressString(event['title'], 160);
+    const mime = safeProgressString(event['mime'], 60);
+    const version = event['version'];
+    if (!artifactId || !title || !mime) return undefined;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(artifactId)) return undefined;
+    return {
+      type,
+      artifactId,
+      title,
+      mime,
+      version: typeof version === 'number' && Number.isInteger(version) && version > 0 ? version : 1,
+    };
+  }
   return undefined;
 }

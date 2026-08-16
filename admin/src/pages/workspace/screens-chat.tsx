@@ -24,9 +24,10 @@
  * back is an answer rather than a wall of rows.
  */
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { FileText } from 'lucide-react'
 import { Navigate, useParams } from 'react-router-dom'
 import { Chart } from './chat/charts'
-import { Artifact, Composer, Preview, Say } from './chat/parts'
+import { Composer, Preview, Say } from './chat/parts'
 import { splitTrace } from './chat/lifecycle'
 import { PiTraceTimeline } from './chat/trace'
 import { PinSpacer } from './chat/pin'
@@ -40,6 +41,9 @@ import {
 } from './chat/threads'
 import { generateThreadTitle } from './chat/title'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { ArtifactWorkspace } from './artifacts/panel'
+import { restoreThreadArtifacts } from './artifacts/open'
+import { setOpen, useArtifacts } from './artifacts/store'
 import { EXAMPLES } from './chat/examples'
 import { ToolMark } from './chat/tools'
 import '@/styles/beautiful.css'
@@ -85,6 +89,11 @@ export function WorkspaceChat() {
 function ChatThread({ threadId }: { threadId: string }) {
   const handoff = useMemo(peekHandoff, [])
   const { token } = useAdminAuth()
+  /* What this conversation produced before today. Restored into the panel's
+     tabs but not shown: a reader opening last week's thread came back for the
+     conversation, and a panel that springs out at them is answering a question
+     they did not ask. The header's control is how they ask it. */
+  useEffect(() => { void restoreThreadArtifacts(threadId, token) }, [threadId, token])
   const [draft, setDraft] = useState('')
   /* Whether the thread has been scrolled at all — the header's hairline is
      drawn only when something is genuinely passing under it. */
@@ -236,9 +245,13 @@ function ChatThread({ threadId }: { threadId: string }) {
   const empty = !live.loading && live.exchanges.length === 0
 
   return (
-    /* The drop target is the whole conversation, composer included. A file is
-       being given to Divo rather than typed into a field, so anywhere you can
-       see the chat is somewhere you can let go of it. */
+    /* The split wraps the conversation rather than the app, because a document
+       is beside *this* conversation. The panel is empty and takes no width until
+       a run files something, so an ordinary chat is laid out exactly as before. */
+    <ArtifactWorkspace>
+    {/* The drop target is the whole conversation, composer included. A file is
+        being given to Divo rather than typed into a field, so anywhere you can
+        see the chat is somewhere you can let go of it. */}
     <div className="bui-scope relative flex h-full min-h-0 flex-col bg-page" {...dropProps}>
       <DropVeil visible={over} />
       {/* Over the conversation, not in it. The work log answers "what has it
@@ -303,6 +316,7 @@ function ChatThread({ threadId }: { threadId: string }) {
         </div>
       </div>
     </div>
+    </ArtifactWorkspace>
   )
 }
 
@@ -337,6 +351,7 @@ function ChatThread({ threadId }: { threadId: string }) {
    one of the things you can do to a chat among several, and where the chat is
    an object rather than the place you are standing. */
 function Header({ title, scrolled }: { title: string; scrolled: boolean }) {
+  const { tabs, open } = useArtifacts()
   return (
     <header
       className={`ws-chat-head sticky top-0 z-10 shrink-0 bg-page/70 backdrop-blur-md transition-[border-color] duration-200 ${
@@ -360,6 +375,20 @@ function Header({ title, scrolled }: { title: string; scrolled: boolean }) {
         >
           {title}
         </span>
+        {/* The only way back to a document once the panel has been closed, and
+            the only sign that a thread produced one at all. Absent when there is
+            nothing to show, so an ordinary conversation carries no control for a
+            thing it never made. */}
+        {tabs.length > 0 && !open && (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="ml-auto flex shrink-0 items-center gap-1.5 rounded-control px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-fill hover:text-ink"
+          >
+            <FileText size={13} />
+            {tabs.length === 1 ? '1 document' : `${tabs.length} documents`}
+          </button>
+        )}
       </div>
     </header>
   )
@@ -473,7 +502,6 @@ const Exchanged = memo(function Exchanged({
           if (beat.t === 'block') {
             const { block } = beat
             if (block.kind === 'table') return <Preview key={key} block={block} />
-            if (block.kind === 'artifact') return <Artifact key={key} block={block} />
             return <Chart key={key} block={block} />
           }
           return null

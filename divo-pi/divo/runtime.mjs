@@ -124,26 +124,57 @@ const DIRECT_MESSAGE_ONLY_TOOLS = [
 const DIRECT_MESSAGE_ONLY_MODULES = ["divo-chat-history"];
 
 /**
+ * Tools that only exist where something can render what they produce.
+ *
+ * The badge tool files a document for a reader with a panel beside their
+ * conversation. A Lark card has no panel and no filesystem, so on Lark the
+ * honest state is not "the tool exists but please don't use it" — it is that the
+ * tool is not there. The surface descriptor tells the model the same thing in
+ * words (`artifacts: 'none'`), and this is what makes those words true: a model
+ * cannot be tempted by, or hallucinate the results of, a tool it was never given.
+ *
+ * Keyed by the channel that may have it, not by the channels that may not, so a
+ * third surface arrives without the tool until someone decides otherwise.
+ */
+const CHANNEL_ONLY_MODULES = { "divo-artifact": ["web"] };
+const CHANNEL_ONLY_TOOLS = { divo_artifact: ["web"] };
+
+/** @param {Record<string, string[]>} table @param {string} name @param {string|undefined} channel */
+function allowedOnChannel(table, name, channel) {
+	const channels = table[name];
+	if (!channels) return true;
+	return channel !== undefined && channels.includes(channel);
+}
+
+/**
  * The manifest as this run may use it.
  *
  * Withheld at the three places that decide what Pi can call — the extension that
  * registers the tools, the skill that teaches them, and the allowlist that
- * admits them. The controller separately puts shared runs in a fresh disposable
- * container and volume; this runtime filtering remains defence in depth.
+ * admits them. Two separate questions are asked here and both filter the same
+ * three lists: is this run scoped to a shared chat, and which surface is it
+ * answering on.
+ *
+ * The controller separately puts shared runs in a fresh disposable container and
+ * volume; this runtime filtering remains defence in depth.
+ *
+ * @param {boolean} isRunScoped
+ * @param {string} [channel] The surface the backend drives this run for, if any.
  */
-export function scopedManifest(isRunScoped) {
-	if (!isRunScoped) return manifest;
+export function scopedManifest(isRunScoped, channel) {
+	const keepModule = (name) => (
+		(!isRunScoped || !DIRECT_MESSAGE_ONLY_MODULES.includes(name))
+		&& allowedOnChannel(CHANNEL_ONLY_MODULES, name, channel)
+	);
+	const keepTool = (name) => (
+		(!isRunScoped || !DIRECT_MESSAGE_ONLY_TOOLS.includes(name))
+		&& allowedOnChannel(CHANNEL_ONLY_TOOLS, name, channel)
+	);
 	return {
 		...manifest,
-		extensions: manifest.extensions.filter(
-			(name) => !DIRECT_MESSAGE_ONLY_MODULES.includes(name),
-		),
-		trustedSkills: manifest.trustedSkills.filter(
-			(name) => !DIRECT_MESSAGE_ONLY_MODULES.includes(name),
-		),
-		toolAllowlist: manifest.toolAllowlist.filter(
-			(name) => !DIRECT_MESSAGE_ONLY_TOOLS.includes(name),
-		),
+		extensions: manifest.extensions.filter(keepModule),
+		trustedSkills: manifest.trustedSkills.filter(keepModule),
+		toolAllowlist: manifest.toolAllowlist.filter(keepTool),
 	};
 }
 
@@ -493,7 +524,7 @@ export function buildChildEnvironment(baseEnvironment, values) {
 		...(values.departmentId ? { DIVO_DEPARTMENT_ID: values.departmentId } : {}),
 		DIVO_RUNTIME_CONTEXT_PATH: values.runtimeContextPath,
 		DIVO_RUN_CONTEXT_PATH: values.runContextPath,
-		DIVO_SKILL_DIRS: scopedManifest(values.isRunScoped)
+		DIVO_SKILL_DIRS: scopedManifest(values.isRunScoped, values.channel)
 			.trustedSkills.map((name) => path.join(divoDir, "skills", name))
 			.join(path.delimiter),
 		DIVO_BUNDLED_SKILLS_DIR: path.join(divoDir, "skills"),
@@ -645,7 +676,7 @@ export function buildPiArgumentsWithResources(
 	values,
 	{ nativeSkillsRoot = "/run/divo-skills/current" } = {},
 ) {
-	const allowed = scopedManifest(values.isRunScoped);
+	const allowed = scopedManifest(values.isRunScoped, values.channel);
 	const extensionArguments = allowed.extensions.flatMap((name) => [
 		"--extension",
 		path.join(divoDir, "extensions", name, "index.ts"),

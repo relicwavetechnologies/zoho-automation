@@ -23,6 +23,7 @@ import {
   type LedgerRow, type RunEvent, type Timeline,
 } from './stream'
 import { getThread, threadSettled, type ThreadRunRecord, type ThreadTurn } from './threads'
+import { showArtifact } from '../artifacts/open'
 import type { RunState } from './player'
 
 function stepBeat(row: LedgerRow): Beat {
@@ -306,6 +307,11 @@ export function useThreadRun(input: {
      another one's name. */
   const currentThread = useRef(input.threadId)
   currentThread.current = input.threadId
+  /* Read inside `consume`, which is deliberately built once — a token in its
+     dependency list would rebuild the consumer, and a rebuilt consumer mid-run
+     is a second reader of one stream. */
+  const currentToken = useRef(input.token)
+  currentToken.current = input.token
 
   /**
    * Consume a run's events, however it was reached.
@@ -326,6 +332,12 @@ export function useThreadRun(input: {
         if (event.type === 'answer') setLiveAnswer(event.text)
         if (event.type === 'answer_delta') setLiveAnswer(current => current + event.delta)
         if (event.type === 'answer_reset') setLiveAnswer('')
+        // Opened on the announcement, filled a fetch later. Waiting for the body
+        // first would leave a gap between the sentence naming the document and
+        // the document appearing, which reads as the panel having missed it.
+        if (event.type === 'artifact') {
+          void showArtifact(event, currentThread.current, currentToken.current)
+        }
         if (event.type === 'error') { setError(event.message); answered = true }
         if (event.type === 'final') {
           answered = true

@@ -10,10 +10,7 @@
  * built from. Nothing here asks for a web-shaped payload, because there is no
  * web-shaped payload — see `plans/divo-one-soul-two-surfaces.md`.
  */
-
-export const API_BASE_URL =
-  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL
-  ?? 'http://localhost:8000'
+import { API_BASE_URL } from '@/lib/api-base'
 
 /**
  * One agent working under a step that farmed work out.
@@ -105,6 +102,20 @@ export type RunEvent =
   | { type: 'answer_delta'; delta: string }
   | { type: 'answer_reset' }
   | { type: 'final'; text: string; timeline: Timeline }
+  /**
+   * A document is ready to read beside the thread.
+   *
+   * Address only, never the body. The reader may already have this version open,
+   * and a report on the event stream would put a document-sized payload on a
+   * channel built for sentences.
+   */
+  | {
+      type: 'artifact'
+      artifactId: string
+      title: string
+      mime: string
+      version: number
+    }
   | { type: 'error'; message: string; code: string }
 
 export type AskInput = {
@@ -233,7 +244,7 @@ function parseFrame(frame: string): RunEvent | null {
     // `open` is a handshake frame, not part of the run.
     return parsed.type === 'timeline' || parsed.type === 'answer'
       || parsed.type === 'answer_delta' || parsed.type === 'answer_reset'
-      || parsed.type === 'final' || parsed.type === 'error'
+      || parsed.type === 'final' || parsed.type === 'artifact' || parsed.type === 'error'
       ? parsed
       : null
   } catch {

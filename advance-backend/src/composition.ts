@@ -481,6 +481,8 @@ export interface Container {
   webRunRegistry: import('./application/runtime/web-run-registry').WebRunRegistry;
   /** The reader's view of their own conversations: list, read, rename, delete. */
   webThreads: import('./infrastructure/persistence/web-thread.repository').WebThreadRepository;
+  /** Documents the agent wrote, kept after the container that wrote them is gone. */
+  artifacts: import('./infrastructure/persistence/artifact.repository').ArtifactRepository;
 }
 
 export interface BuildContainerOptions {
@@ -2892,6 +2894,7 @@ export async function buildContainer(
       logger: logger.child({ service: 'web-run-registry' }),
     }),
     webThreads: new (await import('./infrastructure/persistence/web-thread.repository')).WebThreadRepository(prisma),
+    artifacts: new (await import('./infrastructure/persistence/artifact.repository')).ArtifactRepository(prisma),
     // Scheduled workflow executor
     scheduledWorkflowService: new (await import('./application/scheduling/scheduled-workflow.service')).ScheduledWorkflowService({
       prisma,

@@ -476,3 +476,42 @@ svg.bui-mark {
   vertical-align: middle;
 }
 
+
+/* ── Document ─────────────────────────────────────────────
+   The same markdown renderer as a chat answer, at a document's scale.
+
+   The chat's heading sizes are correct for a chat: a `##` there labels the
+   paragraph under it and sits one notch below body weight, because an answer is
+   a few hundred words inside a bubble. A report is not — it is read on its own,
+   scanned before it is read, and its headings have to be findable from six
+   inches away. Same components, same links, same tables; only the type scale
+   differs, because only the reading does.
+
+   Declared here rather than as a second component map so there is still exactly
+   one place that decides what a link or a table looks like. */
+.bui-doc h3 {
+  margin-top: 26px;
+  margin-bottom: 8px;
+  font-size: 15px;
+  line-height: 1.35;
+  letter-spacing: -0.012em;
+}
+
+.bui-doc h4 {
+  margin-top: 20px;
+  margin-bottom: 6px;
+  font-size: 13.5px;
+}
+
+/* The report's own title, which the model writes as `#`. Set apart from the
+   section headings under it — without this a document opens with three
+   identical-looking lines and no way to tell the title from the first section. */
+.bui-doc > h3:first-child {
+  margin-top: 0;
+  font-size: 19px;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.bui-doc p { margin-top: 10px; margin-bottom: 10px; }
+.bui-doc ul, .bui-doc ol { margin-top: 10px; margin-bottom: 10px; }

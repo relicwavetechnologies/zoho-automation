@@ -2,28 +2,25 @@
  * Artifacts — the thing Divo makes while you chat, and somewhere to look at it.
  *
  * ── Where this stands today ────────────────────────────
- * The Pi runtime already has an artifact extension
- * (divo-pi/divo/extensions/divo-artifact/index.ts), and it is deliberately
- * switched off — runtime.test.mjs actively ASSERTS the extension is not
- * loaded, `divo_artifact` is absent from the tool allowlist, and the system
- * prompt never mentions it. That is the right call for now, because the
- * current design cannot support what this screen shows:
+ * Artifacts are real now, and this page has not caught up with them.
  *
- *   · `mimeFromPath()` returns markdown and nothing else. HTML is rejected,
- *     so "make me a deck" has nowhere to land.
- *   · The file never leaves the container workspace. Nothing uploads it, so
- *     no web app, no Lark link and no second reader can ever see it.
- *   · The tool badges a path for the DESKTOP sidebar. There is no URL, so a
- *     Lark chat has nothing to link to.
- *   · No owner, no access, no sharing — the file is just a path.
- *   · No event on write, so nothing can re-render when the agent edits.
+ * A web run can write a document and file it: `divo-artifact` is loaded for the
+ * web channel only (runtime.mjs `scopedManifest`), the tool lifts the body out
+ * of the container into the `Artifact` table, and the panel beside the chat
+ * renders it — `artifacts/panel.tsx`. `GET /api/artifacts` lists a
+ * member's own, which is exactly the list this page wants.
  *
- * One piece already exists and is worth keeping: the Lark webhook already has
- * a `divo_artifact` branch (lark.webhook.routes.ts:1067), so the chat card
- * knows what to do the moment the tool is re-enabled.
+ * What this page still shows that does not exist:
  *
- * This file is the target, not the plan. It shows the scope worth building
- * toward so the pipeline can be designed backwards from it.
+ *   · Kinds. A deck, a to-do and a research brief are all markdown; nothing
+ *     classifies them, and `mimeFromPath()` still accepts markdown only.
+ *   · Sharing, owners and grants. An artifact belongs to one member and there
+ *     is no way to give it to a second one.
+ *   · Version history. The store counts revisions but keeps only the newest, so
+ *     there is nothing to browse back through.
+ *
+ * Each of those is marked in the UI with a `DataNote` rather than left to be
+ * discovered, and the list itself is the part worth wiring first.
  */
 import { useEffect, useState } from 'react'
 import {
@@ -146,40 +143,40 @@ export function Artifacts({ replay, toast }: Props) {
           </div>
           <div className="ws-panel-foot">
             <DataNote source="artifacts" />
-            The Pi artifact tool exists but is switched off — markdown only, never leaves the container
+            Artifacts are real in chat — this list is not yet reading them
           </div>
         </Panel>
 
-        <Panel title="How this would work" description="The gap between the tool that exists and the screen above">
+        <Panel title="Where this stands" description="What a document can already do, and what this page still shows that it cannot">
           <div className="ws-rows">
             <Step
               n="1"
-              title="Divo writes a file, as it already does"
-              body="Artifacts are ordinary workspace files the model creates with write/edit. Nothing about that changes — it is already how the divo_artifact tool is designed."
+              title="Divo writes a file and shows it beside the chat"
+              body="The model writes an ordinary markdown file, then badges it. The badge lifts the body out of the container and files it against you, so it outlives the run — and the panel next to the conversation renders it."
               state="live"
             />
             <Step
               n="2"
-              title="Accept more than markdown"
-              body="mimeFromPath() currently returns text/markdown and undefined for everything else, so HTML is rejected outright. Widening it is what makes 'make me a deck' possible at all."
-              state="small"
+              title="Revising a document updates it in place"
+              body="A second badge on the same file is the same document, one version later. The tab refreshes rather than a second one appearing."
+              state="live"
             />
             <Step
               n="3"
-              title="Persist it somewhere outside the container"
-              body="Right now the file dies with the workspace. It needs an owner, a company, a stable id and durable storage before any second reader can exist."
-              state="new"
-            />
-            <Step
-              n="4"
-              title="Give it a URL, and post that link in Lark"
-              body="The Lark webhook already has a divo_artifact branch, so the card is half-built. It needs a link to put in the card instead of a desktop sidebar path."
+              title="This list, reading the real ones"
+              body="Every document you own is already listed by the artifacts route. This page is still showing four fixtures instead of calling it."
               state="small"
             />
             <Step
+              n="4"
+              title="Anything other than markdown"
+              body="mimeFromPath() still returns markdown or nothing, so a deck has nowhere to land. Model-written HTML also needs a separate origin before it can be rendered — not a sanitiser."
+              state="new"
+            />
+            <Step
               n="5"
-              title="Fire an event when the agent edits the file"
-              body="So an open viewer updates in place rather than going stale. This is what makes the artifact feel alive rather than exported."
+              title="Sharing, and a Lark link"
+              body="A document belongs to one person and there is no way to give it to a second. Lark cannot show one at all: its runs are never given the tool, which is what keeps the two surfaces honest."
               state="new"
             />
           </div>

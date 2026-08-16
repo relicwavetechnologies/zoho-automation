@@ -161,9 +161,6 @@ describe("Divo Pi runtime boundary", () => {
 		assert.ok(args.includes("/tmp/sessions/pi-session.jsonl"));
 		assert.ok(args.some((argument) => argument.endsWith("/divo-llm/index.ts")));
 		assert.ok(args.some((argument) => argument.endsWith("/divo-gateway/index.ts")));
-		assert.ok(!args.some((argument) => argument.endsWith("/divo-artifact/index.ts")));
-		const toolAllowlist = args[args.indexOf("--tools") + 1];
-		assert.ok(!toolAllowlist.split(",").includes("divo_artifact"));
 		const systemPrompt = args[args.indexOf("--append-system-prompt") + 1];
 		// Whether a file can reach the reader is a property of the surface now,
 		// stated by the generated presentation policy. The workspace prompt used
@@ -172,6 +169,30 @@ describe("Divo Pi runtime boundary", () => {
 		assert.doesNotMatch(systemPrompt, /Lark cannot deliver/i);
 		assert.match(systemPrompt, /a property of the surface/i);
 		assert.doesNotMatch(systemPrompt, /DIVO_ARTIFACTS_DIR|divo_artifact/i);
+	});
+
+	// The surface descriptor tells the model "this surface cannot hand a file
+	// back". These assertions are what make that sentence true rather than a rule
+	// the model is asked to remember: on Lark the tool is not there to be used,
+	// misremembered, or hallucinated a result for.
+	it("gives the document tool only to the surface that can show one", () => {
+		const has = (channel) => {
+			const args = buildPiArguments({ ...values, ...(channel ? { channel } : {}) });
+			const loaded = args.some((argument) => argument.endsWith("/divo-artifact/index.ts"));
+			const allowed = args[args.indexOf("--tools") + 1].split(",").includes("divo_artifact");
+			// Loading the extension without allowing the tool, or the reverse, is a
+			// half-gate — so both halves are asserted together rather than apart.
+			assert.equal(loaded, allowed, `${channel ?? "local"}: extension and allowlist disagree`);
+			return loaded;
+		};
+
+		assert.equal(has("web"), true);
+		assert.equal(has("lark"), false);
+		// A run nobody drives is a desktop-local one, which loads its own copy of
+		// the extension. Withheld here rather than granted by the absence of a
+		// channel: an unknown surface should arrive without the tool.
+		assert.equal(has(undefined), false);
+		assert.equal(has("teams"), false);
 	});
 
 	it("loads authenticated DB skills through Pi's native resource loader", () => {

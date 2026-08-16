@@ -55,6 +55,7 @@ import { createProxyRoutes } from './http/admin/proxy.routes';
 import { createLlmProxyRoutes } from './http/llm/llm-proxy.routes';
 import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
 import { createTraceIngestRoutes } from './http/desktop/trace-ingest.routes';
+import { createArtifactRoutes } from './http/member/artifacts.routes';
 import { ExecutionRepository } from './infrastructure/persistence/execution.repository';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
@@ -815,6 +816,24 @@ export const createServer = (c: Container): DivoServerApplication => {
       revisions: c.managerPersonaRevisionService,
       uploadDir: c.managerTeachUploadDir,
       maxVideoBytes: c.env.MANAGER_TEACH_MAX_VIDEO_MB * 1_024 * 1_024,
+    }),
+  );
+
+  // Artifacts. One mount for both directions on purpose: the container writes
+  // with a runtime lease, the browser reads with a session, and both resolve to
+  // the same member — so ownership is checked once, in the repository, rather
+  // than twice with a chance of disagreeing.
+  //
+  // Named for the resource, not for a client. A document belongs to a person,
+  // and both the browser showing it and the container that wrote it are the same
+  // person — so `/api/desktop/artifacts` would have named the one caller that is
+  // neither of them.
+  app.use(
+    '/api/artifacts',
+    piRuntimeMemberAuth,
+    createArtifactRoutes({
+      artifacts: c.artifacts,
+      logger:    c.logger,
     }),
   );
 

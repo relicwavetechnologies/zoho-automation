@@ -10,7 +10,8 @@
  * So an id is minted once, put in the URL, and everything else — history,
  * reconnection, the list in the sidebar — hangs off it.
  */
-import { API_BASE_URL, type LedgerRow } from './stream'
+import type { LedgerRow } from './stream'
+import { API_BASE_URL } from '@/lib/api-base'
 
 /** What a run left behind, read back rather than watched live. */
 export type ThreadRunRecord = {

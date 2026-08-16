@@ -51,14 +51,10 @@ export type ChartBlock =
       segments: { label: string; value: number; hint: string; color: string }[]
     }
 
-export type ArtifactBlock = {
-  kind: 'artifact'
-  tool: ToolKey
-  title: string
-  meta: string
-}
-
-export type Block = TableBlock | ChartBlock | ArtifactBlock
+/* An artifact is not a block. It is a document filed outside the conversation
+   and read in the panel beside it — see `artifacts/store.ts`. The card that used
+   to sit here rendered a fixture nothing produced. */
+export type Block = TableBlock | ChartBlock
 
 /**
  * Which beat this is, for as long as the run remembers it.

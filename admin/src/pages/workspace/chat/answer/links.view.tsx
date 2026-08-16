@@ -29,7 +29,7 @@ import {
   Check, FileArchive, FileCode, FileImage, FileSpreadsheet, FileText, Mail, Presentation,
 } from 'lucide-react'
 import { ToolMark } from '../tools'
-import { API_BASE_URL } from '../stream'
+import { API_BASE_URL } from '@/lib/api-base'
 import { markForUrl } from '../tool-identity'
 import {
   fileNameOf, initialOf, isBareLink, isNavigable, targetOf, tintOf,
