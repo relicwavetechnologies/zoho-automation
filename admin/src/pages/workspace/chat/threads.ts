@@ -22,6 +22,8 @@ export type ThreadRunRecord = {
 
 export type ThreadTurn = {
   id: string
+  /** Where this turn sits in the thread. The cursor an earlier page is asked for by. */
+  sequence: number
   role: 'user' | 'assistant'
   text: string
   at: string
@@ -40,7 +42,12 @@ export type ThreadSummary = {
   running?: boolean
 }
 
-export type ThreadDetail = ThreadSummary & { turns: ThreadTurn[] }
+export type ThreadDetail = ThreadSummary & {
+  /** The most recent turns, oldest first — not the whole conversation. */
+  turns: ThreadTurn[]
+  /** There is older conversation above the first turn here. */
+  hasEarlier: boolean
+}
 
 /**
  * A new conversation's id.
@@ -194,8 +201,11 @@ export async function getThread(
   threadId: string,
   token: string,
   signal?: AbortSignal,
+  /** The oldest turn already held. Omit for the newest page. */
+  before?: number,
 ): Promise<{ thread: ThreadDetail; running?: { runId: string; prompt: string; startedAt: number } } | null> {
-  return await call(`/threads/${encodeURIComponent(threadId)}`, token, { signal })
+  const cursor = before === undefined ? '' : `?before=${before}`
+  return await call(`/threads/${encodeURIComponent(threadId)}${cursor}`, token, { signal })
 }
 
 export async function renameThread(

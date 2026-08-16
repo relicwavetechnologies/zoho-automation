@@ -5,9 +5,8 @@ import { wrapInfra, type InfraError } from '../../shared/errors';
 import type {
   WebThreadDetail,
   WebThreadSummary,
-  WebThreadTurn,
 } from '../../domain/channel/web-thread';
-import { webThreadRun } from '../../domain/channel/web-thread';
+import { WEB_THREAD_PAGE, webThreadPage } from '../../domain/channel/web-thread';
 
 /**
  * The web's own view of the conversations it holds.
@@ -87,8 +86,21 @@ export class WebThreadRepository implements WebThreadRepoPort {
     }
   }
 
+  /**
+   * One page of a conversation, newest last.
+   *
+   * `before` is a sequence, exclusive — the caller passes the sequence of the
+   * oldest turn it already has and gets the turns above it. A sequence rather
+   * than an offset because turns can be deleted underneath a reader, and an
+   * offset silently skips a turn when they are.
+   *
+   * The role filter is in the query, not after it, so a page of `limit` rows is
+   * `limit` turns a reader will actually see. Filtering afterwards made a page
+   * that happened to hold mostly tool bookkeeping arrive nearly empty, with a
+   * "load earlier" control below it that was the only way to see anything.
+   */
   async get(
-    query: WebThreadQuery & { threadId: string },
+    query: WebThreadQuery & { threadId: string; before?: number },
   ): Promise<Result<WebThreadDetail | null, InfraError>> {
     try {
       const row = await this.db.runtimeConversation.findUnique({
@@ -107,9 +119,23 @@ export class WebThreadRepository implements WebThreadRepoPort {
           updatedAt: true,
           lastMessageSequence: true,
           messages: {
-            orderBy: { sequence: 'asc' },
+            // A tool turn is the model's own bookkeeping. The work log a reader
+            // sees travels on the answer instead, so showing these too would
+            // print the same run twice, once in a shape nobody asked for.
+            where: {
+              role: { in: ['user', 'assistant'] },
+              ...(query.before !== undefined ? { sequence: { lt: query.before } } : {}),
+            },
+            // Newest first, because a page is counted back from the end of the
+            // conversation. Reversed below into the order it is read in.
+            orderBy: { sequence: 'desc' },
+            // One more than a page. Its presence is how `hasEarlier` is known
+            // for certain rather than guessed from a full page, which is wrong
+            // exactly when the thread's length is a multiple of the page size.
+            take: WEB_THREAD_PAGE + 1,
             select: {
               id: true,
+              sequence: true,
               role: true,
               contentText: true,
               contentJson: true,
@@ -122,21 +148,7 @@ export class WebThreadRepository implements WebThreadRepoPort {
       // one apart from the other tells a stranger which thread ids exist.
       if (!row || row.createdByUserId !== query.userId) return ok(null);
 
-      const turns: WebThreadTurn[] = row.messages
-        // A tool turn is the model's own bookkeeping. The work log a reader sees
-        // travels on the answer instead, so showing these too would print the
-        // same run twice, once in a shape nobody asked for.
-        .filter(message => message.role === 'user' || message.role === 'assistant')
-        .map(message => {
-          const run = webThreadRun(message.contentJson);
-          return {
-            id: message.id,
-            role: message.role as 'user' | 'assistant',
-            text: message.contentText ?? '',
-            at: message.createdAt.toISOString(),
-            ...(run ? { run } : {}),
-          };
-        });
+      const { turns, hasEarlier } = webThreadPage(row.messages);
 
       return ok({
         threadId: row.channelConversationKey,
@@ -146,6 +158,7 @@ export class WebThreadRepository implements WebThreadRepoPort {
         preview: preview(turns[turns.length - 1]?.text ?? ''),
         messageCount: row.lastMessageSequence,
         turns,
+        hasEarlier,
       });
     } catch (e) {
       return err(wrapInfra('prisma', 'getWebThread', e));

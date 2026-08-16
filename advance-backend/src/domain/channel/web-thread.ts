@@ -43,6 +43,12 @@ export interface WebThreadRunRecord {
 
 export interface WebThreadTurn {
   readonly id: string;
+  /**
+   * Where this turn sits in the conversation, and the cursor a page is asked
+   * for by. Monotonic per thread and never reused, so it addresses a position
+   * even after a turn either side of it is deleted — which an offset does not.
+   */
+  readonly sequence: number;
   readonly role: 'user' | 'assistant';
   readonly text: string;
   readonly at: string;
@@ -51,7 +57,70 @@ export interface WebThreadTurn {
 }
 
 export interface WebThreadDetail extends WebThreadSummary {
+  /**
+   * The most recent turns, oldest first — not the whole conversation.
+   *
+   * This used to be every message a thread had ever held, each assistant turn
+   * carrying its full work log, in one query with no `take`. A year-old chat
+   * answered its own open with every word it had ever contained, and the reader
+   * saw a blank column until all of it arrived.
+   */
   readonly turns: readonly WebThreadTurn[];
+  /**
+   * There is older conversation above the first turn here.
+   *
+   * Stated rather than inferred from `turns.length === limit`, which is wrong
+   * exactly when the thread's length is a multiple of the page size — the one
+   * case that offers a reader a control that fetches nothing.
+   */
+  readonly hasEarlier: boolean;
+}
+
+/** How much of a conversation one read returns. */
+export const WEB_THREAD_PAGE = 40;
+
+/** One stored turn, as much of it as assembling a page needs. */
+export interface WebThreadPageRow {
+  readonly id: string;
+  readonly sequence: number;
+  readonly role: string;
+  readonly contentText: string | null;
+  readonly contentJson: unknown;
+  readonly createdAt: Date;
+}
+
+/**
+ * Rows off the store, as a page a reader can be shown.
+ *
+ * Kept apart from the query that fetched them because this is the part that can
+ * be wrong. The store is asked for `WEB_THREAD_PAGE + 1` rows, newest first; the
+ * extra row is never shown and exists only so "is there more above this?" is
+ * known rather than guessed from a full page — a guess that is wrong exactly
+ * when a thread's length is a multiple of the page size, which is the one case
+ * that offers a reader a control fetching nothing.
+ *
+ * Reversed on the way out. A page is counted back from the end of a
+ * conversation and read from its start.
+ */
+export function webThreadPage(rows: readonly WebThreadPageRow[]): {
+  turns: WebThreadTurn[];
+  hasEarlier: boolean;
+} {
+  const turns = rows
+    .slice(0, WEB_THREAD_PAGE)
+    .reverse()
+    .map((row): WebThreadTurn => {
+      const run = webThreadRun(row.contentJson);
+      return {
+        id: row.id,
+        sequence: row.sequence,
+        role: row.role === 'user' ? 'user' : 'assistant',
+        text: row.contentText ?? '',
+        at: row.createdAt.toISOString(),
+        ...(run ? { run } : {}),
+      };
+    });
+  return { turns, hasEarlier: rows.length > WEB_THREAD_PAGE };
 }
 
 /** How a run's record travels on a turn. Read back by `webThreadRun`. */

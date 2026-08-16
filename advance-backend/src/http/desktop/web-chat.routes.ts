@@ -114,10 +114,15 @@ export function createWebChatRoutes(deps: {
       res.status(400).json({ ok: false, error: 'invalid_thread_id' });
       return;
     }
+    /* The oldest turn the reader already has. Anything unparseable is treated
+       as absent rather than rejected: the worst a junk cursor can do is return
+       the newest page, which is the same thing a first open asks for. */
+    const before = Number(req.query['before']);
     const found = await deps.threads.get({
       companyId: String(identity.runContext.companyId),
       userId: identity.userId,
       threadId: threadId.data,
+      ...(Number.isSafeInteger(before) && before > 0 ? { before } : {}),
     });
     if (!found.ok) {
       log.error('web_chat.threads.get_failed', { error: String(found.error) });
@@ -138,6 +143,7 @@ export function createWebChatRoutes(deps: {
         preview: '',
         messageCount: 0,
         turns: [],
+        hasEarlier: false,
       },
       ...(active && !active.settled
         ? { running: { runId: active.runId, prompt: active.prompt, startedAt: active.startedAt } }

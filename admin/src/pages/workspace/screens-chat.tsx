@@ -23,7 +23,7 @@
  * in the open, governed tools apply the same backend policy, and what comes
  * back is an answer rather than a wall of rows.
  */
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { FileText } from 'lucide-react'
 import { Navigate, useParams } from 'react-router-dom'
 import { Composer } from './chat/composer'
@@ -35,7 +35,7 @@ import { CopyButton } from './chat/copy'
 import { clearHandoff, peekHandoff } from './chat/handoff'
 import { useThreadRun, type Exchange } from './chat/live'
 import { PlanPanel } from './chat/plan.view'
-import { ThreadSkeleton } from './chat/loading.view'
+import { LoadEarlier, ThreadSkeleton } from './chat/loading.view'
 import {
   isThreadId, newThreadId, renameThread, threadStarted, threadsChanged,
 } from './chat/threads'
@@ -101,6 +101,7 @@ function ChatThread({ threadId }: { threadId: string }) {
      drawn only when something is genuinely passing under it. */
   const [scrolled, setScrolled] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
+
   const column = useRef<HTMLDivElement>(null)
 
   /* Files waiting to go with the next message, wherever they came from. Held by
@@ -111,6 +112,27 @@ function ChatThread({ threadId }: { threadId: string }) {
   useDropGuard()
 
   const live = useThreadRun({ threadId, token })
+  /**
+   * Reading upward, without the page moving underneath.
+   *
+   * Prepending an earlier page adds height above whatever the reader is looking
+   * at, and a scroller left alone keeps its *offset* rather than its content —
+   * so the line being read jumps down by however much arrived. The height
+   * before the page lands is recorded here and the difference added back once
+   * it has, in a layout effect so it happens before anything is painted.
+   */
+  const anchor = useRef<number | null>(null)
+  const readEarlier = () => {
+    anchor.current = scroller.current?.scrollHeight ?? 0
+    void live.loadEarlier()
+  }
+  useLayoutEffect(() => {
+    const node = scroller.current
+    if (anchor.current === null || !node) return
+    node.scrollTop += node.scrollHeight - anchor.current
+    anchor.current = null
+  })
+
   /* `send` is rebuilt whenever the run's state changes, so depending on it
      directly would re-run the handoff effect on every frame of a live run. */
   const sendRef = useRef(live.send)
@@ -300,17 +322,22 @@ function ChatThread({ threadId }: { threadId: string }) {
           ) : empty ? (
             <Welcome onPick={start} />
           ) : (
-            live.exchanges.map((exchange) => (
-              <Exchanged
-                key={exchange.id}
-                exchange={exchange}
-                /* Only the exchange that is still running has any use for it,
-                   and handing the same changing string to every exchange in the
-                   thread would defeat the memo on all of them — a new label per
-                   tool call would redraw the entire conversation. */
-                liveLabel={exchange.state.finished ? null : live.liveLabel}
-              />
-            ))
+            <>
+              {live.hasEarlier && (
+                <LoadEarlier loading={live.loadingEarlier} onLoad={readEarlier} />
+              )}
+              {live.exchanges.map((exchange) => (
+                <Exchanged
+                  key={exchange.id}
+                  exchange={exchange}
+                  /* Only the exchange that is still running has any use for it,
+                     and handing the same changing string to every exchange in
+                     the thread would defeat the memo on all of them — a new
+                     label per tool call would redraw the whole conversation. */
+                  liveLabel={exchange.state.finished ? null : live.liveLabel}
+                />
+              ))}
+            </>
           )}
         </div>
         {/* After the column, not in it — see `pin.tsx`. */}

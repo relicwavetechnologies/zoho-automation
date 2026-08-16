@@ -135,8 +135,8 @@ describe('a call that farmed its work out', () => {
  */
 describe('a conversation recorded before the run marked its asides', () => {
   const replay = (...rows: LedgerRow[]) => exchangesFrom([
-    { id: 'u1', role: 'user', text: 'How are the invoices?', at: '' },
-    { id: 'a1', role: 'assistant', text: 'Three invoices are overdue.', at: '', run: { ledger: rows, elapsedMs: 900 } },
+    { id: 'u1', sequence: 1, role: 'user', text: 'How are the invoices?', at: '' },
+    { id: 'a1', sequence: 2, role: 'assistant', text: 'Three invoices are overdue.', at: '', run: { ledger: rows, elapsedMs: 900 } },
   ])[0]!
   const replayLog = (...rows: LedgerRow[]) => replay(...rows).trace.map(step => (
     step.kind === 'narration' ? `aside:${step.text}` : `step:${step.kind}`

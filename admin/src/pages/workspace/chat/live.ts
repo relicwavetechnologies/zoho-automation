@@ -236,8 +236,20 @@ export type ThreadRun = {
    * something that is not there.
    */
   title: string | null
-  /** True until the thread's history has been read back. */
+  /** True until the thread's newest page has been read back. */
   loading: boolean
+  /**
+   * There is older conversation above the first exchange on screen.
+   *
+   * A thread arrives one page at a time — it used to arrive whole, every
+   * message it had ever held, each answer carrying its full work log. This is
+   * the server's own answer to "is there more?", not a guess from a full page.
+   */
+  hasEarlier: boolean
+  /** True while an earlier page is being fetched. */
+  loadingEarlier: boolean
+  /** Fetch the page above the oldest exchange on screen. */
+  loadEarlier: () => Promise<void>
   /**
    * What the run says it is doing right now.
    *
@@ -280,7 +292,20 @@ export function useThreadRun(input: {
   threadId: string
   token: string | null
 }): ThreadRun {
-  const [settled, setSettled] = useState<Exchange[]>([])
+  /*
+   * The conversation as the server sent it, and the exchanges this session
+   * added on top.
+   *
+   * Turns rather than exchanges, because a page boundary does not respect the
+   * pairing: an earlier page can end on a question whose answer is on the newer
+   * one. Pairing each page as it arrives would draw those two as separate
+   * exchanges — a question with no answer, above an answer with no question —
+   * so pairing happens once, over everything held.
+   */
+  const [turns, setTurns] = useState<ThreadTurn[]>([])
+  const [appended, setAppended] = useState<Exchange[]>([])
+  const [hasEarlier, setHasEarlier] = useState(false)
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
   const [title, setTitle] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [prompt, setPrompt] = useState<string | null>(null)
@@ -356,7 +381,9 @@ export function useThreadRun(input: {
     const controller = new AbortController()
     abort.current?.abort()
     abort.current = controller
-    setSettled([])
+    setTurns([])
+    setAppended([])
+    setHasEarlier(false)
     setTitle(null)
     setPrompt(null)
     setTimeline(null)
@@ -369,20 +396,22 @@ export function useThreadRun(input: {
     const load = async (): Promise<{ prompt: string; startedAt: number } | null> => {
       const found = await getThread(threadId, input.token!, controller.signal)
       if (controller.signal.aborted || currentThread.current !== threadId) return null
-      const history = exchangesFrom(found?.thread.turns ?? [])
+      const page = found?.thread.turns ?? []
       const live = found?.running
 
-      // A live run's own ask is already the last user turn in history — the
-      // runtime wrote it down when the run started. Lifting it out of the
-      // settled list stops the same question appearing twice, once above its
-      // answer and once beside it.
-      const last = history[history.length - 1]
-      if (live && last && last.trace.length === 0 && !last.answer) history.pop()
+      // A live run's own ask is already the last turn the server holds — the
+      // runtime wrote it down when the run started. Lifting it out stops the
+      // same question appearing twice, once above its answer and once beside it.
+      const lastTurn = page[page.length - 1]
+      const trailingAsk = live !== undefined && lastTurn?.role === 'user'
 
-      setSettled(history)
+      setTurns(trailingAsk ? page.slice(0, -1) : page)
+      setHasEarlier(found?.thread.hasEarlier ?? false)
       setTitle(found?.thread.title?.trim() || null)
       setLoading(false)
-      return live ? { prompt: live.prompt || last?.prompt || '', startedAt: live.startedAt } : null
+      return live
+        ? { prompt: live.prompt || (trailingAsk ? lastTurn!.text : ''), startedAt: live.startedAt }
+        : null
     }
 
     void (async () => {
@@ -420,7 +449,7 @@ export function useThreadRun(input: {
   useEffect(() => {
     if (running || prompt === null) return
     if (!final && !error) return
-    setSettled(previous => [...previous, {
+    setAppended(previous => [...previous, {
       id: runExchangeId(startedAt.current),
       prompt,
       trace: traceFrom(timeline),
@@ -519,6 +548,36 @@ export function useThreadRun(input: {
      new list of steps thirty times a second to draw the same five rows. */
   const plan = useMemo(() => planOf(timeline, running), [timeline, running])
 
+  /* One pairing over everything held, then whatever this session finished on
+     top. The server's turns and the exchanges completed here are kept apart
+     precisely so this can be re-derived when an earlier page is prepended. */
+  const settled = useMemo(
+    () => [...exchangesFrom(turns), ...appended],
+    [turns, appended],
+  )
+
+  /**
+   * Fetch the page above the oldest turn on screen.
+   *
+   * Keyed off the oldest *turn's* sequence rather than a page number, so turns
+   * arriving or being deleted underneath a reader cannot make a page repeat or
+   * skip. Guarded against overlapping reads: pressing the control twice used to
+   * be the ordinary way to get a page prepended to itself.
+   */
+  const loadEarlier = useCallback(async () => {
+    const oldest = turns[0]?.sequence
+    if (!input.token || oldest === undefined || loadingEarlier || !hasEarlier) return
+    setLoadingEarlier(true)
+    try {
+      const found = await getThread(input.threadId, input.token, undefined, oldest)
+      if (currentThread.current !== input.threadId) return
+      setTurns(previous => [...(found?.thread.turns ?? []), ...previous])
+      setHasEarlier(found?.thread.hasEarlier ?? false)
+    } finally {
+      setLoadingEarlier(false)
+    }
+  }, [input.threadId, input.token, turns, loadingEarlier, hasEarlier])
+
   const exchanges = useMemo(() => (prompt === null
     ? settled
     : [...settled, {
@@ -534,6 +593,10 @@ export function useThreadRun(input: {
     exchanges,
     title,
     loading,
+    /** There is older conversation above the first exchange on screen. */
+    hasEarlier,
+    loadingEarlier,
+    loadEarlier,
     liveLabel: running ? timeline?.liveLabel ?? null : null,
     running,
     plan,

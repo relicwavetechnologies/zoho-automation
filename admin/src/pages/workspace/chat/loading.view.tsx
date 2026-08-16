@@ -111,3 +111,32 @@ export function DocumentSkeleton() {
     </div>
   )
 }
+
+/**
+ * The way back into a conversation longer than one page.
+ *
+ * At the top of the column rather than as an infinite scroll, because a thread
+ * is read from its newest end and reaching upward is a deliberate act. Scroll
+ * anchoring on the way up is the part that goes wrong quietly: prepending
+ * content moves everything the reader is looking at, and a browser that has not
+ * been told otherwise keeps the scroll offset rather than the content under it.
+ */
+export function LoadEarlier({ loading, onLoad }: {
+  loading: boolean
+  onLoad: () => void
+}) {
+  return (
+    <div className="flex justify-center pb-2">
+      <button
+        type="button"
+        onClick={onLoad}
+        disabled={loading}
+        className="rounded-full bg-fill px-3 py-1 text-[11.5px] text-ink-3 transition-colors duration-100 hover:bg-field hover:text-ink-2 disabled:cursor-default disabled:text-ink-3"
+      >
+        {/* The label says what happens, not what is happening. A control whose
+            text changes length mid-press moves under the cursor. */}
+        {loading ? 'Loading earlier…' : 'Load earlier messages'}
+      </button>
+    </div>
+  )
+}
