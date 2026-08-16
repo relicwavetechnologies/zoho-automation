@@ -1,21 +1,31 @@
 /**
  * Home — the composer-first landing.
  *
- * Two halves with different rules.
+ * The page is ordered by what a person can do about each thing: what is waiting
+ * on them, what they could start, how the work has been going, and what it ran
+ * on. Nothing decorative sits above something actionable.
  *
- * The top half opens web chat as a mock run surface. It does not call the
- * backend yet; it carries the typed prompt to `/chat`, where the future
- * Cloud-Pi event lifecycle is represented with local fixture events.
+ * **Every band here disappears when it is empty.** A card reading "Nothing is
+ * waiting" is a row of pixels charging rent to say nothing — the reader learns
+ * the same thing, faster, from its absence. That rule is why `ActionTiles`,
+ * `TaskBand` and the charts all return `null` rather than an empty state, and
+ * why the page is short on a quiet morning and long on a busy one.
  *
- * The bottom half is the OLD `YouHome`, unchanged in what it reads. Same four
- * hooks, same fields, same empty and error states. This screen is a re-skin,
- * not a rewrite, and the panels that were already telling the truth keep
- * telling it.
+ * **A chart has to earn its half of the row.** The usage card used to hold
+ * *Tasks run · Cost · Busiest day* — the page's summary, buried inside a chart —
+ * and repeat three more figures under its own calendar. Those figures are the
+ * `Performance` row now, and the calendar went with them rather than staying on
+ * as a title, a grid and a legend with eleven of sixteen columns empty.
+ *
+ * The two charts that remain are read as a pair, so they draw into the same box
+ * (`CHART_BOX` in `charts.tsx`) rather than each at its own proportions — a
+ * cluster at 2:1 beside a field at 3:1 looks like one of them went wrong,
+ * whatever either says on its own.
  */
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  Activity, ArrowUpRight, Check, ChevronLeft, ChevronRight, Link2, Lock, MessageSquare,
-  Plus, Send, Sparkles, X,
+  Activity, ArrowUpRight, ChevronLeft, ChevronRight, CircleAlert, Link2, Lock,
+  MessageSquare, Plus, Send, Sparkles, X,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { Composer as ChatComposer } from './chat/composer'
@@ -29,10 +39,12 @@ import {
   dayLabel, summarizeSpend, USAGE_DAYS, USAGE_WEEKS,
 } from './data/use-my-activity'
 import { useConnections, CONNECTABLE } from './data/use-connections'
+import { dueLabel, useMyTasks, type OpenTask } from './data/use-my-tasks'
+import { DotField, HexShare, hueAt } from './charts'
 import type { MyRun } from './data/use-my-activity'
 import type { Provider } from './fixtures'
 import {
-  ClickRow, Empty, Fade, Heatmap, Panel, ProviderMark, Skel, SkelRows,
+  ClickRow, Empty, Fade, Panel, ProviderMark, Skel, SkelRows,
   money, providerName, useStaged, type Toast,
 } from './ui'
 
@@ -130,7 +142,20 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
   const { usage, loading: usageLoading } = useMyUsage(USAGE_DAYS)
   const { runs, loading: runsLoading } = useMyRuns(6)
   const { byProvider, loading: connectionsLoading } = useConnections()
+  const { tasks, reachable: tasksReachable } = useMyTasks(5)
   const { dismissed, dismiss } = useDismissed()
+
+  /* The composer's draft lives here rather than inside it, because a task in
+     the band below has to be able to put a sentence into it. Starting a task
+     seeds the box instead of submitting: the person gets to see what Divo is
+     about to be asked and change it, which is the difference between a
+     suggestion and a button that runs something on their behalf. */
+  const [draft, setDraft] = useState('')
+  /* Scrolled to by ref rather than `window.scrollTo`, because whether the
+     window or some ancestor is the scrolling element is the shell's business
+     and has changed before. Asking the node to bring itself into view is right
+     either way. */
+  const composerRef = useRef<HTMLDivElement>(null)
 
   // First name only. "Welcome back, Ananya Mehta" is a form letter; the
   // surname adds nothing the person does not already know about themselves.
@@ -232,7 +257,26 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
         Named, not shown: the composer is a better greeting than a title bar.
       */}
       <h1 className="ws-a11y-title">Your workspace</h1>
-      <Composer go={go} />
+      <Composer go={go} value={draft} onChange={setDraft} slotRef={composerRef} />
+
+      <ActionTiles
+        attention={attention.length}
+        running={runs.filter((run) => run.status === 'running').length}
+        loading={!r1 || approvalsLoading}
+        go={go}
+      />
+
+      <TaskBand
+        tasks={tasks}
+        reachable={tasksReachable}
+        onStart={(task) => {
+          setDraft(taskPrompt(task))
+          // The composer is above a band the reader has scrolled down to;
+          // seeding a box they cannot see reads as the button having done
+          // nothing at all.
+          composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        }}
+      />
 
       {cards.length > 0 ? (
         <section className="ws-band">
@@ -300,14 +344,14 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
         </section>
       ) : null}
 
-      <section className="ws-band">
-        <Panel
-          title="Needs you"
-          description={attention.length ? `${attention.length} item${attention.length > 1 ? 's' : ''} waiting` : undefined}
-        >
-          {!r1 || approvalsLoading ? <SkelRows n={2} icon={false} /> : attention.length === 0 ? (
-            <Empty icon={Check} title="Nothing is waiting" body="Approvals and blocked work will show up here." />
-          ) : (
+      {/* Only what is genuinely waiting. The tiles above already say how many
+          and offer the way in, so a settled workspace shows neither. */}
+      {attention.length > 0 && !approvalsLoading ? (
+        <section className="ws-band">
+          <Panel
+            title="Needs you"
+            description={`${attention.length} item${attention.length > 1 ? 's' : ''} waiting`}
+          >
             <Fade>
               <div className="ws-attn">
                 {attention.map((a, i) => (
@@ -323,107 +367,100 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
                 ))}
               </div>
             </Fade>
-          )}
-        </Panel>
-      </section>
+          </Panel>
+        </section>
+      ) : null}
 
+      {/* ── Performance ──────────────────────────────────
+          The figures that used to be buried inside the usage card. They are the
+          page's summary, so they sit above the charts that explain them rather
+          than inside one of them. */}
       <section className="ws-band">
         <div className="ws-band-hd">
           <div>
-            <h2>Recent work</h2>
-            <p>What Divo has been doing for you</p>
+            <h2>Performance</h2>
+            <p>Your last {USAGE_WEEKS} weeks</p>
           </div>
           <div className="ws-band-act">
-            <button type="button" className="btn" onClick={() => go('usage')}>All activity</button>
+            <button type="button" className="btn" onClick={() => go('usage')}>View full report</button>
           </div>
         </div>
-        <Panel source="myRuns">
-          {!r3 || runsLoading ? <SkelRows n={4} icon={false} /> : runs.length === 0 ? (
-            <Empty icon={Activity} title="Nothing yet" body="Runs appear here once you ask Divo to do something." />
-          ) : (
-            <Fade><RunList runs={runs} /></Fade>
+        <Panel source="myUsage">
+          {!r2 || usageLoading ? <SkelRows n={2} icon={false} /> : (
+            <Fade>
+              <div className="ws-metrics">
+                <div className="ws-metric">
+                  <div className="k">Tasks run</div>
+                  <div className="v">
+                    {usage.runs}
+                    {usage.previousRuns > 0 ? (
+                      /* Tone is stated, never read off the sign. More runs is
+                         not automatically good and fewer is not automatically
+                         bad — this one is neutral on purpose. */
+                      <span className="ws-delta">
+                        <ArrowUpRight size={12} />
+                        {runChange >= 0 ? '+' : '−'}{Math.abs(runChange)}%
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="s">vs the {USAGE_WEEKS} weeks before</div>
+                </div>
+                <div className="ws-metric">
+                  <div className="k">Cost</div>
+                  <div className="v">{money(usage.spendUsd)}</div>
+                  <div className="s">{money(usage.spendTodayUsd)} today</div>
+                </div>
+                <div className="ws-metric">
+                  <div className="k">Busiest day</div>
+                  <div className="v">{spend.busiest ? money(spend.busiest.value) : '—'}</div>
+                  <div className="s">{spend.busiest ? dayLabel(spend.busiest.date) : 'Nothing yet'}</div>
+                </div>
+                <div className="ws-metric">
+                  <div className="k">Days used</div>
+                  <div className="v">{spend.activeDays}</div>
+                  <div className="s">
+                    of {usage.days || USAGE_DAYS}
+                    {spend.activeDays ? ` · ${money(spend.perActiveDay)} on a day you used it` : ''}
+                  </div>
+                </div>
+              </div>
+            </Fade>
           )}
         </Panel>
       </section>
 
+      <SpendBands
+        usage={usage}
+        loading={!r2 || usageLoading}
+        spendLabel={spend.last ? dayLabel(spend.last) : null}
+      />
+
+      {/*
+        Two lists, side by side, closing the page.
+
+        They were a full-width run list stacked on a half-width pair, which made
+        the bottom of this page taller than the half that has the answers in it.
+        Both are short lists of the same shape, so they belong in the same row —
+        and the calendar that used to take the other half is gone rather than
+        slimmed: its headline figures are the `Performance` row and its
+        footnotes are the fourth tile there, which left a card holding a title,
+        a grid and a legend, eleven of whose sixteen columns are empty. "How has
+        spend moved" is the dot field above; "which days" still has room on
+        `/settings/usage` and the profile, where nothing competes for it.
+      */}
       <section className="ws-band">
         <div className="ws-cols">
-          {/*
-            The same card as the member dashboard's, because it answers the
-            same question about a different subject.
-
-            It was thirty days, and thirty days is five columns of seven
-            whatever the styling — a strip that could neither fill the card nor
-            sit under it without leaving two thirds of a row empty. Sixteen
-            weeks is sixteen columns, which is the width the calendar was drawn
-            for; the mail card has said so in a comment since it was built.
-          */}
           <Panel
-            title={`Your last ${USAGE_WEEKS} weeks`}
-            source="myUsage"
-            aside={<button type="button" className="btn" onClick={() => go('usage')}>Details</button>}
+            title="Recent work"
+            description="What Divo has been doing for you"
+            source="myRuns"
+            aside={<button type="button" className="btn" onClick={() => go('usage')}>All activity</button>}
           >
-            <div className="ws-panel-body">
-              {!r2 || usageLoading ? (
-                <>
-                  <div className="ws-stat3">
-                    <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
-                    <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
-                    <div><Skel w={60} h={9} /><div style={{ height: 10 }} /><Skel w={90} h={26} /></div>
-                  </div>
-                  <div style={{ height: 22 }} />
-                  <Skel w="100%" h={130} block />
-                </>
-              ) : (
-                <Fade>
-                  <div className="ws-stat3">
-                    <div>
-                      <div className="ws-lbl">Tasks run</div>
-                      <div className="ws-num" style={{ marginTop: 8 }}>{usage.runs}</div>
-                      <div className="ws-sub" style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 5 }}>
-                        {runChange >= 0 ? <ArrowUpRight size={13} style={{ color: 'var(--cur-success)' }} /> : null}
-                        {runChange >= 0 ? '+' : '−'}{Math.abs(runChange)}% vs the period before
-                      </div>
-                    </div>
-                    <div>
-                      <div className="ws-lbl">Cost</div>
-                      <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
-                      <div className="ws-sub" style={{ marginTop: 5 }}>{money(usage.spendTodayUsd)} today</div>
-                    </div>
-                    <div>
-                      <div className="ws-lbl">Busiest day</div>
-                      <div className="ws-num" style={{ marginTop: 8 }}>
-                        {spend.busiest ? money(spend.busiest.value) : '—'}
-                      </div>
-                      <div className="ws-sub" style={{ marginTop: 5 }}>
-                        {spend.busiest ? dayLabel(spend.busiest.date) : 'Nothing yet'}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 22 }}>
-                    <Heatmap
-                      data={usage.series.map((p) => ({ date: p.date, value: p.spendUsd }))}
-                      format={(n) => money(n)}
-                    />
-                  </div>
-                  <div className="ws-heat-facts">
-                    <div>
-                      <div className="ws-lbl">Days used</div>
-                      <div style={{ marginTop: 5 }}>{spend.activeDays} of {usage.days || USAGE_DAYS}</div>
-                    </div>
-                    <div>
-                      <div className="ws-lbl">On a day you used it</div>
-                      <div style={{ marginTop: 5 }}>{spend.activeDays ? money(spend.perActiveDay) : '—'}</div>
-                    </div>
-                    <div>
-                      <div className="ws-lbl">Last run</div>
-                      <div style={{ marginTop: 5 }}>{spend.last ? dayLabel(spend.last) : '—'}</div>
-                    </div>
-                  </div>
-                </Fade>
-              )}
-            </div>
+            {!r3 || runsLoading ? <SkelRows n={4} icon={false} /> : runs.length === 0 ? (
+              <Empty icon={Activity} title="Nothing yet" body="Runs appear here once you ask Divo to do something." />
+            ) : (
+              <Fade><RunList runs={runs} /></Fade>
+            )}
           </Panel>
 
           <Panel title="Connected" aside={<button type="button" className="btn" onClick={() => go('connections')}>Manage</button>}>
@@ -481,8 +518,18 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
  * an empty composer would make the handoff feel like a page change rather than
  * a continuation of the thing you just asked for.
  */
-function Composer({ go }: { go: (screen: string) => void }) {
-  const [prompt, setPrompt] = useState('')
+/**
+ * The draft is owned by the page, not by this.
+ *
+ * A task in the band below has to be able to put a sentence into the box, and a
+ * composer holding its own text is a composer nothing else can reach.
+ */
+function Composer({ go, value: prompt, onChange: setPrompt, slotRef }: {
+  go: (screen: string) => void
+  value: string
+  onChange: (next: string) => void
+  slotRef?: React.Ref<HTMLDivElement>
+}) {
   const attach = useAttachments()
   const modelChoice = useChatModelChoice()
   const { over, dropProps } = useFileDrop(attach.add)
@@ -499,7 +546,7 @@ function Composer({ go }: { go: (screen: string) => void }) {
     /* Only the composer's own slot takes a drop here, not the whole page. Home
        is a dashboard of panels rather than one conversation, so a veil across
        all of it would claim a target the panels do not have. */
-    <div className="bui-scope ws-comp-slot relative" {...dropProps}>
+    <div ref={slotRef} className="bui-scope ws-comp-slot relative" {...dropProps}>
       <DropVeil visible={over} />
       <ChatComposer
         value={prompt}
@@ -517,6 +564,216 @@ function Composer({ go }: { go: (screen: string) => void }) {
         onRemoveFile={attach.remove}
       />
     </div>
+  )
+}
+
+/**
+ * What is waiting, as counts with a way in.
+ *
+ * Renders nothing when nothing is waiting. That is the whole point of it: a
+ * settled workspace should not carry a card explaining that it is settled, and
+ * the reader learns "there is nothing" faster from the row not being there than
+ * from a tick and a sentence saying so.
+ */
+function ActionTiles({ attention, running, loading, go }: {
+  attention: number
+  running: number
+  loading: boolean
+  go: (screen: string) => void
+}) {
+  // Nothing at all while the answer is still unknown, rather than tiles that
+  // pop in reading zero and then change under the reader.
+  if (loading) return null
+  const tiles = [
+    attention > 0 && {
+      key: 'approvals',
+      icon: <CircleAlert size={15} />,
+      label: 'Waiting on you',
+      value: attention,
+      unit: attention === 1 ? 'decision' : 'decisions',
+      cta: 'Review',
+      onClick: () => go('approvals'),
+    },
+    running > 0 && {
+      key: 'running',
+      icon: <Activity size={15} />,
+      label: 'Running now',
+      value: running,
+      unit: running === 1 ? 'task' : 'tasks',
+      cta: 'Watch',
+      onClick: () => go('usage'),
+    },
+  ].filter(Boolean) as Array<{
+    key: string; icon: ReactNode; label: string; value: number
+    unit: string; cta: string; onClick: () => void
+  }>
+
+  if (tiles.length === 0) return null
+
+  return (
+    <section className="ws-band">
+      <Fade>
+        <div className="ws-acts">
+          {tiles.map((tile) => (
+            <div className="ws-act" key={tile.key}>
+              <div className="ws-act-h">
+                <span className="ws-act-ic" aria-hidden>{tile.icon}</span>
+                {tile.label}
+              </div>
+              <div className="ws-act-b">
+                <span className="ws-act-n">{tile.value}</span>
+                <span className="ws-act-u">{tile.unit}</span>
+                <button type="button" className="btn primary" onClick={tile.onClick}>{tile.cta}</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </Fade>
+    </section>
+  )
+}
+
+/**
+ * The sentence a task is turned into when somebody starts it.
+ *
+ * Deliberately an instruction rather than the title alone. "Lark Channel Audit"
+ * on its own is a topic and Divo would open by asking what is wanted; naming
+ * where it came from and asking for a plan first is what makes the button worth
+ * pressing instead of typing.
+ */
+function taskPrompt(task: OpenTask): string {
+  const due = task.dueDate ? ` It is due ${task.dueDate}.` : ''
+  return `Help me with my Lark task "${task.title}".${due} `
+    + 'Start by telling me what you understand it to involve and what you would do first.'
+}
+
+/**
+ * The Lark tasks still assigned to this person.
+ *
+ * Read-only on purpose. Ticking one off from here would mean this page holds a
+ * credential that can change somebody's Lark, which is a different permission
+ * conversation from showing them a list — so the route behind it asks for read
+ * access only and the only control is one that hands the work to Divo.
+ */
+function TaskBand({ tasks, reachable, onStart }: {
+  tasks: readonly OpenTask[]
+  reachable: boolean
+  onStart: (task: OpenTask) => void
+}) {
+  /* Nothing when there is nothing, and nothing when Divo cannot see. Somebody
+     with no Lark account linked is not missing a feature they asked for, and an
+     offer to connect belongs on the Connected panel that already makes it. */
+  if (!reachable || tasks.length === 0) return null
+
+  return (
+    <section className="ws-band">
+      <div className="ws-band-hd">
+        <div>
+          <h2>Your open tasks</h2>
+          <p>Assigned to you in Lark — start one and Divo picks it up</p>
+        </div>
+      </div>
+      <Panel>
+        <Fade>
+          <div className="ws-rows">
+            {tasks.map((task) => {
+              const due = dueLabel(task)
+              return (
+                <div className="ws-row" key={task.taskId}>
+                  <div className="ws-row-main">
+                    <b>{task.title}</b>
+                    {due ? (
+                      <p className={task.overdue ? 'ws-task-late' : undefined}>{due}</p>
+                    ) : null}
+                  </div>
+                  <div className="ws-row-act">
+                    <button type="button" className="btn" onClick={() => onStart(task)}>Start</button>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </Fade>
+      </Panel>
+    </section>
+  )
+}
+
+/**
+ * Where the money went, and how it moved.
+ *
+ * Two charts rather than one because they answer different questions and a
+ * reader asks both: a total is made of something, and it got here somehow.
+ * Neither renders without data, so a workspace nobody has spent anything in
+ * shows neither instead of two empty axes.
+ */
+function SpendBands({ usage, loading, spendLabel }: {
+  usage: { byModel: { modelId: string; costUsd: number }[]; series: { date: string; spendUsd: number }[] }
+  loading: boolean
+  spendLabel: string | null
+}) {
+  const slices = useMemo(
+    () => [...usage.byModel]
+      // A cent, not a fraction of one. A row reading "0% · $0.00" is a model
+      // that was billed four thousandths of a dollar, and listing it says
+      // nothing except that the list has one more line than it needs.
+      .filter((row) => row.costUsd >= 0.01)
+      .sort((a, b) => b.costUsd - a.costUsd)
+      .slice(0, 8)
+      .map((row, index) => ({ label: row.modelId, value: row.costUsd, color: hueAt(index) })),
+    [usage.byModel],
+  )
+  const total = slices.reduce((sum, slice) => sum + slice.value, 0)
+  const points = usage.series.map((point) => ({ date: point.date, value: point.spendUsd }))
+
+
+  if (loading) {
+    return (
+      <section className="ws-band">
+        <div className="ws-cols"><Skel w="100%" h={200} block /><Skel w="100%" h={200} block /></div>
+      </section>
+    )
+  }
+  if (slices.length === 0 && points.length === 0) return null
+
+  return (
+    <section className="ws-band">
+      <div className="ws-cols">
+        {slices.length > 0 ? (
+          <Panel title="Where your spend went" source="myUsage">
+            <div className="ws-panel-body">
+              <Fade>
+                <HexShare slices={slices} />
+                <div className="ws-share">
+                  {slices.map((slice) => (
+                    <div className="ws-share-r" key={slice.label}>
+                      <i className="ws-share-d" style={{ background: slice.color }} />
+                      <span className="ws-share-n">{slice.label}</span>
+                      <span className="ws-share-p">
+                        {total > 0 ? Math.round((slice.value / total) * 100) : 0}%
+                      </span>
+                      <span className="ws-share-v">{money(slice.value)}</span>
+                    </div>
+                  ))}
+                </div>
+              </Fade>
+            </div>
+          </Panel>
+        ) : null}
+
+        {points.length > 0 ? (
+          <Panel
+            title="Spend over time"
+            source="myUsage"
+            {...(spendLabel ? { description: `Last run ${spendLabel.toLowerCase()}` } : {})}
+          >
+            <div className="ws-panel-body">
+              <Fade><DotField points={points} format={(n) => money(n)} /></Fade>
+            </div>
+          </Panel>
+        ) : null}
+      </div>
+    </section>
   )
 }
 

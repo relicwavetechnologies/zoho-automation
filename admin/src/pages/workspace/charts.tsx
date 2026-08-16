@@ -33,6 +33,17 @@ export const CHART_HUES = [
   '#9a5cff', '#ee6572', '#c84f9d', '#7f858d',
 ] as const
 
+/**
+ * The box every chart draws into.
+ *
+ * Fixed here rather than left to each chart's own proportions, because two
+ * charts sitting in one row are read as a pair: a cluster at 2:1 beside a field
+ * at 3:1 looks like one of them went wrong, whatever either says on its own.
+ * Each scales to fit inside this and centres, so they occupy the same rectangle
+ * and their cards come out the same height.
+ */
+const CHART_BOX = { width: '100%', height: 176, display: 'block' } as const
+
 /** The hue a category keeps everywhere it appears, by its rank in the list. */
 export const hueAt = (index: number): string =>
   CHART_HUES[index % CHART_HUES.length] ?? '#7f858d'
@@ -71,9 +82,10 @@ export function HexShare({ slices, density = 0.58 }: {
   return (
     <svg
       viewBox={`0 0 ${box.width.toFixed(0)} ${box.height.toFixed(0)}`}
+      preserveAspectRatio="xMidYMid meet"
       role="img"
       aria-label={slices.map((s) => s.label).join(', ')}
-      style={{ width: '100%', height: 'auto', display: 'block' }}
+      style={CHART_BOX}
     >
       {cells.map((cell, index) => (
         <polygon
@@ -132,9 +144,10 @@ export function DotField({ points, color = CHART_HUES[0], format = (n) => String
   return (
     <svg
       viewBox={`0 0 ${W} ${H}`}
+      preserveAspectRatio="xMidYMid meet"
       role="img"
       aria-label={`${format(values[values.length - 1] ?? 0)} most recent`}
-      style={{ width: '100%', height: 'auto', display: 'block' }}
+      style={CHART_BOX}
     >
       {ticks.map((tick) => (
         <text

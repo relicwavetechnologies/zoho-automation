@@ -549,6 +549,67 @@
   gap: 14px; margin-top: 16px;
 }
 
+/* ── Home: what is waiting ────────────────────────────
+   Counts with a way in, at the top of the page. Never rendered empty — the
+   band is absent on a settled workspace rather than present and saying so, so
+   these rules describe a row that always has something in it. */
+.cur .ws-acts {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(232px, 1fr)); gap: 10px;
+}
+.cur .ws-act {
+  background: var(--cur-surface); border-radius: var(--cur-r-card);
+  box-shadow: 0 0 0 1px var(--cur-hairline), var(--cur-shadow-card);
+  padding: 13px 15px;
+}
+.cur .ws-act-h {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 500; color: var(--cur-body);
+}
+/* The mark is a tile like every other app mark on this page, not a bare icon —
+   a 15px glyph floating beside 13px text reads as a bullet, not a subject. */
+.cur .ws-act-ic {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 7px; flex: none;
+  background: var(--cur-canvas-soft); box-shadow: 0 0 0 1px var(--cur-hairline);
+  color: var(--cur-muted);
+}
+.cur .ws-act-b { display: flex; align-items: baseline; gap: 8px; margin-top: 11px; }
+.cur .ws-act-n {
+  font-size: 26px; letter-spacing: -0.02em; color: var(--cur-ink);
+  font-variant-numeric: tabular-nums; line-height: 1;
+}
+.cur .ws-act-u { font-size: 12px; color: var(--cur-muted); }
+/* The action sits on the baseline row with the number so the tile reads as one
+   statement — "3 decisions, review" — rather than a figure and a stray button. */
+.cur .ws-act-b .btn { margin-left: auto; align-self: center; }
+
+/* A late task says so in the error tone; everything else keeps meta ink. The
+   date is already in the sentence, so this only has to carry that it is past. */
+.cur .ws-task-late { color: var(--cur-error) !important; }
+
+/* ── Home: share of spend ─────────────────────────────
+   The rows under the hex cluster. The cluster carries the proportion and these
+   carry the figures, which is why the percentage is a quiet pill and the money
+   is the column that lines up. */
+.cur .ws-share { margin-top: 14px; }
+.cur .ws-share-r {
+  display: flex; align-items: center; gap: 9px; padding: 7px 0;
+  border-top: 1px solid var(--cur-hairline-soft); font-size: 12.5px;
+}
+.cur .ws-share-r:first-child { border-top: 0; }
+.cur .ws-share-d { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.cur .ws-share-n {
+  color: var(--cur-ink); min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.cur .ws-share-p {
+  font-size: 11px; color: var(--cur-body); background: var(--cur-surface-strong);
+  border-radius: 4px; padding: 1px 5px; font-variant-numeric: tabular-nums; flex: none;
+}
+.cur .ws-share-v {
+  margin-left: auto; color: var(--cur-ink); font-variant-numeric: tabular-nums; flex: none;
+}
+
 /* ── Lark → browser connect flow ──────────────────────
    Spec for the moment a member is blocked in Lark chat, taps Connect, and
    lands back in the dashboard. Rendered as two panes because the flow spans
