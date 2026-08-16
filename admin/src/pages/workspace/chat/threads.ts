@@ -118,6 +118,25 @@ export function threadStarted(threadId: string, title: string): void {
   threadsChanged()
 }
 
+/**
+ * The chat got its real name before the server row carrying it arrived.
+ *
+ * A claim is named with the raw ask, because at the moment it is made that is
+ * the only thing anybody knows. A moment later a small model writes an actual
+ * name and the header starts showing it — and until the renamed server row came
+ * back, the rail went on showing the sentence. One chat, two names, a
+ * centimetre apart, for exactly as long as the round trip took.
+ *
+ * A no-op once the server row exists, which is the ordinary case: `withStarted
+ * Threads` drops the claim the moment a real row can answer for it.
+ */
+export function threadRenamed(threadId: string, title: string): void {
+  const claim = startedHere.get(threadId)
+  if (!claim) return
+  startedHere.set(threadId, { ...claim, title })
+  threadsChanged()
+}
+
 /** The run ended, so the server has the thread and everything about it. */
 export function threadSettled(threadId: string): void {
   startedHere.delete(threadId)

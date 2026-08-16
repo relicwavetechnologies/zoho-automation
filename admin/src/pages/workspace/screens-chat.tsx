@@ -37,7 +37,7 @@ import { useThreadRun, type Exchange } from './chat/live'
 import { PlanPanel } from './chat/plan.view'
 import { LoadEarlier, ThreadSkeleton } from './chat/loading.view'
 import {
-  isThreadId, newThreadId, renameThread, threadStarted, threadsChanged,
+  isThreadId, newThreadId, renameThread, threadRenamed, threadStarted, threadsChanged,
 } from './chat/threads'
 import { generateThreadTitle } from './chat/title'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -191,6 +191,11 @@ function ChatThread({ threadId }: { threadId: string }) {
       .then(title => {
         if (!title || controller.signal.aborted) return
         setNamed(title)
+        /* The rail is told directly rather than waiting for the renamed row to
+           come back. Both places show a chat's name at once, and until this the
+           header switched to the real name while the rail went on showing the
+           raw ask for the length of the round trip. */
+        threadRenamed(threadId, title)
         /* Written through to the server so the name outlives this tab, and
            announced so the rail stops showing the truncated one. A failed write
            costs the stored name, not the one on screen. */
