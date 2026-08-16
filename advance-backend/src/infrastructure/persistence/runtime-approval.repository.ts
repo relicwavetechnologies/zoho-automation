@@ -511,6 +511,30 @@ export class RuntimeApprovalRepository {
     }
   }
 
+  /**
+   * Store a part-finished answer, and only while the request is still open.
+   *
+   * The guard is the whole difference from `persistAnswer` above, which runs
+   * after the verdict is already durable and must therefore write to a resolved
+   * row. This one runs before any verdict exists, and two surfaces can be
+   * holding the same request: a card press that loaded a moment before a
+   * browser settled it would otherwise land its half-answer on top of a
+   * finished decision, leaving a transcript that contradicts the verdict beside
+   * it. Answers false when the row has moved on, which the caller reports as
+   * "answered somewhere else".
+   */
+  async persistPartialAnswer(id: string, responseJson: unknown): Promise<Result<boolean, Error>> {
+    try {
+      const changed = await this.prisma.runtimeApproval.updateMany({
+        where: { id, status: { in: ['dispatching', 'pending'] } },
+        data:  { responseJson: responseJson as any },
+      });
+      return ok(changed.count === 1);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.persistPartialAnswer', e));
+    }
+  }
+
   async persistResult(id: string, resultJson: unknown): Promise<Result<void, Error>> {
     try {
       await this.prisma.runtimeApproval.update({

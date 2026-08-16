@@ -23,7 +23,7 @@
  * in the open, governed tools apply the same backend policy, and what comes
  * back is an answer rather than a wall of rows.
  */
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { FileText } from 'lucide-react'
 import { Navigate, useParams } from 'react-router-dom'
 import { Composer } from './chat/composer'
@@ -125,8 +125,12 @@ function ChatThread({ threadId }: { threadId: string }) {
      the case a push never would: the same question being answered on a Lark
      card while this thread sits open, which has to make the card here go away. */
   const decisions = useDecisions({ poll: 15_000 })
-  const asking = firstOpen(decisions.awaitingMe)
-  const [deferred, setDeferred] = useState<string[]>([])
+  /* Only what this thread raised. `awaitingMe` is everything in the company
+     waiting on this person, which for a manager is mostly other people's Lark
+     approvals — showing those here replaced the composer of every thread they
+     opened, and there was no way to type until each was dismissed. */
+  const asking = firstOpen(decisions.awaitingMe, threadId)
+  const [deferred, setDeferred] = useDeferredDecisions()
   const open = asking && !deferred.includes(asking.id) ? asking : null
   /* A run that has just stopped is the likeliest moment for a new question. */
   useEffect(() => { if (!live.running) void decisions.refresh() }, [live.running])
@@ -397,7 +401,7 @@ function ChatThread({ threadId }: { threadId: string }) {
             <DecisionCard
               decision={open}
               sending={decisions.sending === open.id}
-              onDismiss={() => setDeferred((ids) => [...ids, open.id])}
+              onDismiss={() => setDeferred(open.id)}
               onSend={(answer) => void decisions.settle(open.id, answer)}
             />
           ) : (
@@ -606,3 +610,34 @@ const Exchanged = memo(function Exchanged({
     </div>
   )
 })
+
+/**
+ * Decisions the reader has put aside, for as long as the tab is open.
+ *
+ * In `sessionStorage` rather than component state because `ChatThread` is keyed
+ * on the thread id: leaving a conversation and coming back remounts it, and a
+ * dismissal held in `useState` came straight back with it. Not `localStorage` —
+ * putting a question aside is a "not this minute", not a decision that should
+ * still be in force next week.
+ */
+const DEFERRED_KEY = 'divo.decisions.deferred'
+
+function useDeferredDecisions(): [string[], (id: string) => void] {
+  const [ids, setIds] = useState<string[]>(() => {
+    try {
+      const raw = window.sessionStorage.getItem(DEFERRED_KEY)
+      return raw ? (JSON.parse(raw) as string[]) : []
+    } catch {
+      return []
+    }
+  })
+  const defer = useCallback((id: string) => {
+    setIds((prev) => {
+      if (prev.includes(id)) return prev
+      const next = [...prev, id]
+      try { window.sessionStorage.setItem(DEFERRED_KEY, JSON.stringify(next)) } catch { /* private mode */ }
+      return next
+    })
+  }, [])
+  return [ids, defer]
+}

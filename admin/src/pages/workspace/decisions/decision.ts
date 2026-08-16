@@ -46,6 +46,14 @@ export type Decision = {
   questions: DecisionQuestion[]
   requestedAt: string
   expiresAt: string | null
+  /**
+   * The web thread this was asked in, or null when it was asked elsewhere.
+   *
+   * The chat shows a question only when it names the thread being read. Without
+   * that, every open request replaced the composer of every thread — a manager
+   * with one approval from a colleague's Lark run could not type anywhere.
+   */
+  threadId: string | null
 }
 
 export const EMPTY: DecisionAnswer = { responses: [] }
@@ -143,8 +151,15 @@ export function currentIndex(questions: DecisionQuestion[], answer: DecisionAnsw
  * were asked, and a card that jumped to whichever arrived last would leave the
  * first one buried under it — which is how a queue turns into a stack.
  */
-export function firstOpen(decisions: readonly Decision[]): Decision | null {
-  return [...decisions].sort((a, b) => a.requestedAt.localeCompare(b.requestedAt))[0] ?? null
+export function firstOpen(decisions: readonly Decision[], threadId?: string): Decision | null {
+  /* A thread shows only what it raised. Anything else — an approval from
+     somebody's Lark run, a request made on another thread — is somebody
+     waiting on you, not this conversation waiting on you, and it belongs on
+     the Approvals page rather than in front of a text box you were using. */
+  const mine = threadId === undefined
+    ? decisions
+    : decisions.filter((decision) => decision.threadId === threadId)
+  return [...mine].sort((a, b) => a.requestedAt.localeCompare(b.requestedAt))[0] ?? null
 }
 
 /** "in 51 min", "Expired", or nothing when the request has no deadline. */

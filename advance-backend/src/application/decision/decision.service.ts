@@ -173,8 +173,14 @@ export class DecisionService {
     const questions = input.questions;
     if (questions.length === 0) return { ok: false, message: 'A decision needs at least one question.' };
 
+    /* The questions are part of what makes this the same question.
+       `createOrReuseActive` reuses any live row with a matching key without
+       comparing payloads, so a key built from the title alone let a second,
+       different ask inside the TTL quietly return the first one's decision —
+       answered, resumed, while its own caller was told it had been asked. */
     const idempotencyKey = input.idempotencyKey
-      ?? sha256(`decision:${input.companyId}:${input.approver.userId}:${input.conversationKey}:${input.title}`);
+      ?? sha256(`decision:${input.companyId}:${input.approver.userId}:${input.conversationKey}:${input.title}:${
+        JSON.stringify({ questions, continuation: input.continuation })}`);
 
     const created = await this.deps.approvals.createOrReuseActive({
       chatId: input.conversationKey,
@@ -200,6 +206,9 @@ export class DecisionService {
         /* Native decisions carry their own continuation, so the resumer's
            gateway rule must not also apply to them. */
         autoResume: input.continuation.kind === 'run',
+        /* Named so the projection can tell a decision asked in a browser from
+           one asked anywhere else, without inferring it from an id shape. */
+        conversationKey: input.conversationKey,
       },
       channel: input.channel,
       requestedBy: input.requestedBy.userId,
@@ -254,6 +263,26 @@ export class DecisionService {
    * and `settle` decides that rather than this.
    */
   async open(actor: DecisionActor): Promise<DecisionInbox> {
+    const rows = await this.openRows(actor);
+    return {
+      awaitingMe: rows.awaitingMe.map(projected => projected.decision),
+      requestedByMe: rows.requestedByMe.map(projected => projected.decision),
+    };
+  }
+
+  /**
+   * The same read, projected but not yet narrowed to a `Decision`.
+   *
+   * Exists for one caller: the compatibility route the installed Desktop
+   * clients call, which has to answer in the shape it promised them — tool ids,
+   * department names, a described tool action. `Decision` drops all of that on
+   * purpose, and a route that went back to the rows to describe them a second
+   * time would be a second projection to keep in agreement with this one.
+   */
+  async openRows(actor: DecisionActor): Promise<{
+    readonly awaitingMe: readonly ProjectedDecision[];
+    readonly requestedByMe: readonly ProjectedDecision[];
+  }> {
     const listed = await this.deps.approvals.listInboxFor({
       companyId: actor.companyId,
       userId: actor.userId,
@@ -263,9 +292,9 @@ export class DecisionService {
       return { awaitingMe: [], requestedByMe: [] };
     }
     const now = new Date();
-    const live = (row: RuntimeApprovalRow): Decision | null => {
+    const live = (row: RuntimeApprovalRow): ProjectedDecision | null => {
       const projected = projectDecision(row);
-      return isOpen(projected.decision, now) ? projected.decision : null;
+      return isOpen(projected.decision, now) ? projected : null;
     };
     return {
       awaitingMe: listed.value.awaitingMe.flatMap(row => live(row) ?? []),
@@ -376,10 +405,22 @@ export class DecisionService {
 
     const answer = addChoice(storedAnswer(row), question, value);
     if (nextQuestion(projected.questions, answer)) {
-      const stored = await this.deps.approvals.persistAnswer(decisionId, answer);
+      /* Guarded to a still-open row. Two surfaces can hold this decision at
+         once, and a card press that loaded before a browser settled it would
+         otherwise overwrite the transcript of a finished decision — leaving a
+         stored answer that disagrees with the verdict beside it. */
+      const stored = await this.deps.approvals.persistPartialAnswer(decisionId, answer);
       if (!stored.ok) {
         this.deps.logger.error('decision.partial_not_stored', { decisionId, error: stored.error.message });
         return { ok: false, settled: false, reason: 'failed', message: 'Could not record that. Please try again.' };
+      }
+      if (!stored.value) {
+        return {
+          ok: false,
+          settled: false,
+          reason: 'already_resolved',
+          message: 'This request was answered somewhere else.',
+        };
       }
       return { ok: true, settled: false, decision: projected.decision, answer };
     }

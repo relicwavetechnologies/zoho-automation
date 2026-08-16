@@ -109,8 +109,8 @@ describe('the pager', () => {
 })
 
 describe('which decision the thread shows', () => {
-  const decision = (id: string, requestedAt: string): Decision => ({
-    id, title: id, source: 'Divo', questions: [FLAVOURS], requestedAt, expiresAt: null,
+  const decision = (id: string, requestedAt: string, threadId: string | null = null): Decision => ({
+    id, title: id, source: 'Divo', questions: [FLAVOURS], requestedAt, expiresAt: null, threadId,
   })
 
   it('takes the oldest, so a queue does not turn into a stack', () => {
@@ -122,6 +122,23 @@ describe('which decision the thread shows', () => {
 
   it('is nothing when nothing is open', () => {
     assert.equal(firstOpen([]), null)
+  })
+
+  it('shows a thread only what that thread raised', () => {
+    /* Everything waiting on a manager is mostly other people's Lark approvals.
+       Drawn in the chat they replaced the composer of every thread, and there
+       was no way to type until each one was dismissed. */
+    const mine = decision('mine', '2026-08-17T12:00:00Z', 'web_aaaaaaaa')
+    const elsewhere = decision('elsewhere', '2026-08-17T09:00:00Z', 'web_bbbbbbbb')
+    const lark = decision('lark', '2026-08-17T08:00:00Z', null)
+
+    assert.equal(firstOpen([lark, elsewhere, mine], 'web_aaaaaaaa')?.id, 'mine')
+    assert.equal(firstOpen([lark, elsewhere], 'web_aaaaaaaa'), null)
+  })
+
+  it('still takes everything when no thread is named', () => {
+    /* The Approvals page asks for the whole list, and gets it. */
+    assert.equal(firstOpen([decision('lark', '2026-08-17T08:00:00Z', null)])?.id, 'lark')
   })
 })
 

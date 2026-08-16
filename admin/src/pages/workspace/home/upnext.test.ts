@@ -16,6 +16,7 @@ const approval = (over: Partial<Decision> & { id: string }): Decision => ({
   questions: [],
   requestedAt: NOW.toISOString(),
   expiresAt: null,
+  threadId: null,
   ...over,
 })
 

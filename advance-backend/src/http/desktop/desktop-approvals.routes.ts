@@ -4,6 +4,7 @@ import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
 import type { DecisionService } from '../../application/decision/decision.service';
+import type { ProjectedDecision } from '../../application/decision/decision-projection';
 import type { GatewayMemberContext } from '../../application/gateway/gateway.types';
 import { confirmAnswer } from '../../domain/decision/decision';
 
@@ -40,12 +41,16 @@ export function createDesktopApprovalRoutes(deps: DesktopApprovalRoutesDeps): Ro
 
   router.get('/approvals', memberAuth, async (_req: Request, res: Response) => {
     try {
-      const open = await deps.decisions.open(actorFrom(res));
-      /* Named `awaitingMe`/`requestedByMe` because that is what installed
-         clients read. The values inside are decisions now, and every field the
-         old inbox item carried is either on the decision or was the tool
-         plumbing this surface never drew. */
-      res.json(open);
+      const open = await deps.decisions.openRows(actorFrom(res));
+      /* Answered in the shape installed clients already parse, field for field.
+         They read `description.title`, `description.tool`, `description.details`
+         and four names off each row, and a client shipped last month cannot be
+         updated in step with this repo — so the compatibility adapter converts
+         and the new shape stays on the routes written for it. */
+      res.json({
+        awaitingMe: open.awaitingMe.map(asInboxItem),
+        requestedByMe: open.requestedByMe.map(asInboxItem),
+      });
     } catch (error) {
       deps.logger.error('desktop.approvals.list_failed', { error: String(error) });
       res.status(500).json({ error: 'internal_error', message: 'Could not load your approvals.' });
@@ -94,6 +99,31 @@ export function statusFor(reason: string): number {
   if (reason === 'already_resolved' || reason === 'expired') return 409;
   if (reason === 'invalid_answer') return 422;
   return 500;
+}
+
+/**
+ * A decision in the shape the installed Desktop clients read.
+ *
+ * Every field here is one `jan/web-app/src/lib/divo-approvals.ts` declares and
+ * `ApprovalInbox.tsx` reads. `canDecide` and `decisionKind` are dropped because
+ * neither was ever read there; everything else is carried whether or not the
+ * new surfaces have a use for it.
+ */
+function asInboxItem(projected: ProjectedDecision) {
+  return {
+    id: projected.decision.id,
+    toolId: projected.toolId,
+    action: projected.action,
+    status: projected.status,
+    requestedAt: projected.decision.requestedAt,
+    expiresAt: projected.decision.expiresAt,
+    requestedByName: projected.presentation.requestedByName,
+    approverName: projected.presentation.approverName,
+    departmentName: projected.presentation.departmentName,
+    deliveredVia: projected.presentation.deliveredVia,
+    description: projected.presentation.description,
+    payload: projected.payload,
+  };
 }
 
 function actorFrom(res: Response): { userId: string; companyId: string; displayName?: string } {

@@ -68,7 +68,7 @@ function decisionRow(overrides: Record<string, unknown> = {}) {
     actionGroup: 'execute',
     kind: 'decision',
     summary: 'Launch plan',
-    payloadJson: { questions: [FLAVOURS, MARKET], continuation: { kind: 'tell' } },
+    payloadJson: { questions: [FLAVOURS, MARKET], continuation: { kind: 'none' } },
     metadataJson: {
       title: 'Launch plan',
       source: 'Divo',
@@ -81,11 +81,13 @@ function decisionRow(overrides: Record<string, unknown> = {}) {
 
 function makeService(row: ReturnType<typeof toolActionRow> | null, opts: {
   resolveOk?: boolean;
+  partialLands?: boolean;
   businessAction?: unknown;
 } = {}) {
   const calls = {
     resolved: [] as unknown[],
     answers: [] as unknown[],
+    partials: [] as unknown[],
     resumed: [] as string[],
     cards: [] as unknown[],
     audit: [] as any[],
@@ -103,6 +105,10 @@ function makeService(row: ReturnType<typeof toolActionRow> | null, opts: {
       persistAnswer: async (id: string, answer: unknown) => {
         calls.answers.push({ id, answer });
         return ok(undefined);
+      },
+      persistPartialAnswer: async (id: string, answer: unknown) => {
+        calls.partials.push({ id, answer });
+        return ok(opts.partialLands !== false);
       },
       listInboxFor: async () => ok({ awaitingMe: row ? [row] : [], requestedByMe: [] }),
       createOrReuseActive: async (input: unknown) => {
@@ -358,7 +364,7 @@ describe('decisions — one button at a time', () => {
 
     assert.equal(outcome.settled, false);
     assert.equal(calls.resolved.length, 0);
-    assert.deepEqual(calls.answers, [{
+    assert.deepEqual(calls.partials, [{
       id: 'decision-1',
       answer: { responses: [{ questionId: 'flavours', chose: ['three'] }] },
     }]);
@@ -381,7 +387,7 @@ describe('decisions — one button at a time', () => {
     const { service, calls } = makeService(decisionRow({
       payloadJson: {
         questions: [confirmQuestion({ ask: 'Send this?' }), MARKET],
-        continuation: { kind: 'tell' },
+        continuation: { kind: 'none' },
       },
     }));
     const outcome = await service.answerOne(APPROVER, 'decision-1', 'confirm', 'no');
@@ -423,7 +429,7 @@ describe('decisions — asking', () => {
       requestedBy: { userId: 'user-aman', displayName: 'Aman' },
       title: 'Launch plan',
       questions: [FLAVOURS, MARKET],
-      continuation: { kind: 'tell' },
+      continuation: { kind: 'none' },
       channel: 'lark',
       conversationKey: 'oc_1',
     });
@@ -470,5 +476,84 @@ describe('decisions — asking', () => {
 
     assert.equal(outcome.ok, false);
     assert.equal(calls.created.length, 0);
+  });
+});
+
+describe('decisions — telling one thread from every other', () => {
+  it('names the web thread a question was asked in', async () => {
+    /* Without this the chat had only "somebody is waiting on you" and treated
+       it as "the run in front of you is waiting", so one approval replaced the
+       composer of every thread. */
+    const { service } = makeService(decisionRow({
+      metadataJson: {
+        title: 'Launch plan',
+        resolvedManagerUserId: 'user-manager',
+        sourceChatId: 'web_abcd1234',
+      },
+    }));
+    assert.equal((await service.open(APPROVER)).awaitingMe[0]!.threadId, 'web_abcd1234');
+  });
+
+  it('refuses to read a Lark chat id or a scope key as a thread', async () => {
+    /* A manager gate's stored chat id is a namespacing key, not a conversation
+       — treating it as one would put an unrelated approval in a composer. */
+    for (const chatId of ['oc_9f2b7c', 'gateway:comp-1:user-1', 'scheduled-workflow:42']) {
+      const { service } = makeService(toolActionRow({
+        metadataJson: { resolvedManagerUserId: 'user-manager', sourceChatId: chatId },
+      }));
+      assert.equal((await service.open(APPROVER)).awaitingMe[0]!.threadId, null, chatId);
+    }
+  });
+});
+
+describe('decisions — asking the same thing twice', () => {
+  const base = {
+    companyId: 'comp-1',
+    approver: { userId: 'user-manager' },
+    requestedBy: { userId: 'user-aman' },
+    title: 'Approve sending the report',
+    continuation: { kind: 'none' as const },
+    channel: 'web' as const,
+    conversationKey: 'web_abcd1234',
+  };
+
+  it('treats a different question as a different request', async () => {
+    /* `createOrReuseActive` reuses on an exact key without comparing payloads,
+       so a key built from the title alone let a second, different ask return
+       the first one's decision — answered and resumed, while its own caller was
+       told it had been asked. */
+    const { service, calls } = makeService(null);
+    await service.ask({ ...base, questions: [FLAVOURS] });
+    await service.ask({ ...base, questions: [MARKET] });
+
+    assert.notEqual(calls.created[0].idempotencyKey, calls.created[1].idempotencyKey);
+  });
+
+  it('treats the identical question as the same request', async () => {
+    const { service, calls } = makeService(null);
+    await service.ask({ ...base, questions: [FLAVOURS] });
+    await service.ask({ ...base, questions: [FLAVOURS] });
+
+    assert.equal(calls.created[0].idempotencyKey, calls.created[1].idempotencyKey);
+  });
+
+  it('lets a caller name the key itself', async () => {
+    const { service, calls } = makeService(null);
+    await service.ask({ ...base, questions: [FLAVOURS], idempotencyKey: 'mine' });
+    assert.equal(calls.created[0].idempotencyKey, 'mine');
+  });
+});
+
+describe('decisions — a press that arrives too late', () => {
+  it('refuses a part-answer once the request has been settled elsewhere', async () => {
+    /* Two surfaces hold the same decision. A card press that loaded a moment
+       before a browser settled it must not land its half-answer on the finished
+       row, leaving a transcript that contradicts the verdict beside it. */
+    const { service, calls } = makeService(decisionRow(), { partialLands: false });
+    const outcome = await service.answerOne(APPROVER, 'decision-1', 'flavours', 'three');
+
+    assert.equal(outcome.settled, false);
+    assert.equal(outcome.ok, false);
+    assert.equal(calls.resolved.length, 0);
   });
 });

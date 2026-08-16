@@ -25,7 +25,7 @@ import {
   type DecisionContinuation,
   type DecisionQuestion,
 } from '../../domain/decision/decision';
-import { describeToolAction } from '../approval/describe-tool-action';
+import { describeToolAction, type ToolActionDescription } from '../approval/describe-tool-action';
 import type { RuntimeApprovalRow } from '../../infrastructure/persistence/runtime-approval.repository';
 
 /** The row kind a decision asked through this module is stored under. */
@@ -67,6 +67,22 @@ export interface ProjectedDecision {
   readonly requestedByUserId: string | null;
   /** The exact arguments, for a reader who wants to see everything. */
   readonly payload: unknown;
+  /**
+   * The fields the installed Desktop clients read, kept whole.
+   *
+   * `Decision` deliberately drops most of them — a question does not need a
+   * tool id or a department to be asked. But a shipped client cannot be updated
+   * in step with this repo, and the route it calls promised these. Carried here
+   * so the compatibility adapter can answer in the old shape without going back
+   * to the row and describing it a second time.
+   */
+  readonly presentation: {
+    readonly description: ToolActionDescription;
+    readonly requestedByName: string;
+    readonly approverName: string;
+    readonly departmentName: string | null;
+    readonly deliveredVia: string;
+  };
 }
 
 export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
@@ -83,16 +99,18 @@ export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
   const questions = native
     ? native.questions
     : [confirmQuestion({ ask: described!.title })];
+  const title = native ? (readString(meta['title']) ?? row.summary) : described!.title;
 
   return {
     decision: {
       id: row.id,
-      title: native ? (readString(meta['title']) ?? row.summary) : described!.title,
+      title,
       ...(detailOf(native, meta, described) ? { detail: detailOf(native, meta, described)! } : {}),
       source: native ? (readString(meta['source']) ?? 'Divo') : requesterName,
       questions,
       requestedAt: row.createdAt.toISOString(),
       expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
+      threadId: webThreadIdOf(meta),
     },
     questions,
     continuation: native
@@ -110,7 +128,41 @@ export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
       ?? null,
     requestedByUserId: row.requestedBy,
     payload: args,
+    presentation: {
+      description: described ?? {
+        tool: 'Divo',
+        title,
+        /* A native decision has no tool call to describe, so its questions are
+           the detail. Written as label/value pairs because that is what the
+           shape promises and what the old client lays out in rows. */
+        details: questions.map(question => ({ label: 'Asks', value: question.ask })),
+      },
+      requestedByName: requesterName,
+      approverName: readString(meta['resolvedManagerName']) ?? 'your approver',
+      departmentName: readString(meta['departmentName']) ?? null,
+      deliveredVia: row.channel,
+    },
   };
+}
+
+/**
+ * The web thread this was asked in, when it was asked in one.
+ *
+ * Only a key that is recognisably a web thread id counts. A Lark approval's
+ * stored chat id is an open-chat id, and a manager gate's is a scoped
+ * namespacing key that is not a conversation at all — treating either as a
+ * thread would put an unrelated approval in front of somebody's composer, which
+ * is exactly what this exists to stop. Anything unrecognised is null, and a
+ * null decision simply lives on the Approvals page.
+ */
+const WEB_THREAD_ID = /^web_[A-Za-z0-9-]{8,64}$/;
+
+function webThreadIdOf(meta: Record<string, unknown>): string | null {
+  for (const key of ['sourceChatId', 'chatId', 'conversationKey']) {
+    const value = readString(meta[key]);
+    if (value && WEB_THREAD_ID.test(value)) return value;
+  }
+  return null;
 }
 
 /**
@@ -170,9 +222,11 @@ function readContinuation(value: unknown): DecisionContinuation {
       return { kind: 'run', toolId, action, argsHash: readString(record['argsHash']) ?? '' };
     }
   }
-  if (record['kind'] === 'tell') return { kind: 'tell' };
-  /* An unreadable continuation becomes "nobody is waiting" rather than a guess.
-     Guessing `run` would execute a tool call nobody could name. */
+  /* Anything else becomes "nobody is waiting" rather than a guess — including a
+     row written by an earlier build carrying the removed `tell` arm. Guessing
+     `run` would execute a tool call nobody could name; reading a `tell` row as
+     `none` says the true thing, which is that no continuation this build can
+     carry out was recorded. */
   return { kind: 'none' };
 }
 

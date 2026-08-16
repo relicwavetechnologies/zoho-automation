@@ -93,10 +93,22 @@ export interface DecisionAnswer {
  */
 export type DecisionContinuation =
   | { readonly kind: 'run'; readonly toolId: string; readonly action: string; readonly argsHash: string }
-  /** Hand the answer back to the run that asked, as another turn. */
-  | { readonly kind: 'tell' }
-  /** Nobody is waiting. The record of the answer is the whole point. */
+  /** Nobody is waiting on the answer. The record of it is the whole point. */
   | { readonly kind: 'none' };
+
+/*
+  There was a third arm here — `tell`, "hand the answer back to the run that
+  asked, as another turn" — and it is gone rather than kept for later. Nothing
+  consumed it: the settlement path ran the `run` case and returned, so a caller
+  declaring `tell` got a settled row, a resolved card, an audit line and a run
+  that was never told anything. Three test fixtures used it and none asserted an
+  effect, which made it read as covered.
+
+  It is the right idea and it needs the runtime threaded through to this module
+  to work. Until that exists, an arm the code does not honour is worse than an
+  absent one: the next author reads it as a fact about the system and builds on
+  it. Add it back the day something can carry out the promise.
+*/
 
 /**
  * One open question, as every surface receives it.
@@ -116,6 +128,17 @@ export interface Decision {
   readonly questions: readonly DecisionQuestion[];
   readonly requestedAt: string;
   readonly expiresAt: string | null;
+  /**
+   * The web thread this was asked in, when it was asked in one.
+   *
+   * Carried so a surface can tell "the run in front of you is waiting on this"
+   * from "somebody, somewhere, is waiting on you". Without it the chat had only
+   * the second and treated it as the first: every open request replaced the
+   * composer of every thread, including approvals raised by other people's Lark
+   * runs. Null for anything not asked in a browser, which belongs on the
+   * Approvals page and nowhere else.
+   */
+  readonly threadId: string | null;
 }
 
 // ── Answering ───────────────────────────────────────────────────────────────
