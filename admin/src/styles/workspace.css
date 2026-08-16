@@ -1936,27 +1936,37 @@
 
 .cur .set-body { flex: 1; min-width: 0; overflow-y: auto; }
 /*
-  The column is wide; the FORM is narrow.
+  One column, and every page in it.
 
-  Capping the column itself at a reading measure looked right on Profile and
-  broke every data screen behind it. `.ws-skills` and `.ws-cols` drop to one
-  column at `max-width: 1080px` — and a media query measures the VIEWPORT, not
-  the container. On a wide monitor those grids stayed two-up inside a 652px
-  box, so the Skills detail pane got ~344px: its header wrapped one word per
-  line and its Rename/Archive buttons overflowed the panel entirely.
+  This was three widths at once. The column ran to 1180px, the settings
+  primitives capped themselves at 720 and centred inside it, and Profile set
+  its own 880 — so a page title started at a different x depending on which
+  page you were on, and moving between two settings screens moved the text
+  under your eyes. Preferences was a centred 720px form; Connected apps was an
+  1180px table; Profile was 880 between them.
 
-  So the column is sized for the widest thing it hosts, and the settings
-  primitives below carry the reading measure themselves. Pages that want width
-  get it; pages that are a list of statements still read as one column.
+  It was three widths for a reason. Capping the column used to break the data
+  screens: `.ws-cols` and `.ws-skills` fold to one column at a 1080px viewport,
+  and a media query cannot see that it is sitting in an 880px box on a 27"
+  monitor — so those grids stayed two-up and were squeezed to a few hundred
+  pixels a side. The three lines below say it directly instead.
+
+  A container query would say it properly, and is the obvious answer here. It
+  is not usable yet: `container-type` makes an element the containing block for
+  every `position: fixed` descendant, and this app renders its modals, scrims
+  and drawers inline rather than through a portal — so every overlay opened
+  from a settings page would be trapped inside this column. Portal them and the
+  three lines below become one query.
+
+  880 is Profile's width, which is the page in here that was already right.
 */
-.cur .set-col { max-width: 1180px; margin: 0 auto; padding: 46px 34px 90px; }
+.cur .set-col { max-width: 880px; margin: 0 auto; padding: 46px 34px 90px; }
 
-/* Centred, not just capped.
-   The column centres itself at 1180px and the content inside it stops at 720,
-   so on any screen wider than that the whole page sat against the left edge
-   with 460px of nothing to its right — a reading column pushed off-centre
-   rather than a page with a margin. */
-.cur .set-h, .cur .set-row, .cur .set-note { max-width: 720px; margin-inline: auto; }
+/* What a container query would have said. Scoped to the takeover, so the app's
+   own 1160px pages keep the viewport behaviour these grids were tuned for. */
+.cur .set-col .ws-cols,
+.cur .set-col .ws-cols-even,
+.cur .set-col .ws-skills { grid-template-columns: minmax(0, 1fr); }
 .cur .set-h { margin-bottom: 30px; }
 .cur .set-h h1 { font-size: 26px; font-weight: 500; letter-spacing: -0.02em; color: var(--cur-ink); }
 .cur .set-h p { font-size: 13.5px; color: var(--cur-muted); margin-top: 7px; line-height: 1.5; }
@@ -2071,27 +2081,27 @@
    row belongs to a section by containment rather than by being the next thing
    after a heading. */
 .cur .set-section {
-  /* `margin-inline: auto` after the shorthand, which would otherwise zero it
-     and leave the labels hanging left of the cards they belong to. */
-  max-width: 720px; margin: 32px 0 10px; margin-inline: auto;
+  margin: 32px 0 10px;
   font-size: 12.5px; font-weight: 500; color: var(--cur-muted);
   letter-spacing: 0.01em;
 }
 .cur .set-section:first-of-type { margin-top: 0; }
 .cur .set-group {
-  max-width: 720px; margin-inline: auto; background: var(--cur-surface);
+  background: var(--cur-surface);
   border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
   box-shadow: var(--cur-shadow-card); overflow: hidden;
 }
 /* Inside a card the rows carry their own padding and a divider between them,
-   rather than a rule above each that also draws one at the very top. */
+   rather than a rule above each that also draws one at the very top. 18px to
+   match `.ws-row`, so a row in a settings group and a row in a panel are the
+   same row — they sit on the same page often enough to be compared. */
 .cur .set-group .set-row {
-  max-width: none; padding: 14px 16px;
+  padding: 14px 18px;
   border-top: 1px solid var(--cur-hairline-soft);
 }
 .cur .set-group .set-row:first-child { border-top: 0; }
 .cur .set-group .set-note {
-  max-width: none; margin: 0; padding: 12px 16px;
+  margin: 0; padding: 12px 18px;
   border-top: 1px solid var(--cur-hairline-soft); background: var(--cur-canvas-soft);
 }
 
@@ -2153,12 +2163,8 @@
   out. The accent is the same tint the avatar carries, which is the app's
   existing answer for "this is identity, not an action".
 */
-.cur .prof { max-width: 880px; margin-inline: auto; --ws-chart-ink: var(--cur-accent); }
-/* The settings primitives cap themselves; inside here the page has already
-   decided the measure and a second cap only narrows it. */
-.cur .prof .set-section,
-.cur .prof .set-group,
-.cur .prof .set-note { max-width: none; }
+/* The column is 880 now, which is what this page used to have to ask for. */
+.cur .prof { --ws-chart-ink: var(--cur-accent); }
 
 .cur .prof-card {
   background: var(--cur-surface); border: 1px solid var(--cur-hairline);
