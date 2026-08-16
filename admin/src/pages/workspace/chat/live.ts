@@ -367,7 +367,7 @@ export function useThreadRun(input: {
     setLoading(true)
 
     const load = async (): Promise<{ prompt: string; startedAt: number } | null> => {
-      const found = await getThread(threadId, input.token!)
+      const found = await getThread(threadId, input.token!, controller.signal)
       if (controller.signal.aborted || currentThread.current !== threadId) return null
       const history = exchangesFrom(found?.thread.turns ?? [])
       const live = found?.running

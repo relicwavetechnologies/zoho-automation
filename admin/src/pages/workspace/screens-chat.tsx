@@ -34,6 +34,7 @@ import { CopyButton } from './chat/copy'
 import { clearHandoff, peekHandoff } from './chat/handoff'
 import { useThreadRun, type Exchange } from './chat/live'
 import { PlanPanel } from './chat/plan.view'
+import { ThreadSkeleton } from './chat/loading.view'
 import {
   isThreadId, newThreadId, renameThread, threadStarted, threadsChanged,
 } from './chat/threads'
@@ -271,7 +272,12 @@ function ChatThread({ threadId }: { threadId: string }) {
       >
         <Header title={title} scrolled={scrolled} />
         <div ref={column} className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-5 pb-6">
-          {empty ? (
+          {/* Three states, not two. A thread being read is not an empty one,
+              and drawing nothing for it made a slow read look like a chat with
+              nothing in it — see `loading.view.tsx`. */}
+          {live.loading && live.exchanges.length === 0 ? (
+            <ThreadSkeleton />
+          ) : empty ? (
             <Welcome onPick={start} />
           ) : (
             live.exchanges.map((exchange) => (

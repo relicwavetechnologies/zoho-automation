@@ -182,12 +182,20 @@ export async function listThreads(token: string): Promise<ThreadSummary[]> {
  * `running` comes back when a run on this thread is still going, so the reader
  * who opens it can be shown the live view rather than a settled transcript that
  * happens to be missing its last answer.
+ *
+ * Cancellable, and the caller passes a signal because it knows something this
+ * cannot: that the reader has moved to a different conversation. It used to
+ * take no signal at all, so switching threads discarded the result of a read
+ * that carried on running to completion — a whole transcript fetched, parsed
+ * and thrown away, while the thread the reader is actually looking at waits
+ * behind it.
  */
 export async function getThread(
   threadId: string,
   token: string,
+  signal?: AbortSignal,
 ): Promise<{ thread: ThreadDetail; running?: { runId: string; prompt: string; startedAt: number } } | null> {
-  return await call(`/threads/${encodeURIComponent(threadId)}`, token)
+  return await call(`/threads/${encodeURIComponent(threadId)}`, token, { signal })
 }
 
 export async function renameThread(
