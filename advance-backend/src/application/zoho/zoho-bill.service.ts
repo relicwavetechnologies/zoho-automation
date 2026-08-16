@@ -5,10 +5,12 @@ import type { Result } from '../../shared/result';
 import { err, ok } from '../../shared/result';
 import { mapZohoError } from './zoho-error.utils';
 import { refuseSelfDealing } from './zoho-self-dealing';
+import { createZohoBooksWriteRunner } from './zoho-books-write';
 import {
-  classifyZohoBooksWriteFailure,
-  createZohoBooksWriteRunner,
-} from './zoho-books-write';
+  completeZohoDocument,
+  writeZohoDocument,
+  type ZohoDocumentAttachment,
+} from './zoho-document-lifecycle';
 import { unwrapZohoRecord, type ZohoWriteSummary } from './zoho-books-write-result';
 import {
   BILL_CLAIM_PENDING,
@@ -44,8 +46,6 @@ type CallContext = {
   readonly signal?: AbortSignal;
   readonly onProgress?: (message: string) => void;
 };
-
-type AttachmentResult = { outcome: 'attached' | 'unconfirmed' | 'refused'; message: string };
 
 const text = (record: Record<string, unknown>, ...keys: string[]): string =>
   keys.map(key => record[key]).find(value => typeof value === 'string' && value.trim()) as string | undefined ?? '';
@@ -185,7 +185,7 @@ export function createZohoBillService(deps: {
 
     async create(input: CallContext & {
       stagingId?: string;
-      attach?: (billId: string, fileName: string, organizationId: string) => Promise<AttachmentResult>;
+      attach?: (billId: string, fileName: string, organizationId: string) => Promise<ZohoDocumentAttachment>;
     }): Promise<Result<BillCreateOutput, ToolError>> {
       if (!input.stagingId) {
         return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: 'create_bill needs a stagingId from stage_bill.' }));
@@ -240,27 +240,25 @@ export function createZohoBillService(deps: {
         appBaseUrl: deps.appBaseUrl,
       });
 
-      let record: Record<string, unknown>;
-      let summary: ZohoWriteSummary;
-      try {
-        const written = await writer.writeRecord({
+      const written = await writeZohoDocument({
+        writer,
+        receivedObject: 'the bill',
+        request: {
           module: 'bills',
           verb: 'created',
           method: 'POST',
           path: '/bills',
           body: staged.payload,
-        });
-        record = written.record;
-        summary = written.summary;
-      } catch (error) {
-        const failure = classifyZohoBooksWriteFailure(error, { receivedObject: 'the bill' });
-        if (failure.kind !== 'unknown') {
+        },
+      });
+      if (written.kind === 'failed') {
+        if (written.failure.kind !== 'unknown') {
           await deps.staging.release({ stagingId: staged.stagingId, companyId: input.companyId, marker });
           return err(new ToolError({
             toolId: 'zohoBooks',
             reason: 'upstream_failure',
-            cause: error,
-            message: mapZohoError(error),
+            cause: written.error,
+            message: mapZohoError(written.error),
           }));
         }
         await deps.staging.markUnresolved({
@@ -272,12 +270,11 @@ export function createZohoBillService(deps: {
         return err(new ToolError({
           toolId: 'zohoBooks',
           reason: 'upstream_failure',
-          cause: error,
-          message: `${mapZohoError(error)} The request may have reached Zoho, so Divo will not retry it. Check bills before staging another.`,
+          cause: written.error,
+          message: `${mapZohoError(written.error)} The request may have reached Zoho, so Divo will not retry it. Check bills before staging another.`,
         }));
       }
-
-      if (!summary.id) {
+      if (written.kind === 'missing_id') {
         await deps.staging.markUnresolved({
           stagingId: staged.stagingId,
           companyId: input.companyId,
@@ -290,25 +287,29 @@ export function createZohoBillService(deps: {
           message: 'Zoho accepted the bill but returned no bill_id. Check Zoho before trying again.',
         }));
       }
-      await deps.staging.settle({ stagingId: staged.stagingId, companyId: input.companyId, billId: summary.id });
-
-      let attachmentNote = '';
-      if (staged.attachFileName && input.attach) {
-        const outcome = await input.attach(summary.id, staged.attachFileName, staged.organizationId);
-        attachmentNote = outcome.outcome === 'attached'
-          ? ` ${outcome.message}`
-          : ` The bill exists, but its attachment is ${outcome.outcome}: ${outcome.message}`;
-      }
-      const verified = await writer.verifyRecord({
+      const completed = await completeZohoDocument({
+        writer,
         module: 'bills',
         verb: 'created',
-        recordId: summary.id,
-        fallbackRecord: record,
+        written: written.written,
+        settle: billId => deps.staging!.settle({
+          stagingId: staged.stagingId,
+          companyId: input.companyId,
+          billId,
+        }),
+        ...(staged.attachFileName && input.attach
+          ? { attach: () => input.attach!(written.written.summary.id, staged.attachFileName!, staged.organizationId) }
+          : {}),
       });
+      const attachmentNote = completed.attachment
+        ? completed.attachment.outcome === 'attached'
+          ? ` ${completed.attachment.message}`
+          : ` The bill exists, but its attachment is ${completed.attachment.outcome}: ${completed.attachment.message}`
+        : '';
       return ok({
-        record: verified.record,
-        summary: verified.summary,
-        message: `${verified.message}${attachmentNote}`.trim(),
+        record: completed.record,
+        summary: completed.summary,
+        message: `${completed.verification.message}${attachmentNote}`.trim(),
       });
     },
   };

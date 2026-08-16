@@ -5,9 +5,9 @@ import type { Result } from '../../shared/result';
 import { err, ok } from '../../shared/result';
 import type { ZohoAttachmentSourcePort } from './zoho-attachment.service';
 import {
-  classifyZohoBooksWriteFailure,
   createZohoBooksWriteRunner,
 } from './zoho-books-write';
+import { writeZohoDocument, type ZohoDocumentAttachment } from './zoho-document-lifecycle';
 import { summarizeZohoWrite, unwrapZohoRecord } from './zoho-books-write-result';
 import { mapZohoError } from './zoho-error.utils';
 import { normalizeInvoiceFields } from './zoho-invoice-fields';
@@ -84,8 +84,6 @@ type CallContext = {
   readonly signal?: AbortSignal;
   readonly onProgress?: (message: string) => void;
 };
-
-type AttachmentResult = { outcome: 'attached' | 'unconfirmed' | 'refused'; message: string };
 
 const TWIN_READ_BACK_LIMIT = 5;
 
@@ -375,7 +373,7 @@ export function createZohoInvoiceService(deps: {
 
     async create(input: CallContext & {
       readonly stagingId?: string;
-      readonly attach?: (invoiceId: string, fileName: string, organizationId?: string) => Promise<AttachmentResult>;
+      readonly attach?: (invoiceId: string, fileName: string, organizationId?: string) => Promise<ZohoDocumentAttachment>;
     }): Promise<Result<InvoiceCreateOutput, ToolError>> {
       if (!input.stagingId) {
         return err(new ToolError({
@@ -536,27 +534,30 @@ export function createZohoInvoiceService(deps: {
       let createdRecordUrl: string | undefined;
       let recoveryNote = '';
       let createdFromReadBack = false;
-      try {
-        const invoiceNumber = staged.payload['invoice_number'];
-        const written = await writer.writeRecord({
+      const writeOutcome = await writeZohoDocument({
+        writer,
+        receivedObject: 'the invoice',
+        request: {
           module: 'invoices',
           verb: 'created',
           method: 'POST',
           path: '/invoices',
-          ...(typeof invoiceNumber === 'string' && invoiceNumber.trim()
+          ...(typeof staged.payload['invoice_number'] === 'string' && String(staged.payload['invoice_number']).trim()
             ? { params: { ignore_auto_number_generation: 'true' } }
             : {}),
           body: staged.payload,
-        });
-        createdRecord = written.record;
-        createdId = written.summary.id;
-        createdMessage = written.summary.message;
-        createdRecordUrl = written.summary.recordUrl;
-      } catch (error) {
-        const failure = classifyZohoBooksWriteFailure(error);
+        },
+      });
+      if (writeOutcome.kind === 'failed') {
+        const { error, failure } = writeOutcome;
         if (failure.kind !== 'unknown') {
           await deps.staging.release({ stagingId: staged.stagingId, companyId: input.companyId, marker });
-          return err(new ToolError({ toolId: 'zohoBooks', reason: 'upstream_failure', cause: error, message: mapZohoError(error) }));
+          return err(new ToolError({
+            toolId: 'zohoBooks',
+            reason: 'upstream_failure',
+            cause: error,
+            message: mapZohoError(error),
+          }));
         }
 
         const readBack = await findInvoiceCreatedFrom(staged);
@@ -572,7 +573,7 @@ export function createZohoInvoiceService(deps: {
           createdId = readBack.invoiceId;
           createdMessage = summary.message;
           createdRecordUrl = summary.recordUrl;
-          recoveryNote = `${failure.why}, so Divo checked Zoho: the invoice was created. `;
+          recoveryNote = failure.why + ', so Divo checked Zoho: the invoice was created. ';
           createdFromReadBack = true;
         } else {
           if (readBack.state === 'absent') {
@@ -580,14 +581,14 @@ export function createZohoInvoiceService(deps: {
               stagingId: staged.stagingId,
               companyId: input.companyId,
               marker,
-              absent: `${INVOICE_CLAIM_ABSENT}${input.correlationId}`,
+              absent: INVOICE_CLAIM_ABSENT + input.correlationId,
             });
           } else {
             await deps.staging.markUnresolved({
               stagingId: staged.stagingId,
               companyId: input.companyId,
               marker,
-              unresolved: `${INVOICE_CLAIM_UNRESOLVED}${input.correlationId}`,
+              unresolved: INVOICE_CLAIM_UNRESOLVED + input.correlationId,
             });
           }
           return err(new ToolError({
@@ -595,16 +596,33 @@ export function createZohoInvoiceService(deps: {
             reason: 'upstream_failure',
             cause: error,
             message: readBack.state === 'absent'
-              ? `${mapZohoError(error)} ${failure.why}. Divo then searched Zoho for this invoice and did not find it, `
+              ? mapZohoError(error) + ' ' + failure.why + '. Divo then searched Zoho for this invoice and did not find it, '
                 + 'so it most likely was not created — but that search cannot be certain, and this draft will not be sent again. '
                 + 'Tell the member what happened and stage it afresh only if they confirm it is missing.'
-              : `${mapZohoError(error)} ${failure.why}. Divo tried to check Zoho and could not (${readBack.why}), `
+              : mapZohoError(error) + ' ' + failure.why + '. Divo tried to check Zoho and could not (' + readBack.why + '), '
                 + 'so whether the invoice exists is genuinely unknown. It will not send this draft again. '
                 + 'Check Zoho for it and tell the member what you find.',
           }));
         }
+      } else if (writeOutcome.kind === 'missing_id') {
+        await deps.staging.markUnresolved({
+          stagingId: staged.stagingId,
+          companyId: input.companyId,
+          marker,
+          unresolved: INVOICE_CLAIM_UNRESOLVED + input.correlationId,
+        });
+        return err(new ToolError({
+          toolId: 'zohoBooks',
+          reason: 'upstream_failure',
+          message: 'Zoho accepted the invoice but returned no invoice_id. Check Zoho before trying again.',
+        }));
+      } else {
+        const written = writeOutcome.written;
+        createdRecord = written.record;
+        createdId = written.summary.id;
+        createdMessage = written.summary.message;
+        createdRecordUrl = written.summary.recordUrl;
       }
-
       await deps.staging.settle({ stagingId: staged.stagingId, companyId: input.companyId, invoiceId: createdId });
 
       let attachmentNote = '';
