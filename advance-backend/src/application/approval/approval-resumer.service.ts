@@ -260,10 +260,7 @@ export class ApprovalResumerService {
         kind: 'status',
         terminal: false,
         timeline: {
-          phase: 'Completing approved action',
-          progressPct: 75,
-          completedSteps: 1,
-          totalSteps: 2,
+          state: 'working',
           liveLabel: 'Executing the exact approved action…',
         },
       });

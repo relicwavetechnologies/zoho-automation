@@ -864,7 +864,6 @@ export async function processAcceptedLarkReceipt(
           kind: 'status',
           terminal: false,
           timeline: {
-            phase: 'Queued',
             state: 'queued',
             liveLabel: QUEUED_REQUEST_TEXT,
           },

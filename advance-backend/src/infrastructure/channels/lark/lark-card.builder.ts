@@ -199,16 +199,13 @@ export function statusCounterText(timeline: ChannelTimeline, now = Date.now()): 
 }
 
 /**
- * Header title: what the user asked for. The state is a chip beside it and the
- * bot's name is printed above every card by the client, so neither belongs here
- * — the title is the one line that makes a chat full of Divo cards scannable.
+ * Header title: the run's state, and the bot's name is printed above every card
+ * by the client so it does not belong here.
+ *
+ * This used to prefer a `subject` — a short restatement of the request — and
+ * fall back to the state. Nothing ever set one, in any channel, so the fallback
+ * was the whole function.
  */
-function statusHeaderTitle(timeline?: ChannelTimeline): string {
-  const subject = timeline?.subject?.trim();
-  if (subject) return subject;
-  return statusStateTitle(timeline);
-}
-
 function statusStateTitle(timeline?: ChannelTimeline): string {
   const state = timeline?.state;
   if (!state) return CARD_TITLE;
@@ -509,7 +506,7 @@ function normalizeLive(value: string): string {
  * two together is the same sentence twice in different words.
  */
 function narrationMarkdown(timeline: ChannelTimeline): string | undefined {
-  const active = timeline.narrationActive?.trim() || timeline.liveLabel?.trim();
+  const active = timeline.liveLabel?.trim();
   if (!active) return undefined;
   if (timeline.ledger?.some(row => row.status === 'running')) return undefined;
 
@@ -1274,13 +1271,11 @@ export function buildStatusCard(input: StatusCardInput): string {
   return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
 }
 
-/** Notification preview text — the run's subject and state, not a generic "Divo AI". */
+/** Notification preview text — the run's state and counter, not a generic "Divo AI". */
 function statusSummary(timeline: ChannelTimeline | undefined, now: number): string {
-  const title   = statusHeaderTitle(timeline);
   const state   = statusStateTitle(timeline);
   const counter = timeline ? statusCounterText(timeline, now) : '';
-  const tail    = [title === state ? '' : state, counter].filter(Boolean).join(' · ');
-  return tail ? `${title} — ${tail}` : title;
+  return counter ? `${state} — ${counter}` : state;
 }
 
 /**
@@ -1298,14 +1293,12 @@ function buildStatusHeader(
   branding: ChannelBranding | undefined,
 ): Record<string, unknown> | undefined {
   const state = timeline?.state;
-  if (!state) return buildHeader(timeline?.subject?.trim(), branding);
-  const subject = timeline.subject?.trim();
+  if (!state) return buildHeader(undefined, branding);
   return {
     template: 'default',
-    // No title unless the run has a subject. The only other thing to put there
-    // is the state, which is the chip sitting immediately beside it — and
-    // "Working… | Working" is the one-fact-twice this card exists to remove.
-    ...(subject ? { title: { tag: 'plain_text', content: subject } } : {}),
+    // No title at all. The only thing there is to put there is the state, which
+    // is the chip sitting immediately beside it — and "Working… | Working" is
+    // the one-fact-twice this card exists to remove.
     text_tag_list: [{
       tag:   'text_tag',
       text:  { tag: 'plain_text', content: RUN_STATE_WORD[state] },

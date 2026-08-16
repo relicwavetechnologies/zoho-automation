@@ -63,7 +63,6 @@ export interface RunTimelineReducerInput {
 
 export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTimelineReducer {
   const ledger = new Map<string, ChannelLedgerRow>();
-  let phase = 'Thinking';
   let state: ChannelRunState = 'thinking';
   let liveLabel = 'Thinking…';
   let actionCount = 0;
@@ -183,30 +182,25 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
       // Tool arguments, progress details, model narration, and declared plans
       // may all contain customer/order data. Keep only a generic live state
       // once a protected read starts; the final reply is transient.
-      phase = 'Working';
       state = 'working';
       liveLabel = 'Working…';
       return 'immediate';
     }
 
     if (event.type === 'starting') {
-      phase = 'Starting';
       state = 'queued';
       // The container says which stage it is in and names it. Discarding that
       // and printing "Thinking…" was the worst moment in the run to be vague:
       // a cold container can take tens of seconds to come up, and a reader
       // watching an unchanging label has no way to tell booting from hung.
       liveLabel = event.label.trim() || 'Starting…';
-    } else if (event.type === 'working') {
-      phase = 'Thinking';
-      state = 'thinking';
-      liveLabel = 'Thinking…';
-    } else if (event.type === 'ready' || event.type === 'thinking') {
-      phase = 'Thinking';
+    // The wire distinguishes three ways of saying the model is between jobs.
+    // Nothing downstream ever has: they arrived here as three branches with one
+    // body, and they leave as one.
+    } else if (event.type === 'working' || event.type === 'ready' || event.type === 'thinking') {
       state = 'thinking';
       liveLabel = 'Thinking…';
     } else if (event.type === 'say') {
-      phase = 'Writing';
       state = 'writing';
       liveLabel = 'Preparing your response…';
       // Talking is doing something other than thinking, so it ends the thought
@@ -222,7 +216,6 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
         status: 'done',
       });
     } else if (event.type === 'thought') {
-      phase = 'Thinking';
       state = 'thinking';
       liveLabel = 'Thinking…';
       // A new block of reasoning ends the one before it: they are separate rows,
@@ -241,7 +234,6 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
       });
     } else if (event.type === 'tool_start') {
       const tool = toolRowLabels(event.toolName, event.toolId);
-      phase = 'Working';
       state = 'working';
       liveLabel = tool.liveLabel;
       actionCount += 1;
@@ -275,7 +267,6 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
       if (reclassified) return 'immediate';
     } else if (event.type === 'tool_progress') {
       applyProgressDetail(event.callId, event);
-      phase = 'Working';
       state = 'working';
     } else if (event.type === 'tool_end') {
       applyProgressDetail(event.callId, event);
@@ -286,11 +277,9 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
           status: event.isError ? 'failed' : 'done',
         });
       }
-      phase = 'Working';
       state = 'working';
       liveLabel = event.isError ? 'A step failed; checking what can continue…' : 'Continuing…';
     } else {
-      phase = 'Writing';
       state = 'writing';
       liveLabel = 'Preparing your response…';
     }
@@ -302,7 +291,6 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
   };
 
   const finishing = (): void => {
-    phase = 'Writing';
     state = 'writing';
     liveLabel = 'Preparing your response…';
     // Nothing is still being reasoned about once the run is writing its reply,
@@ -311,13 +299,12 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
   };
 
   const timeline = (): ChannelTimeline => ({
-    phase,
     state,
     liveLabel,
     actionCount,
     startedAtMs: input.startedAtMs,
     ...(ledger.size > 0 ? { ledger: [...ledger.values()] } : {}),
-    ...(declared ? { declared, ...fractionOf(declared) } : {}),
+    ...(declared ? { declared } : {}),
   });
 
   return {
@@ -326,27 +313,6 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
     finishing,
     timeline,
     get protectedDataUsed() { return protectedDataUsed; },
-  };
-}
-
-/**
- * The only honest denominator a run has.
- *
- * Derived from the declared checklist and nothing else: a fraction counted from
- * "tool calls so far" has no total, because the total is unknowable until the
- * run ends. Absent a checklist these stay unset, and a renderer that wants a
- * progress bar simply does not draw one.
- */
-function fractionOf(declared: ChannelDeclaredPlan): Pick<
-  ChannelTimeline,
-  'completedSteps' | 'totalSteps' | 'progressPct'
-> {
-  if (declared.total <= 0) return {};
-  const done = Math.min(declared.done, declared.total);
-  return {
-    completedSteps: done,
-    totalSteps: declared.total,
-    progressPct: Math.round((done / declared.total) * 100),
   };
 }
 

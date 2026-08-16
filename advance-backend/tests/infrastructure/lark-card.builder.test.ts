@@ -52,8 +52,6 @@ function elementById(card: Record<string, unknown>, id: string): Record<string, 
 
 describe('lark-card.builder buildStatusCard', () => {
   const workingTimeline = {
-    subject:     'Invoice for Acme Corp',
-    phase:       'Executing',
     state:       'working' as const,
     liveLabel:   'Attaching the PDF to the Lark task…',
     actionCount: 11,
@@ -77,7 +75,10 @@ describe('lark-card.builder buildStatusCard', () => {
     const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
 
     assert.deepEqual(chips(card), ['Working']);
-    assert.equal(headerTitle(card), 'Invoice for Acme Corp');
+    // No title beside the chip. The header used to prefer a `subject` — a short
+    // restatement of the request — and this fixture was the only place one was
+    // ever set, which is how a field with no producer looked alive for so long.
+    assert.equal(headerTitle(card), undefined);
     for (const content of markdownContents(card)) {
       assert.doesNotMatch(content, /\bWorking\b/);
     }
@@ -274,10 +275,13 @@ describe('lark-card.builder buildStatusCard', () => {
     );
   });
 
+  // A run has no honest denominator until the model declares a checklist, so
+  // this card draws progress as a count of what happened and never as a bar.
+  // The timeline used to carry a percentage for one to be drawn from; nothing
+  // ever drew it, and it is gone.
   it('never renders a progress chart', () => {
-    const card = parseCard(buildStatusCard({ timeline: { ...workingTimeline, progressPct: 88 } }));
+    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
     assert.equal(bodyElements(card).some(e => e['tag'] === 'chart'), false);
-    assert.doesNotMatch(JSON.stringify(card), /88/);
   });
 
   it('ships only the icon token the collapsible panel is known to accept', () => {
@@ -314,7 +318,7 @@ describe('lark-card.builder buildStatusCard', () => {
   it('previews the run in the notification summary', () => {
     const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
     const config = card['config'] as { summary: { content: string } };
-    assert.match(config.summary.content, /Invoice for Acme Corp — Working… · 11 steps/);
+    assert.match(config.summary.content, /Working… — 11 steps/);
   });
 });
 

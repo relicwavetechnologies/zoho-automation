@@ -158,12 +158,10 @@ export class LarkStatusCoordinator {
     // deduped away as "no update". Elapsed time is deliberately excluded — it
     // ticks every second and would defeat the rate limiter on its own.
     const parts = [
-      t.phase,
       t.state,
       String(t.actionCount ?? ''),
       t.declared ? `${t.declared.done}/${t.declared.total}:${t.declared.current ?? ''}` : '',
       t.liveLabel,
-      t.narrationActive,
       /* The rows this card will actually draw, not every row in the run. The
          model's reasoning is on the timeline and never on a card, so counting
          it here would make every settled thought look like a change worth an

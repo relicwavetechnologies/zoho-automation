@@ -144,21 +144,21 @@ export type ChannelRunState =
   | 'done'
   | 'blocked';
 
+/**
+ * What a run looks like from outside, in terms no channel owns.
+ *
+ * Every field here is filled by the reducer and read by at least one renderer.
+ * That is the rule this shape is kept to, and it is not decorative: an optional
+ * field nobody fills reads to the next author as a fact the run knows, and they
+ * build on it. Six such fields were removed at once — a narration array with no
+ * producer and no reader, an active-sentence field two renderers checked and
+ * always fell through, a subject that was never set, and three progress
+ * counters that were computed on every snapshot and drawn by nothing. Between
+ * them they described a status card this product does not have.
+ */
 export interface ChannelTimeline {
-  /**
-   * Short restatement of what the user asked for. Titles the status card so a
-   * chat with several Divo cards stays scannable — the bot's own name is already
-   * printed above every card by the client.
-   */
-  readonly subject?:       string;
-  /** Header subtitle, e.g. "Executing · 2/5" */
-  readonly phase?:         string;
   /** Coarse run state — drives the status card title. */
   readonly state?:         ChannelRunState;
-  /** 0–100 for progress chart */
-  readonly progressPct?:   number;
-  readonly completedSteps?: number;
-  readonly totalSteps?:     number;
   /** Tool calls performed so far. Counts up; never used as a denominator. */
   readonly actionCount?:   number;
   /**
@@ -171,11 +171,8 @@ export interface ChannelTimeline {
   readonly declared?:      ChannelDeclaredPlan;
   /** Full run ledger, grouped by tool family. */
   readonly ledger?:        ReadonlyArray<ChannelLedgerRow>;
+  /** What the run says it is doing right now, in its own words. */
   readonly liveLabel?:      string;
-  /** Rolling live sentences from model stream (max 3 committed). */
-  readonly narration?:      ReadonlyArray<string>;
-  /** In-progress sentence not yet committed to a line. */
-  readonly narrationActive?: string;
 }
 
 export interface StatusUpdate {

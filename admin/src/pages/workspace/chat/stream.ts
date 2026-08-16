@@ -77,20 +77,26 @@ export type LedgerRow = {
   toolName?: string
 }
 
+/**
+ * The run's timeline, narrowed to what this surface actually draws.
+ *
+ * Hand-written rather than shared with the backend, because the two trees do
+ * not share types — which is exactly why this is kept to the fields that are
+ * read. It once mirrored the wire field for field and carried eleven the
+ * surface never touched: a phase, a state, four counters, and a plan's own
+ * `done`/`total`/`current`/`next` — the last of which `plan.ts` deliberately
+ * recomputes from the item list, because two counts of one list disagree the
+ * moment one of them is stale.
+ *
+ * More arrives on the wire than is listed here, and that is fine: JSON ignores
+ * what it is not asked for. Adding a field is a two-line change on the day
+ * something draws it.
+ */
 export type Timeline = {
-  phase?: string
-  state?: 'queued' | 'thinking' | 'planning' | 'working' | 'writing' | 'done' | 'blocked'
+  /** What the run says it is doing right now — shimmered at the trace head. */
   liveLabel?: string
-  actionCount?: number
-  startedAtMs?: number
-  completedSteps?: number
-  totalSteps?: number
-  progressPct?: number
+  /** Set only when the model declared a checklist. Drawn as the plan panel. */
   declared?: {
-    done: number
-    total: number
-    current?: string
-    next?: string
     items?: { title: string; status: LedgerRow['status'] }[]
   }
   ledger?: LedgerRow[]

@@ -132,8 +132,7 @@ describe('run timeline reducer', () => {
   it('reports a fraction only when the run declared a checklist', () => {
     const run = reducer();
     run.apply({ type: 'tool_start', callId: 'c1', toolName: 'read' });
-    assert.equal(run.timeline().totalSteps, undefined);
-    assert.equal(run.timeline().progressPct, undefined);
+    assert.equal(run.timeline().declared, undefined);
 
     run.apply({
       type: 'tool_progress',
@@ -146,11 +145,11 @@ describe('run timeline reducer', () => {
       ],
     });
 
+    /* The counts live on the plan and nowhere else. They used to be copied onto
+       the timeline as three more fields as well — a second count of one list,
+       which no renderer read and which could only ever disagree with this. */
     const t = run.timeline();
-    assert.deepEqual(
-      [t.completedSteps, t.totalSteps, t.progressPct],
-      [1, 3, 33],
-    );
+    assert.deepEqual([t.declared?.done, t.declared?.total], [1, 3]);
     assert.equal(t.declared?.current, 'Reconcile');
   });
 

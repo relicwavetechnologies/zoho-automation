@@ -3,13 +3,13 @@ import assert from 'node:assert/strict'
 import { fitsBesideThread, planOf, planStatus } from './plan'
 import type { Timeline } from './stream'
 
+/* The wire also carries the plan's own `done`/`total`/`current`/`next`. This
+   used to set them to deliberately wrong values, to prove nothing here reads
+   them; `Timeline` no longer declares them at all, so the compiler makes the
+   same point and cannot forget to. */
 const timeline = (
   items: { title: string; status: 'pending' | 'running' | 'done' | 'skipped' | 'failed' }[],
-): Timeline => ({
-  /* Sent on the same value and deliberately wrong here, because nothing in this
-     module is allowed to read them. */
-  declared: { done: 99, total: 99, items },
-})
+): Timeline => ({ declared: { items } })
 
 describe('reading a plan off the wire', () => {
   it('says nothing when the model never declared one', () => {
