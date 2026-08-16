@@ -126,6 +126,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     appBaseUrl:            c.env.APP_BASE_URL,
     approvalGate:          c.approvalGate,
     approvalCardHandler:   c.approvalCardHandler,
+    decisionCardHandler:   c.decisionCardHandler,
     workbookConversionCardHandler: c.workbookConversionCardHandler,
     knowledgeReviewService: c.larkKnowledgeReviewService,
     larkOAuthService:      c.larkOAuthService,
@@ -656,6 +657,9 @@ export const createServer = (c: Container): DivoServerApplication => {
       // The same client the Lark voice-note path uses, so a recording is heard
       // identically whichever surface it was handed over on.
       ...(voiceTranscriber ? { transcriber: voiceTranscriber } : {}),
+      // What Divo is waiting to hear from this person, in the thread that
+      // asked rather than on a page beside it.
+      decisions: c.decisions,
     }),
   );
 
@@ -667,8 +671,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       prisma:          c.prisma,
       memberJwtSecret: c.env.MEMBER_JWT_SECRET,
       logger:          c.logger,
-      inbox:           c.approvalInbox,
-      businessActions: c.businessActions,
+      decisions:       c.decisions,
     }),
   );
 

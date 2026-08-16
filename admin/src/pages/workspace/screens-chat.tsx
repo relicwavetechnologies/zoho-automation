@@ -27,6 +27,9 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'rea
 import { FileText } from 'lucide-react'
 import { Navigate, useParams } from 'react-router-dom'
 import { Composer } from './chat/composer'
+import { useDecisions } from './data/use-decisions'
+import { firstOpen } from './decisions/decision'
+import { DecisionCard } from './decisions/decision.view'
 import { Say } from './chat/answer/answer.view'
 import { PiTraceTimeline } from './chat/trace'
 import { PinSpacer } from './chat/pin'
@@ -112,6 +115,21 @@ function ChatThread({ threadId }: { threadId: string }) {
   useDropGuard()
 
   const live = useThreadRun({ threadId, token })
+
+  /* What Divo is waiting to hear from this person.
+     
+     Polled rather than pushed. A decision always ends the turn that raised it —
+     the tool returns "waiting on somebody" and the model wraps up — so the
+     moment worth catching is a run finishing, and a poll catches that within a
+     few seconds without a second event channel to keep honest. It also catches
+     the case a push never would: the same question being answered on a Lark
+     card while this thread sits open, which has to make the card here go away. */
+  const decisions = useDecisions({ poll: 15_000 })
+  const asking = firstOpen(decisions.awaitingMe)
+  const [deferred, setDeferred] = useState<string[]>([])
+  const open = asking && !deferred.includes(asking.id) ? asking : null
+  /* A run that has just stopped is the likeliest moment for a new question. */
+  useEffect(() => { if (!live.running) void decisions.refresh() }, [live.running])
   /**
    * Reading upward, without the page moving underneath.
    *
@@ -368,6 +386,21 @@ function ChatThread({ threadId }: { threadId: string }) {
 
       <div className="shrink-0 bg-canvas">
         <div className="mx-auto w-full max-w-[720px] px-5 py-3">
+          {/* The composer's place, taken by the question.
+
+              Swapped rather than stacked above it, and that is the point: a
+              banner over a live text box says "when you get a minute", and this
+              says the true thing — nothing else is going to happen here until
+              you answer. Putting it aside is still allowed, and the request
+              stays open on the Approvals page either way. */}
+          {open ? (
+            <DecisionCard
+              decision={open}
+              sending={decisions.sending === open.id}
+              onDismiss={() => setDeferred((ids) => [...ids, open.id])}
+              onSend={(answer) => void decisions.settle(open.id, answer)}
+            />
+          ) : (
           <Composer
             value={draft}
             onChange={setDraft}
@@ -386,6 +419,7 @@ function ChatThread({ threadId }: { threadId: string }) {
             onAttach={attach.add}
             onRemoveFile={attach.remove}
           />
+          )}
         </div>
       </div>
     </div>

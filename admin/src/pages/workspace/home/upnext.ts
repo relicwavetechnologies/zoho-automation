@@ -18,7 +18,7 @@
  * invents a meeting is worse than one that admits it cannot see them. When a
  * calendar read lands, it becomes a third `kind` and nothing else changes.
  */
-import type { ApprovalItem } from '../data/use-approvals'
+import type { Decision } from '../decisions/decision'
 import { dueLabel, type OpenTask } from '../data/use-my-tasks'
 
 /**
@@ -41,7 +41,7 @@ export type UpNextItem = {
   readonly urgency: Urgency
   /** The row's own copy of what it came from, for whatever the action needs. */
   readonly task?: OpenTask
-  readonly approval?: ApprovalItem
+  readonly approval?: Decision
 }
 
 const RANK: Record<Urgency, number> = { late: 0, today: 1, soon: 2, later: 3 }
@@ -111,7 +111,7 @@ function approvalWhen(expiresAt: string | null, now: Date): { when: string | nul
  */
 export function upNext(
   tasks: readonly OpenTask[],
-  approvals: readonly ApprovalItem[],
+  approvals: readonly Decision[],
   limit = 6,
   now = new Date(),
 ): UpNextItem[] {
@@ -121,8 +121,8 @@ export function upNext(
       return {
         id: `approval:${approval.id}`,
         kind: 'approval',
-        title: approval.description?.summary || approval.action || 'Approval requested',
-        source: approval.requestedByName,
+        title: approval.title,
+        source: approval.source,
         when,
         urgency,
         approval,

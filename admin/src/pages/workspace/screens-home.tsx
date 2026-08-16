@@ -33,7 +33,8 @@ import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/atta
 import { stageHandoff } from './chat/handoff'
 import { useChatModelChoice } from './chat/model-choice'
 import '@/styles/beautiful.css'
-import { ago, expiryLabel, useApprovals } from './data/use-approvals'
+import { useDecisions } from './data/use-decisions'
+import { ago, expiryLabel } from './decisions/decision'
 import {
   useMyRuns, useMyUsage, changePct, durationLabel, runTitle,
   dayLabel, summarizeSpend, USAGE_DAYS, USAGE_WEEKS,
@@ -139,7 +140,7 @@ function useCarousel(count: number) {
 export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
   const [r1, r2, r3] = useStaged([260, 520, 800], replay)
   const { session } = useAdminAuth()
-  const { awaitingMe, requestedByMe, loading: approvalsLoading } = useApprovals()
+  const { awaitingMe, loading: approvalsLoading } = useDecisions()
   const { usage, loading: usageLoading } = useMyUsage(USAGE_DAYS)
   const { runs, loading: runsLoading } = useMyRuns(6)
   const { byProvider, loading: connectionsLoading } = useConnections()
@@ -225,29 +226,22 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
   const carousel = useCarousel(cards.length)
 
   const attention = [
-    ...awaitingMe.map((a) => {
-      const expiry = expiryLabel(a.expiresAt)
+    ...awaitingMe.map((decision) => {
+      const expiry = expiryLabel(decision.expiresAt)
       return {
         tone: 'act' as const,
-        title: a.description?.summary ?? `${a.toolId} · ${a.action}`,
-        body: a.description?.detail ?? '',
-        meta: [`${a.requestedByName} · ${ago(a.requestedAt)}`, expiry ? `Expires ${expiry.text}` : 'No deadline'],
+        title: decision.title,
+        body: decision.detail ?? '',
+        meta: [`${decision.source} · ${ago(decision.requestedAt)}`, expiry ? `Expires ${expiry.text}` : 'No deadline'],
         cta: 'Review',
         onClick: () => go('approvals'),
       }
     }),
-    ...requestedByMe
-      .filter((a) => expiryLabel(a.expiresAt)?.expired && a.status === 'pending')
-      .map((a) => ({
-        tone: 'warn' as const,
-        title: 'One of your requests expired unanswered',
-        body: `${a.description?.summary ?? a.toolId} was never approved, so Divo stopped and did nothing.`,
-        meta: [ago(a.requestedAt)],
-        cta: 'Ask again',
-        // Nothing happens when this is pressed, so it must not arrive as a
-        // green tick — the button's whole answer is that it cannot help.
-        onClick: () => toast('Ask in Lark or raise it with your manager — Divo cannot re-open an expired request.', 'error'),
-      })),
+    /* An expired request of your own used to get a card here. It cannot any
+       more, and deliberately: the decision module drops anything past its
+       deadline before this surface sees it, so the branch could only ever
+       produce an empty list — which would read as "nothing of yours has ever
+       lapsed". A card that cannot appear is worse than no card. */
   ]
 
   return (

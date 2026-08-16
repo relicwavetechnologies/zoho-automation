@@ -21,7 +21,7 @@
  */
 import { ArrowRight, ShieldCheck } from 'lucide-react'
 import { lateCount, upNext, type UpNextItem, type Urgency } from './upnext'
-import type { ApprovalItem } from '../data/use-approvals'
+import type { Decision } from '../decisions/decision'
 import type { OpenTask } from '../data/use-my-tasks'
 
 /**
@@ -97,12 +97,12 @@ export function UpNext({
   tasks, approvals, reachable, limit = 6, onStartTask, onOpenApproval, now,
 }: {
   tasks: readonly OpenTask[]
-  approvals: readonly ApprovalItem[]
+  approvals: readonly Decision[]
   /** False when Divo cannot see this person's Lark at all. */
   reachable: boolean
   limit?: number
   onStartTask: (task: OpenTask) => void
-  onOpenApproval: (approval: ApprovalItem) => void
+  onOpenApproval: (approval: Decision) => void
   /** Injected by the tests that pin a clock; the app never passes it. */
   now?: Date
 }) {

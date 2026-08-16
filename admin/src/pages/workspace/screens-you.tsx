@@ -27,7 +27,10 @@ import {
 import {
   useShopifyCompanyStatus, useShopifyConnect, type ShopifyCompanyConnection, type ShopifyCompanyStatus,
 } from './data/use-company-connections'
-import { ago, expiryLabel, useApprovals } from './data/use-approvals'
+import { useDecisions } from './data/use-decisions'
+import type { DecisionAnswer } from './decisions/decision'
+import { ago, expiryLabel } from './decisions/decision'
+import { DecisionCard } from './decisions/decision.view'
 import { useMySkills } from './data/use-my-skills'
 import {
   useZohoSelfClientConnect,
@@ -90,7 +93,7 @@ function zohoPresetFromConnection(connection: LiveConnection): ZohoConnectPreset
 export function YouHome({ persona, replay, toast, go }: ScreenProps) {
   const [r1, r2, r3] = useStaged([260, 520, 800], replay)
   const { session } = useAdminAuth()
-  const { awaitingMe, requestedByMe, loading: approvalsLoading } = useApprovals()
+  const { awaitingMe, loading: approvalsLoading } = useDecisions()
   const { usage, loading: usageLoading } = useMyUsage(30)
   const { runs, loading: runsLoading } = useMyRuns(4)
   const { byProvider, loading: connectionsLoading } = useConnections()
@@ -102,13 +105,13 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
     .map((provider) => ({ provider, status: byProvider.get(provider) }))
     .filter((entry) => entry.status?.connected)
   const attention = [
-    ...awaitingMe.map((a) => {
-      const expiry = expiryLabel(a.expiresAt)
+    ...awaitingMe.map((decision) => {
+      const expiry = expiryLabel(decision.expiresAt)
       return {
         tone: 'act' as const,
-        title: a.description?.summary ?? `${a.toolId} · ${a.action}`,
-        body: a.description?.detail ?? '',
-        meta: [`${a.requestedByName} · ${ago(a.requestedAt)}`, expiry ? `Expires ${expiry.text}` : 'No deadline'],
+        title: decision.title,
+        body: decision.detail ?? '',
+        meta: [`${decision.source} · ${ago(decision.requestedAt)}`, expiry ? `Expires ${expiry.text}` : 'No deadline'],
         cta: 'Review',
         onClick: () => go('approvals'),
       }
@@ -116,18 +119,12 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
     // A "this skill cannot run for you" card belongs here, but it was built from
     // fixtures — it asserted a fact about the reader's own permissions that
     // nothing had read. A wrong claim about your own access is worse than none.
-    ...requestedByMe
-      .filter((a) => expiryLabel(a.expiresAt)?.expired && a.status === 'pending')
-      .map((a) => ({
-        tone: 'warn' as const,
-        title: 'One of your requests expired unanswered',
-        body: `${a.description?.summary ?? a.toolId} was never approved, so Divo stopped and did nothing.`,
-        meta: [ago(a.requestedAt)],
-        cta: 'Ask again',
-        // Nothing happened when they pressed this, so it must not arrive as a
-        // green tick — the button's whole answer is that it cannot help.
-        onClick: () => toast('Ask in Lark or raise it with your manager — Divo cannot re-open an expired request.', 'error'),
-      })),
+    //
+    // An expired request of your own used to get a card here too. It cannot any
+    // more, and deliberately: the decision module drops anything past its
+    // deadline before this surface sees it, so the branch could only ever
+    // produce an empty list — which would read as "nothing of yours has ever
+    // lapsed". A card that cannot appear is worse than no card.
   ]
 
   return (
@@ -1700,16 +1697,16 @@ export function YouAccess({ replay }: ScreenProps) {
 export function YouApprovals({ replay, toast }: ScreenProps) {
   const [r1] = useStaged([240], replay)
   const [tab, setTab] = useState<'awaiting' | 'mine'>('awaiting')
-  const { awaitingMe, requestedByMe, loading, deciding, decide } = useApprovals()
+  const { awaitingMe, requestedByMe, loading, sending, settle } = useDecisions({ poll: 20_000 })
   const list = tab === 'awaiting' ? awaitingMe : requestedByMe
   const ready = r1 && !loading
 
-  const answer = async (id: string, decision: 'approved' | 'rejected') => {
-    const outcome = await decide(id, decision)
-    // The same row can be resolved from a Lark card, so losing the race is a
+  const answer = async (id: string, given: DecisionAnswer) => {
+    const outcome = await settle(id, given)
+    // The same request can be answered on a Lark card, so losing the race is a
     // normal outcome and says so — not a generic failure.
     toast(outcome.ok
-      ? decision === 'approved' ? 'Approved — Divo is continuing' : 'Rejected'
+      ? outcome.verdict === 'approved' ? 'Answered — Divo is continuing' : 'Stopped. Nothing was changed.'
       : outcome.message)
   }
 
@@ -1732,58 +1729,26 @@ export function YouApprovals({ replay, toast }: ScreenProps) {
       </div>
       <Panel source="approvals">
         {!ready ? <SkelRows n={2} icon={false} /> : list.length === 0 ? (
-          <Empty icon={Check} title="Nothing here" body="Approvals appear when Divo needs a person to say yes." />
+          <Empty icon={Check} title="Nothing here" body="Requests appear when Divo needs a person to answer something." />
         ) : (
           <Fade>
-            <div className="ws-attn">
-              {list.map((a) => {
-                const expiry = expiryLabel(a.expiresAt)
-                const expired = expiry?.expired ?? false
-                const pending = a.status === 'pending'
-                return (
-                  <div className="ws-attn-item" data-tone={expired ? 'warn' : 'act'} key={a.id}>
-                    <span className="ws-attn-bar" />
-                    <div className="ws-attn-main">
-                      <b>{a.description?.summary ?? `${a.toolId} · ${a.action}`}</b>
-                      {a.description?.detail ? <p>{a.description.detail}</p> : null}
-                      <div className="ws-attn-meta">
-                        <span>{toolById(a.toolId)?.name ?? a.toolId} · {a.action}</span>
-                        <span>{a.requestedByName} · {ago(a.requestedAt)}</span>
-                        {expiry ? (
-                          <span style={expired ? { color: 'var(--cur-error)' } : undefined}>
-                            <Clock size={11} style={{ marginRight: 4 }} />
-                            {expired ? 'Expired' : `Expires ${expiry.text}`}
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                    {tab === 'awaiting' && pending && !expired ? (
-                      <div className="ws-row-act">
-                        <button
-                          type="button"
-                          className="btn"
-                          disabled={deciding === a.id}
-                          onClick={() => void answer(a.id, 'rejected')}
-                        >
-                          <X size={14} />No
-                        </button>
-                        <button
-                          type="button"
-                          className="btn primary"
-                          disabled={deciding === a.id}
-                          onClick={() => void answer(a.id, 'approved')}
-                        >
-                          <Check size={14} />Approve
-                        </button>
-                      </div>
-                    ) : (
-                      <span className={`badge ${expired || a.status === 'rejected' ? 'b-err' : 'b-ok'}`}>
-                        <span className="dot" />{expired ? 'Expired' : a.status}
-                      </span>
-                    )}
-                  </div>
-                )
-              })}
+            {/* The same card the chat thread swaps its composer for. One
+                renderer, so a question asked mid-run and the same question read
+                here later cannot offer different options. */}
+            <div className="ws-decisions">
+              {list.map((decision) => (
+                <DecisionCard
+                  key={decision.id}
+                  decision={decision}
+                  sending={sending === decision.id}
+                  {...(tab === 'awaiting'
+                    ? { onSend: (given: DecisionAnswer) => void answer(decision.id, given) }
+                    /* Your own request is shown, never answered: the person it
+                       is waiting on is somebody else, and a card that took an
+                       answer here would be refused by the server anyway. */
+                    : { onSend: () => toast('This one is waiting on somebody else.') })}
+                />
+              ))}
             </div>
           </Fade>
         )}

@@ -199,6 +199,12 @@
 /* ── Attention list — replaces the KPI carousel ───────
    The old mock opened every screen with four equal-weight counts. This opens
    with the far smaller set of things that actually want a human. */
+/* A column of decision cards, on the page that lists them rather than in the
+   thread that raised one. The card draws its own surface and ring, so this is
+   only the gap between them — and the padding the panel would otherwise put
+   flush against a card that already has its own. */
+.cur .ws-decisions { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
+
 .cur .ws-attn { display: flex; flex-direction: column; }
 .cur .ws-attn-item { display: flex; gap: 13px; padding: 15px 18px; border-top: 1px solid var(--cur-hairline-soft); align-items: flex-start; }
 .cur .ws-attn-item:first-child { border-top: 0; }

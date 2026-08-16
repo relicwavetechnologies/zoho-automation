@@ -25,6 +25,7 @@ import type {
   LarkApprovalCardHandler,
   LarkAuthenticatedCardActor,
 } from './lark-approval-card.handler';
+import type { LarkDecisionCardHandler } from './lark-decision-card.handler';
 import {
   isWorkbookConversionCardAction,
   type LarkWorkbookConversionCardHandler,
@@ -169,6 +170,8 @@ export interface LarkWebhookDeps {
   env: TypedEnv;
   approvalGate?: ApprovalGateService;
   approvalCardHandler?: LarkApprovalCardHandler;
+  /** Answers every question asked through the decision module. */
+  decisionCardHandler?: LarkDecisionCardHandler;
   workbookConversionCardHandler?: LarkWorkbookConversionCardHandler;
   knowledgeReviewService?: LarkKnowledgeReviewService;
   larkOAuthService?: LarkOAuthService;
@@ -329,6 +332,21 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
             res.status(200).json({
               toast: { type: 'error', content: 'Could not verify this Lark action.' },
             });
+            return;
+          }
+
+          // Every question Divo asks through the decision module comes back
+          // here, under one kind. It claims only its own presses, so it can sit
+          // ahead of the older per-feature handlers without shadowing them —
+          // and as each of those migrates, its branch below simply goes away.
+          if (deps.decisionCardHandler?.claims(cardEvent)) {
+            const result = await deps.decisionCardHandler.handle(cardEvent, {
+              openId: actor.openId,
+              userId: actor.userId,
+              companyId: actor.companyId,
+              ...(actor.displayName ? { displayName: actor.displayName } : {}),
+            });
+            res.status(200).json(result.responseBody);
             return;
           }
 

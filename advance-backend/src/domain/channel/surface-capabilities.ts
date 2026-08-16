@@ -37,7 +37,21 @@ export interface SurfaceCapabilities {
   readonly maxMessageBytes: number;
   /** How the work log reaches the reader. */
   readonly worklog: 'patched-card' | 'streamed';
-  readonly approvals: 'card-buttons' | 'inline';
+  /**
+   * How much of a question this surface can put to a person.
+   *
+   * `buttons` is a row of choices and nothing else — no text field, no
+   * multi-select that survives a redraw, which is a chat card's real limit
+   * rather than a style. `form` is a surface that can hold every question shape
+   * at once, so a three-part decision arrives as one card instead of three.
+   *
+   * Read by the decision module when it picks a renderer. A decision the
+   * buttons surface cannot carry is still delivered there — as a card that says
+   * what is being asked and sends the reader to the web — in the same spirit as
+   * `artifacts: 'none'`: the limit shows up as an honest absence rather than as
+   * something broken.
+   */
+  readonly decisions: 'buttons' | 'form';
   /** May Divo offer "this is better on the web"? */
   readonly handoff: boolean;
 }
@@ -53,7 +67,7 @@ const LARK: SurfaceCapabilities = {
   maxBlockChars: LARK_CARD_LIMITS.maxBlockChars,
   maxMessageBytes: LARK_CARD_LIMITS.maxCardBytes,
   worklog: 'patched-card',
-  approvals: 'card-buttons',
+  decisions: 'buttons',
   handoff: false,
 };
 
@@ -73,6 +87,10 @@ const LARK: SurfaceCapabilities = {
  * run is never given that tool, so its `'none'` is enforced by absence and not
  * by a rule the model is asked to remember.
  *
+ * `decisions: 'form'` — the composer band swaps to the decision card, which can
+ * hold every question shape at once. Lark answers the same decision one card at
+ * a time because a card is a row of buttons; both settle through one module.
+ *
  * Charts and the table/size caps stay where they are. There is no chart renderer
  * yet, and raising a cap the browser has not been observed handling is exactly
  * the shortcut this record exists to prevent.
@@ -82,6 +100,7 @@ const WEB: SurfaceCapabilities = {
   key: 'web',
   worklog: 'streamed',
   artifacts: 'inline',
+  decisions: 'form',
 };
 
 /** A desktop run answers into a terminal that owns its own rendering. */

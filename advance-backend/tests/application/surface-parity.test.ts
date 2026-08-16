@@ -40,6 +40,13 @@ const WEB_GRANTS = {
   worklog: 'streamed',
   /** The panel beside the thread renders a stored document. */
   artifacts: 'inline',
+  /**
+   * The composer band swaps to the decision card, which holds every question
+   * shape at once. Lark answers the same decision one card at a time, because
+   * a card is a row of buttons and cannot carry a text field or a multi-select
+   * across a redraw.
+   */
+  decisions: 'form',
 } as const satisfies Partial<SurfaceCapabilities>;
 
 describe('surface capabilities', () => {
@@ -71,6 +78,7 @@ describe('surface capabilities', () => {
   it('grants Lark none of them', () => {
     assert.equal(lark.worklog, 'patched-card');
     assert.equal(lark.artifacts, 'none');
+    assert.equal(lark.decisions, 'buttons');
   });
 
   // Not yet granted, and each for a stated reason: no chart renders in the web

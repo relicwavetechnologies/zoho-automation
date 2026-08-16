@@ -27,7 +27,7 @@ import {
   SCHEDULE_LABEL, STATUS_LABEL, useAutomation, useAutomations,
   type Automation, type AutomationRun, type AutomationRunStatus, type AutomationStatus,
 } from './data/use-automations'
-import { ago } from './data/use-approvals'
+import { ago } from './decisions/decision'
 import { DetailPage, RailChip, RailEmpty, RailRow, RailSection } from './detail'
 import { DataNote, Empty, Fade, PageHeader, Panel, SkelRows, type Toast } from './ui'
 

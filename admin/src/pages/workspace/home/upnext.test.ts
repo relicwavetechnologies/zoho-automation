@@ -3,19 +3,20 @@ import assert from 'node:assert/strict'
 
 import { lateCount, upNext } from './upnext'
 import type { OpenTask } from '../data/use-my-tasks'
-import type { ApprovalItem } from '../data/use-approvals'
+import type { Decision } from '../decisions/decision'
 
 const NOW = new Date('2026-08-17T15:00:00Z')
 
 const task = (over: Partial<OpenTask> & { taskId: string; title: string }): OpenTask =>
   ({ overdue: false, ...over })
 
-const approval = (over: Partial<ApprovalItem> & { id: string }): ApprovalItem => ({
-  toolId: 'googleGmail', action: 'send', status: 'pending',
-  requestedAt: NOW.toISOString(), expiresAt: null,
-  requestedByName: 'Aleem', approverName: 'Abhishek', departmentName: null,
-  deliveredVia: 'lark', description: { summary: 'Send a reply to 4 customers' },
-  payload: null, ...over,
+const approval = (over: Partial<Decision> & { id: string }): Decision => ({
+  title: 'Send a reply to 4 customers',
+  source: 'Aleem',
+  questions: [],
+  requestedAt: NOW.toISOString(),
+  expiresAt: null,
+  ...over,
 })
 
 describe('upNext', () => {
@@ -107,8 +108,12 @@ describe('upNext', () => {
     assert.equal(lateCount(all), 2)
   })
 
-  it('falls back through summary, then action, before inventing a title', () => {
-    const [a] = upNext([], [approval({ id: 'x', description: { summary: '' }, action: 'send' })], 6, NOW)
-    assert.equal(a!.title, 'send')
+  it('takes the title the decision already carries, not a tool call', () => {
+    /* `title` is what `describeToolAction` produced — "Send email" — and it
+       arrives ready to read. The band used to reach for a `description.summary`
+       field the endpoint never sent, and fell through to printing the raw
+       action group. */
+    const [a] = upNext([], [approval({ id: 'x', title: 'Send email' })], 6, NOW)
+    assert.equal(a!.title, 'Send email')
   })
 })

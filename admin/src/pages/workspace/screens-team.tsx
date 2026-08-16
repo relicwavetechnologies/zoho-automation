@@ -31,7 +31,8 @@ import {
   type Candidate, type DeptRole, type MemberActionState, type RoleActionState, type ToolScopeSnapshot,
 } from './data/use-team'
 import { dayLabel, summarizeSpend, USAGE_DAYS, USAGE_WEEKS } from './data/use-my-activity'
-import { useApprovals, expiryLabel } from './data/use-approvals'
+import { useDecisions } from './data/use-decisions'
+import { expiryLabel } from './decisions/decision'
 
 type Props = { replay: number; toast: Toast; go: (screen: string) => void }
 
@@ -281,7 +282,7 @@ export function TeamHome({ replay, go }: Props) {
   // zero that means "nobody spent anything".
   const { usage, loading: usageLoading } = useTeamUsage(dept?.id)
   const { coverage } = useDepartmentMatrix(dept?.id)
-  const { awaitingMe } = useApprovals()
+  const { awaitingMe } = useDecisions()
 
   if (!dept) return <NoTeam />
   // Being removed as manager mid-session is the case this catches: the scope
@@ -294,11 +295,11 @@ export function TeamHome({ replay, go }: Props) {
   const exceptions = coverage?.tools.reduce((n, t) => n + t.exceptionCount, 0) ?? 0
 
   const attention = [
-    ...awaitingMe.map((a) => ({
+    ...awaitingMe.map((decision) => ({
       tone: 'act' as const,
-      title: a.description.summary,
-      body: `${a.requestedByName} is waiting. ${a.description.detail ?? ''}`.trim(),
-      meta: [expiryLabel(a.expiresAt)?.text].filter((m): m is string => Boolean(m)),
+      title: decision.title,
+      body: `${decision.source} is waiting. ${decision.detail ?? ''}`.trim(),
+      meta: [expiryLabel(decision.expiresAt)?.text].filter((m): m is string => Boolean(m)),
       cta: 'Review',
       onClick: () => go('approvals'),
     })),

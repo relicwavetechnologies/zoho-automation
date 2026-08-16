@@ -7,6 +7,8 @@ import type { WebRunEvent, WebRunService } from '../../application/runtime/web-r
 import { WebRunBusyError, type WebRunRegistry } from '../../application/runtime/web-run-registry';
 import { intakeUploads, type UploadTranscriber } from '../../application/runtime/upload-intake';
 import type { WebThreadRepoPort } from '../../infrastructure/persistence/web-thread.repository';
+import type { DecisionService } from '../../application/decision/decision.service';
+import { statusFor } from './desktop-approvals.routes';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { RunContext } from '../../domain/orchestration/run-context';
@@ -59,6 +61,22 @@ const renameSchema = z.object({
   title: z.string().trim().min(1).max(120),
 });
 
+/**
+ * An answer to a decision, as it arrives from a browser.
+ *
+ * Shape-checked here and meaning-checked in the decision module, which is the
+ * split that matters: this stops a malformed body reaching the domain, and the
+ * domain decides whether the answer actually fits the questions — a judgement a
+ * schema at the door cannot make, because it does not know what was asked.
+ */
+const answerSchema = z.object({
+  responses: z.array(z.object({
+    questionId: z.string().min(1).max(120),
+    chose: z.array(z.string().min(1).max(200)).max(50),
+    said: z.string().max(2_000).optional(),
+  })).min(1).max(50),
+}).strict();
+
 export function createWebChatRoutes(deps: {
   readonly webRuns: WebRunService;
   readonly registry: WebRunRegistry;
@@ -71,6 +89,14 @@ export function createWebChatRoutes(deps: {
    * and the web says the same thing rather than pretending to have listened.
    */
   readonly transcriber?: UploadTranscriber;
+  /**
+   * What Divo is waiting to hear from this person.
+   *
+   * Optional so a deployment without it serves an empty list rather than a
+   * failure: a thread with no decisions in it is the ordinary case, and the
+   * composer should not break because the module is not wired.
+   */
+  readonly decisions?: Pick<DecisionService, 'open' | 'settle'>;
 }) {
   const router = Router();
   const log = deps.logger.child({ service: 'web-chat-routes' });
@@ -315,6 +341,75 @@ export function createWebChatRoutes(deps: {
 
     await streamRun(res, identity.userId, threadId, runId);
   };
+
+  /* ── Decisions ───────────────────────────────────────────
+     What Divo is waiting to hear from this person, and the way to answer it.
+
+     In the thread rather than on a page of its own: an approval that interrupts
+     a run belongs where the run is, and the separate inbox this surface used to
+     have was the only reason a question asked in a browser had to be answered
+     somewhere else. The page is still there and still true — it is the second
+     view of the same rows, not the only one. */
+
+  router.get('/decisions', async (_req, res) => {
+    const identity = identityFrom(res);
+    if (!identity) return unauthenticated(res);
+    if (!deps.decisions) {
+      res.json({ ok: true, awaitingMe: [], requestedByMe: [] });
+      return;
+    }
+    const open = await deps.decisions.open({
+      userId: identity.userId,
+      companyId: String(identity.runContext.companyId),
+    });
+    res.json({ ok: true, ...open });
+  });
+
+  router.post('/decisions/:decisionId', async (req, res) => {
+    const identity = identityFrom(res);
+    if (!identity) return unauthenticated(res);
+    if (!deps.decisions) {
+      res.status(503).json({ ok: false, error: 'decisions_unavailable' });
+      return;
+    }
+    const parsed = answerSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'invalid_answer', message: parsed.error.issues[0]?.message });
+      return;
+    }
+    const outcome = await deps.decisions.settle(
+      {
+        userId: identity.userId,
+        companyId: String(identity.runContext.companyId),
+        ...(res.locals['email'] ? { displayName: String(res.locals['email']) } : {}),
+        member: {
+          companyId: String(identity.runContext.companyId),
+          userId: identity.userId,
+          aiRole: String(identity.runContext.companyRole),
+          sessionId: identity.sessionId,
+          channel: 'web',
+          email: (res.locals['email'] as string | null | undefined) ?? null,
+          larkOpenId: null,
+        },
+      },
+      req.params['decisionId']!,
+      /* An absent `said` is dropped rather than carried as undefined: the
+         domain reads "they typed nothing" off the key not being there, and a
+         present-but-undefined key is a third state nothing means. */
+      {
+        responses: parsed.data.responses.map(response => ({
+          questionId: response.questionId,
+          chose: response.chose,
+          ...(response.said !== undefined ? { said: response.said } : {}),
+        })),
+      },
+    );
+    if (!outcome.ok) {
+      res.status(statusFor(outcome.reason)).json({ ok: false, error: outcome.reason, message: outcome.message });
+      return;
+    }
+    res.json({ ok: true, verdict: outcome.verdict, summary: outcome.summary });
+  });
 
   /**
    * Watch a run already going.

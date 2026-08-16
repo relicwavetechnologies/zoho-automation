@@ -6,7 +6,9 @@ import {
   resolveRedisUrl,
 } from './config/env';
 import { RuntimeApprovalRepository } from './infrastructure/persistence/runtime-approval.repository';
-import { ApprovalInboxService } from './application/approval/approval-inbox.service';
+import { DecisionService } from './application/decision/decision.service';
+import { LarkDecisionCourier } from './infrastructure/channels/lark/lark-decision.courier';
+import { LarkDecisionCardHandler } from './infrastructure/channels/lark/lark-decision-card.handler';
 import { buildApprovalResolutionCard } from './application/approval/approval-card-builder';
 import { ApprovalResolverService } from './application/approval/approval-resolver.service';
 import { ApprovalGateService } from './application/approval/approval-gate.service';
@@ -431,7 +433,9 @@ export interface Container {
   approvalCardHandler: LarkApprovalCardHandler;
   workbookConversionCardHandler: LarkWorkbookConversionCardHandler;
   approvalResumer: ApprovalResumerService;
-  approvalInbox: ApprovalInboxService;
+  /** The one place Divo asks a person something and hears back. */
+  decisions: DecisionService;
+  decisionCardHandler: LarkDecisionCardHandler;
   businessActions: BusinessActionService;
   workbookConversionQueue: WorkbookConversionQueue;
   workbookConversionWorker: GoogleDriveXlsxConversionConsumer;
@@ -2711,24 +2715,27 @@ export async function buildContainer(
     logger,
   });
 
-  // The same decisions the Lark card carries, reachable by anyone signed in.
-  // `onResolvedCard` is what stops a delivered card from still offering buttons
-  // for a decision that was already made in the inbox.
-  const approvalInbox = new ApprovalInboxService({
-    approvals: approvalRepo,
-    resumer: approvalResumer,
-    logger: logger.child({ service: 'approval-inbox' }),
-    audit: auditService,
-    onResolvedCard: async (messageId, decision, byName) => {
-      await larkAdapter.updateMessageById(messageId, buildApprovalResolutionCard(decision, byName, new Date()));
-    },
-  });
-
   const businessActions = new BusinessActionService({
     approvals: approvalRepo,
     toolExecutor: gatewayToolExecutor,
     logger: logger.child({ service: 'business-action' }),
   });
+
+  // Every question Divo puts to a person, whichever surface it lands on.
+  // `onResolvedCard` is what stops a delivered card from still offering buttons
+  // for a decision that was already answered somewhere else.
+  const decisions = new DecisionService({
+    approvals: approvalRepo,
+    resumer: approvalResumer,
+    businessActions,
+    logger: logger.child({ service: 'decision' }),
+    audit: auditService,
+    courier: new LarkDecisionCourier(larkAdapter, logger, env.APP_BASE_URL),
+    onResolvedCard: async (messageId, decision, byName) => {
+      await larkAdapter.updateMessageById(messageId, buildApprovalResolutionCard(decision, byName, new Date()));
+    },
+  });
+  const decisionCardHandler = new LarkDecisionCardHandler(decisions, logger, env.APP_BASE_URL);
   const automationPlanService = new AutomationPlanService({
     toolExecutor: gatewayToolExecutor,
     permissions,
@@ -2849,7 +2856,8 @@ export async function buildContainer(
     approvalCardHandler,
     workbookConversionCardHandler,
     approvalResumer,
-    approvalInbox,
+    decisions,
+    decisionCardHandler,
     businessActions,
     // Workbook conversion and async ingress
     workbookConversionQueue,

@@ -889,6 +889,21 @@ export interface CallbackCardInput {
  * the webhook; this function owns presentation only.
  */
 export function buildCallbackCard(input: CallbackCardInput): string {
+  return JSON.stringify({
+    msg_type: 'interactive',
+    card: JSON.stringify(buildCallbackCardData(input)),
+  });
+}
+
+/**
+ * The same card as a value rather than a message envelope.
+ *
+ * Lark wants the card inline when it is answering a button press and doubly
+ * stringified when it is being sent as a message. Split so a caller that needs
+ * the first does not have to parse our own JSON back out of the second — which
+ * is how a card ends up escaped twice and renders as a wall of backslashes.
+ */
+export function buildCallbackCardData(input: CallbackCardInput): Record<string, unknown> {
   const elements: Record<string, unknown>[] = [];
   for (const block of input.markdownBlocks) {
     for (const chunk of splitMarkdown(softenHeadings(block))) {
@@ -925,7 +940,7 @@ export function buildCallbackCard(input: CallbackCardInput): string {
     });
   }
 
-  const card = {
+  return {
     schema: '2.0',
     config: {
       width_mode: 'fill',
@@ -943,7 +958,6 @@ export function buildCallbackCard(input: CallbackCardInput): string {
       elements,
     },
   };
-  return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
 }
 
 interface BuildFinalCardResult {

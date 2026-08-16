@@ -2677,6 +2677,12 @@ model RuntimeApproval {
   rejectedAt          DateTime?
   expiresAt           DateTime?
   executionResultJson Json?
+  // What the person actually said, when the request asked more than yes/no.
+  // Its own column rather than a corner of executionResultJson: that field is
+  // read as a replay barrier — a row carrying one must never be approved a
+  // second time — and an answer written there would make every settled
+  // question look like a half-finished execution.
+  responseJson        Json?
   idempotencyKey      String?
   decisionMessageId   String?
   resolutionReason    String?
