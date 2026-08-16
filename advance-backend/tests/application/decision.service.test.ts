@@ -480,15 +480,30 @@ describe('decisions — asking', () => {
 });
 
 describe('decisions — telling one thread from every other', () => {
-  it('names the web thread a question was asked in', async () => {
-    /* Without this the chat had only "somebody is waiting on you" and treated
-       it as "the run in front of you is waiting", so one approval replaced the
-       composer of every thread. */
+  it('names the web thread on a row shaped the way the gate actually writes one', async () => {
+    /* The shape matters more than the assertion. A web run's approval stores
+       its chat id as `gateway:company:…:thread:web_…:run:…` — a namespacing
+       key, not a conversation — and the thread id lives on `execution`, which
+       is bound to the signed runtime lease. Reading only the chat ids returned
+       null for every real row, so the card this feeds could never appear on
+       any thread while its own test passed on a hand-written fixture. */
+    const { service } = makeService(toolActionRow({
+      metadataJson: {
+        resolvedManagerUserId: 'user-manager',
+        sourceChatId: 'gateway:company:comp-1:requester:user-aman:thread:web_abcd1234:run:run-1',
+        chatId: 'gateway:company:comp-1:requester:user-aman:thread:web_abcd1234:run:run-1:dept:d1',
+        execution: { version: 1, threadId: 'web_abcd1234', runId: 'run-1', actionId: 'act-1' },
+      },
+    }));
+    assert.equal((await service.open(APPROVER)).awaitingMe[0]!.threadId, 'web_abcd1234');
+  });
+
+  it('names the thread of a decision this module opened', async () => {
     const { service } = makeService(decisionRow({
       metadataJson: {
         title: 'Launch plan',
         resolvedManagerUserId: 'user-manager',
-        sourceChatId: 'web_abcd1234',
+        conversationKey: 'web_abcd1234',
       },
     }));
     assert.equal((await service.open(APPROVER)).awaitingMe[0]!.threadId, 'web_abcd1234');
@@ -503,6 +518,15 @@ describe('decisions — telling one thread from every other', () => {
       }));
       assert.equal((await service.open(APPROVER)).awaitingMe[0]!.threadId, null, chatId);
     }
+    /* A Lark run's execution context names its own thread, and that is not a
+       web thread either — the shape gate is what keeps it out. */
+    const lark = makeService(toolActionRow({
+      metadataJson: {
+        resolvedManagerUserId: 'user-manager',
+        execution: { version: 1, threadId: 'agent-seat-7', runId: 'r', actionId: 'a' },
+      },
+    }));
+    assert.equal((await lark.service.open(APPROVER)).awaitingMe[0]!.threadId, null);
   });
 });
 

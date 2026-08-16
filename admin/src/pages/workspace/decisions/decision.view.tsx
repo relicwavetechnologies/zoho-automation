@@ -36,7 +36,14 @@ export function DecisionCard({
 }: {
   decision: Decision
   sending?: boolean
-  onSend: (answer: DecisionAnswer) => void
+  /**
+   * Absent when this person may not answer.
+   *
+   * Their own request, seen from the list of things they asked for, is the
+   * case: the card still shows what was asked and when it lapses, and draws no
+   * control at all rather than offering an Approve that the server would refuse.
+   */
+  onSend?: (answer: DecisionAnswer) => void
   /** Put it aside for now. It stays open, and stays on the Approvals page. */
   onDismiss?: () => void
   /** Injected by tests that pin a clock; the app never passes it. */
@@ -58,7 +65,7 @@ export function DecisionCard({
      option and then press a second button to confirm the pick is one press too
      many on the shape most of these questions have — one question, two options. */
   const pick = (value: string): void => {
-    if ('text' in question) return
+    if ('text' in question || !onSend) return
     const next = choose(answer, question, value)
     setAnswer(next)
     if (question.pick !== 'one' || !next.responses.some((r) => r.questionId === question.id && r.chose.length)) return
@@ -149,6 +156,7 @@ export function DecisionCard({
           </Step>
         </div>
 
+        {onSend ? (
         <button
           type="button"
           aria-label={ready ? 'Send answer' : 'Next question'}
@@ -164,6 +172,9 @@ export function DecisionCard({
         >
           {sending ? <Check size={14} /> : ready ? <ArrowUp size={14} /> : <ChevronRight size={14} />}
         </button>
+        ) : (
+          <span className="text-[11.5px] leading-none text-ink-3">Waiting on somebody else</span>
+        )}
       </div>
     </div>
   )

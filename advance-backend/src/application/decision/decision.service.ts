@@ -84,7 +84,21 @@ export interface AskDecision {
   /** Named on the card: a requester, a department, "Divo". */
   readonly source?: string;
   readonly questions: readonly DecisionQuestion[];
-  readonly continuation: DecisionContinuation;
+  /**
+   * Deliberately narrower than `DecisionContinuation`.
+   *
+   * A projected legacy row can say `run`, and that works: the resumer knows how
+   * to re-execute a `tool_action` payload because the gate wrote one. A row
+   * opened here has no such payload — it holds questions — and no metadata the
+   * resumer reads, so a `run` declared at this door would resolve the row,
+   * patch the card to "Approved", say "Divo is carrying on", and run nothing.
+   *
+   * That is the same defect the `tell` arm was deleted for. Rather than delete
+   * `run` too — legitimate for the rows that already carry it — it is refused
+   * at the one place that could introduce a new one. Widen this on the day a
+   * continuation executor exists for native decisions.
+   */
+  readonly continuation: Extract<DecisionContinuation, { kind: 'none' }>;
   /** Where the asking happened, so the answer can find its way back. */
   readonly channel: ChannelKey;
   readonly conversationKey: string;
@@ -203,9 +217,10 @@ export class DecisionService {
         requesterName: input.requestedBy.displayName ?? null,
         sourceChannel: input.channel,
         approvalOrigin: input.channel === 'lark' ? 'lark' : 'gateway',
-        /* Native decisions carry their own continuation, so the resumer's
-           gateway rule must not also apply to them. */
-        autoResume: input.continuation.kind === 'run',
+        /* A native decision never resumes a stored tool call — see the note on
+           `continuation` above — so it must not inherit the gateway rule that
+           would ask the resumer to find one. */
+        autoResume: false,
         /* Named so the projection can tell a decision asked in a browser from
            one asked anywhere else, without inferring it from an id shape. */
         conversationKey: input.conversationKey,

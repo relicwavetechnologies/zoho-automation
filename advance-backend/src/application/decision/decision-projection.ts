@@ -148,21 +148,31 @@ export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
 /**
  * The web thread this was asked in, when it was asked in one.
  *
- * Only a key that is recognisably a web thread id counts. A Lark approval's
- * stored chat id is an open-chat id, and a manager gate's is a scoped
- * namespacing key that is not a conversation at all — treating either as a
- * thread would put an unrelated approval in front of somebody's composer, which
- * is exactly what this exists to stop. Anything unrecognised is null, and a
- * null decision simply lives on the Approvals page.
+ * `execution.threadId` first, because that is where the answer actually is on
+ * every row the product writes today. The gate stores its chat id as
+ * `gateway:company:<c>:requester:<u>:thread:web_…:run:<r>` — a namespacing key
+ * rather than a conversation — so a version of this that only looked at the
+ * chat ids returned null for every real approval, and the thread card it feeds
+ * could never appear on any thread. The execution context is bound to the
+ * signed runtime lease, so it is also the trustworthy copy.
+ *
+ * Everything is still gated on the web-thread shape. A Lark approval's chat id
+ * is an open-chat id and a scheduled run's is a synthetic key; treating either
+ * as a thread would put an unrelated approval in front of somebody's composer,
+ * which is exactly what this exists to stop. Anything unrecognised is null, and
+ * a null decision simply lives on the Approvals page.
  */
 const WEB_THREAD_ID = /^web_[A-Za-z0-9-]{8,64}$/;
 
 function webThreadIdOf(meta: Record<string, unknown>): string | null {
-  for (const key of ['sourceChatId', 'chatId', 'conversationKey']) {
-    const value = readString(meta[key]);
-    if (value && WEB_THREAD_ID.test(value)) return value;
-  }
-  return null;
+  const execution = asRecord(meta['execution']);
+  const candidates = [
+    readString(execution['threadId']),
+    readString(meta['conversationKey']),
+    readString(meta['sourceChatId']),
+    readString(meta['chatId']),
+  ];
+  return candidates.find((value): value is string => Boolean(value && WEB_THREAD_ID.test(value))) ?? null;
 }
 
 /**

@@ -399,6 +399,13 @@ function ChatThread({ threadId }: { threadId: string }) {
               stays open on the Approvals page either way. */}
           {open ? (
             <DecisionCard
+              /* Keyed, so a second decision arriving in this slot is a new card
+                 rather than the last one with its answer still in it. Every
+                 legacy approval projects to the same question id and the same
+                 yes/no values, so an un-keyed card would have shown the next
+                 request with Approve already selected and its send control
+                 live — one click from approving something unread. */
+              key={open.id}
               decision={open}
               sending={decisions.sending === open.id}
               onDismiss={() => setDeferred(open.id)}

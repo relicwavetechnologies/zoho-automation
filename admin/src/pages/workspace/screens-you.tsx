@@ -1737,16 +1737,16 @@ export function YouApprovals({ replay, toast }: ScreenProps) {
                 here later cannot offer different options. */}
             <div className="ws-decisions">
               {list.map((decision) => (
+                /* Your own request is shown, never answered: the person it is
+                   waiting on is somebody else, so the card draws no control at
+                   all rather than an Approve the server would refuse. */
                 <DecisionCard
                   key={decision.id}
                   decision={decision}
                   sending={sending === decision.id}
                   {...(tab === 'awaiting'
                     ? { onSend: (given: DecisionAnswer) => void answer(decision.id, given) }
-                    /* Your own request is shown, never answered: the person it
-                       is waiting on is somebody else, and a card that took an
-                       answer here would be refused by the server anyway. */
-                    : { onSend: () => toast('This one is waiting on somebody else.') })}
+                    : {})}
                 />
               ))}
             </div>
