@@ -181,6 +181,22 @@ export interface StatusUpdate {
   readonly branding?: ChannelBranding;
   readonly timeline?: ChannelTimeline;
   readonly terminal:  boolean;
+  /**
+   * A change the reader is looking straight at, which should not wait for the
+   * next rate-limited redraw.
+   *
+   * The reducer is the only thing that can tell — it knows what a frame meant,
+   * where the caller only knows one arrived — and it has always said so. This
+   * field is where that answer had nowhere to go: it was honoured by the
+   * publisher's own one-second gate and then dropped, because a status update
+   * had no way to carry it the rest of the way to the channel. A sentence that
+   * has just stopped being the reply stayed drawn as the reply for up to a
+   * second and a half after it stopped being one.
+   *
+   * It buys past the *interval*, never past the deduplicator. A card that says
+   * the same thing is not worth repainting however urgent the reason.
+   */
+  readonly urgent?:   boolean;
 }
 
 export interface FinalReply {

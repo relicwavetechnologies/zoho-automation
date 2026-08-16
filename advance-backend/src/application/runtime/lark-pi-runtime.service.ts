@@ -1829,13 +1829,24 @@ const STEP_STATUSES: ReadonlySet<string> = new Set([
   'pending', 'running', 'done', 'failed', 'skipped',
 ]);
 
-const MAX_PROGRESS_CHILDREN = 8;
-const MAX_PROGRESS_TODOS = 12;
-
-function safeStepStatus(value: unknown, fallback: ChannelPlanStepStatus): ChannelPlanStepStatus {
+/**
+ * A status off the wire, or the weakest claim there is.
+ *
+ * `pending` for anything unrecognised, and the same answer for every caller.
+ * It used to depend on who was asking: a child fell back to `running` and a
+ * checklist item to `pending`, which are two different wrong answers to one
+ * question. `running` is the worse of them — it draws a spinner that turns for
+ * the rest of the run, because a status nobody understands never arrives again
+ * to settle it.
+ *
+ * `pending` claims nothing has happened yet, which is the least this can assert
+ * while still drawing a row, and it self-corrects: the whole timeline is
+ * re-sent every tick, so a step that really is running says so on the next one.
+ */
+function safeStepStatus(value: unknown): ChannelPlanStepStatus {
   return typeof value === 'string' && STEP_STATUSES.has(value)
     ? value as ChannelPlanStepStatus
-    : fallback;
+    : 'pending';
 }
 
 /**
@@ -1854,7 +1865,7 @@ function safeProgressDetail(event: Record<string, unknown>): RunProgressDetail {
         const elapsed = boundProgressText(row?.['elapsed'], 'elapsed');
         return [{
           label,
-          status: safeStepStatus(row?.['status'], 'running'),
+          status: safeStepStatus(row?.['status']),
           ...(detail ? { detail } : {}),
           ...(elapsed ? { elapsed } : {}),
         }];
@@ -1867,7 +1878,7 @@ function safeProgressDetail(event: Record<string, unknown>): RunProgressDetail {
         const row = entry as Record<string, unknown> | null;
         const title = boundProgressText(row?.['title'], 'label');
         if (!title) return [];
-        return [{ title, status: safeStepStatus(row?.['status'], 'pending') }];
+        return [{ title, status: safeStepStatus(row?.['status']) }];
       })
     : [];
 

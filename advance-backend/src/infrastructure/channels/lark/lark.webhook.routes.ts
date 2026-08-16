@@ -1363,18 +1363,28 @@ export function quotedImageAttachments(
  * from racing a second into a duplicate card.
  */
 export function createCoalescedPublisher(
-  publish: () => Promise<void>,
+  publish: (urgent: boolean) => Promise<void>,
   onError: (error: unknown) => void,
-): { readonly queue: () => void; readonly settle: () => Promise<void> } {
+): { readonly queue: (urgent?: boolean) => void; readonly settle: () => Promise<void> } {
   let inFlight: Promise<void> | null = null;
   let pending = false;
+  /* Sticky until it is spent. A publish coalesces several queued frames into
+     one, and if any of them was urgent the frame that actually goes out is
+     carrying that change — so the urgency belongs to it. Dropping it because a
+     later ordinary frame arrived first is how the signal gets lost. */
+  let urgent = false;
+  const takeUrgent = (): boolean => {
+    const was = urgent;
+    urgent = false;
+    return was;
+  };
 
   const drain = async (): Promise<void> => {
     try {
-      await publish();
+      await publish(takeUrgent());
       while (pending) {
         pending = false;
-        await publish();
+        await publish(takeUrgent());
       }
     } catch (error) {
       onError(error);
@@ -1392,7 +1402,8 @@ export function createCoalescedPublisher(
   };
 
   return {
-    queue: () => {
+    queue: (isUrgent = false) => {
+      if (isUrgent) urgent = true;
       if (inFlight) {
         pending = true;
         return;
@@ -1445,11 +1456,12 @@ export async function runPiAndDeliver(input: {
   const run = createRunTimelineReducer({ startedAtMs });
   let statusHandle: StatusHandle | null = null;
 
-  const publishStatus = async (): Promise<void> => {
+  const publishStatus = async (urgent = false): Promise<void> => {
     const update = {
       kind: 'status' as const,
       terminal: false,
       timeline: run.timeline(),
+      ...(urgent ? { urgent: true } : {}),
     };
     const result = statusHandle
       ? await deps.adapter.editStatus(statusHandle, update)
@@ -1482,7 +1494,11 @@ export async function runPiAndDeliver(input: {
     // edits.
     if (event.type === 'answer_delta' || event.type === 'answer_reset') return;
     if (run.apply(event) === 'immediate') {
-      queueStatus();
+      /* The reducer is the only thing that knows a frame changed something the
+         reader is looking straight at. It says so here, and the flag now travels
+         all the way to the channel — it used to buy past this publisher's own
+         one-second gate and then wait out the card's 1.5s floor anyway. */
+      queueStatus(true);
       return;
     }
     const now = Date.now();

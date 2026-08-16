@@ -144,6 +144,9 @@ export function settledSentences(text) {
 	return match ? match[0].trim() : "";
 }
 
+/** The only statuses a surface downstream will accept. */
+const STEP_STATUSES = new Set(["pending", "running", "done", "failed", "skipped"]);
+
 /** Pi child states, in the vocabulary the status card renders. */
 const CHILD_STATE_STATUS = {
 	queued: "pending",
@@ -189,7 +192,10 @@ function progressChildren(details) {
 	const rows = children.slice(0, PROGRESS_LIST_LIMITS.children).flatMap((child) => {
 		const label = bound(child?.role, "label");
 		if (!label) return [];
-		const status = CHILD_STATE_STATUS[child?.state] ?? "running";
+		// "pending" for a state this map does not know, matching the far side.
+		// "running" draws a spinner that turns for the rest of the run, because a
+		// state nobody understands never arrives again to settle it.
+		const status = CHILD_STATE_STATUS[child?.state] ?? "pending";
 		const detail = bound(child?.task, "detail");
 		// Only while it is going. A finished child's elapsed time is a number
 		// nobody asked for, and the run's own duration already covers the turn.
@@ -213,7 +219,9 @@ function progressTodos(details) {
 	const rows = items.slice(0, PROGRESS_LIST_LIMITS.todos).flatMap((item) => {
 		const title = bound(item?.title, "label");
 		if (!title) return [];
-		const status = typeof item?.status === "string" ? item.status : "pending";
+		// Only the five the far side accepts; anything else lands as "pending"
+		// there anyway, and sending it raw just moves the coercion.
+		const status = STEP_STATUSES.has(item?.status) ? item.status : "pending";
 		return [{ title, status }];
 	});
 	return rows.length > 0 ? rows : undefined;

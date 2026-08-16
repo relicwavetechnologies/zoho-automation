@@ -68,7 +68,17 @@ export class LarkStatusCoordinator {
 
   getStatusMessageId(): string | undefined { return this.statusMessageId; }
 
-  async update(renderable: StatusCardInput, opts?: { force?: boolean; terminal?: boolean }): Promise<void> {
+  /**
+   * `urgent` buys past the minimum interval and nothing else.
+   *
+   * Deliberately not `force`, which also skips the deduplicator: urgency is a
+   * claim about *when* a real change should be drawn, not a licence to repaint
+   * a card that says exactly what it already said.
+   */
+  async update(
+    renderable: StatusCardInput,
+    opts?: { force?: boolean; terminal?: boolean; urgent?: boolean },
+  ): Promise<void> {
     if (this.closed || this.finalizing || (this.terminalLocked && !opts?.terminal)) return;
 
     const previewText = this.renderBodyPreview(renderable);
@@ -83,7 +93,7 @@ export class LarkStatusCoordinator {
     this.pending = renderable;
     const elapsed = Date.now() - this.lastSentAt;
 
-    if (elapsed >= this.minIntervalMs || opts?.terminal || opts?.force) {
+    if (elapsed >= this.minIntervalMs || opts?.terminal || opts?.force || opts?.urgent) {
       await this.flush();
     } else if (!this.flushTimer) {
       const delay = this.minIntervalMs - elapsed;

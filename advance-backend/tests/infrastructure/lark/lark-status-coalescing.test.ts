@@ -90,3 +90,46 @@ test('a publish that throws before it ever suspends leaves the slot usable', { t
   assert.equal(calls, 2);
   assert.equal(errors.length, 2);
 });
+
+/*
+ * Urgency survives coalescing.
+ *
+ * The reducer is the only thing that knows a frame changed something a reader
+ * is looking straight at, and it says so once. Several queued frames become one
+ * publish, so if the urgency were read from whichever frame happened to be last
+ * it would be lost exactly when the run is busiest — which is when it matters.
+ */
+test('carries urgency into the publish that coalesced it', { timeout: 5_000 }, async () => {
+  const seen: boolean[] = [];
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let first = true;
+
+  const publisher = createCoalescedPublisher(
+    async urgent => {
+      seen.push(urgent);
+      if (first) { first = false; await gate; }
+    },
+    () => {},
+  );
+
+  publisher.queue();          // starts, and parks on the gate
+  publisher.queue(true);      // urgent, coalesced into the next publish
+  publisher.queue();          // ordinary, must not clear the urgency above
+  release();
+  await publisher.settle();
+
+  assert.deepEqual(seen, [false, true]);
+});
+
+test('spends urgency once rather than sticking to every later publish', async () => {
+  const seen: boolean[] = [];
+  const publisher = createCoalescedPublisher(async urgent => { seen.push(urgent); }, () => {});
+
+  publisher.queue(true);
+  await publisher.settle();
+  publisher.queue();
+  await publisher.settle();
+
+  assert.deepEqual(seen, [true, false]);
+});
