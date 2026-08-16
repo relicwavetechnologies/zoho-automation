@@ -1,9 +1,10 @@
 /**
- * The two moments a document reaches the panel.
+ * The three moments a document reaches the panel.
  *
  * **Live** — a run announces one it has just filed, and it opens now.
  * **On arrival** — a thread is opened and whatever it produced before is put
  * back, quietly, without taking the screen.
+ * **Chosen** — somebody picks one out of a list of what has been made.
  *
  * Kept out of both the store and the chat: the store is state and knows nothing
  * about the network, and the chat is a conversation and should not know how a
@@ -44,6 +45,33 @@ export async function showArtifact(
   const document = await getArtifact(announced.artifactId, token)
   if (document) fillArtifact(document.artifactId, document.version, document.body)
   else failArtifact(announced.artifactId)
+}
+
+/**
+ * Show a document somebody asked for by name.
+ *
+ * The panel takes the screen here, unlike the restore path, because this time
+ * opening it is the thing that was asked for. The tab appears before the body
+ * arrives for the same reason as above: the click has to land somewhere.
+ */
+export async function showSavedArtifact(
+  summary: {
+    readonly artifactId: string
+    readonly title: string
+    readonly mime: string
+    readonly version: number
+    readonly threadId?: string
+  },
+  token: string | null,
+): Promise<void> {
+  openArtifact({
+    artifactId: summary.artifactId,
+    title: summary.title,
+    mime: summary.mime,
+    version: summary.version,
+    ...(summary.threadId ? { threadId: summary.threadId } : {}),
+  })
+  await loadArtifactBody(summary.artifactId, token)
 }
 
 /** Fetch one tab's body on demand — what the panel calls when it first draws one. */

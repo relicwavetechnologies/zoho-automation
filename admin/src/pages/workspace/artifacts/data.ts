@@ -20,6 +20,14 @@ export type ArtifactSummary = {
   threadId?: string
   createdAt: string
   updatedAt: string
+  /**
+   * The opening of the document, cut by the server.
+   *
+   * A list of titles alone makes somebody open four things to find the one they
+   * meant. This is enough to recognise a document by and far too little to read
+   * one from — the panel is still the only place a document is shown.
+   */
+  preview: string
 }
 
 export type ArtifactDocument = ArtifactSummary & { body: string }
@@ -56,5 +64,18 @@ export async function listArtifacts(threadId: string, token: string): Promise<Ar
     token,
     'artifacts',
   )
+  return found ?? []
+}
+
+/**
+ * The last few things this person has made, whatever conversation made them.
+ *
+ * The same route without the thread filter, which is the whole of the
+ * difference: an artifact belongs to the member, and the thread it came out of
+ * is a fact about it rather than the way in. That is what lets a landing page
+ * show them without knowing anything about chats.
+ */
+export async function recentArtifacts(token: string, limit: number): Promise<ArtifactSummary[]> {
+  const found = await read<ArtifactSummary[]>(`${base}?limit=${limit}`, token, 'artifacts')
   return found ?? []
 }
