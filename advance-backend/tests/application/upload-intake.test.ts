@@ -22,6 +22,8 @@ describe('intakeUploads', () => {
     assert.equal(intake.attachments.length, 1);
     assert.equal(intake.attachments[0]?.name, 'q3.pdf');
     assert.equal(intake.attachments[0]?.kind, 'file');
+    assert.equal(intake.providerFiles.length, 1);
+    assert.equal(intake.providerFiles[0]?.originalname, 'q3.pdf');
     assert.equal(intake.text, 'what is the total?');
   });
 
@@ -44,6 +46,7 @@ describe('intakeUploads', () => {
     });
 
     assert.equal(intake.attachments.length, 0);
+    assert.equal(intake.providerFiles.length, 0);
     assert.match(intake.text, /standup\.mp4/);
     assert.match(intake.text, /NOT SAVED/);
     assert.match(intake.text, /Do not guess or infer/i);
@@ -59,6 +62,7 @@ describe('intakeUploads', () => {
     });
 
     assert.equal(intake.attachments.length, 0);
+    assert.equal(intake.providerFiles.length, 0);
     assert.match(intake.text, /memo\.m4a/);
     assert.match(intake.text, /Please chase the Acme invoice\./);
     assert.match(intake.text, /what did I ask for\?$/);

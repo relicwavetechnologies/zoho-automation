@@ -3,6 +3,7 @@ import multer from 'multer';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Logger } from '../../shared/logger';
+import type { ConversationAttachmentAssetService } from '../../application/conversation-attachments/conversation-attachment-asset.service';
 import type { WebRunEvent, WebRunService } from '../../application/runtime/web-run.service';
 import { WebRunBusyError, type WebRunRegistry } from '../../application/runtime/web-run-registry';
 import { intakeUploads, type UploadTranscriber } from '../../application/runtime/upload-intake';
@@ -83,6 +84,7 @@ export function createWebChatRoutes(deps: {
   readonly threads: WebThreadRepoPort;
   readonly logger: Logger;
   readonly maxUploadBytes: number;
+  readonly attachmentAssets?: ConversationAttachmentAssetService;
   /**
    * Turns an uploaded recording into text. Optional because it is optional in
    * the deployment: without a transcription key Lark refuses voice notes too,
@@ -304,6 +306,18 @@ export function createWebChatRoutes(deps: {
       abortSignal: controller.signal,
     });
     const attachments = intake.attachments;
+    await deps.attachmentAssets?.record({
+      companyId: String(identity.runContext.companyId),
+      userId: identity.userId,
+      channel: 'web',
+      conversationKey: threadId,
+      chatId: threadId,
+      files: intake.providerFiles.map(file => ({
+        fileName: file.originalname,
+        mimeType: file.mimetype,
+        buffer: file.buffer,
+      })),
+    });
 
     try {
       deps.registry.start({

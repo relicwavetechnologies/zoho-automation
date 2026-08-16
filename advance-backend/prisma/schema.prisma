@@ -2541,6 +2541,40 @@ model ConversationAttachment {
   @@index([expiresAt])
 }
 
+/// Files Divo itself is holding for a conversation.
+///
+/// Lark files stay as provider references in ConversationAttachment because the
+/// source of truth is still Lark. Browser uploads arrive as bytes, so a later
+/// provider action needs an owned, scoped, expiring asset rather than a fake
+/// Lark key or a container path that disappears with the run.
+model ConversationAttachmentAsset {
+  id                  String    @id @default(uuid())
+  companyId           String
+  userId              String
+  channel             String
+  conversationKey     String
+  chatId              String
+  fileName            String
+  mimeType            String
+  sizeBytes           Int
+  sha256              String
+  storageProvider     String
+  storageKey          String
+  resourceType        String
+  deliveryType        String
+  threatScanProvider  String?
+  threatScanVersion   String?
+  threatScannedAt     DateTime?
+  receivedAt          DateTime  @default(now())
+  expiresAt           DateTime
+  consumedAt          DateTime?
+  uncertainAt         DateTime?
+
+  @@index([companyId, userId, channel, chatId, expiresAt], map: "ConversationAttachmentAsset_scope_live_idx")
+  @@index([companyId, userId, channel, chatId, fileName, receivedAt], map: "ConversationAttachmentAsset_name_idx")
+  @@index([expiresAt], map: "ConversationAttachmentAsset_expires_idx")
+}
+
 /// An invoice payload held before it is sent to Zoho.
 ///
 /// Stored rather than passed back through the model on purpose: creation

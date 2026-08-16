@@ -55,6 +55,8 @@ export interface UploadTranscriber {
 export interface UploadIntake {
   /** The files the container will actually receive. */
   readonly attachments: readonly LarkPiRuntimeAttachment[];
+  /** The same usable file bytes, kept for backend provider actions such as Zoho attachment. */
+  readonly providerFiles: readonly UploadedFile[];
   /** The ask, with every refusal and transcript folded in ahead of it. */
   readonly text: string;
   /**
@@ -120,6 +122,7 @@ export async function intakeUploads(input: {
   readonly abortSignal?: AbortSignal;
 }): Promise<UploadIntake> {
   const attachments: LarkPiRuntimeAttachment[] = [];
+  const providerFiles: UploadedFile[] = [];
   const notices: string[] = [];
   const manifest: AskAttachment[] = [];
   const noted = (file: UploadedFile, outcome: AskAttachment['outcome']): void => {
@@ -153,11 +156,13 @@ export async function intakeUploads(input: {
     }
 
     attachments.push(attachmentFromUpload(file));
+    providerFiles.push(file);
     noted(file, 'file');
   }
 
   return {
     attachments,
+    providerFiles,
     text: [...notices, input.text.trim()].filter(Boolean).join('\n\n'),
     manifest,
   };

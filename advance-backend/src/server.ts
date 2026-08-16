@@ -273,6 +273,20 @@ export const createServer = (c: Container): DivoServerApplication => {
   );
   knowledgeFileCleanupTimer.unref?.();
 
+  const cleanupConversationAttachmentAssets = () => {
+    void c.conversationAttachmentAssets.cleanupExpired().catch(error => {
+      c.logger.warn('conversation_attachment_asset.cleanup.failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+  cleanupConversationAttachmentAssets();
+  const conversationAttachmentCleanupTimer = setInterval(
+    cleanupConversationAttachmentAssets,
+    c.env.KNOWLEDGE_FILE_CLEANUP_INTERVAL_SECONDS * 1_000,
+  );
+  conversationAttachmentCleanupTimer.unref?.();
+
   if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) {
     c.scheduledWorkflowService.start();
   }
@@ -654,6 +668,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       threads: c.webThreads,
       logger:  c.logger,
       maxUploadBytes: c.env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
+      attachmentAssets: c.conversationAttachmentAssets,
       // The same client the Lark voice-note path uses, so a recording is heard
       // identically whichever surface it was handed over on.
       ...(voiceTranscriber ? { transcriber: voiceTranscriber } : {}),

@@ -50,8 +50,9 @@ export interface WebThreadRunRecord {
  * sentence, so re-reading the thread gave no sign the file had ever existed.
  *
  * Deliberately a description rather than a handle. Nothing here can be opened
- * or fetched; the bytes went to the run and are not kept. What survives is what
- * a person needs to recognise their own message by.
+ * or fetched by the browser or model. Provider tools may have a separate,
+ * backend-only asset scoped to the same conversation; what survives here is
+ * only what a person needs to recognise their own message by.
  */
 export interface AskAttachment {
   readonly name: string;

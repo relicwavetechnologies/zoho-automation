@@ -93,20 +93,75 @@ describe('Zoho attachment service', () => {
     assert.equal(wrote, false);
   });
 
-  it('refuses non-Lark channels before resolving or reading files', async () => {
-    let touched = false;
+  it('uploads a web-held file through the same attachment service', async () => {
+    let resolved = false;
+    let consumed = false;
+    const writes: ZohoBooksMutationRequest[] = [];
+    let readCount = 0;
     const attachments = createZohoAttachmentService({
-      attachmentSource: sourcePdf,
+      attachmentSource: {
+        resolve: async () => {
+          resolved = true;
+          return {
+            kind: 'resolved',
+            fileName: 'source.pdf',
+            mimeType: 'application/pdf',
+            content: Buffer.from('%PDF-1.4\n'),
+            onAttached: async () => { consumed = true; },
+          };
+        },
+      },
       companyId: 'co-1',
       userId: 'user-1',
       channel: 'web',
-      chatId: 'chat-1',
+      chatId: 'web-thread-1',
       readRecord: async () => {
-        touched = true;
-        return {};
+        readCount += 1;
+        return readCount === 1
+          ? { documents: [] }
+          : { documents: [{ file_name: 'source.pdf' }] };
+      },
+      write: async request => { writes.push(request); },
+    });
+
+    const outcome = await attachments.attach({
+      recordType: 'bill',
+      recordId: 'bill-1',
+      fileName: 'source.pdf',
+    });
+
+    assert.equal(outcome.outcome, 'attached');
+    assert.equal(resolved, true);
+    assert.equal(consumed, true);
+    assert.equal(writes[0]?.multipart?.fileName, 'source.pdf');
+  });
+
+  it('refuses a web upload when Zoho already has the same filename', async () => {
+    let resolved = false;
+    let wrote = false;
+    let readCount = 0;
+    const attachments = createZohoAttachmentService({
+      attachmentSource: {
+        resolve: async () => {
+          resolved = true;
+          return {
+            kind: 'resolved',
+            fileName: 'source.pdf',
+            mimeType: 'application/pdf',
+            content: Buffer.from('%PDF corrected\n'),
+          };
+        },
+      },
+      companyId: 'co-1',
+      userId: 'user-1',
+      channel: 'web',
+      chatId: 'web-thread-1',
+      readRecord: async () => {
+        readCount += 1;
+        return { documents: [{ file_name: 'SOURCE.pdf' }] };
       },
       write: async () => {
-        touched = true;
+        wrote = true;
       },
     });
 
@@ -117,8 +172,10 @@ describe('Zoho attachment service', () => {
     });
 
     assert.equal(outcome.outcome, 'refused');
-    assert.match(outcome.message, /only files sent in Lark/);
-    assert.equal(touched, false);
+    assert.match(outcome.message, /Rename the uploaded file/);
+    assert.equal(resolved, true);
+    assert.equal(wrote, false);
+    assert.equal(readCount, 1);
   });
 
   it('separates never-sent uploads from uncertain provider uploads', async () => {

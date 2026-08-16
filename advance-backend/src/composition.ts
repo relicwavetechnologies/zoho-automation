@@ -106,9 +106,14 @@ import {
 import { ZohoConnectionRepository } from './infrastructure/zoho/zoho-connection.repository';
 import { ZohoTokenService } from './infrastructure/zoho/zoho-token.service';
 import { ZohoBooksPaginatedClient } from './infrastructure/zoho/zoho-books-paginated.client';
+import { ConversationAttachmentAssetService } from './application/conversation-attachments/conversation-attachment-asset.service';
 import { ConversationAttachmentService } from './application/conversation-attachments/conversation-attachment.service';
+import { CloudinaryConversationAttachmentObjectStore } from './infrastructure/conversation-attachments/cloudinary-conversation-attachment-object.store';
+import { PrismaConversationAttachmentAssetStore } from './infrastructure/persistence/conversation-attachment-asset.repository';
 import { PrismaConversationAttachmentStore } from './infrastructure/persistence/conversation-attachment.repository';
+import { ChannelAttachmentSource } from './application/zoho/channel-attachment-source';
 import { LarkConversationAttachmentSource } from './infrastructure/zoho/lark-conversation-attachment.source';
+import { WebConversationAttachmentSource } from './infrastructure/zoho/web-conversation-attachment.source';
 import { PrismaStagedInvoiceStore } from './infrastructure/persistence/zoho-invoice-staging.repository';
 import { PrismaStagedPurchaseOrderStore } from './infrastructure/persistence/zoho-purchase-order-staging.repository';
 import { PrismaStagedBillStore } from './infrastructure/persistence/zoho-bill-staging.repository';
@@ -477,6 +482,8 @@ export interface Container {
   larkContactsClient: LarkContactsClient;
   /** Files the member sent, indexed by name so a tool can attach one later. */
   conversationAttachments: ConversationAttachmentService;
+  /** Browser-uploaded files held privately for provider attachment. */
+  conversationAttachmentAssets: ConversationAttachmentAssetService;
   // Pi/Desktop capability gateway
   gatewayDispatcher: GatewayDispatcher;
   /** Container runtime shared by the Lark webhook and the scheduled-workflow poller. */
@@ -1561,12 +1568,6 @@ export async function buildContainer(
     maxArchiveCompressionRatio: env.KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_COMPRESSION_RATIO,
   });
 
-  const conversationAttachmentSource = new LarkConversationAttachmentSource(
-    conversationAttachments,
-    new LarkFileClient(env, logger),
-    logger,
-  );
-
   // ── Zoho Books paginated client + finance ops ────────────────────────────
   const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
   const zohoPaginatedCrmClient = new ZohoCrmPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
@@ -1646,6 +1647,26 @@ export async function buildContainer(
     threatScanner: knowledgeThreatScanner,
     threatScanRequired: env.KNOWLEDGE_FILE_MALWARE_SCAN_MODE === 'required',
     threatScanTimeoutMs: env.CLAMAV_SCAN_TIMEOUT_SECONDS * 1_000,
+  });
+  const conversationAttachmentAssets = new ConversationAttachmentAssetService({
+    assets: new PrismaConversationAttachmentAssetStore(prisma),
+    objects: new CloudinaryConversationAttachmentObjectStore(cloudinaryAdapter),
+    logger,
+    maxBytes: env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
+    threatScanner: knowledgeThreatScanner,
+    threatScanRequired: env.KNOWLEDGE_FILE_MALWARE_SCAN_MODE === 'required',
+    threatScanTimeoutMs: env.CLAMAV_SCAN_TIMEOUT_SECONDS * 1_000,
+  });
+  const conversationAttachmentSource = new ChannelAttachmentSource({
+    lark: new LarkConversationAttachmentSource(
+      conversationAttachments,
+      new LarkFileClient(env, logger),
+      logger,
+    ),
+    web: new WebConversationAttachmentSource(
+      conversationAttachmentAssets,
+      logger,
+    ),
   });
   const knowledgeDocuments = new PrismaKnowledgeDocumentRepository(prisma);
   const knowledgeDocumentIndex = new KnowledgeDocumentIndexService({
@@ -2897,6 +2918,7 @@ export async function buildContainer(
     // Lark contacts (for directory sync)
     larkContactsClient,
     conversationAttachments,
+    conversationAttachmentAssets,
     // Pi/Desktop capability gateway
     gatewayDispatcher,
     // Container runtime, shared by the Lark webhook and the scheduler.
