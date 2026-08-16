@@ -50,6 +50,52 @@ describe('the sources under an answer', () => {
   it('has nothing to show for an answer that cited nothing', () => {
     assert.deepEqual(sourcesIn('Pistachio is your fastest-growing flavor.'), [])
   })
+
+  /* An answer that shows you a command has not consulted the host in it. The
+     renderer draws a fenced block as text; the scanner used to read it as
+     prose, and the two disagreed by one chip claiming a source that was never
+     consulted. */
+  it('does not cite a host that only appears inside a fenced block', () => {
+    assert.deepEqual(sourcesIn([
+      'Charge a card like this:',
+      '```bash',
+      'curl https://api.stripe.com/v1/charges -u sk_test:',
+      '```',
+    ].join('\n')), [])
+  })
+
+  it('does not cite a host inside a code span', () => {
+    assert.deepEqual(sourcesIn('Point it at `https://api.stripe.com` and retry.'), [])
+  })
+
+  /* Most of a streaming code block's life is spent unclosed. Reading the rest
+     of the answer as prose the moment a fence opens would make chips appear and
+     vanish as the reply arrived. */
+  it('treats an unclosed fence as code all the way to the end', () => {
+    assert.deepEqual(sourcesIn('Run:\n```bash\ncurl https://api.stripe.com/v1'), [])
+  })
+
+  it('still reads the prose around a block', () => {
+    assert.deepEqual(sourcesIn([
+      'Per [Reuters](https://reuters.com/a):',
+      '```bash',
+      'curl https://api.stripe.com/v1/charges',
+      '```',
+      'and https://sec.gov/c agrees.',
+    ].join('\n')).map(s => s.domain), ['reuters.com', 'sec.gov'])
+  })
+
+  /* A fence may hold unbalanced backticks. Reading spans first would pair one
+     of them with a backtick further down the answer and blank the prose
+     between them, losing citations that were never in code at all. */
+  it('is not confused by a stray backtick inside a block', () => {
+    assert.deepEqual(sourcesIn([
+      '```sh',
+      "echo `date` https://api.stripe.com",
+      '```',
+      'See [Reuters](https://reuters.com/a).',
+    ].join('\n')).map(s => s.domain), ['reuters.com'])
+  })
 })
 
 /* The tile colour is identity, not measurement — but it has to be the same
