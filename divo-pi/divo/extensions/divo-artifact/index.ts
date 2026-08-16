@@ -22,6 +22,7 @@ import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { readRuntimeRunContext } from "../../runtime-run-context.mjs";
+import { resolveMemberCredentials } from "../../runtime-member-credentials.mjs";
 
 export const DIVO_ARTIFACT_TOOL_NAME = "divo_artifact";
 export const DIVO_ARTIFACT_DETAILS_VERSION = 2 as const;
@@ -201,17 +202,23 @@ const SURFACES_WITH_A_PANEL = new Set(["web"]);
 /**
  * The store's address, or nothing.
  *
- * Nothing is the honest answer when the container was started without a backend
- * to talk to — a local development run, for instance. The tool says so rather
- * than pretending it filed the document somewhere.
+ * Read from the runtime's held credentials rather than from `process.env`. The
+ * gateway deletes `DIVO_MEMBER_TOKEN` from the environment during startup, on
+ * purpose — every shell the agent spawns inherits that environment — so by the
+ * time this tool is called there is nothing left in it to read. Reading the
+ * environment here was the whole reason a filed document reported "no document
+ * store": the address was there and the credential was not.
+ *
+ * Nothing is still the honest answer when the container was started without a
+ * backend to talk to. The tool says so rather than pretending it filed the
+ * document somewhere.
  */
 export function resolveArtifactStore(
-	env: NodeJS.ProcessEnv = process.env,
+	env?: NodeJS.ProcessEnv,
 ): { backendUrl: string; memberToken: string } | undefined {
-	const backendUrl = env.DIVO_BACKEND_URL?.trim().replace(/\/$/, "");
-	const memberToken = env.DIVO_MEMBER_TOKEN?.trim();
-	if (!backendUrl || !memberToken) return undefined;
-	return { backendUrl, memberToken };
+	const held = resolveMemberCredentials(env);
+	if ("error" in held) return undefined;
+	return { backendUrl: held.backendUrl, memberToken: held.memberToken };
 }
 
 /** Named for the resource. The caller is a member, not a client. */
