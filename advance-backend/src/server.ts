@@ -56,6 +56,7 @@ import { createLlmProxyRoutes } from './http/llm/llm-proxy.routes';
 import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
 import { createTraceIngestRoutes } from './http/desktop/trace-ingest.routes';
 import { createArtifactRoutes } from './http/member/artifacts.routes';
+import { createMemberTaskRoutes } from './http/member/tasks.routes';
 import { ExecutionRepository } from './infrastructure/persistence/execution.repository';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
@@ -838,6 +839,15 @@ export const createServer = (c: Container): DivoServerApplication => {
       artifacts: c.artifacts,
       logger:    c.logger,
     }),
+  );
+
+  // What the signed-in member still has to do, read from their own Lark
+  // account. Read-only by construction — see the module for why a dashboard
+  // must not hold a credential that could finish somebody's work for them.
+  app.use(
+    '/api/me/tasks',
+    piRuntimeMemberAuth,
+    createMemberTaskRoutes({ ...c.openTasks, logger: c.logger }),
   );
 
   // Desktop/PI run-trace ingest (Track A — member auth). Current clients share

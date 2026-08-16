@@ -485,6 +485,8 @@ export interface Container {
   webThreads: import('./infrastructure/persistence/web-thread.repository').WebThreadRepository;
   /** Documents the agent wrote, kept after the container that wrote them is gone. */
   artifacts: import('./infrastructure/persistence/artifact.repository').ArtifactRepository;
+  /** What a member still has to do, read from their own Lark account. */
+  openTasks: import('./application/work/open-tasks').OpenTasksDeps;
 }
 
 export interface BuildContainerOptions {
@@ -2903,6 +2905,32 @@ export async function buildContainer(
     }),
     webThreads: new (await import('./infrastructure/persistence/web-thread.repository')).WebThreadRepository(prisma),
     artifacts: new (await import('./infrastructure/persistence/artifact.repository')).ArtifactRepository(prisma),
+    /*
+      The member's own Lark account, resolved from the connection they
+      authorized rather than from a run context. `userExternalId` is an open_id
+      on Lark and a Divo user id on the web, so anything that reads it and asks
+      Lark about it gets nothing on the web and calls that an empty list.
+      The connection is the one place that always holds a real open_id.
+    */
+    openTasks: {
+      accounts: {
+        async openIdFor({ userId }) {
+          const connection = await prisma.integrationConnection.findFirst({
+            where: { ownerUserId: userId, provider: 'lark', status: 'connected', revokedAt: null },
+            select: { externalAccountId: true },
+            orderBy: { updatedAt: 'desc' },
+          });
+          return connection?.externalAccountId ?? null;
+        },
+      },
+      tokens: larkUserTokenResolver,
+      createClient: (userToken: string) => new LarkTaskClient({
+        appId: env.LARK_APP_ID,
+        appSecret: env.LARK_APP_SECRET,
+        apiBaseUrl: env.LARK_API_BASE_URL,
+        userToken,
+      }),
+    },
     // Scheduled workflow executor
     scheduledWorkflowService: new (await import('./application/scheduling/scheduled-workflow.service')).ScheduledWorkflowService({
       prisma,
