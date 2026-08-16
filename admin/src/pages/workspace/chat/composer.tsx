@@ -96,6 +96,7 @@ export function Composer({
   const controls = useRef<HTMLDivElement>(null)
   const measure = useRef<HTMLSpanElement>(null)
   const modelBtn = useRef<HTMLButtonElement>(null)
+  const modelMenu = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
 
   const [expanded, setExpanded] = useState(false)
@@ -123,6 +124,26 @@ export function Composer({
   useEffect(() => {
     if (running) setModelOpen(false)
   }, [running])
+
+  useEffect(() => {
+    if (!modelOpen) return
+    const dismissAway = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (modelMenu.current?.contains(target) || modelBtn.current?.contains(target)) return
+      setModelOpen(false)
+    }
+    const dismissWithKeyboard = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setModelOpen(false)
+      modelBtn.current?.focus()
+    }
+    document.addEventListener('mousedown', dismissAway)
+    document.addEventListener('keydown', dismissWithKeyboard)
+    return () => {
+      document.removeEventListener('mousedown', dismissAway)
+      document.removeEventListener('keydown', dismissWithKeyboard)
+    }
+  }, [modelOpen])
 
   /* Wrapped text takes a row of its own, then the field grows to a ceiling.
      Measured off a hidden mirror of the draft rather than off the textarea, so
@@ -262,6 +283,7 @@ export function Composer({
       {/* ── model menu ── */}
       {modelOpen && (
         <div
+          ref={modelMenu}
           className="absolute right-0 bottom-full z-10 mb-2 w-56 rounded-card bg-surface p-1 shadow-overlay"
           style={{ animation: 'bui-pop-in 180ms cubic-bezier(0.23,1,0.32,1) both', transformOrigin: 'bottom right' }}
         >
