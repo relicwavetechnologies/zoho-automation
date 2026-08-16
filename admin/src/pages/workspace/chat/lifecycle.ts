@@ -62,12 +62,10 @@ export type TraceSegment =
 /**
  * The run, split into what it did and what it produced.
  *
- * Everything that happened on the way is the trace; everything else — an
- * approval waiting on a person, a table, the answer — stays in the conversation
- * in the order the run put it there. Ordering carries meaning out here: the
- * invoice run draws its ageing chart *before* it asks permission to send
- * anything, and a layout that sorted by kind printed the chart underneath the
- * approval it existed to inform.
+ * Everything that happened on the way is the trace; what is left is the answer.
+ * `rest` is a list rather than one value because a run may land on more than one
+ * reply — a resumed run appends to what is already there — and because the
+ * caller puts trace and answer back in run order, which `index` is for.
  */
 export function splitTrace(beats: readonly Beat[]): {
   trace: TraceStep[]

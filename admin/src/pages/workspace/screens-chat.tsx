@@ -26,8 +26,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { FileText } from 'lucide-react'
 import { Navigate, useParams } from 'react-router-dom'
-import { Chart } from './chat/charts'
-import { Composer, Preview, Say } from './chat/parts'
+import { Composer, Say } from './chat/parts'
 import { splitTrace } from './chat/lifecycle'
 import { PiTraceTimeline } from './chat/trace'
 import { PinSpacer } from './chat/pin'
@@ -489,23 +488,11 @@ const Exchanged = memo(function Exchanged({
           liveLabel={liveLabel}
         />
 
-        {rest.map(({ beat, key }) => {
-          if (beat.t === 'say') {
-            return (
-              <Say
-                key={key}
-                text={beat.text}
-                streaming={!state.finished && beat.narration !== true}
-              />
-            )
-          }
-          if (beat.t === 'block') {
-            const { block } = beat
-            if (block.kind === 'table') return <Preview key={key} block={block} />
-            return <Chart key={key} block={block} />
-          }
-          return null
-        })}
+        {rest.map(({ beat, key }) =>
+          beat.t === 'say'
+            ? <Say key={key} text={beat.text} streaming={!state.finished} />
+            : null,
+        )}
 
         {exchange.error && (
           <p className="text-[13px] text-rose-600 dark:text-rose-400">{exchange.error}</p>

@@ -4,7 +4,7 @@ import { coalesceSegments, splitTrace } from './lifecycle'
 import type { Beat } from './beats'
 
 const call = (title: string, key: Extract<Beat, { t: 'step' }>['tool'] = 'zohoBooks'): Beat => ({
-  t: 'step', tool: key, title, ms: 0, done: 'Done',
+  t: 'step', tool: key, title, done: 'Done',
 })
 const agents = (): Beat => ({
   t: 'agents',

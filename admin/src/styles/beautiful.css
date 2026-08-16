@@ -419,18 +419,8 @@ svg.bui-mark {
 }
 
 /* ── Chart chrome ─────────────────────────────────────────
-   The charts are hand-drawn SVG rather than a charting dependency, so their
-   only shared furniture is the hover cursor and the tooltip. */
-.bui-chart-cursor {
-  position: absolute;
-  top: 0;
-  bottom: 22px;
-  width: 1px;
-  background: var(--bui-line-strong);
-  pointer-events: none;
-  transform: translateX(-0.5px);
-}
-
+   The chart an answer draws is hand-drawn SVG rather than a charting
+   dependency, so its only shared furniture is the tooltip. */
 .bui-chart-tip {
   position: absolute;
   top: 8px;
@@ -444,13 +434,6 @@ svg.bui-mark {
   color: var(--bui-tip-fg);
   box-shadow: var(--bui-shadow-overlay);
   animation: bui-fade-in 120ms ease-out both;
-}
-
-.bui-chart-tip-time {
-  display: block;
-  margin-bottom: 4px;
-  font-size: 10.5px;
-  color: var(--bui-tip-muted);
 }
 
 .bui-chart-tip-row {

@@ -25,7 +25,7 @@ import { sourcesIn } from './answer/links'
 import { FileChips, RejectionNote } from './attach.view'
 import { namedForClipboard, type Rejection } from './attach'
 import { CopyButton } from './copy'
-import type { Beat, TableBlock } from './beats'
+import type { Beat } from './beats'
 
 /* ── Step ─────────────────────────────────────────────────
    Two states, one shape. Live: open, the label shimmering, the chip carrying
@@ -96,9 +96,7 @@ export function Step({
             Both sit a weight below the label and are never title-cased: a query,
             a path or a command is verbatim, and tidying it corrupts what it
             says. */}
-        <span
-          className={`min-w-0 truncate text-ink-3 transition-colors duration-100 group-hover:text-ink-2 ${beat.mono ? 'font-mono text-[12px]' : ''}`}
-        >
+        <span className="min-w-0 truncate text-ink-3 transition-colors duration-100 group-hover:text-ink-2">
           {live ? beat.chip : beat.done}
         </span>
 
@@ -127,9 +125,7 @@ export function Step({
             {/* Once settled the chip has left the header, so it reappears here
                 — the query is still the most useful thing in the detail. */}
             {!live && beat.chip && (
-              <span className={`mb-0.5 text-[11.5px] text-ink-3 ${beat.mono ? 'font-mono' : ''}`}>
-                {beat.chip}
-              </span>
+              <span className="mb-0.5 text-[11.5px] text-ink-3">{beat.chip}</span>
             )}
             {/* The app's name, in text. The mark is already on the row header
                 two lines up — repeating it here was the logo showing up twice
@@ -297,58 +293,6 @@ export function Markdown({ children }: { children: string }) {
     <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
       {children}
     </ReactMarkdown>
-  )
-}
-
-/* ── Table ────────────────────────────────────────────────
-   A preview, and it says so in the footer. The full data is in the artifact —
-   this exists to prove the rows are real, not to be read. */
-export function Preview({ block }: { block: TableBlock }) {
-  const numeric = new Set(block.numeric ?? [])
-  return (
-    <figure
-      className="overflow-hidden rounded-control bg-surface shadow-hairline"
-      style={{ animation: 'bui-fade-up 380ms cubic-bezier(0.23,1,0.32,1) both' }}
-    >
-      <figcaption className="border-b border-line px-2.5 py-1.5 text-[11px] text-ink-3">
-        {block.caption}
-      </figcaption>
-      <div className="overflow-x-auto">
-        <table className="w-full border-collapse text-[11.5px]">
-          <thead>
-            <tr>
-              {block.columns.map((c, i) => (
-                <th
-                  key={c}
-                  className={`border-b border-line px-2.5 py-1.5 font-medium text-ink-3 ${numeric.has(i) ? 'text-right' : 'text-left'}`}
-                >
-                  {c}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {block.rows.map((row, ri) => (
-              <tr key={row[0]} className="transition-colors duration-100 hover:bg-fill">
-                {row.map((cell, ci) => (
-                  <td
-                    key={ci}
-                    className={`whitespace-nowrap px-2.5 py-1.5 ${ri < block.rows.length - 1 ? 'border-b border-line' : ''} ${
-                      numeric.has(ci) ? 'text-right tabular-nums text-ink' : ci === 0 ? 'font-medium text-ink' : 'text-ink-2'
-                    }`}
-                  >
-                    {cell}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {block.footer && (
-        <div className="border-t border-line px-2.5 py-1.5 text-[11px] text-ink-3">{block.footer}</div>
-      )}
-    </figure>
   )
 }
 

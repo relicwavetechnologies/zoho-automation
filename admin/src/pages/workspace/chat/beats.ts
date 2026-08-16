@@ -18,44 +18,6 @@
 import type { ToolKey } from './tools'
 import type { AgentRun } from './agents'
 
-export type TableBlock = {
-  kind: 'table'
-  caption: string
-  columns: string[]
-  /** Right-aligned columns, by index — money and counts. */
-  numeric?: number[]
-  rows: string[][]
-  footer?: string
-}
-
-export type ChartBlock =
-  | {
-      kind: 'chart'
-      variant: 'line'
-      caption: string
-      unit: 'money' | 'count'
-      series: { label: string; color: string; values: number[] }[]
-      labels: string[]
-    }
-  | {
-      kind: 'chart'
-      variant: 'bars'
-      caption: string
-      unit: 'money' | 'count'
-      bars: { label: string; value: number; tone?: 'bad' | 'warn' }[]
-    }
-  | {
-      kind: 'chart'
-      variant: 'split'
-      caption: string
-      segments: { label: string; value: number; hint: string; color: string }[]
-    }
-
-/* An artifact is not a block. It is a document filed outside the conversation
-   and read in the panel beside it — see `artifacts/store.ts`. The card that used
-   to sit here rendered a fixture nothing produced. */
-export type Block = TableBlock | ChartBlock
-
 /**
  * Which beat this is, for as long as the run remembers it.
  *
@@ -75,8 +37,6 @@ export type Beat =
       title: string
       /** The mono chip beside the title — the actual query, file, or target. */
       chip?: string
-      mono?: boolean
-      ms: number
       done: string
       /**
        * The call is still open.
@@ -119,14 +79,3 @@ export type Beat =
    * does not, and one of them never leaves the container's own surface.
    */
   | (Identified & { t: 'think'; text: string; running?: boolean })
-  /**
-   * A result rendered under the answer.
-   *
-   * The one variant nothing produces yet. It is kept because it is *wired* —
-   * the thread draws a table, a chart or an artifact the moment one arrives —
-   * and because handing back a file rather than a wall of rows is the settled
-   * plan for this surface, not a maybe. Contrast the approval beat that used to
-   * sit here, which had no producer AND no renderer: it could not have appeared
-   * on screen even if something had built one.
-   */
-  | (Identified & { t: 'block'; block: Block })

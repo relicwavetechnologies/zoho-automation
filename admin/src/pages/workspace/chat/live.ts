@@ -38,8 +38,6 @@ function stepBeat(row: LedgerRow): Beat {
     // the row happens to sit in the list is what lets a step keep shimmering
     // while the model narrates over the top of it.
     ...(row.status === 'running' ? { running: true } : {}),
-    // The stream decides when a step ends, so its duration is never guessed.
-    ms: 0,
     done: row.outcome ?? (row.status === 'failed' ? 'Failed' : 'Done'),
   }
 }
