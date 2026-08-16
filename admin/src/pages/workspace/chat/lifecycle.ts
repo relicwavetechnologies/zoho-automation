@@ -60,42 +60,29 @@ export type TraceSegment =
   | { kind: 'agents'; step: Extract<TraceStep, { kind: 'agents' }> }
 
 /**
- * The run, split into what it did and what it produced.
+ * The work log, in the vocabulary the timeline draws.
  *
- * Everything that happened on the way is the trace; what is left is the answer.
- * `rest` is a list rather than one value because a run may land on more than one
- * reply — a resumed run appends to what is already there — and because the
- * caller puts trace and answer back in run order, which `index` is for.
+ * A total mapping, and it did not use to be. This was `splitTrace`: it took one
+ * array holding both the log and the answer and pulled them apart again, having
+ * been handed them glued together one step earlier. The two are on completely
+ * different clocks — the log changes about once a second, the answer changes
+ * with every token — so joining them meant the whole log was rebuilt at the
+ * answer's rate and every row in it redrawn to show the same thing.
+ *
+ * They are now built apart and never meet, so there is nothing to split. What
+ * arrives here is only ever the log, which is why every beat has a step to
+ * become.
  */
-export function splitTrace(beats: readonly Beat[]): {
-  trace: TraceStep[]
-  rest: { beat: Beat; key: string; index: number }[]
-} {
-  const trace: TraceStep[] = []
-  const rest: { beat: Beat; key: string; index: number }[] = []
-
-  beats.forEach((beat, index) => {
+export function traceSteps(beats: readonly Beat[]): TraceStep[] {
+  return beats.flatMap((beat, index): TraceStep[] => {
     const key = beat.id ?? `beat:${index}`
-    if (beat.t === 'step') {
-      trace.push({ kind: 'tool', key, index, beat })
-      return
-    }
-    if (beat.t === 'agents') {
-      trace.push({ kind: 'agents', key, index, beat })
-      return
-    }
+    if (beat.t === 'step') return [{ kind: 'tool', key, index, beat }]
+    if (beat.t === 'agents') return [{ kind: 'agents', key, index, beat }]
     if (beat.t === 'think') {
-      trace.push({ kind: 'thought', key, index, text: beat.text, live: beat.running === true })
-      return
+      return [{ kind: 'thought', key, index, text: beat.text, live: beat.running === true }]
     }
-    if (beat.t === 'say' && beat.narration === true) {
-      trace.push({ kind: 'narration', key, index, text: beat.text })
-      return
-    }
-    rest.push({ beat, key, index })
+    return [{ kind: 'narration', key, index, text: beat.text }]
   })
-
-  return { trace, rest }
 }
 
 /**

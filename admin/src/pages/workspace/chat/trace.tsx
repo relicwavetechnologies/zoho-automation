@@ -14,7 +14,7 @@
  * reading one tool call meant opening two disclosures — that is the shape this
  * file exists to not have.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Waypoints } from 'lucide-react'
 import { ToolMark } from './tools'
 import { AgentRunView } from './agents.view'
@@ -214,7 +214,21 @@ function Elapsed({ startedAt, seconds }: { startedAt: number | null; seconds: nu
   return <>{elapsedLabel(startedAt === null ? seconds : (now - startedAt) / 1000)}</>
 }
 
-export function PiTraceTimeline({
+/**
+ * The run's work log.
+ *
+ * Memoised, and it is the half of the fix that makes the other half worth
+ * anything. The log is now built on the timeline's clock rather than the
+ * answer's, so its `steps` array keeps its identity between tokens — but the
+ * exchange around it still re-renders on every one of them, because the answer
+ * genuinely changed. Without this, the parent's redraw walks straight through
+ * and rebuilds every burst, every vendor mark and every agent list anyway, at
+ * the answer's rate, to draw exactly what is already on screen.
+ *
+ * `elapsed` and `startedAt` are stable while a run is going; the clock ticking
+ * inside `Elapsed` is its own state and does not reach this list.
+ */
+export const PiTraceTimeline = memo(function PiTraceTimeline({
   steps, streaming, startedAt, elapsed, liveLabel,
 }: {
   steps: TraceStep[]
@@ -298,7 +312,7 @@ export function PiTraceTimeline({
       </div>
     </div>
   )
-}
+})
 
 function TimelineBody({
   segments, streaming,

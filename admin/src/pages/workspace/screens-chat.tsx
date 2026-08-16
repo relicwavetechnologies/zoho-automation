@@ -27,7 +27,6 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { FileText } from 'lucide-react'
 import { Navigate, useParams } from 'react-router-dom'
 import { Composer, Say } from './chat/parts'
-import { splitTrace } from './chat/lifecycle'
 import { PiTraceTimeline } from './chat/trace'
 import { PinSpacer } from './chat/pin'
 import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
@@ -458,10 +457,7 @@ const Exchanged = memo(function Exchanged({
   /** What the run says it is doing. Null once it has settled. */
   liveLabel?: string | null
 }) {
-  const { prompt, beats, state } = exchange
-  /* Everything that happened on the way is the trace; everything else stays in
-     the conversation, in the order the run put it there. */
-  const { trace, rest } = splitTrace(beats)
+  const { prompt, trace, answer, state } = exchange
 
   return (
     /* The id is what a just-sent prompt is pinned by. It has to sit on a direct
@@ -488,11 +484,7 @@ const Exchanged = memo(function Exchanged({
           liveLabel={liveLabel}
         />
 
-        {rest.map(({ beat, key }) =>
-          beat.t === 'say'
-            ? <Say key={key} text={beat.text} streaming={!state.finished} />
-            : null,
-        )}
+        {answer && <Say text={answer} streaming={!state.finished} />}
 
         {exchange.error && (
           <p className="text-[13px] text-rose-600 dark:text-rose-400">{exchange.error}</p>

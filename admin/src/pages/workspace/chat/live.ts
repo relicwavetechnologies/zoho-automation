@@ -15,6 +15,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Beat } from './beats'
+import { traceSteps, type TraceStep } from './lifecycle'
 import { agentRunOf, isAgentRow } from './agents'
 import { planOf, type Plan } from './plan'
 import { toolMarkFor } from './tool-identity'
@@ -25,6 +26,7 @@ import {
 import { getThread, threadSettled, type ThreadRunRecord, type ThreadTurn } from './threads'
 import { showArtifact } from '../artifacts/open'
 import type { RunState } from './player'
+import type { ModelSelection } from './model-choice'
 
 function stepBeat(row: LedgerRow): Beat {
   return {
@@ -40,28 +42,6 @@ function stepBeat(row: LedgerRow): Beat {
     ...(row.status === 'running' ? { running: true } : {}),
     done: row.outcome ?? (row.status === 'failed' ? 'Failed' : 'Done'),
   }
-}
-
-/**
- * The answer, as one beat.
- *
- * It used to be split on blank lines so the screen could reveal a paragraph at
- * a time. That was fine while the answer was prose and wrong the moment it was
- * markdown: a blank line is how markdown separates a heading from its list and
- * a sentence from its table, so splitting there handed the renderer a pile of
- * fragments and asked each to make sense alone. The document is the unit.
- *
- * Nothing is lost from the live feel — while the run is going, the prose is
- * arriving as `say` rows in the ledger, which still land one at a time.
- */
-function sayBeats(text: string): Beat[] {
-  const answer = text.trim()
-  /* One id for the whole run, because there is one reply and it is the same
-     reply from its first word to its last. Keyed by position instead, it moved
-     as the log above it grew, and the answer a reader was mid-sentence through
-     was torn down and rebuilt — re-parsing its markdown and replaying its
-     arrival animation — because a row above it had been reclassified. */
-  return answer ? [{ t: 'say', id: 'answer', text: answer }] : []
 }
 
 /**
@@ -104,21 +84,20 @@ function ledgerBeats(ledger: readonly LedgerRow[]): Beat[] {
 }
 
 /**
- * The run so far, as beats.
+ * The work log so far.
  *
  * The backend sends a snapshot of the whole timeline each tick, not a delta, so
- * each snapshot simply replaces the beats. Rows carry their own identity, so a
+ * each snapshot simply replaces the log. Rows carry their own identity, so a
  * dropped frame costs a redraw rather than a corrupted log, and a row that did
  * not change is not redrawn at all.
+ *
+ * Deliberately knows nothing about the answer. The two used to be concatenated
+ * into one array here and pulled apart again by the renderer, which meant the
+ * whole log was rebuilt on every token of the reply — see `traceFrom`'s memo in
+ * `useThread`, which is the point of keeping them separate.
  */
-export function beatsFrom(
-  timeline: Timeline | null,
-  final: { text: string } | null,
-  liveAnswer = '',
-): Beat[] {
-  const beats = ledgerBeats(timeline?.ledger ?? [])
-  beats.push(...sayBeats(final?.text?.trim() ?? liveAnswer))
-  return beats
+export function traceFrom(timeline: Timeline | null): TraceStep[] {
+  return traceSteps(ledgerBeats(timeline?.ledger ?? []))
 }
 
 /**
@@ -146,11 +125,9 @@ function asRecorded(rows: readonly LedgerRow[]): LedgerRow[] {
   ))
 }
 
-/** The same beats, rebuilt from what a finished run wrote down. */
-function beatsFromRecord(text: string, run: ThreadRunRecord | undefined): Beat[] {
-  const beats = ledgerBeats(asRecorded(run?.ledger ?? []))
-  beats.push(...sayBeats(text))
-  return beats
+/** The same log, rebuilt from what a finished run wrote down. */
+function traceFromRecord(run: ThreadRunRecord | undefined): TraceStep[] {
+  return traceSteps(ledgerBeats(asRecorded(run?.ledger ?? [])))
 }
 
 /**
@@ -163,7 +140,18 @@ function beatsFromRecord(text: string, run: ThreadRunRecord | undefined): Beat[]
 export type Exchange = {
   id: string
   prompt: string
-  beats: Beat[]
+  /**
+   * What the run did on the way. Changes about once a second.
+   *
+   * Held apart from the answer rather than interleaved with it, because they
+   * move at rates two orders of magnitude apart and are never drawn mixed
+   * together. One array meant the slower value inherited the faster one's
+   * identity, so every token of the reply rebuilt every row of the log — and
+   * with it every vendor mark, roughly thirty times a second.
+   */
+  trace: TraceStep[]
+  /** What the run landed on. Changes with every token while it streams. */
+  answer: string
   state: RunState
   /** Set when the run ended without an answer. */
   error?: string
@@ -206,18 +194,20 @@ export function exchangesFrom(turns: readonly ThreadTurn[]): Exchange[] {
       exchanges.push({
         id: turn.id,
         prompt: turn.text,
-        beats: [],
+        trace: [],
+        answer: '',
         state: settledState(0),
       })
       continue
     }
-    const beats = beatsFromRecord(turn.text, turn.run)
+    const trace = traceFromRecord(turn.run)
     const elapsed = (turn.run?.elapsedMs ?? 0) / 1000
     const open = exchanges[exchanges.length - 1]
-    if (open && open.beats.length === 0 && !open.error) {
+    if (open && open.trace.length === 0 && !open.answer && !open.error) {
       exchanges[exchanges.length - 1] = {
         ...open,
-        beats,
+        trace,
+        answer: turn.text,
         state: settledState(elapsed),
         ...(turn.run?.failure ? { error: turn.run.failure.message } : {}),
       }
@@ -225,7 +215,8 @@ export function exchangesFrom(turns: readonly ThreadTurn[]): Exchange[] {
       exchanges.push({
         id: turn.id,
         prompt: '',
-        beats,
+        trace,
+        answer: turn.text,
         state: settledState(elapsed),
         ...(turn.run?.failure ? { error: turn.run.failure.message } : {}),
       })
@@ -281,7 +272,7 @@ export type ThreadRun = {
    * newest exchange to the top of the window on send, and a pin armed by a
    * declined send fires later, against whatever exchange appears next.
    */
-  send: (text: string, files?: readonly File[]) => boolean
+  send: (text: string, files: readonly File[] | undefined, modelSelection: ModelSelection) => boolean
   error: string | null
 }
 
@@ -386,7 +377,7 @@ export function useThreadRun(input: {
       // settled list stops the same question appearing twice, once above its
       // answer and once beside it.
       const last = history[history.length - 1]
-      if (live && last && last.beats.length === 0) history.pop()
+      if (live && last && last.trace.length === 0 && !last.answer) history.pop()
 
       setSettled(history)
       setTitle(found?.thread.title?.trim() || null)
@@ -429,11 +420,11 @@ export function useThreadRun(input: {
   useEffect(() => {
     if (running || prompt === null) return
     if (!final && !error) return
-    const beats = beatsFrom(timeline, final)
     setSettled(previous => [...previous, {
       id: runExchangeId(startedAt.current),
       prompt,
-      beats,
+      trace: traceFrom(timeline),
+      answer: final?.text?.trim() ?? '',
       /* Read once, here, from the same clock the header was ticking off. The
          duration is only news when the run is over. */
       state: settledState((Date.now() - startedAt.current) / 1000),
@@ -455,7 +446,11 @@ export function useThreadRun(input: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running, final, error])
 
-  const send = useCallback((text: string, files?: readonly File[]): boolean => {
+  const send = useCallback((
+    text: string,
+    files: readonly File[] | undefined,
+    modelSelection: ModelSelection,
+  ): boolean => {
     if (!input.token || running) return false
     const controller = new AbortController()
     abort.current?.abort()
@@ -471,6 +466,7 @@ export function useThreadRun(input: {
     void consume(ask({
       threadId: input.threadId,
       text,
+      modelSelection,
       ...(files?.length ? { files } : {}),
       token: input.token,
       signal: controller.signal,
@@ -483,14 +479,23 @@ export function useThreadRun(input: {
     void stop(input.threadId, input.token)
   }, [input.threadId, input.token, running])
 
-  /* Rebuilt only when the wire says something new.
-     Every value below it is derived, and a derived value with a fresh identity
-     is a re-render of everything downstream — so a render caused by anything
-     else at all (a scroll flag, a title arriving) used to rebuild every beat in
-     the run and hand each exchange a new object to redraw from. */
-  const liveBeats = useMemo(
-    () => (prompt === null ? [] : beatsFrom(timeline, final, liveAnswer)),
-    [prompt, timeline, final, liveAnswer],
+  /* The work log, on the wire's own clock.
+     Rebuilt only when the timeline says something new — about once a second —
+     and pointedly not when the answer grows. It used to be memoised on the
+     answer too, because the two shared an array: the reply arrives in deltas
+     every few milliseconds, so every row of the log, every vendor mark and
+     every agent list was rebuilt roughly thirty times a second to draw exactly
+     what was already on screen. That is the flicker. */
+  const liveTrace = useMemo(
+    () => (prompt === null ? [] : traceFrom(timeline)),
+    [prompt, timeline],
+  )
+
+  /* The answer, on the model's clock. A new string thirty times a second is
+     what a stream is; it reaches one text node and nothing else. */
+  const liveAnswerText = useMemo(
+    () => (prompt === null ? '' : final?.text?.trim() ?? liveAnswer),
+    [prompt, final, liveAnswer],
   )
 
   /* No longer keyed on the beats. It used to enumerate them — one index per
@@ -519,10 +524,11 @@ export function useThreadRun(input: {
     : [...settled, {
       id: runExchangeId(startedAt.current),
       prompt,
-      beats: liveBeats,
+      trace: liveTrace,
+      answer: liveAnswerText,
       state: liveState,
       ...(error ? { error } : {}),
-    }]), [prompt, settled, liveBeats, liveState, error])
+    }]), [prompt, settled, liveTrace, liveAnswerText, liveState, error])
 
   return {
     exchanges,

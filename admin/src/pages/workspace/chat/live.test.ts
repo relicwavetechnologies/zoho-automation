@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { beatsFrom, exchangesFrom } from './live'
+import { exchangesFrom, traceFrom } from './live'
 import type { LedgerRow, Timeline } from './stream'
 
 const thought = (id: string, label: string, open = false): LedgerRow =>
@@ -12,12 +12,20 @@ const call = (id: string, label: string): LedgerRow =>
 
 const ledger = (...rows: LedgerRow[]): Timeline => ({ ledger: rows })
 
-/** What a reader would see, in the order they would see it. */
-const shown = (timeline: Timeline, liveAnswer = ''): string[] =>
-  beatsFrom(timeline, null, liveAnswer).map(beat => {
-    if (beat.t === 'think') return `think${beat.running ? '*' : ''}:${beat.text}`
-    if (beat.t === 'say') return `${beat.narration ? 'aside' : 'REPLY'}:${beat.text}`
-    return `step:${beat.t === 'step' ? beat.title : ''}`
+/**
+ * The work log, in the order a reader would see it.
+ *
+ * It takes no answer, and that is the point: the log and the reply are built
+ * from different values now, so "does the log change when the answer stream
+ * fills?" is not a question this signature can express. It used to take one,
+ * because the two were one array.
+ */
+const shown = (timeline: Timeline): string[] =>
+  traceFrom(timeline).map(step => {
+    if (step.kind === 'thought') return `think${step.live ? '*' : ''}:${step.text}`
+    if (step.kind === 'narration') return `aside:${step.text}`
+    if (step.kind === 'agents') return 'agents'
+    return `step:${step.beat.title}`
   })
 
 /*
@@ -38,31 +46,19 @@ describe('which prose belongs in the work log', () => {
     said('s2', 'Three invoices are overdue.'),
   )
 
-  it('files what the model said on the way, and leaves the reply to the answer', () => {
-    assert.deepEqual(shown(midRun, 'Three invoices are overdue.'), [
+  it('files what the model said on the way, and leaves the reply out of the log', () => {
+    assert.deepEqual(shown(midRun), [
       'think:Where are the invoices?',
       'aside:Let me check Zoho Books.',
       'step:Zoho Books',
-      'REPLY:Three invoices are overdue.',
     ])
-  })
-
-  /* The answer stream empties on every tool call and refills a moment later.
-     Nothing in the log may move when it does. */
-  it('draws the same log whether the answer stream is full or empty', () => {
-    assert.deepEqual(
-      shown(midRun, '').filter(line => !line.startsWith('REPLY')),
-      shown(midRun, 'Three invoices are overdue.').filter(line => !line.startsWith('REPLY')),
-    )
   })
 
   /* "hi" once came back as "Hi! How can I help you today?" twice, one line
      apart: the sentence was in the ledger and in the answer. A sentence the run
      ended on is the reply, and the reply is drawn under the log, not inside it. */
   it('never prints the reply twice', () => {
-    assert.deepEqual(shown(ledger(said('s1', 'Hi! How can I help?')), 'Hi! How can I help?'), [
-      'REPLY:Hi! How can I help?',
-    ])
+    assert.deepEqual(shown(ledger(said('s1', 'Hi! How can I help?'))), [])
   })
 })
 
@@ -81,10 +77,6 @@ describe('whether the model is still thinking', () => {
     assert.equal(shown(open)[0], 'think*:Two things to check.')
   })
 
-  it('does not change when the answer stream fills', () => {
-    const timeline = ledger(thought('t1', 'Two things to check.', true), said('s1', 'Checking.', true))
-    assert.deepEqual(shown(timeline, ''), shown(timeline, 'Three are overdue.').slice(0, 2))
-  })
 })
 
 /*
@@ -92,28 +84,16 @@ describe('whether the model is still thinking', () => {
  * an aside inserts a beat above the rows below it, and a renderer keyed on
  * position rebuilds every one of them.
  */
-describe('what a beat is called', () => {
+describe('what a row in the log is called', () => {
   it('carries the row\'s own id, so a row keeps its name as the list grows', () => {
-    const ids = (timeline: Timeline, answer: string) =>
-      beatsFrom(timeline, null, answer).map(beat => beat.id)
+    const keys = (timeline: Timeline) => traceFrom(timeline).map(step => step.key)
 
     const before = ledger(thought('t1', 'Hm.'), said('s1', 'Checking.'), call('c1', 'Files'))
     const after = ledger(thought('t1', 'Hm.'), said('s1', 'Checking.', true), call('c1', 'Files'))
 
     // The aside appears; nothing else is renamed by its arrival.
-    assert.deepEqual(ids(before, 'Done.'), ['t1', 'c1', 'answer'])
-    assert.deepEqual(ids(after, 'Done.'), ['t1', 's1', 'c1', 'answer'])
-  })
-
-  /* One reply per run, and it is the same reply from its first word to its
-     last — so it keeps one name while the log above it grows underneath. */
-  it('gives the reply one name for the whole run', () => {
-    const first = beatsFrom(ledger(said('s1', 'Working.', true)), null, 'Three')
-    const later = beatsFrom(
-      ledger(said('s1', 'Working.', true), call('c1', 'Files')), null, 'Three are overdue.',
-    )
-    assert.equal(first[first.length - 1]!.id, 'answer')
-    assert.equal(later[later.length - 1]!.id, 'answer')
+    assert.deepEqual(keys(before), ['t1', 'c1'])
+    assert.deepEqual(keys(after), ['t1', 's1', 'c1'])
   })
 })
 
@@ -132,15 +112,18 @@ describe('a call that farmed its work out', () => {
         { label: 'reviewer', status: 'done', outcome: 'check the totals' },
       ],
     }
-    const [beat] = beatsFrom(ledger(row), null)
-    assert.equal(beat!.t, 'agents')
-    assert.equal(beat!.id, 'c9')
-    assert.deepEqual(beat!.t === 'agents' && beat.run.agents.map(a => a.role), ['scout', 'reviewer'])
+    const [step] = traceFrom(ledger(row))
+    assert.equal(step!.kind, 'agents')
+    assert.equal(step!.key, 'c9')
+    assert.deepEqual(
+      step!.kind === 'agents' && step.beat.run.agents.map(a => a.role),
+      ['scout', 'reviewer'],
+    )
   })
 
   it('leaves every other call a step', () => {
-    const [beat] = beatsFrom(ledger(call('c1', 'Files')), null)
-    assert.equal(beat!.t, 'step')
+    const [step] = traceFrom(ledger(call('c1', 'Files')))
+    assert.equal(step!.kind, 'tool')
   })
 })
 
@@ -154,25 +137,34 @@ describe('a conversation recorded before the run marked its asides', () => {
   const replay = (...rows: LedgerRow[]) => exchangesFrom([
     { id: 'u1', role: 'user', text: 'How are the invoices?', at: '' },
     { id: 'a1', role: 'assistant', text: 'Three invoices are overdue.', at: '', run: { ledger: rows, elapsedMs: 900 } },
-  ])[0]!.beats.map(beat => (
-    beat.t === 'say' ? `${beat.narration ? 'aside' : 'REPLY'}:${beat.text}` : `step:${beat.t}`
+  ])[0]!
+  const replayLog = (...rows: LedgerRow[]) => replay(...rows).trace.map(step => (
+    step.kind === 'narration' ? `aside:${step.text}` : `step:${step.kind}`
   ))
 
   it('keeps what the model said on the way, and still prints the reply once', () => {
+    const exchange = replay(
+      said('s1', 'Let me check Zoho Books.'),
+      call('c1', 'Zoho Books'),
+      said('s2', 'Three invoices are overdue.'),
+    )
     assert.deepEqual(
-      replay(
+      replayLog(
         said('s1', 'Let me check Zoho Books.'),
         call('c1', 'Zoho Books'),
         said('s2', 'Three invoices are overdue.'),
       ),
-      ['aside:Let me check Zoho Books.', 'step:step', 'REPLY:Three invoices are overdue.'],
+      ['aside:Let me check Zoho Books.', 'step:tool'],
     )
+    // The reply is the turn's own text, held apart from the log rather than
+    // sitting at the end of it.
+    assert.equal(exchange.answer, 'Three invoices are overdue.')
   })
 
   it('leaves a record that does carry the mark exactly as it was written', () => {
     assert.deepEqual(
-      replay(said('s1', 'Only an aside.', true), call('c1', 'Files'), said('s2', 'The reply.')),
-      ['aside:Only an aside.', 'step:step', 'REPLY:Three invoices are overdue.'],
+      replayLog(said('s1', 'Only an aside.', true), call('c1', 'Files'), said('s2', 'The reply.')),
+      ['aside:Only an aside.', 'step:tool'],
     )
   })
 })
