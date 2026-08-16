@@ -49,9 +49,10 @@ export const createOmsSiteDataTool = (deps: {
   actionGroups: new Set(['read']),
   argsSchema: OmsSiteDataToolArgsSchema,
   resultSchema: ResultSchema,
-  description: 'Search the company-approved OMS website inventory through a governed, read-only backend capability.',
+  description: 'Sanitize OMS website inputs or search the company-approved OMS website inventory through a governed, read-only backend capability.',
   parameterDocs: [
-    'operation: search_sites, get_site_profiles, or list_catalog_values.',
+    'operation: sanitize_website_inputs, search_sites, get_site_profiles, or list_catalog_values.',
+    'sanitize_website_inputs: pass pasted emails, URLs, or hostnames in inputs; returns deterministic OMS-ready website hostnames without calling OMS.',
     'search_sites: use one or more vetted website, niche, classification, price, quality, traffic, or authority criteria; returns the standard inventory view.',
     'search_sites quality filters: maxSpamScore (lower is better, use it for clean/safe site requests), minDomainRating, minDomainAuthority, minPageAuthority.',
     'search_sites spam score: OMS stores "never measured" as a negative spam score. Setting maxSpamScore, or ranking cleanest-first, automatically excludes those unmeasured sites, so such a result is the set of sites with a MEASURED spam score, not every matching site. Set minSpamScore yourself to override.',
@@ -101,6 +102,7 @@ export const createOmsSiteDataTool = (deps: {
           data.status,
           data.rows.length,
           preview.rows.length,
+          data.coverage,
           args,
         ),
       };
@@ -159,8 +161,18 @@ function messageFor(
   status: 'complete' | 'empty' | 'partial',
   rowCount: number,
   returnedRows: number,
+  coverage: Record<string, unknown>,
   args: OmsSiteDataToolArgs,
 ): string {
+  if (args.operation === 'sanitize_website_inputs') {
+    const sanitizedRows = typeof coverage.sanitizedRows === 'number' ? coverage.sanitizedRows : 0;
+    const invalidRows = typeof coverage.invalidRows === 'number' ? coverage.invalidRows : rowCount - sanitizedRows;
+    const parts = [`Sanitized ${sanitizedRows} of ${rowCount} candidate input${rowCount === 1 ? '' : 's'} into OMS-ready website hostnames.`];
+    if (invalidRows > 0) parts.push(`${invalidRows} candidate${invalidRows === 1 ? ' was' : 's were'} invalid and kept in the preview with a reason.`);
+    parts.push('Use the website column for exact OMS lookups. This operation did not call OMS or any vendor API.');
+    if (rowCount > returnedRows) parts.push(`Showing the first ${returnedRows} rows in chat.`);
+    return parts.join(' ');
+  }
   // Divo injects a spamScore >= 0 filter to drop the unmeasured sentinel, which
   // changes the result set. Saying so keeps "complete" and "no matches" honest.
   const spamNote = args.operation === 'search_sites' && excludesUnmeasuredSpamScore(args)
@@ -197,6 +209,7 @@ function partialAdviceFor(args: OmsSiteDataToolArgs): string {
   if (args.operation === 'get_site_profiles') {
     return `${capped} Sites are stored per listing, so some listings for the requested hostnames may be missing. Request fewer hostnames if you need every listing.`;
   }
+  if (args.operation !== 'search_sites') return capped;
   return args.sortBy
     ? `${capped} OMS sorts before it truncates, so these are genuinely the top 100 by ${args.sortBy} ${args.sortDirection ?? defaultSortDirection(args.sortBy)}; any lower-ranked matches are excluded. Narrow the filters to see past them.`
     : `${capped} No sort was requested, so these 100 rows are an arbitrary subset of the matches rather than the best ones. Re-run with sortBy, or narrow the filters, before drawing any conclusion.`;

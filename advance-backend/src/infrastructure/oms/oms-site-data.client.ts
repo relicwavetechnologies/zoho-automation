@@ -1,8 +1,8 @@
 import {
   buildOmsProviderRequest,
   type OmsFetchedData,
+  type OmsProviderSiteDataToolArgs,
   type OmsProviderRequest,
-  type OmsSiteDataToolArgs,
   OmsSiteDataServiceError,
 } from '../../application/oms/oms-site-data.types';
 
@@ -19,7 +19,7 @@ export class OmsSiteDataClient {
     await parseRows(response);
   }
 
-  async fetch(apiKey: string, args: OmsSiteDataToolArgs): Promise<OmsFetchedData> {
+  async fetch(apiKey: string, args: OmsProviderSiteDataToolArgs): Promise<OmsFetchedData> {
     const response = await this.request(apiKey, buildOmsProviderRequest(args));
     let rows = await parseRows(response);
     if (args.operation === 'list_catalog_values') {

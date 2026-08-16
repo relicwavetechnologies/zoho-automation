@@ -6,6 +6,24 @@ import { ok } from '../../src/shared/result.ts';
 import { noopLogger } from '../tools/tool-test.helpers.ts';
 
 describe('CompanyOmsSiteDataService', () => {
+  it('sanitizes website inputs without requiring a company OMS connection', async () => {
+    const { service, calls } = makeService({ noConnection: true });
+    const preflight = await service.preflight('co-1', { operation: 'sanitize_website_inputs', inputs: ['sales@example.com'] });
+    const result = await service.execute({ companyId: 'co-1', args: { operation: 'sanitize_website_inputs', inputs: ['sales@example.com', 'bad'] } });
+
+    assert.equal(preflight.connectionSource, 'none');
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(result.coverage, {
+      source: 'Divo OMS input sanitizer',
+      inputCount: 2,
+      candidateCount: 2,
+      sanitizedRows: 1,
+      invalidRows: 1,
+    });
+    assert.equal(result.rows[0]?.website, 'www.example.com');
+    assert.equal(calls.fetch, 0);
+  });
+
   it('preflights an active company connection without fetching provider data', async () => {
     const { service, calls } = makeService();
     const result = await service.preflight('co-1', { operation: 'search_sites', niche: 'Technology' });

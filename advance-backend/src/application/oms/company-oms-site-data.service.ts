@@ -4,7 +4,7 @@ import type { Logger } from '../../shared/logger';
 import { CompanyOmsConnectionRepository, type SafeOmsConnection } from '../../infrastructure/persistence/company-oms-connection.repository';
 import { OmsSiteDataClient } from '../../infrastructure/oms/oms-site-data.client';
 import type { OmsFetchedData, OmsSiteDataToolArgs } from './oms-site-data.types';
-import { OmsSiteDataServiceError } from './oms-site-data.types';
+import { OmsSiteDataServiceError, sanitizeOmsWebsiteInputs } from './oms-site-data.types';
 import type { ApiKeyExhaustionNotifierPort } from '../governance/api-key-exhaustion.notifier';
 
 const CONNECTION_PROOF_TTL_SECONDS = 10 * 60;
@@ -50,6 +50,16 @@ export class CompanyOmsSiteDataService {
   }
 
   async preflight(companyId: string, args: OmsSiteDataToolArgs): Promise<Record<string, unknown>> {
+    if (args.operation === 'sanitize_website_inputs') {
+      return {
+        configured: true,
+        enabled: true,
+        operation: args.operation,
+        connectionSource: 'none',
+        limits: { maxInputs: 200 },
+        caveats: ['This operation is deterministic and does not call OMS or any vendor API.'],
+      };
+    }
     const connection = await this.requireActiveConnection(companyId);
     return {
       configured: true,
@@ -62,6 +72,22 @@ export class CompanyOmsSiteDataService {
   }
 
   async execute(input: { companyId: string; args: OmsSiteDataToolArgs }): Promise<OmsFetchedData> {
+    if (input.args.operation === 'sanitize_website_inputs') {
+      const rows = sanitizeOmsWebsiteInputs(input.args.inputs);
+      const sanitizedRows = rows.filter(row => row.status === 'sanitized').length;
+      return {
+        operation: input.args.operation,
+        status: sanitizedRows === 0 ? 'empty' : 'complete',
+        coverage: {
+          source: 'Divo OMS input sanitizer',
+          inputCount: input.args.inputs.length,
+          candidateCount: rows.length,
+          sanitizedRows,
+          invalidRows: rows.length - sanitizedRows,
+        },
+        rows,
+      };
+    }
     const connection = await this.requireActiveConnection(input.companyId);
     try {
       const data = await this.client.fetch(connection.apiKey, input.args);

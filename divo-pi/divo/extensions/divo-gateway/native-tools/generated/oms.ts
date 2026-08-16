@@ -9,16 +9,40 @@ export const OMS_NATIVE_TOOLS = [
     "name": "divo_oms_site_data",
     "family": "oms",
     "label": "Divo Oms Site Data",
-    "description": "Search the company-approved OMS website inventory through a governed, read-only backend capability.",
+    "description": "Sanitize OMS website inputs or search the company-approved OMS website inventory through a governed, read-only backend capability.",
     "promptSnippet": "Use divo_oms_site_data for governed oms work. The backend remains authoritative for access, connections, approvals, and execution.",
     "promptGuidelines": [
-      "operation: search_sites, get_site_profiles, or list_catalog_values.",
+      "operation: sanitize_website_inputs, search_sites, get_site_profiles, or list_catalog_values.",
+      "sanitize_website_inputs: pass pasted emails, URLs, or hostnames in inputs; returns deterministic OMS-ready website hostnames without calling OMS.",
       "search_sites: use one or more vetted website, niche, classification, price, quality, traffic, or authority criteria; returns the standard inventory view.",
-      "search_sites quality filters: maxSpamScore (lower is better, use it for clean/safe site requests), minDomainRating, minDomainAuthority, minPageAuthority.",
-      "search_sites spam score: OMS stores \"never measured\" as a negative spam score. Setting maxSpamScore, or ranking cleanest-first, automatically excludes those unmeasured sites, so such a result is the set of sites with a MEASURED spam score, not every matching site. Set minSpamScore yourself to override."
+      "search_sites quality filters: maxSpamScore (lower is better, use it for clean/safe site requests), minDomainRating, minDomainAuthority, minPageAuthority."
     ],
     "parameters": {
       "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "sanitize_website_inputs"
+            },
+            "inputs": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              },
+              "minItems": 1,
+              "maxItems": 200
+            }
+          },
+          "required": [
+            "operation",
+            "inputs"
+          ],
+          "additionalProperties": false
+        },
         {
           "type": "object",
           "properties": {

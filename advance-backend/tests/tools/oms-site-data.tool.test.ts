@@ -63,6 +63,7 @@ describe('OMS Site Data tool', () => {
     // The restructure moved search's cross-field checks out of the object, so
     // the happy path needs pinning too.
     const tool = createTool();
+    assert.equal(tool.argsSchema.safeParse({ operation: 'sanitize_website_inputs', inputs: ['sales@example.com', 'https://example.com/path'] }).success, true);
     assert.equal(tool.argsSchema.safeParse({ operation: 'get_site_profiles', websites: ['example.com'] }).success, true);
     assert.equal(tool.argsSchema.safeParse({ operation: 'list_catalog_values', field: 'niche' }).success, true);
     assert.equal(tool.argsSchema.safeParse({ operation: 'search_sites', niche: 'Technology' }).success, true);
@@ -187,6 +188,30 @@ describe('OMS Site Data tool', () => {
     if (!result.ok) return;
     assert.equal(result.value.status, 'blocked');
     assert.match(result.value.message, /ambiguous/i);
+  });
+
+  it('summarizes sanitizer output as cleanup, not provider retrieval', async () => {
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'sanitize_website_inputs',
+          status: 'complete' as const,
+          coverage: { sanitizedRows: 1, invalidRows: 1 },
+          rows: [
+            { input: 'sales@example.com', status: 'sanitized', inputKind: 'email', hostname: 'example.com', website: 'www.example.com' },
+            { input: 'bad', status: 'invalid', reason: 'No URL, email, or hostname found.' },
+          ],
+        }),
+      },
+    });
+    const result = await tool.execute({ operation: 'sanitize_website_inputs', inputs: ['sales@example.com', 'bad'] }, makeCtx('omsSiteData', ['read']));
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.status, 'complete');
+    assert.equal(result.value.preview?.rows[0]?.website, 'www.example.com');
+    assert.match(result.value.message, /Sanitized 1 of 2/i);
+    assert.match(result.value.message, /did not call OMS or any vendor API/i);
+    assert.doesNotMatch(result.value.message, /100-row cap|Retrieved 2 site rows/i);
   });
 });
 

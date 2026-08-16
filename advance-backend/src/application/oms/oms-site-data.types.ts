@@ -6,6 +6,7 @@ import { z } from 'zod';
  * reviewed, stable subset that map to useful inventory workflows.
  */
 export const OMS_SITE_DATA_OPERATIONS = [
+  'sanitize_website_inputs',
   'search_sites',
   'get_site_profiles',
   'list_catalog_values',
@@ -83,6 +84,11 @@ export const SEARCH_SORT_FIELDS = [
 ] as const;
 
 const searchSortField = z.enum(SEARCH_SORT_FIELDS);
+
+const SanitizeWebsiteInputsSchema = z.object({
+  operation: z.literal('sanitize_website_inputs'),
+  inputs: z.array(z.string().trim().min(1).max(2_000)).min(1).max(200),
+}).strict();
 
 // Kept as a raw object so the union below can discriminate on `operation`.
 // The cross-field checks live in `refineSearchSites` and run once the branch
@@ -210,6 +216,7 @@ const ListCatalogValuesSchema = z.object({
  */
 export const OmsSiteDataToolArgsSchema = z
   .discriminatedUnion('operation', [
+    SanitizeWebsiteInputsSchema,
     SearchSitesObject,
     GetSiteProfilesSchema,
     ListCatalogValuesSchema,
@@ -218,6 +225,7 @@ export const OmsSiteDataToolArgsSchema = z
     if (value.operation === 'search_sites') refineSearchSites(value, ctx);
   });
 export type OmsSiteDataToolArgs = z.infer<typeof OmsSiteDataToolArgsSchema>;
+export type OmsProviderSiteDataToolArgs = Exclude<OmsSiteDataToolArgs, { operation: 'sanitize_website_inputs' }>;
 
 // The provider allows up to 25 columns per request. Every filterable metric is
 // also selected so a shortlist always shows the fields it was filtered on.
@@ -297,7 +305,86 @@ export interface OmsFetchedData {
   readonly rows: Array<Record<string, unknown>>;
 }
 
-export function buildOmsProviderRequest(args: OmsSiteDataToolArgs): OmsProviderRequest {
+export type OmsSanitizedWebsiteRow = {
+  readonly input: string;
+  readonly status: 'sanitized' | 'invalid';
+  readonly inputKind?: 'email' | 'url' | 'hostname';
+  readonly hostname?: string;
+  readonly website?: string;
+  readonly reason?: string;
+};
+
+export function sanitizeOmsWebsiteInputs(inputs: readonly string[]): OmsSanitizedWebsiteRow[] {
+  const rows: OmsSanitizedWebsiteRow[] = [];
+  for (const input of inputs) {
+    const candidates = websiteCandidates(input);
+    if (candidates.length === 0) {
+      rows.push({ input, status: 'invalid', reason: 'No URL, email, or hostname found.' });
+      continue;
+    }
+    for (const candidate of candidates) rows.push(sanitizeOneWebsiteInput(candidate));
+  }
+  return rows;
+}
+
+function sanitizeOneWebsiteInput(input: string): OmsSanitizedWebsiteRow {
+  const candidate = stripWrapper(input);
+  const emailHost = hostFromEmail(candidate);
+  const parsed = emailHost
+    ? { host: emailHost, kind: 'email' as const }
+    : hostFromUrlOrHostname(candidate);
+  if (!parsed) return { input, status: 'invalid', reason: 'Not a valid email, URL, or website hostname.' };
+  const hostname = parsed.host.replace(/\.$/, '').toLowerCase();
+  if (!website.safeParse(hostname).success) {
+    return { input, status: 'invalid', reason: 'Hostname must be a public domain, not an IP, localhost, or malformed value.' };
+  }
+  return {
+    input,
+    status: 'sanitized',
+    inputKind: parsed.kind,
+    hostname,
+    website: omsWebsiteFor(hostname),
+  };
+}
+
+function websiteCandidates(input: string): string[] {
+  return input
+    .split(/[\s,;]+/)
+    .map(stripWrapper)
+    .filter((candidate) => candidate && /@|:\/\/|\.|^www\./i.test(candidate));
+}
+
+function stripWrapper(value: string): string {
+  return value.trim().replace(/^[<([{'"`]+|[>\])}'"`.,]+$/g, '');
+}
+
+function hostFromEmail(value: string): string | undefined {
+  const address = value.replace(/^mailto:/i, '');
+  const match = /^[^@\s]+@([^@\s/?#]+)$/i.exec(address);
+  return match?.[1];
+}
+
+function hostFromUrlOrHostname(value: string): { host: string; kind: 'url' | 'hostname' } | undefined {
+  const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+  const looksUrl = hasScheme || /[/?#]/.test(value);
+  try {
+    const url = new URL(hasScheme ? value : `https://${value}`);
+    return url.hostname ? { host: url.hostname, kind: looksUrl ? 'url' : 'hostname' } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function omsWebsiteFor(hostname: string): string {
+  if (hostname.startsWith('www.')) return hostname;
+  const labels = hostname.split('.');
+  const [, second, third] = labels;
+  const countrySecondLevel = labels.length === 3 && second !== undefined && third !== undefined && second.length <= 3 && third.length === 2;
+  const bareDomain = labels.length === 2 || countrySecondLevel;
+  return bareDomain ? `www.${hostname}` : hostname;
+}
+
+export function buildOmsProviderRequest(args: OmsProviderSiteDataToolArgs): OmsProviderRequest {
   switch (args.operation) {
     case 'search_sites': {
       const filters: OmsFilter[] = [];

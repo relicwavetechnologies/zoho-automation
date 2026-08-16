@@ -1,9 +1,27 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { OmsSiteDataClient } from '../../src/infrastructure/oms/oms-site-data.client.ts';
-import { OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, SEARCH_SORT_FIELDS, buildOmsProviderRequest } from '../../src/application/oms/oms-site-data.types.ts';
+import { OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, SEARCH_SORT_FIELDS, buildOmsProviderRequest, sanitizeOmsWebsiteInputs } from '../../src/application/oms/oms-site-data.types.ts';
 
 describe('OmsSiteDataClient', () => {
+  it('sanitizes pasted emails, URLs, and hostnames into OMS-ready websites', () => {
+    const rows = sanitizeOmsWebsiteInputs([
+      'Sales@Example.COM',
+      'https://example.com/path?utm=1',
+      'www.partner.co.in/',
+      'blog.example.com/articles',
+      'not-a-domain',
+    ]);
+
+    assert.deepEqual(rows, [
+      { input: 'Sales@Example.COM', status: 'sanitized', inputKind: 'email', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'https://example.com/path?utm=1', status: 'sanitized', inputKind: 'url', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'www.partner.co.in/', status: 'sanitized', inputKind: 'url', hostname: 'www.partner.co.in', website: 'www.partner.co.in' },
+      { input: 'blog.example.com/articles', status: 'sanitized', inputKind: 'url', hostname: 'blog.example.com', website: 'blog.example.com' },
+      { input: 'not-a-domain', status: 'invalid', reason: 'No URL, email, or hostname found.' },
+    ]);
+  });
+
   it('uses the fixed POST contract, exact op filter key, and no browser/session headers', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new OmsSiteDataClient({

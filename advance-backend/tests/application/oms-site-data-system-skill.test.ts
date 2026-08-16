@@ -6,6 +6,9 @@ describe('OMS Site Data system skill', () => {
   it('is discoverable for inventory research and constrained to the canonical OMS tool', () => {
     assert.deepEqual(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.toolIds, ['omsSiteData']);
     assert.ok(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.aliases.includes('oms'));
+    assert.ok(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.aliases.includes('email sanitizer'));
+    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /sanitize_website_inputs/i);
+    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /Vendor lookup requires a separate backend capability/i);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /never call the OMS webhook/i);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /ambiguous/i);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /company administrators/i);
