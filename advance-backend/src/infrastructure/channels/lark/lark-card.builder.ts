@@ -4,6 +4,7 @@
  */
 
 import { LARK_CARD_LIMITS } from '../../../domain/channel/surface-capabilities';
+import { PROGRESS_BOUNDS } from '../../../application/runtime/progress-limits';
 import type {
   ChannelBranding,
   ChannelLedgerChild,
@@ -143,9 +144,22 @@ function hrElement(margin = '4px 0 0 0'): Record<string, unknown> {
  * interleaved rows is barely two steps of context.
  */
 const ACTIVITY_VISIBLE_ROWS = 9;
-const ACTIVITY_DETAIL_MAX   = 64;
-const ACTIVITY_SAY_MAX      = 200;
 const TODO_VISIBLE_ROWS     = 8;
+
+/*
+ * How long a row's text may be is a property of the text, not of this card, so
+ * it is read from the one table both ends of the wire read. These were a third
+ * copy of the same numbers — 64 for a detail, 200 for a sentence — sitting a
+ * step downstream of two that already disagreed with each other.
+ *
+ * How many *rows* fit is genuinely this card's own business: Lark gives an
+ * element a hard character budget, and nine activity rows and eight plan rows
+ * are what fits inside it. Those stay here.
+ */
+const ACTIVITY_LABEL_MAX  = PROGRESS_BOUNDS.label.max;
+const ACTIVITY_DETAIL_MAX = PROGRESS_BOUNDS.detail.max;
+const ACTIVITY_SAY_MAX    = PROGRESS_BOUNDS.say.max;
+const ELAPSED_MAX         = PROGRESS_BOUNDS.elapsed.max;
 
 const RUN_STATE_WORD: Record<ChannelRunState, string> = {
   queued:   'Queued',
@@ -215,6 +229,25 @@ function statusStateTitle(timeline?: ChannelTimeline): string {
 }
 
 /**
+ * Text that has crossed the escape and may sit inside the card's markup.
+ *
+ * A nominal type with no runtime cost, and the point of it is that
+ * `sanitizeRunText` is the only thing that produces one. Every line of this
+ * card is assembled from `CardText` and from string literals written in this
+ * file, so a value off the wire cannot reach the markup without being escaped
+ * on the way — not because each author remembered, but because the alternative
+ * does not compile.
+ *
+ * It used to be each author's job, and three fields were missed: a ledger row's
+ * label, a child agent's label, and a declared step's title. Those three are
+ * precisely the ones whose text originates outside the trust seam — a tool
+ * name, an agent's role, and a checklist item the *model* wrote — and neither
+ * bound applied on the way in strips these characters, because bounding text
+ * and escaping markup are different jobs.
+ */
+export type CardText = string & { readonly __cardEscaped: unique symbol };
+
+/**
  * Text from a run, made safe to sit inside the card's own markup.
  *
  * Activity detail is now a bash command or a sentence the model wrote, and both
@@ -225,7 +258,7 @@ function statusStateTitle(timeline?: ChannelTimeline): string {
  * characters are left alone — stripping them would rewrite `my_file.txt`, and
  * the worst they do is italicise part of a line.
  */
-export function sanitizeRunText(value: string, maxLength: number): string {
+export function sanitizeRunText(value: string, maxLength: number): CardText {
   const flat = value
     .replace(/[<>`]/g, '')
     .replace(/\s+/g, ' ')
@@ -235,10 +268,25 @@ export function sanitizeRunText(value: string, maxLength: number): string {
     // rest of the card looks like its caption.
     .replace(/^\s*(?:#{1,6}|>|\*\*)\s*/, '')
     .trim();
-  return flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat;
+  return (flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat) as CardText;
 }
 
-function truncateOutcome(value: string): string {
+/**
+ * The card's own furniture, wrapped around text that has already been escaped.
+ *
+ * These take `CardText` rather than `string` on purpose. The markup they add is
+ * written here as a literal and never passed in, so the only way to get an
+ * emphasised or greyed span is to hand one of them a value that crossed the
+ * escape — which is what makes "every field is escaped" a fact about the types
+ * rather than a habit.
+ */
+const bold = (text: CardText): CardText => `**${text}**` as CardText;
+const grey = (text: CardText): CardText => `<font color='grey'>${text}</font>` as CardText;
+
+/** Static text this file wrote itself, which needs no escaping. */
+const own = (literal: string): CardText => literal as CardText;
+
+function truncateOutcome(value: string): CardText {
   return sanitizeRunText(value, ACTIVITY_DETAIL_MAX);
 }
 
@@ -263,11 +311,12 @@ function activityLine(row: ChannelLedgerRow, indent: string): string {
     return `${indent}${sanitizeRunText(row.label, ACTIVITY_SAY_MAX)}`;
   }
   const marker = STEP_MARKERS[row.status];
-  const calls  = row.count > 1 ? ` <font color='grey'>×${row.count}</font>` : '';
-  const detail = row.outcome?.trim()
-    ? `  <font color='grey'>${truncateOutcome(row.outcome)}</font>`
-    : '';
-  return `${indent}${marker} **${row.label}**${calls}${detail}`;
+  // A tool's own name, which reaches this card from the container. It was the
+  // one field on this line nothing escaped.
+  const label  = bold(sanitizeRunText(row.label, ACTIVITY_LABEL_MAX));
+  const calls  = row.count > 1 ? ` ${grey(own(`×${row.count}`))}` : '';
+  const detail = row.outcome?.trim() ? `  ${grey(truncateOutcome(row.outcome))}` : '';
+  return `${indent}${marker} ${label}${calls}${detail}`;
 }
 
 /**
@@ -281,12 +330,12 @@ function activityLine(row: ChannelLedgerRow, indent: string): string {
  */
 function childLine(child: ChannelLedgerChild, indent: string): string {
   const marker = STEP_MARKERS[child.status];
-  const task = child.outcome?.trim() ? truncateOutcome(child.outcome) : '';
-  const clock = child.elapsed?.trim() ?? '';
-  const detail = [task, clock].filter(Boolean).join(' · ');
-  return `${indent}${marker} **${child.label}**${
-    detail ? `  <font color='grey'>${detail}</font>` : ''
-  }`;
+  // The agent's role, written by the model when it spawned the child.
+  const label = bold(sanitizeRunText(child.label, ACTIVITY_LABEL_MAX));
+  const task  = child.outcome?.trim() ? truncateOutcome(child.outcome) : '';
+  const clock = child.elapsed?.trim() ? sanitizeRunText(child.elapsed, ELAPSED_MAX) : '';
+  const detail = [task, clock].filter(Boolean).join(' · ') as CardText;
+  return `${indent}${marker} ${label}${detail ? `  ${grey(detail)}` : ''}`;
 }
 
 /**
@@ -455,12 +504,13 @@ function planPanel(timeline: ChannelTimeline): Record<string, unknown> | undefin
   const visible = hidden > 0 ? items.slice(0, TODO_VISIBLE_ROWS) : items;
   const body = [
     ...visible.map(item => {
-      const title = item.status === 'done'
-        ? `<font color='grey'>${item.title}</font>`
-        : item.title;
+      // The model wrote this title. It reaches the card exactly as written, and
+      // it was the last of the three fields nothing escaped.
+      const safe  = sanitizeRunText(item.title, ACTIVITY_LABEL_MAX);
+      const title = item.status === 'done' ? grey(safe) : safe;
       return `${STEP_MARKERS[item.status]} ${title}`;
     }),
-    ...(hidden > 0 ? [`<font color='grey'>+${hidden} more</font>`] : []),
+    ...(hidden > 0 ? [grey(own(`+${hidden} more`))] : []),
   ].join('\n');
 
   return {

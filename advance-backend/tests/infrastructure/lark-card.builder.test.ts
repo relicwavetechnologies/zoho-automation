@@ -364,6 +364,81 @@ describe('lark-card.builder activity log', () => {
   });
 });
 
+/**
+ * The three fields that reach a card from outside the trust seam.
+ *
+ * A tool's name, an agent's role and a checklist item's title are written by
+ * the container or by the model itself, and each was interpolated straight into
+ * the card's markup. Neither bound applied on the way in touches these
+ * characters — bounding text and escaping markup are different jobs, and the
+ * bounds only flatten whitespace.
+ *
+ * `<` is the one that matters: the card opens `<font color='grey'>` spans of
+ * its own, and an unescaped `<` in a row label closes one early and takes the
+ * rest of the card's structure with it.
+ */
+describe('lark-card.builder escaping outside the trust seam', () => {
+  const hostile = "Zoho <font color='red'>x</font> `code` <b>";
+
+  it('escapes a tool name the container chose', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working',
+        ledger: [{ label: hostile, count: 1, status: 'running' }],
+      },
+    }));
+    const log = markdownContents(card).join('\n');
+    // Both brackets go and the backticks with them, so what is left is inert
+    // text sitting where the card put it — inside its own bold run.
+    assert.match(log, /\*\*Zoho font color='red'x\/font code b\*\*/);
+  });
+
+  it('escapes an agent role the model wrote', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working',
+        ledger: [{
+          label: 'Subagents', count: 1, status: 'running',
+          children: [{ label: hostile, status: 'running' }],
+        }],
+      },
+    }));
+    assert.doesNotMatch(markdownContents(card).join('\n'), /<b>|<font color='red'>/);
+  });
+
+  it('escapes a checklist title the model wrote', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working',
+        declared: { done: 0, total: 1, items: [{ title: hostile, status: 'running' }] },
+      },
+    }));
+    assert.doesNotMatch(JSON.stringify(card), /<b>/);
+  });
+
+  /* The card opens exactly the spans it wrote itself. Counting them is how a
+     tag closed early by a run's own text shows up as a failure rather than as
+     a card that merely looks odd. */
+  it('leaves the card with balanced font spans whatever a run calls its steps', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working',
+        ledger: [
+          { label: hostile, count: 3, status: 'done', outcome: hostile },
+          { label: 'Sub', count: 1, status: 'running',
+            children: [{ label: hostile, status: 'running', outcome: hostile, elapsed: '2m' }] },
+        ],
+        declared: { done: 0, total: 1, items: [{ title: hostile, status: 'pending' }] },
+      },
+    }));
+    const markup = markdownContents(card).join('\n');
+    assert.equal(
+      (markup.match(/<font /g) ?? []).length,
+      (markup.match(/<\/font>/g) ?? []).length,
+    );
+  });
+});
+
 describe('lark-card.builder heading softening', () => {
   // Two trailing spaces is markdown's hard line break, so a model writing
   // correct markdown produced `**Title  **` — a bold run CommonMark will not
