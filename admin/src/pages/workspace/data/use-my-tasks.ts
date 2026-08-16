@@ -38,8 +38,12 @@ export function useMyTasks(limit = 6) {
     let live = true
     void (async () => {
       try {
+        /* `raw` because this route answers bare, the way `/api/artifacts` does
+           — member routes under `http/member/` do not use the `{ success, data }`
+           envelope. Without it the reader hands back `body.data`, which is
+           `undefined` here, and the panel reads a shape bug as "no Lark". */
         const data = await api.get<TasksResponse>(
-          `/api/me/tasks?limit=${limit}`, token, { quiet: true },
+          `/api/me/tasks?limit=${limit}`, token, { quiet: true, raw: true },
         )
         if (!live) return
         setTasks(data.tasks ?? [])
