@@ -1,12 +1,17 @@
 /**
  * A table the model wrote, drawn as data.
  *
- * Almost none of what makes this readable is the chart. It is that figures sit
- * under each other in tabular figures instead of ragging, that a long result
- * folds instead of becoming a wall, and that a magnitude carries a hairline you
- * can compare down the column without reading a single number. The chart is
- * offered last and only when the shape is unambiguous — the table is the
- * answer, and a chart is a second way to look at it.
+ * **The chart leads when there is one.** `plotOf` only returns a plot for a
+ * shape that is unambiguous — a labelled first column, a bounded row count,
+ * positive numerics on comparable scales — so wherever a chart exists at all it
+ * is the faster read, and the table is one press away underneath it.
+ *
+ * The rest of what makes this readable has nothing to do with the chart: that
+ * figures sit under each other in tabular figures instead of ragging, that a
+ * long result folds instead of becoming a wall, and that a magnitude carries a
+ * hairline you can compare down the column without reading a single number.
+ * That still matters, because most results never qualify for a plot and land on
+ * the table regardless of this default.
  */
 import { useMemo, useState } from 'react'
 import { PlotView } from './chart'
@@ -19,7 +24,11 @@ const FOLDED = 10
 
 export function DataTable({ table }: { table: ParsedTable }) {
   const [open, setOpen] = useState(false)
-  const [charted, setCharted] = useState(false)
+  /* Safe as a default because the render falls back on its own: with no plot to
+     draw, `charted` is true and the table renders anyway, and the toggle that
+     would contradict it is not shown. So this is "chart when there is one",
+     not "chart even when there isn't". */
+  const [charted, setCharted] = useState(true)
 
   const columns = useMemo(() => readColumns(table.columns, table.rows), [table])
   const plot = useMemo(() => plotOf(columns, table.rows), [columns, table.rows])
