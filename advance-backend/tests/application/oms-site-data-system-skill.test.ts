@@ -7,8 +7,10 @@ describe('OMS Site Data system skill', () => {
     assert.deepEqual(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.toolIds, ['omsSiteData']);
     assert.ok(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.aliases.includes('oms'));
     assert.ok(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.aliases.includes('email sanitizer'));
+    assert.ok(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.aliases.includes('vendor lookup'));
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /sanitize_website_inputs/i);
-    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /Vendor lookup requires a separate backend capability/i);
+    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /lookup_vendors/i);
+    assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /vendor_fetch/i);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /never call the OMS webhook/i);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /ambiguous/i);
     assert.match(DIVO_OMS_SITE_DATA_SYSTEM_SKILL.markdown, /company administrators/i);

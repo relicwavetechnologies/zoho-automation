@@ -10,45 +10,51 @@ export const DIVO_OMS_SITE_DATA_SKILL_SLUG = 'divo-oms-site-inventory';
 export const DIVO_OMS_SITE_DATA_SYSTEM_SKILL: DivoProductivitySystemSkillDefinition = {
   slug: DIVO_OMS_SITE_DATA_SKILL_SLUG,
   name: 'Divo OMS Site Inventory',
-  summary: 'Sanitize OMS website inputs and search the approved OMS website inventory for site shortlists, profiles, and catalog values through a governed read-only capability.',
+  summary: 'Sanitize OMS website inputs, look up OMS vendors, and search the approved OMS website inventory for site shortlists, profiles, and catalog values through a governed read-only capability.',
   markdown: `# Divo OMS Site Inventory
 
-Use this skill only for the company-approved OMS website inventory capability and OMS-ready website input cleanup.
+Use this skill only for company-approved OMS website cleanup, vendor lookup, and site inventory work.
 
 ## Operating rules
 
 1. Resolve this skill before OMS inventory work. Use the returned Divo tool recipe exactly; never call the OMS webhook, database, curl, browser automation, or a local API key directly.
 2. Use the operation that matches the request:
    - \`sanitize_website_inputs\` for pasted emails, HTTP(S) URLs, or hostnames that need to become OMS-ready website hostnames before lookup. This operation is deterministic and does not call OMS. It rejects credential-bearing URLs and non-web URL schemes.
+   - \`lookup_vendors\` for 1–20 exact OMS-ready websites in \`www.example.com\` format. If the user gives emails, URLs, or messy domains, run \`sanitize_website_inputs\` first, then pass only sanitized \`website\` values that start with \`www.\`.
    - \`search_sites\` for a filtered shortlist by niche, content category, country, quality, classification, price, traffic, or authority.
    - \`get_site_profiles\` for 1–20 exact bare website hostnames.
    - \`list_catalog_values\` to inspect available values before narrowing a shortlist.
 3. For sanitizer results:
    - Use the returned \`website\` column for exact OMS lookup work.
    - Tell the user which inputs were invalid instead of silently dropping them.
-   - Do not claim vendor existence from sanitizer output. Vendor lookup requires a separate backend capability.
-4. Apply the quality filters that link buyers actually care about, not just authority:
+   - Do not claim vendor existence from sanitizer output. Vendor existence requires \`lookup_vendors\`.
+4. For vendor lookup results:
+   - Treat returned vendor rows as the only proof of a vendor match.
+   - Treat a validated empty vendor response as “no vendor found” for that website.
+   - Do not use public web search, OMS inventory search, or guessed company names as vendor proof.
+   - Do not call \`vendor_fetch\`, curl, browser automation, webhook URLs, or API keys directly. The backend owns the endpoint, header, and key.
+5. Apply the quality filters that link buyers actually care about, not just authority:
    - \`maxSpamScore\` excludes spammy inventory. Spam score is inverted, so lower is better; prefer it whenever the user asks for good, safe, or clean sites. OMS stores "never measured" as a negative spam score. Divo automatically excludes those rows when you set \`maxSpamScore\` or rank cleanest-first, so a shortlist never presents an unmeasured site as a clean one. Such a result covers only sites with a measured spam score, so say "measured spam score" rather than implying every site was checked. Ranking spammiest-first does not exclude them, and setting \`minSpamScore\` yourself overrides the exclusion.
    - \`minDomainRating\` is the Ahrefs-style authority counterpart to \`minDomainAuthority\`. Use both when the user wants a genuinely strong site.
    - Traffic filters name distinct metrics: \`minOrganicTraffic\` is Semrush **organic** traffic, \`minSemrushTraffic\` is Semrush **total** traffic, and \`minAhrefTraffic\` and \`minSimilarwebTraffic\` are separate vendor estimates. They disagree often, so filter on the metric the user actually named and never present one as the traffic figure.
    - Set \`sortBy\` whenever the user wants the best, top, strongest, or cheapest sites. It changes which rows the 100-row cap returns, not just their order. \`sortDirection\` defaults to DESC, except \`spamScore\`, \`sellingPrice\`, \`costPrice\` and \`turnAroundTime\`, which default to ASC because lower is better; pass it explicitly for the opposite.
    - \`search_sites\` accepts at most 20 criteria in one call. Drop the least important ones rather than splitting a single intent across calls.
-5. Never invent raw OMS columns, filters, operators, SQL, request bodies, headers, endpoint URLs, cookies, or credentials. The backend owns those provider details and validates every request.
-6. Preflight the exact call before retrieval when configuration is uncertain. It checks the company connection and operation bounds without fetching site data. The sanitizer preflight does not require an OMS connection.
-7. Report result states honestly:
+6. Never invent raw OMS columns, filters, operators, SQL, request bodies, headers, endpoint URLs, cookies, or credentials. The backend owns those provider details and validates every request.
+7. Preflight the exact call before retrieval when configuration is uncertain. It checks the company connection and operation bounds without fetching site data. The sanitizer preflight does not require an OMS connection.
+8. Report result states honestly:
    - \`complete\`: the webhook returned fewer than its 100-row cap. The central preview still labels OMS coverage \`provider_limited\` because the provider supplies neither pagination nor a total; describe it as the returned snapshot, not an exhaustive dataset.
    - \`partial\`: the webhook returned exactly 100 rows, which is its cap. OMS reports no total, so this cannot be distinguished from a result that genuinely has 100 matches: say completeness cannot be confirmed rather than asserting rows are missing. OMS sorts before it truncates, so with \`sortBy\` set this is a true top-100 ranking; without \`sortBy\` it is an arbitrary subset and must never be described as the best sites.
    - \`empty\`: OMS returned a valid JSON empty array.
    - \`blocked\`: connection setup, the company kill switch, or OMS's ambiguous empty-body behavior prevented a reliable answer. Do not call it “no results.”
-8. OMS never paginates and never returns a total count. Never state or imply how many sites exist in total, and never claim a shortlist is exhaustive beyond what the row cap allows.
-9. Site rows are per listing, not per domain, so the same website can appear more than once with different niche, price, or link attributes. Report the rows as returned rather than merging them.
-10. Authority values are source data and are occasionally out of range, including values above 100. Pass them through as stored and do not silently correct them.
-11. Summarize only the useful evidence in chat. The preview contains at most 25 rows. OMS has no pagination contract, so any created artifact can contain only the bounded returned snapshot and must say that it may not be exhaustive.
+9. OMS never paginates and never returns a total count. Never state or imply how many sites exist in total, and never claim a shortlist is exhaustive beyond what the row cap allows.
+10. Site rows are per listing, not per domain, so the same website can appear more than once with different niche, price, or link attributes. Report the rows as returned rather than merging them.
+11. Authority values are source data and are occasionally out of range, including values above 100. Pass them through as stored and do not silently correct them.
+12. Summarize only the useful evidence in chat. The preview contains at most 25 rows. OMS has no pagination contract, so any created artifact can contain only the bounded returned snapshot and must say that it may not be exhaustive.
 
 OMS access is read-only and available only to active company administrators in this rollout.`,
   toolIds: ['omsSiteData'],
-  tags: ['divo', 'oms', 'site inventory', 'publisher', 'outreach', 'seo', 'sanitizer'],
-  aliases: ['oms', 'oms sites', 'website inventory', 'site shortlist', 'publisher sites', 'guest post sites', 'find websites', 'url sanitizer', 'email sanitizer', 'sanitize websites'],
+  tags: ['divo', 'oms', 'site inventory', 'publisher', 'outreach', 'seo', 'sanitizer', 'vendor lookup'],
+  aliases: ['oms', 'oms sites', 'website inventory', 'site shortlist', 'publisher sites', 'guest post sites', 'find websites', 'url sanitizer', 'email sanitizer', 'sanitize websites', 'vendor lookup', 'find vendor', 'check vendor'],
   sortOrder: 23,
 };
 

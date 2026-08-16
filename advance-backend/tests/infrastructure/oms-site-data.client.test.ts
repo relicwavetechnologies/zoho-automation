@@ -96,6 +96,22 @@ describe('OmsSiteDataClient', () => {
     }).success, false);
   });
 
+  it('bounds vendor lookup to exact OMS-ready www websites', () => {
+    const valid = OmsSiteDataToolArgsSchema.safeParse({
+      operation: 'lookup_vendors',
+      websites: ['WWW.Example.COM', 'www.partner.co.in'],
+    });
+    assert.equal(valid.success, true);
+    if (valid.success) assert.deepEqual(valid.data.websites, ['www.example.com', 'www.partner.co.in']);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({ operation: 'lookup_vendors', websites: ['example.com'] }).success, false);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({ operation: 'lookup_vendors', websites: ['https://www.example.com'] }).success, false);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({ operation: 'lookup_vendors', websites: ['www.example.com', 'www.example.com'] }).success, false);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({
+      operation: 'lookup_vendors',
+      websites: Array.from({ length: 21 }, (_, index) => `www.site${index}.com`),
+    }).success, false);
+  });
+
   it('rejects unsafe or malformed website inputs instead of guessing a host', () => {
     const rows = sanitizeOmsWebsiteInputs([
       'john@@example.com',
@@ -155,6 +171,81 @@ describe('OmsSiteDataClient', () => {
     assert.equal(JSON.stringify(body).includes('operator'), false);
     assert.equal(result.status, 'complete');
     assert.equal(JSON.stringify(result).includes('never-log-this'), false);
+  });
+
+  it('uses the vendor_fetch POST contract and reports per-website matches', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new OmsSiteDataClient({
+      timeoutMs: 1_000,
+      vendorEndpoint: 'https://oms.example.test/webhook/vendor_fetch',
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), init });
+        const website = new URL(String(url)).searchParams.get('website');
+        if (website === 'www.whatmycarworth.com') {
+          return new Response(JSON.stringify([{
+            website,
+            name: 'Adv Voronsoft',
+            email: 'adv.voronsoft@example.com',
+            pitchedFrom: 'care@outreachdeal.com',
+          }]), { status: 200 });
+        }
+        return new Response('', { status: 200 });
+      },
+    });
+
+    const result = await client.fetchVendors('never-log-this', ['www.whatmycarworth.com', 'www.missing.com']);
+
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls.map(call => new URL(call.url).searchParams.get('website')), ['www.whatmycarworth.com', 'www.missing.com']);
+    for (const call of calls) {
+      assert.equal(call.url.startsWith('https://oms.example.test/webhook/vendor_fetch?'), true);
+      const headers = call.init?.headers as Record<string, string>;
+      assert.equal(headers['X-API-Key'], 'never-log-this');
+      assert.equal(headers.Authorization, undefined);
+      assert.equal(call.init?.body, undefined);
+    }
+    assert.equal(result.operation, 'lookup_vendors');
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(result.coverage, {
+      source: 'OMS Vendor Fetch API',
+      inputCount: 2,
+      foundWebsites: 1,
+      notFoundWebsites: 1,
+      vendorRows: 1,
+    });
+    assert.deepEqual(result.rows, [
+      {
+        website: 'www.whatmycarworth.com',
+        status: 'found',
+        name: 'Adv Voronsoft',
+        email: 'adv.voronsoft@example.com',
+        pitchedFrom: 'care@outreachdeal.com',
+      },
+      { website: 'www.missing.com', status: 'not_found' },
+    ]);
+    assert.equal(JSON.stringify(result).includes('never-log-this'), false);
+  });
+
+  it('maps vendor_fetch auth envelopes without treating them as no vendor found', async () => {
+    const client = new OmsSiteDataClient({
+      timeoutMs: 1_000,
+      fetchImpl: async () => new Response(
+        JSON.stringify({ success: false, error: 'Unauthorized', message: 'Missing or invalid API key.' }),
+        { status: 200 },
+      ),
+    });
+    await assert.rejects(
+      () => client.fetchVendors('wrong-key', ['www.example.com']),
+      (error: unknown) => error instanceof OmsSiteDataServiceError && error.code === 'provider_auth_failed',
+    );
+  });
+
+  it('rejects malformed vendor_fetch responses', async () => {
+    const client = new OmsSiteDataClient({ timeoutMs: 1_000, fetchImpl: async () => new Response('{', { status: 200 }) });
+    await assert.rejects(
+      () => client.fetchVendors('key', ['www.example.com']),
+      (error: unknown) => error instanceof OmsSiteDataServiceError && error.code === 'provider_failure',
+    );
   });
 
   it('sorts grouped catalog values locally and marks a provider-cap response partial', async () => {

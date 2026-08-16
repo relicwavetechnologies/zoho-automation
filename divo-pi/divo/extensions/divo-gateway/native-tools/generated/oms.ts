@@ -9,13 +9,13 @@ export const OMS_NATIVE_TOOLS = [
     "name": "divo_oms_site_data",
     "family": "oms",
     "label": "Divo Oms Site Data",
-    "description": "Sanitize OMS website inputs or search the company-approved OMS website inventory through a governed, read-only backend capability.",
+    "description": "Sanitize OMS website inputs, look up OMS vendors, or search the company-approved OMS website inventory through a governed, read-only backend capability.",
     "promptSnippet": "Use divo_oms_site_data for governed oms work. The backend remains authoritative for access, connections, approvals, and execution.",
     "promptGuidelines": [
-      "operation: sanitize_website_inputs, search_sites, get_site_profiles, or list_catalog_values.",
+      "operation: sanitize_website_inputs, lookup_vendors, search_sites, get_site_profiles, or list_catalog_values.",
       "sanitize_website_inputs: pass pasted emails, http/https URLs, or hostnames in inputs; returns deterministic OMS-ready website hostnames without calling OMS. Credential-bearing URLs and non-web URL schemes are rejected.",
-      "search_sites: use one or more vetted website, niche, classification, price, quality, traffic, or authority criteria; returns the standard inventory view.",
-      "search_sites quality filters: maxSpamScore (lower is better, use it for clean/safe site requests), minDomainRating, minDomainAuthority, minPageAuthority."
+      "lookup_vendors: pass 1-20 exact OMS-ready websites in www.example.com format; returns vendor rows from OMS Vendor Fetch. If the user gives emails, URLs, or messy domains, run sanitize_website_inputs first and pass only sanitized website values that start with www.",
+      "search_sites: use one or more vetted website, niche, classification, price, quality, traffic, or authority criteria; returns the standard inventory view."
     ],
     "parameters": {
       "anyOf": [
@@ -40,6 +40,30 @@ export const OMS_NATIVE_TOOLS = [
           "required": [
             "operation",
             "inputs"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "operation": {
+              "type": "string",
+              "const": "lookup_vendors"
+            },
+            "websites": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 253
+              },
+              "minItems": 1,
+              "maxItems": 20
+            }
+          },
+          "required": [
+            "operation",
+            "websites"
           ],
           "additionalProperties": false
         },

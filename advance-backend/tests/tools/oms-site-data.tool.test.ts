@@ -64,6 +64,8 @@ describe('OMS Site Data tool', () => {
     // the happy path needs pinning too.
     const tool = createTool();
     assert.equal(tool.argsSchema.safeParse({ operation: 'sanitize_website_inputs', inputs: ['sales@example.com', 'https://example.com/path'] }).success, true);
+    assert.equal(tool.argsSchema.safeParse({ operation: 'lookup_vendors', websites: ['www.example.com'] }).success, true);
+    assert.equal(tool.argsSchema.safeParse({ operation: 'lookup_vendors', websites: ['example.com'] }).success, false);
     assert.equal(tool.argsSchema.safeParse({ operation: 'get_site_profiles', websites: ['example.com'] }).success, true);
     assert.equal(tool.argsSchema.safeParse({ operation: 'list_catalog_values', field: 'niche' }).success, true);
     assert.equal(tool.argsSchema.safeParse({ operation: 'search_sites', niche: 'Technology' }).success, true);
@@ -240,6 +242,31 @@ describe('OMS Site Data tool', () => {
     if (!result.ok) return;
     assert.equal(result.value.preview?.rows.length, 25);
     assert.match(result.value.message, /Showing the first 25 rows in chat/i);
+  });
+
+  it('summarizes vendor lookup as vendor evidence, not site inventory', async () => {
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'lookup_vendors',
+          status: 'complete' as const,
+          coverage: { inputCount: 2, foundWebsites: 1, notFoundWebsites: 1, vendorRows: 1 },
+          rows: [
+            { website: 'www.whatmycarworth.com', status: 'found', name: 'Adv Voronsoft', email: 'adv.voronsoft@example.com', pitchedFrom: 'care@outreachdeal.com' },
+            { website: 'www.missing.com', status: 'not_found' },
+          ],
+        }),
+      },
+    });
+    const result = await tool.execute({ operation: 'lookup_vendors', websites: ['www.whatmycarworth.com', 'www.missing.com'] }, makeCtx('omsSiteData', ['read']));
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.status, 'complete');
+    assert.equal(result.value.preview?.rows[0]?.status, 'found');
+    assert.match(result.value.message, /Found vendor records for 1 of 2 websites/i);
+    assert.match(result.value.message, /1 website had no vendor match/i);
+    assert.match(result.value.message, /OMS Vendor Fetch only/i);
+    assert.doesNotMatch(result.value.message, /100-row cap|site row/i);
   });
 });
 

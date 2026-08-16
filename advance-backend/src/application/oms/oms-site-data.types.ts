@@ -2,11 +2,12 @@ import { z } from 'zod';
 
 /**
  * The OMS webhook exposes a dynamic query language. Divo deliberately does
- * not pass that language through to the agent. These three operations are the
+ * not pass that language through to the agent. These operations are the
  * reviewed, stable subset that map to useful inventory workflows.
  */
 export const OMS_SITE_DATA_OPERATIONS = [
   'sanitize_website_inputs',
+  'lookup_vendors',
   'search_sites',
   'get_site_profiles',
   'list_catalog_values',
@@ -31,10 +32,16 @@ const website = z.string().trim().toLowerCase().min(3).max(253)
     'Use a bare website hostname, without protocol, path, credentials, port, or query string.',
   );
 
+const vendorWebsite = website.refine(
+  (value) => value.startsWith('www.'),
+  'Use the OMS-ready vendor lookup format from sanitize_website_inputs, e.g. www.example.com.',
+);
+
 const metric = z.number().finite().min(0).max(10_000_000_000);
 
 /** The provider AND-combines filters and documents a hard ceiling of 20. */
 export const MAX_PROVIDER_FILTERS = 20;
+export const MAX_VENDOR_LOOKUP_WEBSITES = 20;
 
 /**
  * Fields where a smaller value is the better result. The provider sorts before
@@ -88,6 +95,15 @@ const searchSortField = z.enum(SEARCH_SORT_FIELDS);
 const SanitizeWebsiteInputsSchema = z.object({
   operation: z.literal('sanitize_website_inputs'),
   inputs: z.array(z.string().trim().min(1).max(2_000)).min(1).max(200),
+}).strict();
+
+const LookupVendorsSchema = z.object({
+  operation: z.literal('lookup_vendors'),
+  websites: z.array(vendorWebsite).min(1).max(MAX_VENDOR_LOOKUP_WEBSITES).superRefine((items, ctx) => {
+    if (new Set(items).size !== items.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Vendor lookup websites must be unique.' });
+    }
+  }),
 }).strict();
 
 // Kept as a raw object so the union below can discriminate on `operation`.
@@ -217,6 +233,7 @@ const ListCatalogValuesSchema = z.object({
 export const OmsSiteDataToolArgsSchema = z
   .discriminatedUnion('operation', [
     SanitizeWebsiteInputsSchema,
+    LookupVendorsSchema,
     SearchSitesObject,
     GetSiteProfilesSchema,
     ListCatalogValuesSchema,
@@ -225,7 +242,7 @@ export const OmsSiteDataToolArgsSchema = z
     if (value.operation === 'search_sites') refineSearchSites(value, ctx);
   });
 export type OmsSiteDataToolArgs = z.infer<typeof OmsSiteDataToolArgsSchema>;
-export type OmsProviderSiteDataToolArgs = Exclude<OmsSiteDataToolArgs, { operation: 'sanitize_website_inputs' }>;
+export type OmsProviderSiteDataToolArgs = Exclude<OmsSiteDataToolArgs, { operation: 'sanitize_website_inputs' } | { operation: 'lookup_vendors' }>;
 
 // The provider allows up to 25 columns per request. Every filterable metric is
 // also selected so a shortlist always shows the fields it was filtered on.

@@ -57,6 +57,29 @@ describe('CompanyOmsSiteDataService', () => {
     assert.equal(calls.fetch, 0);
   });
 
+  it('preflights and executes vendor lookup through its separate backend key', async () => {
+    const { service, calls } = makeService({ environmentVendorApiKey: 'vendor-key' });
+    const preflight = await service.preflight('co-1', { operation: 'lookup_vendors', websites: ['www.example.com'] });
+    const result = await service.execute({ companyId: 'co-1', args: { operation: 'lookup_vendors', websites: ['www.example.com'] } });
+
+    assert.equal(preflight.connectionSource, 'environment_vendor');
+    assert.deepEqual(preflight.limits, { maxVendorLookupWebsites: 20 });
+    assert.equal(calls.fetch, 0);
+    assert.equal(calls.fetchVendors, 1);
+    assert.equal(result.operation, 'lookup_vendors');
+    assert.equal(result.rows[0]?.status, 'found');
+  });
+
+  it('does not reuse the Site Data key for vendor lookup', async () => {
+    const { service, calls } = makeService({ environmentApiKey: 'site-data-key' });
+    await assert.rejects(
+      () => service.preflight('co-1', { operation: 'lookup_vendors', websites: ['www.example.com'] }),
+      (error: unknown) => error instanceof OmsSiteDataServiceError && error.code === 'not_configured',
+    );
+    assert.equal(calls.fetch, 0);
+    assert.equal(calls.fetchVendors, 0);
+  });
+
   it('marks provider auth failure unavailable after one attempt', async () => {
     const { service, calls } = makeService({ authFailure: true });
     await assert.rejects(
@@ -86,8 +109,8 @@ describe('CompanyOmsSiteDataService', () => {
   });
 });
 
-function makeService(options: { authFailure?: boolean; noConnection?: boolean; environmentApiKey?: string } = {}) {
-  const calls = { fetch: 0, failure: [] as Array<{ code: string; unavailableUntil?: Date }> };
+function makeService(options: { authFailure?: boolean; noConnection?: boolean; environmentApiKey?: string; environmentVendorApiKey?: string } = {}) {
+  const calls = { fetch: 0, fetchVendors: 0, failure: [] as Array<{ code: string; unavailableUntil?: Date }> };
   const cacheStore = new Map<string, unknown>();
   const cache = {
     get: async (key: string) => ok(cacheStore.get(key) ?? null),
@@ -109,6 +132,16 @@ function makeService(options: { authFailure?: boolean; noConnection?: boolean; e
       if (options.authFailure) throw new OmsSiteDataServiceError('provider_auth_failed', 'Denied.');
       return { operation: 'search_sites', status: 'complete' as const, coverage: {}, rows: [{ website: 'example.com' }] };
     },
+    fetchVendors: async () => {
+      calls.fetchVendors += 1;
+      if (options.authFailure) throw new OmsSiteDataServiceError('provider_auth_failed', 'Denied.');
+      return {
+        operation: 'lookup_vendors',
+        status: 'complete' as const,
+        coverage: { inputCount: 1, foundWebsites: 1, notFoundWebsites: 0, vendorRows: 1 },
+        rows: [{ website: 'www.example.com', status: 'found', name: 'Vendor' }],
+      };
+    },
   };
-  return { service: new CompanyOmsSiteDataService(repository as never, client as never, cache as never, noopLogger, options.environmentApiKey ?? ''), calls };
+  return { service: new CompanyOmsSiteDataService(repository as never, client as never, cache as never, noopLogger, options.environmentApiKey ?? '', options.environmentVendorApiKey ?? ''), calls };
 }

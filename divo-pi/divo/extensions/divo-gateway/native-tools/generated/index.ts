@@ -14,7 +14,7 @@ import { SCHEDULING_NATIVE_TOOLS } from "./scheduling.ts";
 import { SHOPIFY_NATIVE_TOOLS } from "./shopify.ts";
 import { ZOHO_NATIVE_TOOLS } from "./zoho.ts";
 
-export const GENERATED_NATIVE_CATALOGUE_DIGEST = "9234fd118c84a42a48a142624a54cf5d9af554d4a343ddd457d9526531e06064";
+export const GENERATED_NATIVE_CATALOGUE_DIGEST = "c1ff3abe019b73ad8dcc43e18378bfb5ee149733fb2b0ddd0bead8002be3e9e0";
 
 export const GENERATED_NATIVE_TOOL_SPECS = [
 	...AIRTABLE_NATIVE_TOOLS,
