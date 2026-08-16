@@ -44,6 +44,58 @@ describe('OmsSiteDataClient', () => {
     ]);
   });
 
+  it('handles a bulk Lark or sheet paste with mixed separators and bad rows', () => {
+    const rows = sanitizeOmsWebsiteInputs([
+      [
+        'Priya <founder@Acme.ai>',
+        'https://www.Notion.so/customers?utm_source=newsletter',
+        'hello@stripe.com',
+        'shopify.com/partners',
+        'blog.hubspot.com/sales',
+        'https://sub.example.co.uk/articles',
+        // Plain words inside a paste are ignored rather than each becoming an
+        // invalid row. Standalone bad inputs are still rejected below.
+        'not-a-domain',
+        'ftp://legacy.example.com/file',
+        'https://accounts.google.com@fake.biz/login',
+      ].join('\n'),
+      'not-a-domain',
+      'ops+billing@vendor.co.in; http://WWW.Example.NET:443/path, (https://foo.com/a).',
+      Array.from({ length: 40 }, (_, index) => `bulk${index}@example${index}.com`).join(', '),
+    ]);
+
+    assert.equal(rows.length, 52);
+    assert.equal(rows.filter(row => row.status === 'sanitized').length, 49);
+    assert.equal(rows.filter(row => row.status === 'invalid').length, 3);
+    assert.deepEqual(rows.slice(0, 6).map(row => row.website), [
+      'www.acme.ai',
+      'www.notion.so',
+      'www.stripe.com',
+      'www.shopify.com',
+      'blog.hubspot.com',
+      'sub.example.co.uk',
+    ]);
+    assert.equal(rows.find(row => row.input === 'ops+billing@vendor.co.in')?.website, 'www.vendor.co.in');
+    assert.equal(rows.find(row => row.input === 'http://WWW.Example.NET:443/path')?.website, 'www.example.net');
+    assert.equal(rows.find(row => row.input === 'ftp://legacy.example.com/file')?.reason, 'Only http and https URLs are accepted.');
+    assert.equal(rows.find(row => row.input === 'https://accounts.google.com@fake.biz/login')?.reason, 'URLs with usernames or passwords are not accepted.');
+  });
+
+  it('bounds sanitizer input size before runtime execution', () => {
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({
+      operation: 'sanitize_website_inputs',
+      inputs: Array.from({ length: 200 }, (_, index) => `site${index}.com`),
+    }).success, true);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({
+      operation: 'sanitize_website_inputs',
+      inputs: Array.from({ length: 201 }, (_, index) => `site${index}.com`),
+    }).success, false);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({
+      operation: 'sanitize_website_inputs',
+      inputs: ['a'.repeat(2_001)],
+    }).success, false);
+  });
+
   it('rejects unsafe or malformed website inputs instead of guessing a host', () => {
     const rows = sanitizeOmsWebsiteInputs([
       'john@@example.com',

@@ -213,6 +213,34 @@ describe('OMS Site Data tool', () => {
     assert.match(result.value.message, /did not call OMS or any vendor API/i);
     assert.doesNotMatch(result.value.message, /100-row cap|Retrieved 2 site rows/i);
   });
+
+  it('caps bulk sanitizer previews before they reach the agent answer', async () => {
+    const rows = Array.from({ length: 30 }, (_, index) => ({
+      input: `bulk${index}@example${index}.com`,
+      status: 'sanitized' as const,
+      inputKind: 'email' as const,
+      hostname: `example${index}.com`,
+      website: `www.example${index}.com`,
+    }));
+    const tool = createTool({
+      service: {
+        execute: async () => ({
+          operation: 'sanitize_website_inputs',
+          status: 'complete' as const,
+          coverage: { sanitizedRows: 30, invalidRows: 0 },
+          rows,
+        }),
+      },
+    });
+    const result = await tool.execute(
+      { operation: 'sanitize_website_inputs', inputs: rows.map(row => row.input) },
+      makeCtx('omsSiteData', ['read']),
+    );
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.value.preview?.rows.length, 25);
+    assert.match(result.value.message, /Showing the first 25 rows in chat/i);
+  });
 });
 
 function createTool(overrides: {

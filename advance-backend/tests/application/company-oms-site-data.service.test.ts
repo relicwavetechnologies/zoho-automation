@@ -24,6 +24,31 @@ describe('CompanyOmsSiteDataService', () => {
     assert.equal(calls.fetch, 0);
   });
 
+  it('reports bulk sanitizer candidate counts without calling OMS', async () => {
+    const { service, calls } = makeService({ noConnection: true });
+    const result = await service.execute({
+      companyId: 'co-1',
+      args: {
+        operation: 'sanitize_website_inputs',
+        inputs: [
+          'sales@example.com, admin@test.co.in; https://foo.com/a',
+          'not-a-domain',
+          'https://user:pass@example.com/login',
+        ],
+      },
+    });
+
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(result.coverage, {
+      source: 'Divo OMS input sanitizer',
+      inputCount: 3,
+      candidateCount: 5,
+      sanitizedRows: 3,
+      invalidRows: 2,
+    });
+    assert.equal(calls.fetch, 0);
+  });
+
   it('preflights an active company connection without fetching provider data', async () => {
     const { service, calls } = makeService();
     const result = await service.preflight('co-1', { operation: 'search_sites', niche: 'Technology' });
