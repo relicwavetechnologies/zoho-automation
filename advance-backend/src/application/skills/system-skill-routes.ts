@@ -266,7 +266,8 @@ Do not route transient task state, secrets, unfinished teaching, one-off work, o
     markdown: `# Web Search
 
 Use \`webSearch\` for current public information and external verification.
-Prefer primary or official sources, verify time-sensitive claims, and include relevant URLs.
+Prefer primary or official sources and verify time-sensitive claims.
+Preserve the source URLs returned by the search and cite researched claims according to the active surface policy, including claims in tables. Never invent or rewrite a source URL.
 Do not use public web search as a substitute for configured Semrush or OMS data, or for a file the user has already sent.`,
     toolIds: ['webSearch'],
     tags: ['search', 'research', 'web', 'verification'],

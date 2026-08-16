@@ -38,6 +38,8 @@ function withoutIdentity(caps: SurfaceCapabilities): Omit<SurfaceCapabilities, '
 const WEB_GRANTS = {
   /** A browser draws the log natively instead of re-editing a card. */
   worklog: 'streamed',
+  /** Browser links can sit beside every claim without overwhelming a chat card. */
+  citations: 'claim-level',
   /** The panel beside the thread renders a stored document. */
   artifacts: 'inline',
   /**
@@ -78,6 +80,7 @@ describe('surface capabilities', () => {
   it('grants Lark none of them', () => {
     assert.equal(lark.worklog, 'patched-card');
     assert.equal(lark.artifacts, 'none');
+    assert.equal(lark.citations, 'compact');
     assert.equal(lark.decisions, 'buttons');
   });
 

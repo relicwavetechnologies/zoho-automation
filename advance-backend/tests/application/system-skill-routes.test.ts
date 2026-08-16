@@ -23,6 +23,7 @@ import { KNOWLEDGE_MANAGEMENT_SKILL_MARKDOWN } from '../../src/application/skill
 import {
   ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS,
   ROUTING_SYSTEM_SKILLS,
+  SEEDED_SYSTEM_SKILLS,
   SYSTEM_SKILL_ROUTE_SEEDS,
   unroutedSeededSystemSkillSlugs,
 } from '../../src/application/skills/system-skill-routes.ts';
@@ -47,6 +48,15 @@ describe('system skill routes', () => {
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /\*\*one\*\*\n?\s*`backlinks_comparison`/);
     assert.match(DIVO_SEMRUSH_SYSTEM_SKILL.markdown, /Show one main table in chat/);
     assert.doesNotMatch(`${router.markdown}\n${DIVO_SEMRUSH_SYSTEM_SKILL.markdown}`, /exportCandidate|dataExport/);
+  });
+
+  it('keeps Web Search evidence channel-neutral and delegates citation density to the surface', () => {
+    const skill = SEEDED_SYSTEM_SKILLS.find(candidate => candidate.slug === 'web-search');
+    assert.ok(skill);
+    assert.match(skill.markdown, /Preserve the source URLs returned by the search/);
+    assert.match(skill.markdown, /according to the active surface policy/);
+    assert.match(skill.markdown, /including claims in tables/);
+    assert.doesNotMatch(skill.markdown, /\b(?:Lark|web UI|browser)\b/i);
   });
 
   it('keeps complete artifacts on source → local file workflow → destination', () => {

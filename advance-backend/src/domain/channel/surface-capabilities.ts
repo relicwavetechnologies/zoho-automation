@@ -37,6 +37,8 @@ export interface SurfaceCapabilities {
   readonly maxMessageBytes: number;
   /** How the work log reaches the reader. */
   readonly worklog: 'patched-card' | 'streamed';
+  /** How densely public-web evidence is attached to the claims it supports. */
+  readonly citations: 'compact' | 'claim-level';
   /**
    * How much of a question this surface can put to a person.
    *
@@ -67,17 +69,18 @@ const LARK: SurfaceCapabilities = {
   maxBlockChars: LARK_CARD_LIMITS.maxBlockChars,
   maxMessageBytes: LARK_CARD_LIMITS.maxCardBytes,
   worklog: 'patched-card',
+  citations: 'compact',
   decisions: 'buttons',
   handoff: false,
 };
 
 /**
- * The web's capabilities — Lark's, plus the two things a browser can do that a
- * chat card cannot.
+ * The web's capabilities — Lark's, plus the presentation modes its browser
+ * renderer can support without overwhelming a chat card.
  *
  * This started identical to Lark on purpose, so that "one soul" was something
- * observed rather than claimed. Two values have since been relaxed, and each is
- * backed by a renderer that exists:
+ * observed rather than claimed. Each value relaxed since then is backed by a
+ * renderer that exists:
  *
  * `worklog: 'streamed'` — a browser draws the log natively instead of re-editing
  * a card. It changes nothing the model decides.
@@ -91,6 +94,11 @@ const LARK: SurfaceCapabilities = {
  * hold every question shape at once. Lark answers the same decision one card at
  * a time because a card is a row of buttons; both settle through one module.
  *
+ * `citations: 'claim-level'` — the answer renderer turns ordinary Markdown
+ * links into source marks beside prose and inside tables. Lark can render links
+ * too, but repeating one on every factual line would spend its small card on
+ * provenance rather than the answer, so it keeps the compact mode.
+ *
  * Charts and the table/size caps stay where they are. There is no chart renderer
  * yet, and raising a cap the browser has not been observed handling is exactly
  * the shortcut this record exists to prevent.
@@ -99,6 +107,7 @@ const WEB: SurfaceCapabilities = {
   ...LARK,
   key: 'web',
   worklog: 'streamed',
+  citations: 'claim-level',
   artifacts: 'inline',
   decisions: 'form',
 };

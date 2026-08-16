@@ -18,7 +18,10 @@ export interface DivoSurfaceCapabilities {
 	maxMessageBytes: number;
 	/** How the work log reaches the reader. */
 	worklog: "patched-card" | "streamed";
-	approvals: "card-buttons" | "inline";
+	/** How densely public-web evidence is attached to the claims it supports. */
+	citations: "compact" | "claim-level";
+	/** How much of a decision the surface can collect at once. */
+	decisions: "buttons" | "form";
 	/** May Divo offer "this is better on the web"? */
 	handoff: boolean;
 }
@@ -28,7 +31,8 @@ const PRESENTATION_POLICY_CLOSE_TAG = "</divo_presentation_policy>";
 
 const ARTIFACT_MODES = new Set(["none", "link", "inline"]);
 const WORKLOG_MODES = new Set(["patched-card", "streamed"]);
-const APPROVAL_MODES = new Set(["card-buttons", "inline"]);
+const CITATION_MODES = new Set(["compact", "claim-level"]);
+const DECISION_MODES = new Set(["buttons", "form"]);
 
 function positiveInt(value: unknown): number | null {
 	return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
@@ -58,7 +62,8 @@ export function parseSurfaceCapabilities(value: unknown): DivoSurfaceCapabilitie
 		|| typeof data.charts !== "boolean"
 		|| typeof data.handoff !== "boolean"
 		|| typeof data.worklog !== "string" || !WORKLOG_MODES.has(data.worklog)
-		|| typeof data.approvals !== "string" || !APPROVAL_MODES.has(data.approvals)
+		|| typeof data.citations !== "string" || !CITATION_MODES.has(data.citations)
+		|| typeof data.decisions !== "string" || !DECISION_MODES.has(data.decisions)
 		|| maxRows === null || maxPerMessage === null
 		|| maxBlockChars === null || maxMessageBytes === null
 	) return null;
@@ -71,7 +76,8 @@ export function parseSurfaceCapabilities(value: unknown): DivoSurfaceCapabilitie
 		maxBlockChars,
 		maxMessageBytes,
 		worklog: data.worklog as DivoSurfaceCapabilities["worklog"],
-		approvals: data.approvals as DivoSurfaceCapabilities["approvals"],
+		citations: data.citations as DivoSurfaceCapabilities["citations"],
+		decisions: data.decisions as DivoSurfaceCapabilities["decisions"],
 		handoff: data.handoff,
 	};
 }
@@ -134,10 +140,27 @@ export function presentationPolicy(caps: DivoSurfaceCapabilities): string {
 		);
 	}
 
+	if (caps.citations === "claim-level") {
+		lines.push(
+			"- When an answer uses public web research, put a relevant Markdown source",
+			"  link beside every externally verifiable factual paragraph and list item.",
+			"  Cite every factual table row; when cells use different sources, cite those",
+			"  cells separately. A Sources section may supplement these links but cannot",
+			"  replace them. Reuse exact URLs returned by search; never invent or rewrite one.",
+		);
+	} else {
+		lines.push(
+			"- When an answer uses public web research, cite its material and time-sensitive",
+			"  claims, then finish with a short Sources section. Keep citations compact; do",
+			"  not repeat the same source on every paragraph, list item, or table row.",
+			"  Reuse exact URLs returned by search; never invent or rewrite one.",
+		);
+	}
+
 	lines.push(
-		caps.approvals === "card-buttons"
-			? "- When something needs approval, the reader gets buttons. Say plainly what you are asking to do, then stop and wait."
-			: "- When something needs approval, the reader is asked inline. Say plainly what you are asking to do, then stop and wait.",
+		caps.decisions === "buttons"
+			? "- When something needs a decision, the reader gets buttons. Say plainly what you are asking, then stop and wait."
+			: "- When something needs a decision, the reader is asked inline. Say plainly what you are asking, then stop and wait.",
 	);
 
 	if (caps.handoff) {
