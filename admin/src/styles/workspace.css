@@ -19,6 +19,17 @@
 .cur {
   /* cursor.css never defined a warning token — pages fall back inline. Define it once. */
   --ws-warning: #b7791f;
+  /*
+    What a chart is drawn in.
+
+    Brand orange by default, because that is what every existing chart already
+    is and a silent recolouring of the spend panels is not a profile page's
+    business. It is a token rather than a literal so a surface can say
+    otherwise: on a page that is one large calendar and two charts, orange stops
+    being the scarce mark that means "this is the thing being asked for" and
+    starts being the background — the same reason `Avatar` is accent-tinted.
+  */
+  --ws-chart-ink: var(--cur-primary);
   /* Scrim must NOT derive from --cur-ink: ink inverts in dark and would tint the overlay light. */
   --ws-scrim: rgba(0, 0, 0, 0.34);
   --ws-float: 0 16px 40px -12px rgba(0, 0, 0, 0.24), 0 0 0 1px var(--cur-hairline);
@@ -497,15 +508,20 @@
 }
 /* Square from its own width, so the rows follow the columns rather than
    needing a height the container cannot know. */
-.cur .ws-heat-grid i { aspect-ratio: 1; border-radius: 5px; background: var(--cur-surface-strong); }
+/* A proportional radius, not a fixed one. At sixteen columns a cell is ~30px
+   and 5px read as a rounded square; the profile's year draws fifty-three
+   columns at ~13px, where the same 5px turns every day into a dot. 17% is the
+   same corner the sixteen-column grids already had, and it now holds at any
+   cell size. */
+.cur .ws-heat-grid i { aspect-ratio: 1; border-radius: 17%; background: var(--cur-surface-strong); }
 /* An unstarted week is absence, not a zero-cost day, so it holds the space
    without drawing a tile that could be counted. */
 .cur .ws-heat-grid i[data-pad="true"] { background: none; }
 .cur .ws-heat-grid i[data-level="0"] { background: var(--cur-surface-strong); }
-.cur .ws-heat-grid i[data-level="1"] { background: color-mix(in srgb, var(--cur-primary) 24%, var(--cur-surface-strong)); }
-.cur .ws-heat-grid i[data-level="2"] { background: color-mix(in srgb, var(--cur-primary) 48%, var(--cur-surface-strong)); }
-.cur .ws-heat-grid i[data-level="3"] { background: color-mix(in srgb, var(--cur-primary) 72%, var(--cur-surface-strong)); }
-.cur .ws-heat-grid i[data-level="4"] { background: var(--cur-primary); }
+.cur .ws-heat-grid i[data-level="1"] { background: color-mix(in srgb, var(--ws-chart-ink) 24%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="2"] { background: color-mix(in srgb, var(--ws-chart-ink) 48%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="3"] { background: color-mix(in srgb, var(--ws-chart-ink) 72%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="4"] { background: var(--ws-chart-ink); }
 /* Inside `.ws-heat`, so it ends where the last column ends rather than at the
    card's edge — a legend floating past the grid reads as a stray control. */
 .cur .ws-heat-key {
@@ -513,10 +529,10 @@
   margin-top: 10px; font-size: 10.5px; color: var(--cur-muted-soft);
 }
 .cur .ws-heat-key i { width: 11px; height: 11px; border-radius: 3px; background: var(--cur-surface-strong); }
-.cur .ws-heat-key i[data-level="1"] { background: color-mix(in srgb, var(--cur-primary) 24%, var(--cur-surface-strong)); }
-.cur .ws-heat-key i[data-level="2"] { background: color-mix(in srgb, var(--cur-primary) 48%, var(--cur-surface-strong)); }
-.cur .ws-heat-key i[data-level="3"] { background: color-mix(in srgb, var(--cur-primary) 72%, var(--cur-surface-strong)); }
-.cur .ws-heat-key i[data-level="4"] { background: var(--cur-primary); }
+.cur .ws-heat-key i[data-level="1"] { background: color-mix(in srgb, var(--ws-chart-ink) 24%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="2"] { background: color-mix(in srgb, var(--ws-chart-ink) 48%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="3"] { background: color-mix(in srgb, var(--ws-chart-ink) 72%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="4"] { background: var(--ws-chart-ink); }
 .cur .ws-heat-key span:first-child { margin-right: 2px; }
 .cur .ws-heat-key span:last-child { margin-left: 2px; }
 
@@ -2023,10 +2039,6 @@
   border-top: 1px solid var(--cur-hairline-soft); background: var(--cur-canvas-soft);
 }
 
-/* Separates groups of rows. The next row draws its own top rule, so this is
-   space rather than a second line. */
-.cur .set-gap { height: 26px; }
-
 .cur .set-note {
   display: flex; align-items: flex-start; gap: 8px; margin-top: 26px;
   font-size: 12.5px; color: var(--cur-muted); line-height: 1.55;
@@ -2066,6 +2078,231 @@
    heading rather than as a control floating beside the links. */
 .cur .set-picker { padding: 2px 10px 8px; }
 .cur .set-picker .select { width: 100%; height: 30px; font-size: 12.5px; }
+
+/* ══════════════════════════════════════════════════════
+   PROFILE
+
+   The one screen in the takeover that is not a list of statements. It carries a
+   year of somebody's activity — a calendar, two charts, four figures — none of
+   which fits the 720px reading measure the settings rows use, so the page sets
+   its own and every block inside it, rows included, takes that width. Mixing
+   the two produced a heatmap indented from the card above it.
+   ══════════════════════════════════════════════════════ */
+/*
+  Drawn in the accent, not the brand.
+
+  This page is a calendar of three hundred and sixty-five squares and two
+  charts. In orange it is a wall of the one colour the rest of the app reserves
+  for the thing it is asking you to do, and the actual controls stop standing
+  out. The accent is the same tint the avatar carries, which is the app's
+  existing answer for "this is identity, not an action".
+*/
+.cur .prof { max-width: 880px; margin-inline: auto; --ws-chart-ink: var(--cur-accent); }
+/* The settings primitives cap themselves; inside here the page has already
+   decided the measure and a second cap only narrows it. */
+.cur .prof .set-section,
+.cur .prof .set-group,
+.cur .prof .set-note { max-width: none; }
+
+.cur .prof-card {
+  background: var(--cur-surface); border: 1px solid var(--cur-hairline);
+  border-radius: var(--cur-r-card); overflow: hidden; margin-bottom: 16px;
+}
+
+/*
+  A cover Divo draws rather than one anybody uploads.
+
+  Two stops off a hue derived from the user id, with a soft light thrown across
+  the top left — enough to read as a deliberate surface rather than as a block
+  of colour, and stable for a given person because the hue is not random.
+  Saturation is held well below the brand orange so a page full of charts still
+  has one loudest thing on it, and that thing is the data.
+*/
+.cur .prof-cover {
+  height: 116px; position: relative;
+  /*
+    Deep and desaturated, not a swatch.
+
+    The first pass was a 48%-saturation band at 34% lightness and it dominated
+    the card — a person opening their own profile saw a colour first and their
+    own name second. These values keep it a surface: the hue is legible, the
+    card below is still the brightest thing, and it holds up in light mode where
+    a saturated band would fight the white page.
+  */
+  background:
+    radial-gradient(130% 180% at 14% 0%, hsl(var(--prof-hue) 42% 46% / 0.42) 0%, transparent 66%),
+    linear-gradient(112deg,
+      hsl(var(--prof-hue) 30% 24%) 0%,
+      hsl(calc(var(--prof-hue) + 38) 26% 17%) 100%);
+}
+/* A grid, at the strength of a watermark. Flat colour at this size reads as an
+   image that failed to load; texture reads as a choice. At 0.14 it read as
+   graph paper, which is a third thing and the wrong one. */
+.cur .prof-cover::after {
+  content: ''; position: absolute; inset: 0; opacity: 0.05;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.7) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.7) 1px, transparent 1px);
+  background-size: 34px 34px;
+}
+/* Grounds the avatar and the name against the band, so the eye lands on the
+   card rather than on the join. */
+.cur .prof-cover::before {
+  content: ''; position: absolute; inset: 0; z-index: 1;
+  background: linear-gradient(to bottom, transparent 42%, color-mix(in srgb, var(--cur-surface) 55%, transparent) 100%);
+}
+
+/*
+  Above the cover's fade.
+
+  `.prof-cover::before` is positioned and the identity block was not, so the
+  pseudo-element painted over it — the avatar's lower half came out washed to
+  the card colour and read as an image that had failed to finish loading. A
+  stacking context here puts the person in front of their own banner.
+*/
+.cur .prof-id { position: relative; z-index: 2; padding: 0 22px 18px; }
+/* Half over the cover, half over the card — the shape that says "this person is
+   the subject of what is below" without needing a heading to say it. */
+.cur .prof-face { margin-top: -36px; margin-bottom: 12px; width: max-content; }
+.cur .prof-face .ws-avatar {
+  border: 3px solid var(--cur-surface); box-shadow: 0 6px 18px -8px rgba(0, 0, 0, 0.5);
+}
+.cur .prof-id h1 {
+  font-size: 22px; font-weight: 500; letter-spacing: -0.02em; color: var(--cur-ink);
+}
+.cur .prof-sub {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-top: 6px; font-size: 12.5px; color: var(--cur-muted);
+}
+/* The company role, worn as a badge. It is the one piece of identity here that
+   changes what a person can do, so it is the one that gets a shape. */
+.cur .prof-tag {
+  padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
+  letter-spacing: 0.02em; color: var(--cur-accent);
+  background: color-mix(in srgb, var(--cur-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cur-accent) 28%, transparent);
+}
+
+.cur .prof-head { padding: 4px 22px 18px; }
+.cur .prof-hero { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.cur .prof-hero b {
+  font-size: 34px; font-weight: 500; letter-spacing: -0.03em; line-height: 1;
+  color: var(--cur-ink); font-variant-numeric: tabular-nums;
+}
+/* Untinted on purpose — see the component. More tasks is not good news and
+   fewer is not bad, and a green arrow here would be an opinion about a bill. */
+.cur .prof-delta {
+  padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 500;
+  color: var(--cur-body); background: var(--cur-surface-strong);
+  font-variant-numeric: tabular-nums;
+}
+.cur .prof-cost { margin-top: 9px; }
+
+/* Four across on a wide card, two on a narrow one. Never three: a 3+1 last row
+   reads as one figure that failed to load. */
+.cur .prof-tiles {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px; padding: 0 22px 20px;
+}
+.cur .prof-tile {
+  padding: 12px 13px; border-radius: 10px;
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+}
+.cur .prof-tile b {
+  display: block; font-size: 17px; font-weight: 500; letter-spacing: -0.01em;
+  color: var(--cur-ink); font-variant-numeric: tabular-nums;
+}
+.cur .prof-tile span {
+  display: block; margin-top: 4px; font-size: 11.5px; color: var(--cur-muted);
+}
+
+.cur .prof-activity {
+  padding: 18px 22px 20px; border-top: 1px solid var(--cur-hairline-soft);
+  background: var(--cur-canvas-soft);
+}
+/* The calendar centres itself at its natural width; inside a card this wide it
+   should start where the label above it starts.
+
+   The cap it carries stays. Lifting it — which the first pass did — lets the
+   grid stretch to the card, and a thirty-day window is five columns: each cell
+   became a 140px tile and the "calendar" turned into fifteen enormous squares.
+   The cap is what makes a short range look like a short range. */
+.cur .prof-activity .ws-heat { margin-inline: 0; }
+
+.cur .prof-bar {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; margin-bottom: 14px;
+}
+.cur .prof-chart { padding: 18px 22px 20px; }
+.cur .prof-figure {
+  display: flex; align-items: center; gap: 9px; margin-top: 7px;
+  font-size: 19px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ‹ August 2026 › */
+.cur .prof-switch {
+  display: flex; align-items: center; gap: 2px; flex-shrink: 0;
+  padding: 3px; border-radius: var(--cur-r-cta); background: var(--cur-surface-strong);
+}
+.cur .prof-switch b {
+  min-width: 118px; text-align: center; font-size: 12.5px; font-weight: 500;
+  color: var(--cur-ink);
+}
+.cur .prof-switch button {
+  width: 24px; height: 24px; display: grid; place-items: center; flex-shrink: 0;
+  border: 0; border-radius: 6px; background: none; cursor: pointer; color: var(--cur-body);
+}
+.cur .prof-switch button:hover:not(:disabled) { background: var(--cur-surface); color: var(--cur-ink); }
+/* Disabled rather than hidden: a control that vanishes at the end of the range
+   moves the label under the pointer that was about to press it. */
+.cur .prof-switch button:disabled { color: var(--cur-muted-soft); cursor: default; }
+
+/* One bar per day. `align-items: flex-end` so a bar grows up from the axis, and
+   `flex: 1` so a 28-day month and a 31-day one both fill the card. */
+.cur .prof-bars {
+  display: flex; align-items: flex-end; gap: 3px; height: 150px;
+}
+.cur .prof-bars i {
+  flex: 1; min-width: 0; min-height: 3px; border-radius: 3px;
+  background: var(--cur-accent);
+}
+/* A day with nothing keeps its place in the row, drawn in the colour of nothing
+   happening. Dropping it would close the gap and quietly redraw the month.
+   Mixed off the ink rather than set to `--cur-hairline-strong`, which at #333
+   on a #1a1a1a card was so close to the background that a quiet fortnight
+   looked like a chart that had stopped rendering. */
+.cur .prof-bars i[data-empty="true"] {
+  min-height: 4px;
+  background: color-mix(in srgb, var(--cur-ink) 15%, transparent);
+}
+
+.cur .prof-axis {
+  display: flex; justify-content: space-between; margin-top: 9px;
+  font-size: 11px; color: var(--cur-muted-soft);
+}
+
+/* Under about 760px the four figures go two-up and the card loses its outer
+   padding — a 22px gutter on a phone leaves the chart about 280px wide. */
+@media (max-width: 760px) {
+  .cur .prof-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* A year is fifty-three columns. Fitted to a phone each day is under three
+     pixels, which is a texture rather than a calendar — so it keeps a legible
+     cell and the band scrolls, the way every contribution grid does. */
+  /* `rtl` on the scroller and `ltr` back on its contents: a year that opens
+     scrolled to its left edge shows the twelve months before this person
+     started, and the part they came to see is off-screen. This starts it at
+     today without a scroll position to set in JavaScript. */
+  .cur .prof-activity { overflow-x: auto; direction: rtl; }
+  .cur .prof-activity > * { direction: ltr; }
+  .cur .prof-activity .ws-heat {
+    --ws-cell-max: 13px;
+    width: calc(var(--ws-cols) * var(--ws-cell-max) + (var(--ws-cols) - 1) * var(--ws-gap));
+  }
+  .cur .prof-id, .cur .prof-head { padding-inline: 16px; }
+  .cur .prof-tiles, .cur .prof-activity, .cur .prof-chart { padding-inline: 16px; }
+  .cur .prof-bar { flex-direction: column; align-items: flex-start; }
+}
 
 /* ══════════════════════════════════════════════════════
    DETAIL PAGE — header, body, inspector rail.
@@ -2776,11 +3013,11 @@
   stroke: var(--cur-hairline-soft); stroke-width: 1; stroke-dasharray: 3 5;
 }
 .cur .ws-trend-line {
-  stroke: var(--cur-primary); stroke-width: 1.5;
+  stroke: var(--ws-chart-ink); stroke-width: 1.5;
   stroke-linejoin: round; stroke-linecap: round;
 }
 .cur .ws-trend-guide { stroke: var(--cur-hairline-strong); stroke-width: 1; }
-.cur .ws-trend-dot { fill: var(--cur-primary); stroke: var(--cur-surface); stroke-width: 2; }
+.cur .ws-trend-dot { fill: var(--ws-chart-ink); stroke: var(--cur-surface); stroke-width: 2; }
 .cur .ws-trend-foot {
   display: flex; justify-content: space-between; align-items: baseline;
   margin-top: 2px; font-size: 11.5px; color: var(--cur-muted-soft);

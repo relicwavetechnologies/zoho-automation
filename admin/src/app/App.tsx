@@ -19,8 +19,9 @@ import { MailPreview } from "@/pages/preview/MailPreview"
 import { routed } from "@/pages/workspace/routes"
 import { SettingsShell } from "@/components/admin/settings-shell"
 import {
-  SettingsModels, SettingsPreferences, SettingsProfile,
+  SettingsModels, SettingsPreferences,
 } from "@/pages/workspace/screens-settings"
+import { SettingsProfile } from "@/pages/workspace/screens-profile"
 import { NoAccess } from "@/pages/workspace/ui"
 import {
   YouAccess, YouApprovals, YouConnections, YouMemory, YouSkills, YouUsage,

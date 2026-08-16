@@ -10,7 +10,14 @@ import { api } from '@/lib/api'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { useToolInventory, type InventoryEntry } from './use-tools'
 
-export type UsagePoint = { date: string; spendUsd: number }
+/** One calendar day, present whether or not anything happened on it. */
+export type UsagePoint = {
+  date: string
+  spendUsd: number
+  tokensIn: number
+  tokensOut: number
+  runs: number
+}
 
 export type MyUsage = {
   days: number
@@ -20,6 +27,10 @@ export type MyUsage = {
   previousRuns: number
   tokensIn: number
   tokensOut: number
+  /** Everything ever, unwindowed — it must not move when the range changes. */
+  lifetimeTokens: number
+  /** The longest completed run, ever. Zero when nothing has finished yet. */
+  longestRunMs: number
   cacheSavingsPct: number
   series: UsagePoint[]
   byModel: { modelId: string; calls: number; costUsd: number }[]
@@ -40,7 +51,8 @@ export type MyRun = {
 
 const EMPTY: MyUsage = {
   days: 30, spendUsd: 0, spendTodayUsd: 0, runs: 0, previousRuns: 0,
-  tokensIn: 0, tokensOut: 0, cacheSavingsPct: 0, series: [], byModel: [],
+  tokensIn: 0, tokensOut: 0, lifetimeTokens: 0, longestRunMs: 0,
+  cacheSavingsPct: 0, series: [], byModel: [],
 }
 
 export function useMyUsage(days = 30) {
@@ -250,6 +262,104 @@ export function summarizeSpend(series: { date: string; spendUsd: number }[]) {
 /** Percentage change between two windows, guarding the divide by zero. */
 export const changePct = (now: number, before: number): number =>
   before === 0 ? (now > 0 ? 100 : 0) : Math.round(((now - before) / before) * 100)
+
+/* ── What a year of days says about somebody ───────────
+   Four figures the series already contains and no endpoint reports, because
+   each is a shape across days rather than a sum of them. Kept as plain
+   functions over the series so they are read the same way wherever they
+   appear, and so they can be checked without a browser. */
+
+/** Tokens a day put through, both directions. */
+export const dayTokens = (point: UsagePoint): number => point.tokensIn + point.tokensOut
+
+/**
+ * The longest unbroken run of days this person asked Divo for something.
+ *
+ * Counted on runs rather than spend. A day whose only task was refused, or
+ * failed before its first model call, records no tokens at all — breaking a
+ * streak the person did nothing to break.
+ */
+export function longestStreak(series: UsagePoint[]): number {
+  let best = 0
+  let current = 0
+  for (const point of series) {
+    current = point.runs > 0 ? current + 1 : 0
+    if (current > best) best = current
+  }
+  return best
+}
+
+/**
+ * The streak still going.
+ *
+ * Today not being used does not end it — the day is not over. Anything earlier
+ * than yesterday does, so this reads back from the end until it finds a gap,
+ * forgiving exactly one at the very end.
+ */
+export function currentStreak(series: UsagePoint[]): number {
+  let streak = 0
+  for (let i = series.length - 1; i >= 0; i -= 1) {
+    if (series[i]!.runs > 0) streak += 1
+    else if (i === series.length - 1) continue
+    else break
+  }
+  return streak
+}
+
+/** The heaviest single day in the window, by tokens. */
+export function peakDay(series: UsagePoint[]): UsagePoint | null {
+  return series.reduce<UsagePoint | null>(
+    (best, point) => (best && dayTokens(best) >= dayTokens(point) ? best : point),
+    null,
+  )
+}
+
+export type UsageMonth = { key: string; label: string; days: UsagePoint[] }
+
+/**
+ * The window cut into calendar months, oldest first.
+ *
+ * Months rather than a rolling thirty days because the switcher names one —
+ * "December" has to mean December, not the last thirty days ending in it.
+ * Months with nothing in them are kept: a gap in somebody's history is a fact,
+ * and skipping it makes the arrows jump over time without saying so.
+ */
+export function byMonth(series: UsagePoint[]): UsageMonth[] {
+  const months = new Map<string, UsagePoint[]>()
+  for (const point of series) {
+    const key = point.date.slice(0, 7)
+    const bucket = months.get(key)
+    if (bucket) bucket.push(point)
+    else months.set(key, [point])
+  }
+  return [...months.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, days]) => ({
+      key,
+      // Parsed at local midnight; a bare `YYYY-MM` is read as UTC and lands in
+      // the previous month for anybody west of Greenwich.
+      label: new Date(`${key}-01T00:00:00`).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }),
+      days,
+    }))
+}
+
+/**
+ * How long something took, in the largest two units that fit.
+ *
+ * "3457s" and "57.6 minutes" are both worse than "57m 37s" for a figure whose
+ * whole job is to be glanced at. Seconds are dropped once there are hours,
+ * where they are noise.
+ */
+export function spanLabel(ms: number): string {
+  if (ms <= 0) return '—'
+  const total = Math.round(ms / 1000)
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const seconds = total % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, '0')}s`
+  return `${seconds}s`
+}
 
 /* ── What Divo may do for me ──────────────────────────── */
 

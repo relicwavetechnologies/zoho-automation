@@ -1,20 +1,22 @@
 /**
- * Account settings, split the way the reference splits them.
+ * The furniture every settings screen is built from, and the two small screens
+ * that are nothing but furniture.
  *
  * `YouSettings` was one page holding profile, model and appearance. The rail
  * gives each its own destination, which is the point of a takeover — a person
  * looking for the theme should not have to scroll past their own department
- * memberships to reach it.
+ * memberships to reach it. Profile outgrew this file and lives in
+ * `screens-profile.tsx`; it still builds its lower half from the primitives
+ * here, so a row means the same thing on every screen in the takeover.
  *
- * Nothing new is read here. Same `session`, same `useMyModelOptions`, same
- * `useTheme` the sidebar toggle uses, and the same honest note about why the
- * model list cannot be changed from this screen.
+ * Nothing new is read here. Same `useMyModelOptions`, same `useTheme` the
+ * sidebar toggle uses, and the same honest note about why the model list cannot
+ * be changed from this screen.
  */
-import { Check, CircleAlert } from 'lucide-react'
-import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { Check } from 'lucide-react'
 import { useTheme } from '@/lib/use-theme'
 import { useMyModelOptions } from './data/use-my-activity'
-import { Avatar, Empty, Seg, SkelRows } from './ui'
+import { Empty, Seg, SkelRows } from './ui'
 
 export const COMPANY_ROLE_LABEL: Record<string, string> = {
   MEMBER: 'Member',
@@ -73,73 +75,7 @@ export function SettingsGroup({ children }: { children: React.ReactNode }) {
   return <div className="set-group">{children}</div>
 }
 
-/** A rule between groups of rows, as the reference draws between sections. */
-export const SettingsGap = () => <div className="set-gap" />
-
 /* ── Screens ─────────────────────────────────────────── */
-
-export function SettingsProfile() {
-  const { session } = useAdminAuth()
-
-  return (
-    <>
-      <SettingsHead title="Profile" description="How you appear across the web app, Lark and the desktop." />
-
-      {/* First row, because the page is called Profile and this is the part of
-          it people look for. It was absent entirely — so somebody who signed in
-          through Lark, which is when Divo stores their picture, had nowhere on
-          this screen that could show it. Falls back to initials on its own. */}
-      <SettingsRow label="Profile picture" description="How you are shown around Divo">
-        <Avatar name={session?.name} email={session?.email} src={session?.avatarUrl} size={34} />
-      </SettingsRow>
-      <SettingsRow label="Full name" description="Your display name">
-        {/* Read-only, and that is not an oversight. No route updates a member's
-            own name — it comes from the directory — so an editable field here
-            would be a text box that forgets what you typed. */}
-        <span className="set-val">{session?.name ?? '—'}</span>
-      </SettingsRow>
-      <SettingsRow label="Email" description="Where Divo reaches you, and how you sign in">
-        <span className="set-val">{session?.email ?? '—'}</span>
-      </SettingsRow>
-      <SettingsRow label="Role" description="Your company-wide ceiling">
-        <span className="set-val">{COMPANY_ROLE_LABEL[session?.role ?? ''] ?? session?.role ?? '—'}</span>
-      </SettingsRow>
-      <SettingsRow label="Company">
-        <span className="set-val">{session?.companyName ?? '—'}</span>
-      </SettingsRow>
-      {/* Departments decide what Divo may do; the company role alone grants
-          nothing, which is the part people get wrong. */}
-      <SettingsRow
-        label={(session?.departments.length ?? 0) === 1 ? 'Department' : 'Departments'}
-        description="These decide what Divo may actually do for you — your company role alone grants nothing"
-      >
-        <span className="set-val">
-          {session?.departments.length
-            ? session.departments.map((d) => `${d.name} · ${d.roleName}`).join(', ')
-            : 'None'}
-        </span>
-      </SettingsRow>
-
-      <SettingsGap />
-
-      <SettingsRow
-        label="Lark"
-        description={session?.larkLinked
-          ? 'Linked — messages you send Divo in Lark resolve to this account'
-          : 'Not linked. Until you link it once, your Lark messages cannot be matched to this account.'}
-      >
-        <span className={`badge ${session?.larkLinked ? 'b-ok' : 'b-warn'}`}>
-          <span className="dot" />{session?.larkLinked ? 'Linked' : 'Not linked'}
-        </span>
-      </SettingsRow>
-
-      <div className="set-note">
-        <CircleAlert size={13} />
-        One account across the web, Lark and the desktop — change it and it changes everywhere.
-      </div>
-    </>
-  )
-}
 
 export function SettingsPreferences() {
   const { theme, setTheme } = useTheme()

@@ -593,8 +593,11 @@ export function TrendChart({ data, format = money, height = 190 }: {
         >
           <defs>
             <linearGradient id="ws-trend-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="var(--cur-primary)" stopOpacity="0.30" />
-              <stop offset="100%" stopColor="var(--cur-primary)" stopOpacity="0" />
+              {/* `--ws-chart-ink` rather than the brand token: a gradient stop
+                  cannot be restyled from a class, so the indirection is the only
+                  way a surface can draw this chart in its own colour. */}
+              <stop offset="0%" stopColor="var(--ws-chart-ink)" stopOpacity="0.30" />
+              <stop offset="100%" stopColor="var(--ws-chart-ink)" stopOpacity="0" />
             </linearGradient>
           </defs>
 
