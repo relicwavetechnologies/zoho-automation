@@ -8,7 +8,7 @@
  * **Every band here disappears when it is empty.** A card reading "Nothing is
  * waiting" is a row of pixels charging rent to say nothing — the reader learns
  * the same thing, faster, from its absence. That rule is why `ActionTiles`,
- * `TaskBand` and the charts all return `null` rather than an empty state, and
+ * `UpNext` and the charts all return `null` rather than an empty state, and
  * why the page is short on a quiet morning and long on a busy one.
  *
  * **A chart has to earn its half of the row.** The usage card used to hold
@@ -39,7 +39,8 @@ import {
   dayLabel, summarizeSpend, USAGE_DAYS, USAGE_WEEKS,
 } from './data/use-my-activity'
 import { useConnections, CONNECTABLE } from './data/use-connections'
-import { dueLabel, useMyTasks, type OpenTask } from './data/use-my-tasks'
+import { useMyTasks, type OpenTask } from './data/use-my-tasks'
+import { UpNext } from './home/upnext.view'
 import { DotField, HexShare, hueAt } from './charts'
 import type { MyRun } from './data/use-my-activity'
 import type { Provider } from './fixtures'
@@ -142,7 +143,10 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
   const { usage, loading: usageLoading } = useMyUsage(USAGE_DAYS)
   const { runs, loading: runsLoading } = useMyRuns(6)
   const { byProvider, loading: connectionsLoading } = useConnections()
-  const { tasks, reachable: tasksReachable } = useMyTasks(5)
+  /* Twelve for a band that shows six. `UpNext` orders by urgency and then
+     cuts, so the read has to be wider than the band or the cut happens first
+     and the late task is the one that never arrived. */
+  const { tasks, reachable: tasksReachable } = useMyTasks(12)
   const { dismissed, dismiss } = useDismissed()
 
   /* The composer's draft lives here rather than inside it, because a task in
@@ -266,16 +270,18 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
         go={go}
       />
 
-      <TaskBand
+      <UpNext
         tasks={tasks}
+        approvals={awaitingMe}
         reachable={tasksReachable}
-        onStart={(task) => {
+        onStartTask={(task) => {
           setDraft(taskPrompt(task))
           // The composer is above a band the reader has scrolled down to;
           // seeding a box they cannot see reads as the button having done
           // nothing at all.
           composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
         }}
+        onOpenApproval={() => go('approvals')}
       />
 
       {cards.length > 0 ? (
@@ -645,58 +651,6 @@ function taskPrompt(task: OpenTask): string {
   const due = task.dueDate ? ` It is due ${task.dueDate}.` : ''
   return `Help me with my Lark task "${task.title}".${due} `
     + 'Start by telling me what you understand it to involve and what you would do first.'
-}
-
-/**
- * The Lark tasks still assigned to this person.
- *
- * Read-only on purpose. Ticking one off from here would mean this page holds a
- * credential that can change somebody's Lark, which is a different permission
- * conversation from showing them a list — so the route behind it asks for read
- * access only and the only control is one that hands the work to Divo.
- */
-function TaskBand({ tasks, reachable, onStart }: {
-  tasks: readonly OpenTask[]
-  reachable: boolean
-  onStart: (task: OpenTask) => void
-}) {
-  /* Nothing when there is nothing, and nothing when Divo cannot see. Somebody
-     with no Lark account linked is not missing a feature they asked for, and an
-     offer to connect belongs on the Connected panel that already makes it. */
-  if (!reachable || tasks.length === 0) return null
-
-  return (
-    <section className="ws-band">
-      <div className="ws-band-hd">
-        <div>
-          <h2>Your open tasks</h2>
-          <p>Assigned to you in Lark — start one and Divo picks it up</p>
-        </div>
-      </div>
-      <Panel>
-        <Fade>
-          <div className="ws-rows">
-            {tasks.map((task) => {
-              const due = dueLabel(task)
-              return (
-                <div className="ws-row" key={task.taskId}>
-                  <div className="ws-row-main">
-                    <b>{task.title}</b>
-                    {due ? (
-                      <p className={task.overdue ? 'ws-task-late' : undefined}>{due}</p>
-                    ) : null}
-                  </div>
-                  <div className="ws-row-act">
-                    <button type="button" className="btn" onClick={() => onStart(task)}>Start</button>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </Fade>
-      </Panel>
-    </section>
-  )
 }
 
 /**

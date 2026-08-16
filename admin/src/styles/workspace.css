@@ -585,7 +585,6 @@
 
 /* A late task says so in the error tone; everything else keeps meta ink. The
    date is already in the sentence, so this only has to carry that it is past. */
-.cur .ws-task-late { color: var(--cur-error) !important; }
 
 /* ── Home: share of spend ─────────────────────────────
    The rows under the hex cluster. The cluster carries the proportion and these

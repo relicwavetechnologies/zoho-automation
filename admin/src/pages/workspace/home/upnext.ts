@@ -19,7 +19,7 @@
  * calendar read lands, it becomes a third `kind` and nothing else changes.
  */
 import type { ApprovalItem } from '../data/use-approvals'
-import type { OpenTask } from '../data/use-my-tasks'
+import { dueLabel, type OpenTask } from '../data/use-my-tasks'
 
 /**
  * How soon this needs a person, as a word rather than a date.
@@ -66,13 +66,17 @@ function taskUrgency(task: OpenTask, now: Date): Urgency {
   return days <= 3 ? 'soon' : 'later'
 }
 
+/**
+ * The wording is `dueLabel`'s; only the dateless case is ours.
+ *
+ * Written out here once and then deleted again: it was the same four branches
+ * `dueLabel` already had, already tested, and two copies of "what do we call a
+ * task due tomorrow" is how a band ends up disagreeing with the page it is on.
+ * What that function cannot answer is a task Lark calls overdue with no date at
+ * all, because it has nothing to subtract — so that is the one line here.
+ */
 function taskWhen(task: OpenTask, now: Date): string | null {
-  if (!task.dueDate) return task.overdue ? 'Overdue' : null
-  const days = daysUntil(task.dueDate, now)
-  if (days < 0) return `${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} late`
-  if (days === 0) return 'Due today'
-  if (days === 1) return 'Due tomorrow'
-  return `Due in ${days} days`
+  return dueLabel(task, now) ?? (task.overdue ? 'Overdue' : null)
 }
 
 /**
