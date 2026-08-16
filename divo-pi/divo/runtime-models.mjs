@@ -24,6 +24,21 @@ export const RUNTIME_MODEL_IDS = Object.keys(RUNTIME_MODELS);
 /** Which models can be shown an image rather than a transcription of one. */
 export const VISION_MODELS = new Set(["gpt-5.6-luna"]);
 
+/**
+ * Exact Pi reasoning levels each provider model honours as a distinct mode.
+ *
+ * DeepSeek maps `medium` to `high`; exposing both would create a control whose
+ * label changes while the provider request does not. `xhigh` is Pi's portable
+ * name for DeepSeek's `max` effort.
+ */
+export const RUNTIME_REASONING_LEVELS = Object.freeze({
+	"deepseek-v4-flash": Object.freeze(["off", "high", "xhigh"]),
+	"deepseek-v4-pro": Object.freeze(["off", "high", "xhigh"]),
+	"gpt-5.6-luna": Object.freeze(["off", "minimal", "low", "medium", "high"]),
+});
+
+export const DEFAULT_RUNTIME_REASONING_LEVEL = "high";
+
 export function isRuntimeModel(value) {
 	return typeof value === "string" && Object.hasOwn(RUNTIME_MODELS, value);
 }
@@ -32,8 +47,16 @@ export function providerForModel(value) {
 	return RUNTIME_MODELS[value];
 }
 
-export function thinkingLevelForModel(value, fallback = "medium") {
-	return value === "gpt-5.6-luna" || value === "deepseek-v4-flash" || value === "deepseek-v4-pro"
-		? "high"
-		: fallback;
+export function reasoningLevelsForModel(value) {
+	return RUNTIME_REASONING_LEVELS[value] ?? [];
+}
+
+export function thinkingLevelForModel(value, requested = DEFAULT_RUNTIME_REASONING_LEVEL) {
+	const supported = reasoningLevelsForModel(value);
+	if (!supported.includes(requested)) {
+		throw new Error(
+			`thinkingLevel for ${value} must be one of: ${supported.join(", ")}`,
+		);
+	}
+	return requested;
 }

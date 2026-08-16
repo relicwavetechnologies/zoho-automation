@@ -10,6 +10,13 @@ import type { WebThreadRepoPort } from '../../infrastructure/persistence/web-thr
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { RunContext } from '../../domain/orchestration/run-context';
+import {
+  DEFAULT_MODEL,
+  PROXY_MODELS,
+  RUNTIME_REASONING_EFFORTS,
+  specFor,
+  supportsReasoningEffort,
+} from '../../application/observability/pricing';
 
 /**
  * Divo, driven from the browser.
@@ -44,6 +51,8 @@ const threadIdSchema = z.string().regex(/^web_[A-Za-z0-9-]{8,64}$/, 'malformed t
 const askSchema = z.object({
   threadId: threadIdSchema,
   text: z.string().min(1).max(20_000),
+  model: z.enum(PROXY_MODELS).optional(),
+  reasoningEffort: z.enum(RUNTIME_REASONING_EFFORTS).optional(),
 });
 
 const renameSchema = z.object({
@@ -228,6 +237,19 @@ export function createWebChatRoutes(deps: {
     if (!identity) return unauthenticated(res);
 
     const { threadId, text } = parsed.data;
+    const selectedModel = parsed.data.model ?? DEFAULT_MODEL;
+    const selectedEffort = parsed.data.reasoningEffort
+      ?? specFor(selectedModel).defaultReasoningEffort;
+    if (!supportsReasoningEffort(selectedModel, selectedEffort)) {
+      res.status(400).json({ ok: false, error: 'invalid_reasoning_effort' });
+      return;
+    }
+    // Old clients that send neither field retain the channel default. Once a
+    // client names either half, make the pair explicit so no layer can silently
+    // substitute a different value.
+    const modelSelection = parsed.data.model || parsed.data.reasoningEffort
+      ? { model: selectedModel, reasoningEffort: selectedEffort }
+      : undefined;
     const runId = randomUUID();
     const controller = new AbortController();
 
@@ -261,6 +283,7 @@ export function createWebChatRoutes(deps: {
           text: intake.text,
           userExternalId: identity.userId,
           sessionId: identity.sessionId,
+          ...(modelSelection ? { modelSelection } : {}),
           ...(attachments.length ? { attachments } : {}),
           abortSignal: controller.signal,
         }),

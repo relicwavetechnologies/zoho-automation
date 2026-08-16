@@ -32,6 +32,24 @@ export interface ModelRate {
 
 export type ModelProvider = 'deepseek' | 'openai'
 
+/**
+ * Pi's provider-neutral reasoning controls.
+ *
+ * A value is offered only when the selected provider/model can honour it as a
+ * distinct mode. In particular, DeepSeek V4 does not expose a real `medium`:
+ * Pi would clamp it upward to `high`, so advertising it would give the member
+ * a control that changes its label but not the request.
+ */
+export const RUNTIME_REASONING_EFFORTS = [
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+] as const
+export type RuntimeReasoningEffort = (typeof RUNTIME_REASONING_EFFORTS)[number]
+
 /** Every model the proxy offers. Anything else canonicalizes to one of these. */
 export const PROXY_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.6-luna'] as const
 export type ProxyModel = (typeof PROXY_MODELS)[number]
@@ -50,6 +68,9 @@ export interface ProxyModelSpec {
    * flag — it decides which of two paths a run takes.
    */
   readonly vision: boolean
+  /** Exact reasoning modes this model can honour through the Divo runtime. */
+  readonly reasoningEfforts: readonly RuntimeReasoningEffort[]
+  readonly defaultReasoningEffort: RuntimeReasoningEffort
   readonly rate: ModelRate
 }
 
@@ -59,6 +80,8 @@ const SPECS: readonly ProxyModelSpec[] = [
     provider: 'deepseek',
     label: 'Flash',
     vision: false,
+    reasoningEfforts: ['off', 'high', 'xhigh'],
+    defaultReasoningEffort: 'high',
     rate: { cacheHitIn: 0.0028, cacheMissIn: 0.14, output: 0.28 },
   },
   {
@@ -66,6 +89,8 @@ const SPECS: readonly ProxyModelSpec[] = [
     provider: 'deepseek',
     label: 'Pro',
     vision: false,
+    reasoningEfforts: ['off', 'high', 'xhigh'],
+    defaultReasoningEffort: 'high',
     rate: { cacheHitIn: 0.0145, cacheMissIn: 1.74, output: 3.48 },
   },
   {
@@ -73,6 +98,8 @@ const SPECS: readonly ProxyModelSpec[] = [
     provider: 'openai',
     label: 'Luna',
     vision: true,
+    reasoningEfforts: ['off', 'minimal', 'low', 'medium', 'high'],
+    defaultReasoningEffort: 'high',
     rate: { cacheHitIn: 0.02, cacheMissIn: 0.2, output: 1.2 },
   },
 ]
@@ -169,6 +196,23 @@ export function bestGrantedModel(allowed: readonly string[]): ProxyModel {
 /** Whether this model can be shown a picture rather than a transcription of one. */
 export function supportsVision(modelId: string): boolean {
   return specFor(modelId).vision
+}
+
+export interface RuntimeModelSelection {
+  readonly model: ProxyModel
+  readonly reasoningEffort: RuntimeReasoningEffort
+}
+
+/** Refuse fake controls instead of letting Pi silently clamp them. */
+export function supportsReasoningEffort(
+  model: ProxyModel,
+  effort: RuntimeReasoningEffort,
+): boolean {
+  return specFor(model).reasoningEfforts.includes(effort)
+}
+
+export function defaultModelSelection(model: ProxyModel = DEFAULT_MODEL): RuntimeModelSelection {
+  return { model, reasoningEffort: specFor(model).defaultReasoningEffort }
 }
 
 export interface SplitTokens {

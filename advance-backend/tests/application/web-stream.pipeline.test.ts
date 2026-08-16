@@ -53,6 +53,7 @@ async function readUntil(
 test('a provider delta crosses controller NDJSON, backend parsing, and web SSE before completion', async t => {
   let finish!: () => void;
   const finished = new Promise<void>(resolve => { finish = resolve; });
+  let runtimeOptions: Record<string, unknown> | undefined;
   const controller = createControllerServer({
     resolveLease: async () => ({
       profile: 'pipeline-user',
@@ -64,6 +65,7 @@ test('a provider delta crosses controller NDJSON, backend parsing, and web SSE b
       instanceId: 'pi-local-1',
     }),
     executeRuntime: async (_runtime: unknown, _message: string, options: any) => {
+      runtimeOptions = options;
       options.onProgress({ type: 'answer_delta', index: 0, delta: 'Hello' });
       await finished;
       options.onProgress({ type: 'answer_delta', index: 0, delta: ' world' });
@@ -116,6 +118,8 @@ test('a provider delta crosses controller NDJSON, backend parsing, and web SSE b
   const body = new FormData();
   body.set('threadId', 'web_pipeline1');
   body.set('text', 'Stream this answer');
+  body.set('model', 'gpt-5.6-luna');
+  body.set('reasoningEffort', 'medium');
   const response = await fetch(`http://127.0.0.1:${backendPort}/api/web-chat/runs`, {
     method: 'POST',
     body,
@@ -129,6 +133,8 @@ test('a provider delta crosses controller NDJSON, backend parsing, and web SSE b
   let stream = await readUntil(reader, decoder, '', 'event: answer_delta');
   assert.match(stream, /"delta":"Hello"/);
   assert.doesNotMatch(stream, /event: final/);
+  assert.equal(runtimeOptions?.['model'], 'gpt-5.6-luna');
+  assert.equal(runtimeOptions?.['thinkingLevel'], 'medium');
 
   finish();
   stream = await readUntil(reader, decoder, stream, 'event: final');

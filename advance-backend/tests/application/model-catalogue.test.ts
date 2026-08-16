@@ -9,6 +9,7 @@ import {
   providerOf,
   bestGrantedModel,
   supportsVision,
+  supportsReasoningEffort,
 } from '../../src/application/observability/pricing.ts';
 import { ProxyKeyStore } from '../../src/application/proxy/proxy-key.store.ts';
 
@@ -44,6 +45,14 @@ describe('model catalogue', () => {
     assert.equal(supportsVision('deepseek-v4-pro'), false);
   });
 
+  it('does not advertise DeepSeek medium when the provider would run high', () => {
+    assert.equal(supportsReasoningEffort('deepseek-v4-flash', 'medium'), false);
+    assert.equal(supportsReasoningEffort('deepseek-v4-pro', 'medium'), false);
+    assert.equal(supportsReasoningEffort('deepseek-v4-flash', 'high'), true);
+    assert.equal(supportsReasoningEffort('deepseek-v4-flash', 'xhigh'), true);
+    assert.equal(supportsReasoningEffort('gpt-5.6-luna', 'medium'), true);
+  });
+
   it('prices Luna at its post-cut rate', () => {
     // 1M cache-missed input + 1M output = $0.20 + $1.20.
     const cost = costUsd('gpt-5.6-luna', { cacheMissIn: 1_000_000, cacheHitIn: 0, output: 1_000_000 });
@@ -65,14 +74,23 @@ describe('model catalogue', () => {
   // controller as `invalid_model`, and a vision flag set only here tells a run
   // to look at a picture with a model that cannot see.
   it('agrees with the table the container reads', async () => {
-    const { RUNTIME_MODELS, VISION_MODELS } = await import(
+    const { RUNTIME_MODELS, VISION_MODELS, reasoningLevelsForModel } = await import(
       '../../../divo-pi/divo/runtime-models.mjs' as string
-    ) as { RUNTIME_MODELS: Record<string, string>; VISION_MODELS: Set<string> };
+    ) as {
+      RUNTIME_MODELS: Record<string, string>;
+      VISION_MODELS: Set<string>;
+      reasoningLevelsForModel(model: string): readonly string[];
+    };
 
     assert.deepEqual(Object.keys(RUNTIME_MODELS).sort(), [...PROXY_MODELS].sort());
     for (const spec of PROXY_MODEL_SPECS) {
       assert.equal(RUNTIME_MODELS[spec.id], spec.provider, `provider for ${spec.id}`);
       assert.equal(VISION_MODELS.has(spec.id), spec.vision, `vision for ${spec.id}`);
+      assert.deepEqual(
+        reasoningLevelsForModel(spec.id),
+        spec.reasoningEfforts,
+        `reasoning efforts for ${spec.id}`,
+      );
     }
   });
 });

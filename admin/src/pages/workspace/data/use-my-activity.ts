@@ -408,7 +408,16 @@ export function useMyTools() {
 
 /* ── Which models this person may pick ────────────────── */
 
-export type ModelOption = { id: string; label: string; provider: string; vision: boolean }
+export type ReasoningEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+export type ModelOption = {
+  id: string
+  label: string
+  provider: string
+  vision: boolean
+  /** Optional only for compatibility with a backend rolling out one version behind. */
+  reasoningEfforts?: readonly ReasoningEffort[]
+  defaultReasoningEffort?: ReasoningEffort
+}
 
 /**
  * The models the proxy will actually accept for the signed-in person.

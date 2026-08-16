@@ -555,10 +555,20 @@ describe("How a run is told to look at a picture", () => {
 		assert.match(imagePolicyFor("deepseek-v4-pro"), /divo_image_read/);
 	});
 
-	it("runs V4 Flash at the provider's upgraded high reasoning level", () => {
+	it("uses only reasoning levels the selected model can honour", () => {
 		assert.equal(thinkingLevelForModel("deepseek-v4-flash"), "high");
 		assert.equal(thinkingLevelForModel("gpt-5.6-luna"), "high");
-		assert.equal(thinkingLevelForModel("deepseek-v4-pro", "medium"), "high");
+		assert.equal(thinkingLevelForModel("deepseek-v4-pro", "xhigh"), "xhigh");
+		assert.equal(thinkingLevelForModel("gpt-5.6-luna", "medium"), "medium");
+		assert.throws(
+			() => thinkingLevelForModel("deepseek-v4-pro", "medium"),
+			/must be one of: off, high, xhigh/,
+		);
+	});
+
+	it("passes the selected reasoning level to Pi instead of forcing high", () => {
+		const args = buildPiArguments({ ...values, thinkingLevel: "off" });
+		assert.equal(args[args.indexOf("--thinking") + 1], "off");
 	});
 
 	it("puts exactly one policy into the prompt the agent is given", () => {

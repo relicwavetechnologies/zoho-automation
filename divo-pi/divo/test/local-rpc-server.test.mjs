@@ -856,6 +856,8 @@ test("Lark runs admit only the profile derived from a validated runtime lease", 
 		backendUrl: "https://backend.example",
 		runtimeLease: "signed-lease",
 		message: " hello ",
+		model: "gpt-5.6-luna",
+		thinkingLevel: "medium",
 		profile: "caller-choice-is-ignored",
 		approve: true,
 	});
@@ -869,6 +871,28 @@ test("Lark runs admit only the profile derived from a validated runtime lease", 
 	assert.equal(calls[1].runtime.profile, "cloud-derived");
 	assert.equal("approve" in calls[1], false);
 	assert.equal(calls[1].options.signal, undefined);
+	assert.equal(calls[1].options.model, "gpt-5.6-luna");
+	assert.equal(calls[1].options.thinkingLevel, "medium");
+});
+
+test("a fake DeepSeek medium effort is rejected before the runtime starts", async () => {
+	let started = false;
+	const admission = createAdmissionController({
+		resolveLease: async () => { started = true; return {}; },
+		executeRuntime: async () => { started = true; return { text: "done" }; },
+	});
+
+	await assert.rejects(
+		admission.runRuntime({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			message: "hello",
+			model: "deepseek-v4-flash",
+			thinkingLevel: "medium",
+		}),
+		(error) => error.code === "invalid_reasoning_effort" && error.statusCode === 400,
+	);
+	assert.equal(started, false);
 });
 
 test("session lifecycle admits only private leases and keeps the profile fenced", async () => {

@@ -26,6 +26,12 @@ import { FileChips, RejectionNote } from './attach.view'
 import { namedForClipboard, type Rejection } from './attach'
 import { CopyButton } from './copy'
 import type { Beat } from './beats'
+import {
+  reasoningEffortHint,
+  reasoningEffortLabel,
+  type ModelSelection,
+  type SelectableModel,
+} from './model-choice'
 
 /* ── Step ─────────────────────────────────────────────────
    Two states, one shape. Live: open, the label shimmering, the chip carrying
@@ -325,12 +331,6 @@ const SOURCES: { key: ToolKey; name: string; hint: string }[] = [
   { key: 'web', name: 'Web search', hint: 'Search and read pages' },
 ]
 
-const MODELS = [
-  { key: 'pro', name: 'Pro', tag: 'Default' },
-  { key: 'fast', name: 'Fast', tag: 'Cheaper' },
-  { key: 'deep', name: 'Deep', tag: 'Long runs' },
-]
-
 /* Stable identities for the empty case. A fresh `[]` in a default parameter is a
    new array on every render, which defeats every memo below it. */
 const NO_FILES: readonly File[] = []
@@ -348,11 +348,17 @@ function tokenAt(draft: string) {
 
 export function Composer({
   value, onChange, onSubmit, placeholder, autoFocus, running, onStop,
+  models, modelSelection, onModelChange, onReasoningEffortChange, modelLoading,
   files = NO_FILES, rejected = NO_REJECTIONS, onAttach, onRemoveFile,
 }: {
   value: string
   onChange: (next: string) => void
   onSubmit: () => void
+  models: readonly SelectableModel[]
+  modelSelection: ModelSelection | null
+  onModelChange: (model: string) => void
+  onReasoningEffortChange: (effort: ModelSelection['reasoningEffort']) => void
+  modelLoading?: boolean
   placeholder: string
   autoFocus?: boolean
   /** A run is going. The send control becomes the way to end it. */
@@ -378,10 +384,11 @@ export function Composer({
   const [expanded, setExpanded] = useState(false)
   const [sourceOpen, setSourceOpen] = useState(false)
   const [modelOpen, setModelOpen] = useState(false)
-  const [model, setModel] = useState(MODELS[0])
   const [active, setActive] = useState(0)
 
   const ready = value.trim().length > 0
+  const canSend = ready && modelSelection !== null
+  const model = models.find(candidate => candidate.id === modelSelection?.model)
   const token = tokenAt(value)
   const rows = useMemo(() => {
     const q = (token?.query ?? '').toLowerCase()
@@ -395,6 +402,10 @@ export function Composer({
   }, [autoFocus])
 
   useEffect(() => { setActive(0) }, [token?.query])
+
+  useEffect(() => {
+    if (running) setModelOpen(false)
+  }, [running])
 
   /* Wrapped text takes a row of its own, then the field grows to a ceiling.
      Measured off a hidden mirror of the draft rather than off the textarea, so
@@ -455,7 +466,7 @@ export function Composer({
   }
 
   const send = () => {
-    if (!ready) return
+    if (!canSend) return
     onSubmit()
   }
 
@@ -534,22 +545,58 @@ export function Composer({
       {/* ── model menu ── */}
       {modelOpen && (
         <div
-          className="absolute right-0 bottom-full z-10 mb-2 w-44 rounded-card bg-surface p-1 shadow-overlay"
+          className="absolute right-0 bottom-full z-10 mb-2 w-56 rounded-card bg-surface p-1 shadow-overlay"
           style={{ animation: 'bui-pop-in 180ms cubic-bezier(0.23,1,0.32,1) both', transformOrigin: 'bottom right' }}
         >
-          {MODELS.map((m) => (
+          <p className="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-3">
+            Model
+          </p>
+          {models.map((candidate) => (
             <button
-              key={m.key}
+              key={candidate.id}
               type="button"
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => { setModel(m); setModelOpen(false); input.current?.focus() }}
+              onClick={() => { onModelChange(candidate.id); input.current?.focus() }}
               className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
             >
-              <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{m.name}</span>
-              <span className="shrink-0 text-[11px] text-ink-3">{m.tag}</span>
-              <Check size={13} className={`shrink-0 text-ink ${m.key === model.key ? '' : 'invisible'}`} />
+              <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{candidate.label}</span>
+              <span className="shrink-0 text-[11px] text-ink-3">
+                {candidate.vision ? 'Vision' : candidate.provider === 'deepseek' ? 'DeepSeek' : 'OpenAI'}
+              </span>
+              <Check size={13} className={`shrink-0 text-ink ${candidate.id === model?.id ? '' : 'invisible'}`} />
             </button>
           ))}
+          {model && modelSelection && (
+            <>
+              <p className="mx-1 mt-1 border-t border-line px-1 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-3">
+                Reasoning effort
+              </p>
+              {model.reasoningEfforts.map((effort) => (
+                <button
+                  key={effort}
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => {
+                    onReasoningEffortChange(effort)
+                    setModelOpen(false)
+                    input.current?.focus()
+                  }}
+                  className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
+                >
+                  <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
+                    {reasoningEffortLabel(effort)}
+                  </span>
+                  <span className="shrink-0 text-[11px] text-ink-3">
+                    {reasoningEffortHint(effort)}
+                  </span>
+                  <Check
+                    size={13}
+                    className={`shrink-0 text-ink ${effort === modelSelection.reasoningEffort ? '' : 'invisible'}`}
+                  />
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
 
@@ -653,12 +700,18 @@ export function Composer({
             type="button"
             aria-expanded={modelOpen}
             aria-label="Choose model"
+            disabled={running || modelLoading || models.length === 0}
             onClick={() => { setSourceOpen(false); setModelOpen((v) => !v) }}
-            className={`flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[12px] font-medium text-ink-2 transition-colors duration-150 hover:bg-fill hover:text-ink ${
+            className={`flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[12px] font-medium text-ink-2 transition-colors duration-150 enabled:hover:bg-fill enabled:hover:text-ink disabled:opacity-60 ${
               expanded ? 'col-start-2 row-start-2' : 'col-start-3 row-start-1'
             }`}
           >
-            {model.name}
+            {model?.label ?? (modelLoading ? 'Loading…' : 'Unavailable')}
+            {modelSelection && (
+              <span className="font-normal text-ink-3">
+                · {reasoningEffortLabel(modelSelection.reasoningEffort)}
+              </span>
+            )}
             <ChevronDown size={11} className="text-ink-3" />
           </button>
 
@@ -673,14 +726,14 @@ export function Composer({
           <button
             type="button"
             aria-label={running ? 'Stop' : 'Send'}
-            disabled={running ? false : !ready}
+            disabled={running ? false : !canSend}
             onClick={running ? onStop : send}
             className={`flex size-7 shrink-0 items-center justify-center rounded-full transition-[background-color,color,transform] duration-200 enabled:active:scale-[0.94] ${
               expanded ? 'col-start-3 row-start-2' : 'col-start-4 row-start-1'
             }`}
             style={{
-              background: running || ready ? 'var(--bui-ink)' : 'var(--bui-line-strong)',
-              color: running || ready ? 'var(--bui-surface)' : 'var(--bui-ink-2)',
+              background: running || canSend ? 'var(--bui-ink)' : 'var(--bui-line-strong)',
+              color: running || canSend ? 'var(--bui-surface)' : 'var(--bui-ink-2)',
             }}
           >
             {running ? <span className="size-2.5 rounded-[2px] bg-current" /> : <ArrowUp size={16} />}

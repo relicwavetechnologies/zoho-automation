@@ -676,6 +676,8 @@ export function buildPiArgumentsWithResources(
 	values,
 	{ nativeSkillsRoot = "/run/divo-skills/current" } = {},
 ) {
+	const selectedModel = values.model ?? manifest.model;
+	const selectedProvider = values.provider ?? manifest.provider;
 	const allowed = scopedManifest(values.isRunScoped, values.channel);
 	const extensionArguments = allowed.extensions.flatMap((name) => [
 		"--extension",
@@ -694,15 +696,15 @@ export function buildPiArgumentsWithResources(
 		"--session-dir",
 		values.sessionDir,
 		"--provider",
-		values.provider,
+		selectedProvider,
 		"--model",
-		values.model,
+		selectedModel,
 		"--thinking",
-		thinkingLevelForModel(values.model, manifest.thinkingLevel),
+		thinkingLevelForModel(selectedModel, values.thinkingLevel),
 		"--append-system-prompt",
 		renderWorkspacePrompt({
 			workspace: values.workspace,
-			image_policy: imagePolicyFor(values.model),
+			image_policy: imagePolicyFor(selectedModel),
 			thread_id: values.thread,
 			run_dir: values.runDir,
 			thread_work_dir: values.isRunScoped
@@ -764,6 +766,7 @@ export function prepareDivoPiRun({
 	// terminal launch and every run before per-member selection existed use.
 	model = manifest.model,
 	provider = manifest.provider,
+	thinkingLevel,
 	print = false,
 	prompt,
 }) {
@@ -776,6 +779,7 @@ export function prepareDivoPiRun({
 	if (providerForModel(model) !== provider) {
 		throw new Error(`Model ${model} is served by ${providerForModel(model)}, not ${provider}`);
 	}
+	const selectedThinkingLevel = thinkingLevelForModel(model, thinkingLevel);
 	if (!/^[A-Za-z0-9._-]+$/.test(thread)) {
 		throw new Error("Thread must contain only letters, numbers, dot, underscore, or dash");
 	}
@@ -848,7 +852,7 @@ export function prepareDivoPiRun({
 	const agentConfiguration = buildAgentConfiguration({
 		provider,
 		model,
-		thinkingLevel: thinkingLevelForModel(model, manifest.thinkingLevel),
+		thinkingLevel: selectedThinkingLevel,
 	});
 	fs.writeFileSync(
 		path.join(agentDir, "settings.json"),
@@ -913,6 +917,7 @@ export function prepareDivoPiRun({
 		sessionPath,
 		thread,
 		threadWorkDir,
+		thinkingLevel: selectedThinkingLevel,
 		token,
 		workspace: path.resolve(workspace),
 	};

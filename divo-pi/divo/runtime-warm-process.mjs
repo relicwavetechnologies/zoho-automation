@@ -74,6 +74,7 @@ export function piProcessBinding({
 		departmentId: departmentId ?? "",
 		provider: selectedModel?.provider ?? "",
 		model: selectedModel?.model ?? "",
+		thinkingLevel: selectedModel?.thinkingLevel ?? "",
 		nativeSkillDigest: nativeSkillDigest ?? "",
 		channel: channel ?? "",
 	};
@@ -87,6 +88,7 @@ export function piProcessBindingMatches(current, next) {
 		&& current.departmentId === next.departmentId
 		&& current.provider === next.provider
 		&& current.model === next.model
+		&& current.thinkingLevel === next.thinkingLevel
 		&& current.nativeSkillDigest === next.nativeSkillDigest
 		&& current.channel === next.channel;
 }
@@ -100,6 +102,7 @@ export function piProcessBindingMismatchReason(current, next) {
 	if (current.departmentId !== next.departmentId) return "department_changed";
 	if (current.provider !== next.provider) return "provider_changed";
 	if (current.model !== next.model) return "model_changed";
+	if (current.thinkingLevel !== next.thinkingLevel) return "thinking_level_changed";
 	if (current.nativeSkillDigest !== next.nativeSkillDigest) return "native_skill_digest_changed";
 	if (current.channel !== next.channel) return "channel_changed";
 	return "none";

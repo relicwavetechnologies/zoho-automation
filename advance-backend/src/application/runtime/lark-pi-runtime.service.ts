@@ -27,8 +27,11 @@ import type {
   VerifiedKnowledgeEffect,
 } from './run-effect-receipt.store';
 import {
+  defaultModelSelection,
   providerOf,
   type ProxyModel,
+  type RuntimeModelSelection,
+  supportsReasoningEffort,
 } from '../observability/pricing';
 import {
   renderContextBlock,
@@ -48,7 +51,7 @@ import {
 } from '../observability/run-latency-recorder';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
-const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-pro';
+const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
 const MAX_CONTROLLER_STREAM_LINE_BYTES = 2 * 1_024 * 1_024;
 
 interface ControllerLatencySample {
@@ -129,6 +132,14 @@ export interface LarkPiRuntimeInput {
   readonly conversation: ConversationHandle;
   readonly threadId: string;
   readonly attachments?: readonly LarkPiRuntimeAttachment[];
+  /**
+   * A member's explicit web-composer choice.
+   *
+   * Lark sends none and remains pinned to Flash. An explicit choice is checked
+   * against the member grant before it reaches the controller; the proxy still
+   * performs the final authorization on every provider continuation.
+   */
+  readonly modelSelection?: RuntimeModelSelection;
   /**
    * Shared conversation the run must read before answering — the room
    * transcript for a group thread. Sent ahead of the ask, never persisted.
@@ -567,11 +578,33 @@ export class LarkPiRuntimeService {
   }
 
   /**
-   * Lark is intentionally pinned independently of member proxy grants. Grants
-   * authorize proxy use; they do not choose the channel's runtime model.
+   * Resolve one honest model control.
+   *
+   * Lark supplies no choice and is pinned to Flash without adding another DB
+   * read to its critical path. Web choices are untrusted input: when one is
+   * present, check it against the member's grant here. The proxy checks again
+   * on every provider continuation and remains the enforcement authority.
    */
-  async modelFor(_userId: string): Promise<ProxyModel> {
-    return LARK_RUNTIME_MODEL;
+  async modelFor(
+    userId: string,
+    requested?: RuntimeModelSelection,
+  ): Promise<RuntimeModelSelection> {
+    const selection = requested ?? defaultModelSelection(LARK_RUNTIME_MODEL);
+    if (!supportsReasoningEffort(selection.model, selection.reasoningEffort)) {
+      throw new LarkPiRuntimeError(
+        'invalid_reasoning_effort',
+        'That reasoning level is not available for this model.',
+        `${selection.model} does not support ${selection.reasoningEffort}`,
+      );
+    }
+    if (!requested || !this.deps.allowedModelsFor) return selection;
+    const allowed = await this.deps.allowedModelsFor(userId);
+    if (allowed.includes(selection.model)) return selection;
+    throw new LarkPiRuntimeError(
+      'model_not_allowed',
+      'That model is not enabled for your account. Choose one from the model menu.',
+      `${selection.model} is not granted to ${userId}`,
+    );
   }
 
   /**
@@ -866,7 +899,7 @@ export class LarkPiRuntimeService {
       ];
       // The member's model grant is a lookup the recalled context never feeds,
       // so the two resolve together rather than one behind the other.
-      const [runtimeMessage, model] = await Promise.all([
+      const [runtimeMessage, modelSelection] = await Promise.all([
         measureRunLatency(latencyTrace, {
           name: 'runtime.knowledge.recall',
           category: 'memory',
@@ -874,7 +907,7 @@ export class LarkPiRuntimeService {
         measureRunLatency(latencyTrace, {
           name: 'runtime.model.resolve',
           category: 'authorization',
-        }, () => this.modelFor(String(input.runContext.userId))),
+        }, () => this.modelFor(String(input.runContext.userId), input.modelSelection)),
       ]);
       const ask = droppedAttachmentNotice(dropped, runtimeMessage);
       const askWithoutRecall = droppedAttachmentNotice(dropped, input.incoming.text);
@@ -883,8 +916,9 @@ export class LarkPiRuntimeService {
           backendUrl: this.deps.backendUrl,
           runtimeLease,
           message,
-          model,
-          provider: providerOf(model),
+          model: modelSelection.model,
+          provider: providerOf(modelSelection.model),
+          thinkingLevel: modelSelection.reasoningEffort,
           ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
           ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
         }),
@@ -903,8 +937,9 @@ export class LarkPiRuntimeService {
             backendUrl: this.deps.backendUrl,
             runtimeLease,
             message,
-            model,
-            provider: providerOf(model),
+            model: modelSelection.model,
+            provider: providerOf(modelSelection.model),
+            thinkingLevel: modelSelection.reasoningEffort,
             ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
             ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
           }),

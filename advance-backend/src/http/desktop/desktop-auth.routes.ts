@@ -1794,7 +1794,14 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         .filter((id) => allowedModels.includes(id))
         .map((id) => PROXY_MODEL_SPECS.find((spec) => spec.id === id))
         .filter((spec): spec is (typeof PROXY_MODEL_SPECS)[number] => Boolean(spec))
-        .map((spec) => ({ id: spec.id, label: spec.label, provider: spec.provider, vision: spec.vision }));
+        .map((spec) => ({
+          id: spec.id,
+          label: spec.label,
+          provider: spec.provider,
+          vision: spec.vision,
+          reasoningEfforts: spec.reasoningEfforts,
+          defaultReasoningEffort: spec.defaultReasoningEffort,
+        }));
       res.json({
         success: true,
         data: { allowedModels, models: catalogue, blocked: policy?.blocked ?? false },

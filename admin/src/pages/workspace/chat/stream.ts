@@ -11,6 +11,7 @@
  * web-shaped payload — see `plans/divo-one-soul-two-surfaces.md`.
  */
 import { API_BASE_URL } from '@/lib/api-base'
+import type { ModelSelection } from './model-choice'
 
 /**
  * One agent working under a step that farmed work out.
@@ -127,6 +128,7 @@ export type RunEvent =
 export type AskInput = {
   threadId: string
   text: string
+  modelSelection: ModelSelection
   files?: readonly File[]
   token: string
   signal?: AbortSignal
@@ -143,6 +145,8 @@ export async function* ask(input: AskInput): AsyncGenerator<RunEvent> {
   const body = new FormData()
   body.append('threadId', input.threadId)
   body.append('text', input.text)
+  body.append('model', input.modelSelection.model)
+  body.append('reasoningEffort', input.modelSelection.reasoningEffort)
   for (const file of input.files ?? []) body.append('files', file)
 
   const response = await fetch(`${API_BASE_URL}/api/web-chat/runs`, {

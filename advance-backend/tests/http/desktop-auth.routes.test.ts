@@ -2487,10 +2487,17 @@ describe('desktop /me reports the department role', () => {
       });
 
       const [model] = result.body.data.models as Record<string, unknown>[];
-      assert.deepEqual(Object.keys(model!).sort(), ['id', 'label', 'provider', 'vision']);
+      assert.deepEqual(Object.keys(model!).sort(), [
+        'defaultReasoningEffort',
+        'id',
+        'label',
+        'provider',
+        'reasoningEfforts',
+        'vision',
+      ]);
     });
 
-    it('offers Flash and Luna when no policy is stored', async () => {
+    it('offers Flash, Pro, and Luna when no policy is stored', async () => {
       const router = createDesktopAuthRoutes(makeDeps({ prisma: policyPrisma(null) }));
 
       const result = await callRoute(router, 'GET', '/model-options', {

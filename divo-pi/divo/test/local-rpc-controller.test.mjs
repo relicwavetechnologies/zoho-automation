@@ -526,6 +526,7 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 		departmentId: "dep-1",
 		provider: "deepseek",
 		model: "deepseek-v4-flash",
+		thinkingLevel: "high",
 		nativeSkillDigest: "a".repeat(64),
 		channel: "lark",
 	};
@@ -533,6 +534,7 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 	assert.equal(piProcessBindingMatches(binding, { ...binding, thread: "lark-2" }), false);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, departmentId: "dep-2" }), false);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, model: "gpt-5.6-luna" }), false);
+	assert.equal(piProcessBindingMatches(binding, { ...binding, thinkingLevel: "xhigh" }), false);
 	assert.equal(piProcessBindingMatches(binding, {
 		...binding,
 		nativeSkillDigest: "b".repeat(64),
@@ -542,6 +544,10 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 	assert.equal(
 		piProcessBindingMismatchReason(binding, { ...binding, thread: "lark-2" }),
 		"thread_changed",
+	);
+	assert.equal(
+		piProcessBindingMismatchReason(binding, { ...binding, thinkingLevel: "xhigh" }),
+		"thinking_level_changed",
 	);
 	assert.equal(
 		piProcessBindingMismatchReason(binding, {
@@ -566,10 +572,10 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 	assert.deepEqual(
 		Object.keys(piProcessBinding({
 			profile: "p", thread: "t", backendUrl: "b", departmentId: "d",
-			selectedModel: { provider: "deepseek", model: "m" },
+			selectedModel: { provider: "deepseek", model: "m", thinkingLevel: "high" },
 			nativeSkillDigest: "x", channel: "web",
 		})).sort(),
-		["backendUrl", "channel", "departmentId", "model", "nativeSkillDigest", "profile", "provider", "thread"],
+		["backendUrl", "channel", "departmentId", "model", "nativeSkillDigest", "profile", "provider", "thinkingLevel", "thread"],
 	);
 });
 

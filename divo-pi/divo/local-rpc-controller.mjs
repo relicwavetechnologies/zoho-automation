@@ -62,6 +62,7 @@ import {
 	readProfile,
 } from "./local-profile.mjs";
 import { createTurnPhases } from "./runtime-turn-phases.mjs";
+import { thinkingLevelForModel } from "./runtime-models.mjs";
 import {
 	assertPinnedProfile,
 	trustedRuntimeSession,
@@ -182,6 +183,7 @@ async function runTurn({
 	attachments,
 	sessionScope,
 	model,
+	thinkingLevel,
 	signal,
 	onProgress,
 	ephemeral = false,
@@ -202,7 +204,16 @@ async function runTurn({
 	record.sessionScope = normalizedSessionScope;
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 	let resources = resourcesFor(profile);
-	const selectedModel = validateRuntimeModel(model);
+	const validatedModel = validateRuntimeModel(model);
+	if (!validatedModel && thinkingLevel !== undefined) {
+		throw new Error("A thinking level requires an explicit runtime model");
+	}
+	const selectedModel = validatedModel
+		? {
+			...validatedModel,
+			thinkingLevel: thinkingLevelForModel(validatedModel.model, thinkingLevel),
+		}
+		: undefined;
 	// Nothing this turn computes decides the image ID, and `ensureRuntime` cannot
 	// begin without it, so it is resolved alongside the skill fetch instead of
 	// after it — one Docker round trip leaves the critical path of every turn.
@@ -696,6 +707,7 @@ export async function promptWithRuntimeLease(runtime, message, options = {}, eff
 		sessionScope: validateSessionScope(options.sessionScope),
 		ephemeral: runtime.ephemeral === true,
 		model: options.model,
+		thinkingLevel: options.thinkingLevel,
 		signal: options.signal,
 		onProgress: options.onProgress,
 	}, effects);

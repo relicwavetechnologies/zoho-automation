@@ -21,6 +21,7 @@ import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { Composer as ChatComposer } from './chat/parts'
 import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
 import { stageHandoff } from './chat/handoff'
+import { useChatModelChoice } from './chat/model-choice'
 import '@/styles/beautiful.css'
 import { ago, expiryLabel, useApprovals } from './data/use-approvals'
 import {
@@ -483,13 +484,14 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
 function Composer({ go }: { go: (screen: string) => void }) {
   const [prompt, setPrompt] = useState('')
   const attach = useAttachments()
+  const modelChoice = useChatModelChoice()
   const { over, dropProps } = useFileDrop(attach.add)
   useDropGuard()
 
   const submit = () => {
     const trimmed = prompt.trim()
-    if (!trimmed) return
-    stageHandoff(trimmed, attach.files)
+    if (!trimmed || !modelChoice.selection) return
+    stageHandoff(trimmed, attach.files, modelChoice.selection)
     go('chat')
   }
 
@@ -504,6 +506,11 @@ function Composer({ go }: { go: (screen: string) => void }) {
         onChange={setPrompt}
         onSubmit={submit}
         placeholder="Ask Divo to export, compare, clean up, draft, or investigate…"
+        models={modelChoice.models}
+        modelSelection={modelChoice.selection}
+        onModelChange={modelChoice.selectModel}
+        onReasoningEffortChange={modelChoice.selectReasoningEffort}
+        modelLoading={modelChoice.loading}
         files={attach.files}
         rejected={attach.rejected}
         onAttach={attach.add}

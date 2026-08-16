@@ -45,6 +45,7 @@ import { restoreThreadArtifacts } from './artifacts/open'
 import { setOpen, useArtifacts } from './artifacts/store'
 import { EXAMPLES } from './chat/examples'
 import { ToolMark } from './chat/tools'
+import { reconcileModelSelection, useChatModelChoice, type ModelSelection } from './chat/model-choice'
 import '@/styles/beautiful.css'
 
 /**
@@ -88,6 +89,7 @@ export function WorkspaceChat() {
 function ChatThread({ threadId }: { threadId: string }) {
   const handoff = useMemo(peekHandoff, [])
   const { token } = useAdminAuth()
+  const modelChoice = useChatModelChoice()
   /* What this conversation produced before today. Restored into the panel's
      tabs but not shown: a reader opening last week's thread came back for the
      conversation, and a panel that springs out at them is answering a question
@@ -164,13 +166,17 @@ function ChatThread({ threadId }: { threadId: string }) {
      because the handoff carries its own: they arrive with the prompt from Home
      and were never in this screen's attachment state, so reading that state
      here would send the message without them. */
-  const begin = (text: string, files: readonly File[] = attach.files) => {
+  const begin = (
+    text: string,
+    files: readonly File[] = attach.files,
+    selected: ModelSelection | null = modelChoice.selection,
+  ) => {
     const trimmed = text.trim()
-    if (!trimmed) return
+    if (!trimmed || !selected) return
     // Armed only if a run genuinely started. A send declined because one is
     // already open would otherwise leave the pin armed, to fire against
     // whatever exchange happens to appear next.
-    const started = sendRef.current(trimmed, files)
+    const started = sendRef.current(trimmed, files, selected)
     pinNext.current = started
     if (!started) return
     // Only once the run is real. Clearing on the attempt would throw away the
@@ -189,13 +195,26 @@ function ChatThread({ threadId }: { threadId: string }) {
   const handedOff = useRef(false)
   useEffect(() => {
     if (handedOff.current || !handoff.prompt || !token || live.loading) return
+    // Home already fetched and staged an allowed pair. Do not put the same
+    // model-options request on this route change's critical path; the runtime
+    // and proxy still re-check the pair before inference. An older handoff with
+    // no pair waits for this screen's catalogue and takes its reconciled choice.
+    const selected = handoff.modelSelection ?? reconcileModelSelection(
+      modelChoice.models,
+      modelChoice.selection,
+    )
+    if (!selected && modelChoice.loading) return
+    if (!selected) return
     handedOff.current = true
     clearHandoff()
     /* Through the same door as a send typed here, so a message carried over from
        Home pins exactly as it would have if it had been typed on this page. */
-    begin(handoff.prompt, handoff.files)
+    begin(handoff.prompt, handoff.files, selected)
+    // `begin` intentionally stays outside the dependency list; the handoff is
+    // one-shot, while the catalogue fields are the values that can unblock an
+    // older handoff which carried no model pair.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handoff, token, live.loading])
+  }, [handoff, token, live.loading, modelChoice.loading, modelChoice.models, modelChoice.selection])
 
   const start = (text: string) => {
     if (!text.trim()) return
@@ -312,6 +331,11 @@ function ChatThread({ threadId }: { threadId: string }) {
             autoFocus={empty}
             running={live.running}
             onStop={live.stopRun}
+            models={modelChoice.models}
+            modelSelection={modelChoice.selection}
+            onModelChange={modelChoice.selectModel}
+            onReasoningEffortChange={modelChoice.selectReasoningEffort}
+            modelLoading={modelChoice.loading}
             files={attach.files}
             rejected={attach.rejected}
             onAttach={attach.add}

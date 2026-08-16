@@ -1659,7 +1659,7 @@ test('a caller-issued session is used verbatim, not the member\'s own sign-in', 
   assert.equal(where['revokedAt'], null);
 });
 
-test('the run asks for the Pro model pinned to the Lark channel', async () => {
+test('the run asks for Flash at high reasoning when Lark supplies no choice', async () => {
   let runBody: Record<string, unknown> | undefined;
   const service = new LarkPiRuntimeService({
     prisma: {
@@ -1688,8 +1688,66 @@ test('the run asks for the Pro model pinned to the Lark channel', async () => {
 
   await service.run(runtimeInput());
 
-  assert.equal(runBody?.['model'], 'deepseek-v4-pro');
+  assert.equal(runBody?.['model'], 'deepseek-v4-flash');
   assert.equal(runBody?.['provider'], 'deepseek');
+  assert.equal(runBody?.['thinkingLevel'], 'high');
+});
+
+test('an allowed web choice reaches the controller as the exact model and effort pair', async () => {
+  let runBody: Record<string, unknown> | undefined;
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    allowedModelsFor: async () => ['gpt-5.6-luna'],
+    fetch: (async (_url: string, init?: RequestInit) => {
+      runBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response(JSON.stringify({ text: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as any,
+  });
+
+  await service.run({
+    ...runtimeInput(),
+    modelSelection: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' },
+  });
+
+  assert.equal(runBody?.['model'], 'gpt-5.6-luna');
+  assert.equal(runBody?.['provider'], 'openai');
+  assert.equal(runBody?.['thinkingLevel'], 'medium');
+});
+
+test('a tampered web choice is refused before the controller is called', async () => {
+  const service = new LarkPiRuntimeService({
+    prisma: {} as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    allowedModelsFor: async () => ['deepseek-v4-flash'],
+  });
+
+  await assert.rejects(
+    service.modelFor('user-1', { model: 'gpt-5.6-luna', reasoningEffort: 'high' }),
+    (error) => error instanceof LarkPiRuntimeError && error.code === 'model_not_allowed',
+  );
 });
 
 function larkIngressInput(overrides: Record<string, unknown> = {}) {

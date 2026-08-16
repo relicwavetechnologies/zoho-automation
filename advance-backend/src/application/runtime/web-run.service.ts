@@ -14,6 +14,7 @@ import type {
 } from './lark-pi-runtime.service';
 import { LarkPiRuntimeError } from './lark-pi-runtime.service';
 import { createLiveAnswerPublisher } from './live-answer-publisher';
+import type { RuntimeModelSelection } from '../observability/pricing';
 
 /**
  * A Divo run driven from the browser.
@@ -78,6 +79,8 @@ export interface WebRunInput {
   readonly sessionId: string;
   /** Files handed over with this ask. Staged exactly as a Lark DM's are. */
   readonly attachments?: readonly LarkPiRuntimeAttachment[];
+  /** The exact model/effort pair selected in the web composer. */
+  readonly modelSelection?: RuntimeModelSelection;
   readonly abortSignal?: AbortSignal;
 }
 
@@ -195,6 +198,7 @@ export class WebRunService {
       },
       threadId: input.threadId,
       sessionId: input.sessionId,
+      ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       onProgress: event => {

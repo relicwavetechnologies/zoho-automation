@@ -31,6 +31,7 @@ import {
 	validateThread,
 } from "./runtime-identity.mjs";
 import { shutdownWarmContainers } from "./runtime-warm-process.mjs";
+import { thinkingLevelForModel } from "./runtime-models.mjs";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4317;
@@ -204,6 +205,7 @@ export function createAdmissionController({
 			attachments,
 			sessionScope,
 			model,
+			thinkingLevel,
 			signal,
 			onProgress,
 		}) {
@@ -217,10 +219,20 @@ export function createAdmissionController({
 			// Rejected here rather than deep inside the launch, so a backend that
 			// names a model this runtime does not carry gets a 400 naming the ones
 			// it does instead of a container that fails to start.
+			let normalizedThinkingLevel;
 			try {
-				validateRuntimeModel(model);
+				const selectedModel = validateRuntimeModel(model);
+				if (!selectedModel && thinkingLevel !== undefined) {
+					throw new Error("thinkingLevel requires an explicit model");
+				}
+				normalizedThinkingLevel = selectedModel
+					? thinkingLevelForModel(selectedModel.model, thinkingLevel)
+					: undefined;
 			} catch (error) {
-				throw admissionError(400, "invalid_model", error.message);
+				const code = /thinkingLevel/.test(error.message)
+					? "invalid_reasoning_effort"
+					: "invalid_model";
+				throw admissionError(400, code, error.message);
 			}
 			// Descriptors are re-derived, not trusted: `resolveStagedAttachments`
 			// recomputes every path from validated parts and ignores whatever the
@@ -259,6 +271,7 @@ export function createAdmissionController({
 						signal,
 						sessionScope: normalizedSessionScope,
 						...(model ? { model } : {}),
+						...(normalizedThinkingLevel ? { thinkingLevel: normalizedThinkingLevel } : {}),
 						...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
 						onProgress: (progress) => {
 							if (isProtectedShopifyProgress(progress)) protectedCallAttempted = true;

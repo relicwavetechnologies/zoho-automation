@@ -85,7 +85,8 @@ export class LlmProxyService {
     if (policy?.blocked) return { allow: false, status: 403, reason: 'This account is blocked from the AI proxy.' };
 
     // `input.model` is already canonical (route normalizes). When no policy has been
-    // set, members receive the shared default grant. Pro still requires an admin grant.
+    // set, members receive the shared default grant. An explicit policy can
+    // narrow that catalogue; this proxy remains the final enforcement point.
     const allowed: readonly string[] =
       policy && policy.allowedModels.length > 0 ? policy.allowedModels : DEFAULT_ALLOWED_MODELS;
     if (!allowed.includes(input.model)) {
