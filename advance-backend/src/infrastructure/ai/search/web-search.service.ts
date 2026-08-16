@@ -18,6 +18,7 @@
 import type { Logger } from '../../../shared/logger';
 import type { SerperOrganicResult, SerperSearchInput, SerperSearchResponse } from './serper.client';
 import { SearchIntegrationError } from './serper.client';
+import { guardedFetch } from '../../http/guarded-fetch';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -26,10 +27,14 @@ const MAX_RESULTS_LIMIT         = 8;
 const DEFAULT_PAGE_CONTEXT_LIMIT = 3;
 const MAX_PAGE_CONTEXT_LIMIT    = 4;
 const PAGE_FETCH_TIMEOUT_MS     = 8_000;
+/* A page is read for a paragraph of context. Anything past this is a download
+   we would parse and throw away, and an attacker's endpoint that never ends. */
+const PAGE_FETCH_MAX_BYTES      = 2 * 1_024 * 1_024;
 const PAGE_CONTEXT_CHAR_LIMIT   = 1_200;
 
-const USER_AGENT =
-  'Mozilla/5.0 (compatible; DivoBot/1.0; +https://divo.ai)';
+/* No user agent here any more. `guardedFetch` sends one honest name for every
+   URL this process did not choose, and a crawler that pretends to be a browser
+   — which this one did — is asking to be blocked by name later. */
 
 // ─── HTML helpers ─────────────────────────────────────────────────────────────
 
@@ -53,11 +58,6 @@ const stripHtml = (html: string): string =>
   );
 
 const dedupeWS = (s: string): string => s.replace(/\s+/g, ' ').trim();
-
-const extractTagText = (html: string, tag: string): string | undefined => {
-  const m = html.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i'));
-  return m?.[1] ? dedupeWS(stripHtml(m[1])) : undefined;
-};
 
 const extractMeta = (html: string, name: string): string | undefined => {
   const byName = html.match(
@@ -150,50 +150,57 @@ function normalizeItem(
   };
 }
 
-async function fetchPageContext(
-  url: string,
-  fetchImpl: typeof fetch,
-): Promise<PageContext> {
-  try {
-    const res = await fetchImpl(url, {
-      headers: {
-        Accept: 'text/html,application/xhtml+xml,text/plain;q=0.8,*/*;q=0.5',
-        'User-Agent': USER_AGENT,
-      },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(PAGE_FETCH_TIMEOUT_MS),
-    });
+/**
+ * Read a page a search engine pointed us at.
+ *
+ * Through `guardedFetch`, because this is the definition of a URL this process
+ * did not choose: it comes from a third-party index, in response to a query the
+ * *model* wrote. It used to be a bare `fetch` with `redirect: 'follow'`, no
+ * address check and no size limit — so a result pointing at `169.254.169.254`
+ * or at anything on the private network behind this service would have been
+ * fetched and its body handed to the model as page context.
+ *
+ * The guard revalidates every redirect hop from scratch, refuses addresses
+ * inside a private network whether they arrive as a hostname or as a literal,
+ * caps the body, and holds the response to types this can actually read.
+ */
+async function fetchPageContext(url: string): Promise<PageContext> {
+  const fetched = await guardedFetch(url, {
+    accept: ['text/html', 'application/xhtml+xml', 'text/plain'],
+    maxBytes: PAGE_FETCH_MAX_BYTES,
+    timeoutMs: PAGE_FETCH_TIMEOUT_MS,
+    maxRedirects: 3,
+  });
 
-    if (!res.ok) {
-      return { excerpt: '', fetched: false, error: `HTTP ${res.status}` };
-    }
-
-    const rawContentType = res.headers.get('content-type');
-    const html = await res.text();
-    const titleText  = extractTagText(html, 'title');
-    const metaDesc   = extractMeta(html, 'description') ?? extractMeta(html, 'og:description');
-    const bodyText   = dedupeWS(stripHtml(html));
-    const excerpt    = bodyText.length > PAGE_CONTEXT_CHAR_LIMIT
-      ? `${bodyText.slice(0, PAGE_CONTEXT_CHAR_LIMIT - 3)}...`
-      : bodyText;
-
-    // Prefer page title over the search-result title for the excerpt label, but
-    // we don't override item.title — just use excerpt from body text.
-    void titleText; // not used in WebSearchItem.title, used only for local context
-    return {
-      excerpt:  excerpt.length > 0 ? excerpt : '',
-      fetched:  excerpt.length > 0,
-      ...(metaDesc        ? { metaDescription: metaDesc }                     : {}),
-      ...(rawContentType  ? { contentType: rawContentType }                   : {}),
-      ...(excerpt.length === 0 ? { error: 'No readable page text extracted' } : {}),
-    };
-  } catch (e) {
-    return {
-      excerpt: '',
-      fetched: false,
-      error: e instanceof Error ? e.message : String(e),
-    };
+  if (!fetched.ok) {
+    return { excerpt: '', fetched: false, error: fetched.error.message };
   }
+  return pageContextFrom(fetched.value.body.toString('utf8'), fetched.value.contentType);
+}
+
+/**
+ * What a page says, out of its markup.
+ *
+ * Split from the fetch because it is the half worth testing and the half that
+ * needs nothing to run. It used to be inside `fetchPageContext`, so the only
+ * way to check that a `<script>` is not read as prose was to stand up a fake
+ * `fetch` and drive the whole service through it — which stopped working the
+ * moment the fetch became a guarded one that takes no stub, and rightly so.
+ */
+export function pageContextFrom(html: string, contentType?: string): PageContext {
+  const metaDesc = extractMeta(html, 'description') ?? extractMeta(html, 'og:description');
+  const bodyText = dedupeWS(stripHtml(html));
+  const excerpt = bodyText.length > PAGE_CONTEXT_CHAR_LIMIT
+    ? `${bodyText.slice(0, PAGE_CONTEXT_CHAR_LIMIT - 3)}...`
+    : bodyText;
+
+  return {
+    excerpt,
+    fetched: excerpt.length > 0,
+    ...(metaDesc ? { metaDescription: metaDesc } : {}),
+    ...(contentType ? { contentType } : {}),
+    ...(excerpt.length === 0 ? { error: 'No readable page text extracted' } : {}),
+  };
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -202,7 +209,6 @@ export class WebSearchService {
   constructor(
     private readonly client: SerperSearchPort,
     private readonly logger: Logger,
-    private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
   async search(input: WebSearchInput): Promise<WebSearchResult> {
@@ -252,10 +258,8 @@ export class WebSearchService {
 
     await Promise.all(
       items.slice(0, pageCtxLimit).map(async item => {
-        (item as unknown as Record<string, unknown>)['pageContext'] = await fetchPageContext(
-          item.link,
-          this.fetchImpl,
-        );
+        (item as unknown as Record<string, unknown>)['pageContext'] =
+          await fetchPageContext(item.link);
       }),
     );
 

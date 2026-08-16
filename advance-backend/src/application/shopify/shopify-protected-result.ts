@@ -1,3 +1,5 @@
+import type { CanonicalToolId } from '../../domain/tools/tool-id';
+
 const MAX_PROTECTED_REFERENCES = 100;
 const SHOPIFY_RESOURCE_ID = /^gid:\/\/shopify\/(Customer|Order)\/[1-9][0-9]*$/;
 
@@ -17,14 +19,37 @@ export interface ShopifyProtectedResult {
   readonly referencesTruncated?: true;
 }
 
+/**
+ * The Shopify capabilities, named as the canonical registry names them.
+ *
+ * Typed as `CanonicalToolId` rather than as strings, which is the whole point:
+ * these ids decide whether a run's output may be retained at all, and they were
+ * three bare string literals with nothing tying them to the registry that
+ * defines them. Renaming a capability in `tool-id.ts` would have left this
+ * matching nothing — and a predicate that silently stops recognising protected
+ * data does not fail loudly, it simply starts keeping customer records.
+ *
+ * With the annotation, that rename is a compile error here.
+ */
+const SHOPIFY_TOOL_IDS: readonly CanonicalToolId[] =
+  ['shopifyAnalytics', 'shopifyOrders', 'shopifyCustomers'];
+
+/**
+ * The two that read personal data.
+ *
+ * Analytics is aggregate and is deliberately not here. Everything downstream of
+ * this — suppressed result content, transient delivery, the destruction of a
+ * durable session — hangs off the answer.
+ */
+const PROTECTED_SHOPIFY_TOOL_IDS: readonly CanonicalToolId[] =
+  ['shopifyOrders', 'shopifyCustomers'];
+
 export function isShopifyToolId(toolId: string): boolean {
-  return toolId === 'shopifyAnalytics'
-    || toolId === 'shopifyOrders'
-    || toolId === 'shopifyCustomers';
+  return (SHOPIFY_TOOL_IDS as readonly string[]).includes(toolId);
 }
 
 export function isProtectedShopifyToolId(toolId: string): boolean {
-  return toolId === 'shopifyOrders' || toolId === 'shopifyCustomers';
+  return (PROTECTED_SHOPIFY_TOOL_IDS as readonly string[]).includes(toolId);
 }
 
 /**

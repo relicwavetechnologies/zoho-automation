@@ -10,7 +10,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { SerperClient, SearchIntegrationError } from '../../../../src/infrastructure/ai/search/serper.client.ts';
-import { WebSearchService } from '../../../../src/infrastructure/ai/search/web-search.service.ts';
+import { pageContextFrom, WebSearchService } from '../../../../src/infrastructure/ai/search/web-search.service.ts';
 import type { Logger } from '../../../../src/shared/logger.ts';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -62,7 +62,7 @@ function makeClient(opts: { apiKey?: string; timeoutMs?: number } = {}): SerperC
 
 function makeService(clientOverride?: SerperClient): WebSearchService {
   const client = clientOverride ?? makeClient();
-  return new WebSearchService(client, noopLogger, (globalThis as any).fetch);
+  return new WebSearchService(client, noopLogger);
 }
 
 const ORGANIC_RESPONSE = {
@@ -315,18 +315,6 @@ describe('WebSearchService.search', () => {
     assert.ok(result.items[0].pageContext?.error);
   });
 
-  it('extracts meta-description from page HTML', async () => {
-    mockResponses.push({ status: 200, body: { organic: [
-      { title: 'T', link: 'https://x.com/p', snippet: 'S', position: 1 },
-    ]}});
-    const html = `<html><head><meta name="description" content="Page meta desc"/></head><body>Body</body></html>`;
-    mockResponses.push({ status: 200, body: html, headers: { 'content-type': 'text/html' } });
-
-    const svc = makeService();
-    const result = await svc.search({ query: 'test', pageContextLimit: 1 });
-    assert.equal(result.items[0].pageContext?.metaDescription, 'Page meta desc');
-  });
-
   it('does not fetch page contexts when pageContextLimit is 0', async () => {
     mockResponses.push({ status: 200, body: ORGANIC_RESPONSE });
 
@@ -335,20 +323,6 @@ describe('WebSearchService.search', () => {
 
     // Only the primary Serper search — no page fetches
     assert.equal(fetchCalls.length, 1);
-  });
-
-  it('strips HTML tags from page excerpt', async () => {
-    mockResponses.push({ status: 200, body: { organic: [
-      { title: 'T', link: 'https://y.com/p', snippet: 'S', position: 1 },
-    ]}});
-    const html = '<html><body><h1>Hello</h1><p>World text here</p></body></html>';
-    mockResponses.push({ status: 200, body: html, headers: { 'content-type': 'text/html' } });
-
-    const svc = makeService();
-    const result = await svc.search({ query: 'test', pageContextLimit: 1 });
-    const excerpt = result.items[0].pageContext?.excerpt ?? '';
-    assert.ok(!excerpt.includes('<p>'), 'should not contain HTML tags');
-    assert.ok(excerpt.includes('Hello'), 'should include h1 text');
   });
 
   it('normalizes domain from item link (strips www.)', async () => {
@@ -378,3 +352,45 @@ describe('WebSearchService.search', () => {
     assert.ok(result.items.length > 0 || result.focusedSiteSearch === false);
   });
 });
+
+/*
+ * What a page says, read out of its markup.
+ *
+ * These used to be driven through the whole service against a stubbed `fetch`.
+ * The page read is now a guarded one — it is a URL a third-party index chose,
+ * in response to a query the model wrote — and a guard that accepts a stub is
+ * not a guard. The extraction was never the part that needed a network.
+ */
+describe('reading a page into context', () => {
+  it('takes the meta description when the page offers one', () => {
+    const html = '<html><head><meta name="description" content="Page meta desc"/></head>'
+      + '<body>Body</body></html>';
+    assert.equal(pageContextFrom(html).metaDescription, 'Page meta desc');
+  });
+
+  it('falls back to the Open Graph description', () => {
+    const html = '<html><head><meta property="og:description" content="OG desc"/></head></html>';
+    assert.equal(pageContextFrom(html).metaDescription, 'OG desc');
+  });
+
+  it('reads the words and not the markup around them', () => {
+    const context = pageContextFrom('<html><body><h1>Hello</h1><p>World text here</p></body></html>');
+    assert.ok(!context.excerpt.includes('<p>'), 'should not contain HTML tags');
+    assert.ok(context.excerpt.includes('Hello'), 'should include h1 text');
+  });
+
+  /* A page whose text is all script and style has nothing to say. Reporting it
+     as fetched would hand the model a paragraph of minified JavaScript and let
+     it answer from it. */
+  it('does not count script and style as prose', () => {
+    const context = pageContextFrom('<html><head><style>a{color:red}</style></head>'
+      + '<body><script>var x = 1;</script></body></html>');
+    assert.equal(context.excerpt, '');
+    assert.equal(context.fetched, false);
+    assert.equal(context.error, 'No readable page text extracted');
+  });
+
+  it('carries the content type it was read as', () => {
+    assert.equal(pageContextFrom('<p>hi</p>', 'text/html').contentType, 'text/html');
+  });
+})
