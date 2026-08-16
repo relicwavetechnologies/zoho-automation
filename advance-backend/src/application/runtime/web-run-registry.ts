@@ -1,3 +1,4 @@
+import type { AskAttachment } from '../../domain/channel/web-thread';
 import type { Logger } from '../../shared/logger';
 import type { WebRunEvent } from './web-run.service';
 
@@ -33,6 +34,8 @@ export interface WebRunHandle {
   readonly userId: string;
   /** What was asked. Shown by a reader who arrives after the run started. */
   readonly prompt: string;
+  /** The files it was asked with, so a reload mid-run redraws the whole ask. */
+  readonly attachments: readonly AskAttachment[];
   readonly startedAt: number;
   readonly settled: boolean;
 }
@@ -67,6 +70,7 @@ export interface WebRunStartInput {
   readonly threadId: string;
   readonly userId: string;
   readonly prompt: string;
+  readonly attachments?: readonly AskAttachment[];
   readonly controller: AbortController;
   /** The run itself. The registry drains it; the caller does not. */
   readonly events: AsyncGenerator<WebRunEvent>;
@@ -122,6 +126,7 @@ export class WebRunRegistry {
         threadId: input.threadId,
         userId: input.userId,
         prompt: input.prompt,
+        attachments: input.attachments ?? [],
         startedAt: Date.now(),
         settled: false,
       },

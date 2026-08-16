@@ -23,6 +23,7 @@ import {
   ask, stop, watch,
   type LedgerRow, type RunEvent, type Timeline,
 } from './stream'
+import { sentFrom, type SentFile } from './attach'
 import { getThread, threadSettled, type ThreadRunRecord, type ThreadTurn } from './threads'
 import { showArtifact } from '../artifacts/open'
 import type { RunState } from './player'
@@ -155,6 +156,8 @@ export type Exchange = {
   state: RunState
   /** Set when the run ended without an answer. */
   error?: string
+  /** Files that went with the ask. Drawn under it, the way the composer showed them. */
+  attachments?: SentFile[]
 }
 
 /**
@@ -197,6 +200,7 @@ export function exchangesFrom(turns: readonly ThreadTurn[]): Exchange[] {
         trace: [],
         answer: '',
         state: settledState(0),
+        ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
       })
       continue
     }
@@ -309,6 +313,11 @@ export function useThreadRun(input: {
   const [title, setTitle] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [prompt, setPrompt] = useState<string | null>(null)
+  /* Described rather than held. The chips outlive the run and the `File`
+     objects do not need to: keeping the handles alive would pin every uploaded
+     buffer in memory for as long as the thread is open, to draw a name and a
+     size that were copied out of them on the way past. */
+  const [sent, setSent] = useState<SentFile[]>([])
   const [timeline, setTimeline] = useState<Timeline | null>(null)
   const [liveAnswer, setLiveAnswer] = useState('')
   const [final, setFinal] = useState<{ text: string } | null>(null)
@@ -393,7 +402,9 @@ export function useThreadRun(input: {
     setRunning(false)
     setLoading(true)
 
-    const load = async (): Promise<{ prompt: string; startedAt: number } | null> => {
+    const load = async (): Promise<
+      { prompt: string; attachments: SentFile[]; startedAt: number } | null
+    > => {
       const found = await getThread(threadId, input.token!, controller.signal)
       if (controller.signal.aborted || currentThread.current !== threadId) return null
       const page = found?.thread.turns ?? []
@@ -409,8 +420,15 @@ export function useThreadRun(input: {
       setHasEarlier(found?.thread.hasEarlier ?? false)
       setTitle(found?.thread.title?.trim() || null)
       setLoading(false)
+      /* The ask is redrawn whole, files included. Read from the run rather than
+         from the turn it wrote: on a reload mid-run that turn is the one being
+         lifted out just above, so its chips would go with it. */
       return live
-        ? { prompt: live.prompt || (trailingAsk ? lastTurn!.text : ''), startedAt: live.startedAt }
+        ? {
+          prompt: live.prompt || (trailingAsk ? lastTurn!.text : ''),
+          attachments: live.attachments ?? lastTurn?.attachments ?? [],
+          startedAt: live.startedAt,
+        }
         : null
     }
 
@@ -418,6 +436,7 @@ export function useThreadRun(input: {
       const live = await load()
       if (!live) return
       setPrompt(live.prompt)
+      setSent(live.attachments)
       startedAt.current = live.startedAt
       setRunning(true)
       const answered = await consume(
@@ -458,8 +477,10 @@ export function useThreadRun(input: {
          duration is only news when the run is over. */
       state: settledState((Date.now() - startedAt.current) / 1000),
       ...(error ? { error } : {}),
+      ...(sent.length ? { attachments: sent } : {}),
     }])
     setPrompt(null)
+    setSent([])
     setTimeline(null)
     setLiveAnswer('')
     setFinal(null)
@@ -486,6 +507,7 @@ export function useThreadRun(input: {
     abort.current = controller
     startedAt.current = Date.now()
     setPrompt(text)
+    setSent((files ?? []).map(sentFrom))
     setTimeline(null)
     setLiveAnswer('')
     setFinal(null)
@@ -587,7 +609,8 @@ export function useThreadRun(input: {
       answer: liveAnswerText,
       state: liveState,
       ...(error ? { error } : {}),
-    }]), [prompt, settled, liveTrace, liveAnswerText, liveState, error])
+      ...(sent.length ? { attachments: sent } : {}),
+    }]), [prompt, settled, liveTrace, liveAnswerText, liveState, error, sent])
 
   return {
     exchanges,

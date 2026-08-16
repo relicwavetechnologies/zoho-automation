@@ -10,6 +10,7 @@
  * So an id is minted once, put in the URL, and everything else — history,
  * reconnection, the list in the sidebar — hangs off it.
  */
+import type { SentFile } from './attach'
 import type { LedgerRow } from './stream'
 import { API_BASE_URL } from '@/lib/api-base'
 
@@ -29,6 +30,8 @@ export type ThreadTurn = {
   at: string
   /** Present on an answer that came from a run with a work log. */
   run?: ThreadRunRecord
+  /** Present on an ask that carried files. */
+  attachments?: SentFile[]
 }
 
 export type ThreadSummary = {
@@ -222,7 +225,10 @@ export async function getThread(
   signal?: AbortSignal,
   /** The oldest turn already held. Omit for the newest page. */
   before?: number,
-): Promise<{ thread: ThreadDetail; running?: { runId: string; prompt: string; startedAt: number } } | null> {
+): Promise<{
+  thread: ThreadDetail
+  running?: { runId: string; prompt: string; attachments?: SentFile[]; startedAt: number }
+} | null> {
   const cursor = before === undefined ? '' : `?before=${before}`
   return await call(`/threads/${encodeURIComponent(threadId)}${cursor}`, token, { signal })
 }

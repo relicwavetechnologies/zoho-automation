@@ -30,7 +30,7 @@ import { Composer } from './chat/composer'
 import { Say } from './chat/answer/answer.view'
 import { PiTraceTimeline } from './chat/trace'
 import { PinSpacer } from './chat/pin'
-import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
+import { DropVeil, SentChips, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
 import { CopyButton } from './chat/copy'
 import { clearHandoff, peekHandoff } from './chat/handoff'
 import { useThreadRun, type Exchange } from './chat/live'
@@ -543,6 +543,10 @@ const Exchanged = memo(function Exchanged({
            your own message offers the copy — aiming at a 24px target that only
            appears once you are already on it is a worse trade than it sounds. */
         <div className="group flex flex-col items-end gap-0.5 pl-16">
+          {/* Above the words, where the composer had them. A file attached to a
+              question is context for it, and a reader scanning back for "the
+              message I sent the contract with" is looking for the file. */}
+          {exchange.attachments && <SentChips files={exchange.attachments} />}
           <p className="rounded-card bg-field px-3 py-2 text-[13.5px] leading-[1.5] text-ink">
             {prompt}
           </p>

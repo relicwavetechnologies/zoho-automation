@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   WEB_THREAD_PAGE,
+  askContent,
   webThreadPage,
   type WebThreadPageRow,
 } from '../../src/domain/channel/web-thread';
@@ -82,5 +83,34 @@ describe('assembling one page of a conversation', () => {
     const [row] = rows(1);
     const { turns } = webThreadPage([{ ...row!, role: 'tool' }]);
     assert.equal(turns[0]!.role, 'assistant');
+  });
+});
+
+describe('an ask that carried files, read back', () => {
+  const asked = (contentText: string, contentJson: unknown): WebThreadPageRow => ({
+    id: 'm1', sequence: 1, role: 'user', contentText, contentJson,
+    createdAt: new Date(1_700_000_000_000),
+  });
+
+  it('shows the person their own words, not the ones the model was given', () => {
+    /* The seam this whole path exists for. The stored text is the model's
+       memory — a transcript, then the question — and showing that back would
+       quote somebody's message to them with two notices stapled to the front. */
+    const { turns } = webThreadPage([asked(
+      '[Audio: "memo.m4a" …]\n\nwhat did she say?',
+      askContent({
+        text: 'what did she say?',
+        attachments: [{ name: 'memo.m4a', mime: 'audio/mp4', bytes: 40, outcome: 'audio' }],
+      }),
+    )]);
+
+    assert.equal(turns[0]?.text, 'what did she say?');
+    assert.equal(turns[0]?.attachments?.[0]?.name, 'memo.m4a');
+  });
+
+  it('leaves an ordinary message exactly as it was stored', () => {
+    const { turns } = webThreadPage([asked('reconcile last month', null)]);
+    assert.equal(turns[0]?.text, 'reconcile last month');
+    assert.equal(turns[0]?.attachments, undefined);
   });
 });

@@ -53,10 +53,57 @@ export function extensionOf(name: string): string {
 /** How the chip draws itself. Not a claim about what the agent will do with it. */
 export type FileKind = 'image' | 'audio' | 'doc'
 
-export function kindOf(file: File): FileKind {
+/**
+ * Enough of a file to name it. A `File` already is one.
+ *
+ * Widened from `File` on purpose: the same chip is drawn twice over — once for
+ * a file the composer is holding, and once for one the thread is reading back
+ * out of a message sent last week, where the bytes are long gone and only the
+ * description survives. Two shapes here would have meant two chips, and two
+ * chips drift.
+ */
+export type Named = { readonly name: string; readonly type: string }
+
+/**
+ * A file that already went, as the transcript knows it.
+ *
+ * `outcome` is the server's word, not a guess made here: audio was heard and
+ * folded into the words rather than staged, and a refused format never reached
+ * the container at all. Both are still things the person attached, which is why
+ * the message shows them.
+ */
+export type SentFile = {
+  name: string
+  /** The browser's mime type as it was sent. Empty when the browser had none. */
+  mime: string
+  bytes: number
+  outcome: 'file' | 'audio' | 'refused'
+}
+
+export function kindOf(file: Named): FileKind {
   if (file.type.startsWith('image/')) return 'image'
   if (file.type.startsWith('audio/') || AUDIO_EXTENSIONS.has(extensionOf(file.name))) return 'audio'
   return 'doc'
+}
+
+/** The same reading, for a file the browser no longer holds. */
+export function kindOfSent(sent: SentFile): FileKind {
+  return kindOf({ name: sent.name, type: sent.mime })
+}
+
+/** What the composer is holding, described the way the thread will read it back. */
+export function sentFrom(file: File): SentFile {
+  return {
+    name: file.name,
+    mime: file.type,
+    bytes: file.size,
+    /* Optimistic, and knowingly so. The server decides what an upload really
+       became and the thread shows that answer on reload; this is the same
+       message a moment earlier, when the only honest thing to say is that the
+       file went. Guessing `refused` here would flash a refusal at somebody
+       whose file is about to be read perfectly well. */
+    outcome: 'file',
+  }
 }
 
 /** Video and binaries only — see the note at the top about not out-guessing the server. */

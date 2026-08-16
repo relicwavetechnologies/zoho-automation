@@ -41,6 +41,34 @@ export interface WebThreadRunRecord {
   readonly failure?: { readonly code: string; readonly message: string };
 }
 
+/**
+ * A file that went with an ask, as the person who sent it should see it named.
+ *
+ * The reader's own message is the one place a file has to be acknowledged, and
+ * it is the one place it was not: a PDF handed over with a question reached the
+ * container, was read, was answered from — and the transcript showed a bare
+ * sentence, so re-reading the thread gave no sign the file had ever existed.
+ *
+ * Deliberately a description rather than a handle. Nothing here can be opened
+ * or fetched; the bytes went to the run and are not kept. What survives is what
+ * a person needs to recognise their own message by.
+ */
+export interface AskAttachment {
+  readonly name: string;
+  readonly mime: string;
+  readonly bytes: number;
+  /**
+   * What became of it.
+   *
+   * `refused` is carried rather than dropped on purpose: a file the container
+   * had no skill for is exactly the one a reader will come back puzzled about,
+   * and a transcript that quietly omits it answers their question with silence.
+   * `audio` was heard and folded into the words — the recording itself is not
+   * staged, so this is the only record that it was ever attached.
+   */
+  readonly outcome: 'file' | 'audio' | 'refused';
+}
+
 export interface WebThreadTurn {
   readonly id: string;
   /**
@@ -54,6 +82,8 @@ export interface WebThreadTurn {
   readonly at: string;
   /** Present on an assistant turn that came from a run with a work log. */
   readonly run?: WebThreadRunRecord;
+  /** Present on an ask that carried files. */
+  readonly attachments?: readonly AskAttachment[];
 }
 
 export interface WebThreadDetail extends WebThreadSummary {
@@ -111,13 +141,18 @@ export function webThreadPage(rows: readonly WebThreadPageRow[]): {
     .reverse()
     .map((row): WebThreadTurn => {
       const run = webThreadRun(row.contentJson);
+      const ask = webAsk(row.contentJson);
       return {
         id: row.id,
         sequence: row.sequence,
         role: row.role === 'user' ? 'user' : 'assistant',
-        text: row.contentText ?? '',
+        /* The person's own sentence where one was kept — the stored text is
+           what the model reads, which for an ask carrying a recording is the
+           transcript with their question underneath it. */
+        text: ask?.text ?? row.contentText ?? '',
         at: row.createdAt.toISOString(),
         ...(run ? { run } : {}),
+        ...(ask?.attachments.length ? { attachments: ask.attachments } : {}),
       };
     });
   return { turns, hasEarlier: rows.length > WEB_THREAD_PAGE };
@@ -153,6 +188,89 @@ export function webThreadRun(contentJson: unknown): WebThreadRunRecord | undefin
       : {}),
   };
   return record;
+}
+
+/** How an ask's own form travels on its turn. Read back by `webAsk`. */
+export const WEB_ASK_CONTENT_KIND = 'web_ask' as const;
+
+/**
+ * The ask as the person made it, written alongside the turn rather than into it.
+ *
+ * A turn's `contentText` is the model's memory, and it is not the message: a
+ * recording's transcript and a refused file's notice are folded in ahead of the
+ * words, because that is what the model has to read on the next turn to know
+ * what was said. Overwriting it with the person's typed sentence would show the
+ * reader the right thing at the cost of the agent forgetting the recording
+ * entirely. So both are kept, and this is the reader's half.
+ */
+export interface WebAsk {
+  /** What the person typed, when it differs from what the model was given. */
+  readonly text?: string;
+  readonly attachments: readonly AskAttachment[];
+}
+
+/**
+ * What is worth writing beside a turn, if anything.
+ *
+ * The common case is nothing: somebody typed a sentence and sent it, the stored
+ * text already is the message, and a JSON blob restating it would be stored on
+ * every turn of every conversation to say what the row next to it says. Only a
+ * message the reader would not otherwise get back — one carrying files, or one
+ * whose words were rewritten on the way to the model — has a second half.
+ */
+export function askFor(
+  ask: { readonly text: string; readonly attachments: readonly AskAttachment[] } | undefined,
+  storedText: string,
+): WebAsk | undefined {
+  if (!ask) return undefined;
+  const typed = ask.text.trim();
+  const rewritten = typed !== '' && typed !== storedText.trim();
+  if (!rewritten && ask.attachments.length === 0) return undefined;
+  return {
+    ...(rewritten ? { text: typed } : {}),
+    attachments: ask.attachments,
+  };
+}
+
+export function askContent(ask: WebAsk): unknown {
+  return {
+    kind: WEB_ASK_CONTENT_KIND,
+    ...(ask.text !== undefined ? { text: ask.text } : {}),
+    attachments: ask.attachments,
+  };
+}
+
+/**
+ * Read an ask off a stored turn, or nothing.
+ *
+ * Same rule as `webThreadRun`, for the same reason: anything unrecognised is
+ * dropped rather than guessed at. An entry missing a name is skipped rather
+ * than shown as an unnamed chip, because a chip nobody can identify is worse
+ * than the message reading as though nothing was attached.
+ */
+export function webAsk(contentJson: unknown): WebAsk | undefined {
+  if (typeof contentJson !== 'object' || contentJson === null) return undefined;
+  const value = contentJson as Record<string, unknown>;
+  if (value['kind'] !== WEB_ASK_CONTENT_KIND) return undefined;
+  const listed = Array.isArray(value['attachments']) ? value['attachments'] : [];
+  const OUTCOMES = new Set(['file', 'audio', 'refused']);
+  const text = value['text'];
+  return {
+    ...(typeof text === 'string' && text.trim() ? { text } : {}),
+    attachments: listed.flatMap((entry): AskAttachment[] => {
+      if (typeof entry !== 'object' || entry === null) return [];
+      const item = entry as Record<string, unknown>;
+      const name = typeof item['name'] === 'string' ? item['name'] : '';
+      if (!name) return [];
+      const outcome = String(item['outcome']);
+      return [{
+        name,
+        mime: typeof item['mime'] === 'string' ? item['mime'] : '',
+        bytes: typeof item['bytes'] === 'number' ? item['bytes'] : 0,
+        outcome: (OUTCOMES.has(outcome) ? outcome : 'file') as AskAttachment['outcome'],
+      }];
+    }),
+  };
 }
 
 /**

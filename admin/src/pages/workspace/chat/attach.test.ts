@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   MAX_FILES, MAX_FILE_BYTES, acceptFiles, formatBytes, isUnopenable, kindOf,
-  namedForClipboard, rejectionSentence,
+  kindOfSent, namedForClipboard, rejectionSentence, sentFrom,
 } from './attach'
 
 /** A file of a given size without allocating it — only `size` is ever read. */
@@ -163,5 +163,22 @@ describe('formatBytes', () => {
     assert.equal(formatBytes(2_048), '2 KB')
     assert.equal(formatBytes(1_500_000), '1.4 MB')
     assert.equal(formatBytes(24 * 1_024 * 1_024), '24 MB')
+  })
+})
+
+describe('a file the browser no longer holds', () => {
+  it('is read the same way as one it does', () => {
+    /* The transcript draws its chips from a description rather than a `File`,
+       and it has to reach the same answer — a recording that shows a document
+       icon in the message you sent is the composer and the thread disagreeing
+       about what you attached. */
+    assert.equal(kindOfSent({ name: 'a.png', mime: 'image/png', bytes: 1, outcome: 'file' }), 'image')
+    assert.equal(kindOfSent({ name: 'memo.m4a', mime: '', bytes: 1, outcome: 'audio' }), 'audio')
+    assert.equal(kindOfSent({ name: 'q3.pdf', mime: '', bytes: 1, outcome: 'file' }), 'doc')
+  })
+
+  it('describes what the composer is holding without keeping hold of it', () => {
+    const sent = sentFrom(fake('q3.pdf', 'application/pdf', 8_100))
+    assert.deepEqual(sent, { name: 'q3.pdf', mime: 'application/pdf', bytes: 8_100, outcome: 'file' })
   })
 })

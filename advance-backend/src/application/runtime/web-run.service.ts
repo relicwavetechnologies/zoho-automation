@@ -3,7 +3,14 @@ import type { Logger } from '../../shared/logger';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { ChannelLedgerRow, ChannelTimeline, InteractiveAction } from '../../domain/channel/outbound';
-import { WEB_RUN_CONTENT_KIND, webThreadTitle, type WebThreadRunRecord } from '../../domain/channel/web-thread';
+import {
+  WEB_RUN_CONTENT_KIND,
+  askContent,
+  askFor,
+  webThreadTitle,
+  type AskAttachment,
+  type WebThreadRunRecord,
+} from '../../domain/channel/web-thread';
 import { asChatId, asCorrelationId, asDepartmentId, asMessageId } from '../../shared/ids';
 import { createRunTimelineReducer } from '../channels/run-timeline.reducer';
 import type { ChannelIdentityRepoPort } from '../../infrastructure/persistence/channel-identity.repository';
@@ -79,6 +86,18 @@ export interface WebRunInput {
   readonly sessionId: string;
   /** Files handed over with this ask. Staged exactly as a Lark DM's are. */
   readonly attachments?: readonly LarkPiRuntimeAttachment[];
+  /**
+   * The ask as the person made it: their own words, and every file they handed
+   * over named with what became of it.
+   *
+   * `text` above is what the model reads — transcripts and refusals folded in
+   * ahead of the question. This is what the thread shows back, which is not the
+   * same string and must not be allowed to become it.
+   */
+  readonly ask?: {
+    readonly text: string;
+    readonly attachments: readonly AskAttachment[];
+  };
   /** The exact model/effort pair selected in the web composer. */
   readonly modelSelection?: RuntimeModelSelection;
   readonly abortSignal?: AbortSignal;
@@ -200,6 +219,7 @@ export class WebRunService {
       sessionId: input.sessionId,
       ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+      ...(input.ask ? { ask: input.ask } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       onProgress: event => {
         if (event.type === 'answer_delta') {
@@ -366,6 +386,10 @@ export class WebRunService {
     if (!this.deps.transcript) return;
     const scope = { companyId: String(input.runContext.companyId), channel: 'web' };
     try {
+      /* The same turn the runtime would have written, files included — a run
+         that failed is the case where the reader most needs their own message
+         back intact, since there is no answer to read it against. */
+      const readerAsk = askFor(input.ask, input.text);
       await this.deps.transcript.appendTurn(
         input.threadId,
         { role: 'user', content: input.text, timestamp: new Date(startedAtMs).toISOString() },
@@ -373,10 +397,11 @@ export class WebRunService {
         {
           dedupeKey: `web:${runId}:user`,
           sourceRunId: runId,
+          ...(readerAsk ? { contentJson: askContent(readerAsk) } : {}),
           conversationDefaults: {
             createdByUserId: String(input.runContext.userId),
             ...(input.runContext.requesterEmail ? { createdByEmail: input.runContext.requesterEmail } : {}),
-            title: webThreadTitle(input.text),
+            title: webThreadTitle(input.ask?.text.trim() || input.text),
           },
         },
       );

@@ -146,7 +146,14 @@ export function createWebChatRoutes(deps: {
         hasEarlier: false,
       },
       ...(active && !active.settled
-        ? { running: { runId: active.runId, prompt: active.prompt, startedAt: active.startedAt } }
+        ? {
+          running: {
+            runId: active.runId,
+            prompt: active.prompt,
+            attachments: active.attachments,
+            startedAt: active.startedAt,
+          },
+        }
         : {}),
     });
   });
@@ -282,6 +289,7 @@ export function createWebChatRoutes(deps: {
         // own message quoted with a transcript and two refusals stapled to the
         // front of it would not recognise it as theirs.
         prompt: text,
+        attachments: intake.manifest,
         controller,
         events: deps.webRuns.run({
           runContext: identity.runContext,
@@ -291,6 +299,9 @@ export function createWebChatRoutes(deps: {
           sessionId: identity.sessionId,
           ...(modelSelection ? { modelSelection } : {}),
           ...(attachments.length ? { attachments } : {}),
+          // What the thread shows back afterwards: their words, and every file
+          // they handed over — including the ones nothing could be done with.
+          ask: { text, attachments: intake.manifest },
           abortSignal: controller.signal,
         }),
       });

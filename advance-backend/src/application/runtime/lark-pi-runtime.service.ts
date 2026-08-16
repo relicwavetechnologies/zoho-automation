@@ -8,7 +8,7 @@ import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
 import { boundProgressText, PROGRESS_LIST_LIMITS } from './progress-limits';
 import { isRuntimeChannel, type RuntimeChannel } from '../../domain/channel/runtime-channel';
-import { webThreadTitle } from '../../domain/channel/web-thread';
+import { askContent, askFor, webThreadTitle, type AskAttachment } from '../../domain/channel/web-thread';
 import { canonicalToolIdForToolName } from '../../domain/tools/tool-id';
 import type { RunOrigin, RunOriginStore } from '../connections/run-origin.store';
 import type { KnowledgeLearningService } from '../knowledge/knowledge-learning.service';
@@ -132,6 +132,20 @@ export interface LarkPiRuntimeInput {
   readonly conversation: ConversationHandle;
   readonly threadId: string;
   readonly attachments?: readonly LarkPiRuntimeAttachment[];
+  /**
+   * The ask as the person made it, for a surface that redraws the conversation.
+   *
+   * `incoming.text` is what the *model* is given: transcripts and refusals are
+   * folded in ahead of the person's words, which is right for answering and
+   * wrong for a transcript — a reader would find their own message quoted back
+   * with two bracketed notices stapled to the front of it. Lark sends nothing
+   * here and needs to: its transcript is the Lark chat, where the message the
+   * person actually sent is still sitting.
+   */
+  readonly ask?: {
+    readonly text: string;
+    readonly attachments: readonly AskAttachment[];
+  };
   /**
    * A member's explicit web-composer choice.
    *
@@ -1367,6 +1381,10 @@ export class LarkPiRuntimeService {
     readonly messageId: string;
     readonly text: string;
   } | null {
+    /* The model's text, deliberately. This row is the agent's memory of the
+       conversation, and for an ask carrying a recording the transcript is the
+       part it has to be able to read back. What the person typed is kept
+       beside it, on `contentJson`, for the reader. */
     const text = input.incoming.text.trim();
     if (
       input.incoming.chatType !== 'p2p'
@@ -1395,6 +1413,7 @@ export class LarkPiRuntimeService {
       const current = input.incoming.text.trim();
       return current ? [current] : [];
     }
+    const readerAsk = askFor(input.ask, turn.text);
     try {
       const user = await measureRunLatency(latencyTrace, {
         name: 'runtime.conversation.user.append',
@@ -1407,13 +1426,19 @@ export class LarkPiRuntimeService {
         dedupeKey: `${turn.scope.channel}:${turn.messageId}:user`,
         sourceMessageId: turn.messageId,
         sourceRunId: String(input.incoming.traceId),
+        // The reader's half of the ask, written only when it has something to
+        // say: an ordinary typed message is already exactly what was sent, so
+        // it stores nothing extra.
+        ...(readerAsk ? { contentJson: askContent(readerAsk) } : {}),
         // Only used if this ask is what opens the conversation. A thread's
         // owner and its name both date from its first message, and nothing
         // later is allowed to change either by accident.
         conversationDefaults: {
           createdByUserId: String(input.runContext.userId),
           ...(input.runContext.requesterEmail ? { createdByEmail: input.runContext.requesterEmail } : {}),
-          title: webThreadTitle(turn.text),
+          // Named after the question, never after a transcript that happened to
+          // arrive above it.
+          title: webThreadTitle(input.ask?.text.trim() || turn.text),
         },
       }));
       if (!user.ok) throw user.error;

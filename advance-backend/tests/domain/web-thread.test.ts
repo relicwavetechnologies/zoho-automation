@@ -1,7 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  WEB_ASK_CONTENT_KIND,
   WEB_RUN_CONTENT_KIND,
+  askContent,
+  askFor,
+  webAsk,
   webThreadRun,
   webThreadTitle,
 } from '../../src/domain/channel/web-thread';
@@ -73,5 +77,73 @@ describe('web thread title', () => {
 
   it('names an empty ask rather than showing nothing', () => {
     assert.equal(webThreadTitle('   '), 'New chat');
+  });
+});
+
+describe('the files an ask carried', () => {
+  it('reads back what it wrote', () => {
+    const read = webAsk(askContent({
+      text: 'what is the total?',
+      attachments: [
+        { name: 'q3.pdf', mime: 'application/pdf', bytes: 8_100, outcome: 'file' },
+        { name: 'memo.m4a', mime: 'audio/mp4', bytes: 40, outcome: 'audio' },
+      ],
+    }));
+    assert.equal(read?.text, 'what is the total?');
+    assert.equal(read?.attachments.length, 2);
+    assert.equal(read?.attachments[1]?.outcome, 'audio');
+  });
+
+  /* Both live on `contentJson`, so each has to leave the other alone: a run
+     record read as an ask would put chips under an answer, and an ask read as a
+     run would staple an empty work log to a question. */
+  it('is not confused with a run record on the same field', () => {
+    const run = { kind: WEB_RUN_CONTENT_KIND, ledger: [], elapsedMs: 12 };
+    assert.equal(webAsk(run), undefined);
+    assert.equal(webThreadRun(askContent({ attachments: [] })), undefined);
+  });
+
+  it('drops an entry it cannot name rather than showing an unnamed chip', () => {
+    const read = webAsk({
+      kind: WEB_ASK_CONTENT_KIND,
+      attachments: [{ mime: 'application/pdf', bytes: 4 }, null, 'q3.pdf'],
+    });
+    assert.deepEqual(read?.attachments, []);
+  });
+
+  it('finds nothing in anything else', () => {
+    assert.equal(webAsk(null), undefined);
+    assert.equal(webAsk({ attachments: [{ name: 'q3.pdf' }] }), undefined);
+  });
+});
+
+describe('what an ask is worth keeping beside its turn', () => {
+  /* The common case, and the reason this is a decision rather than a write:
+     somebody typed a sentence and sent it. The stored text already is the
+     message, and a JSON copy of it on every turn of every conversation would
+     restate what the column next to it says. */
+  it('is nothing, when the message is already what was sent', () => {
+    assert.equal(askFor({ text: 'hello', attachments: [] }, 'hello'), undefined);
+    assert.equal(askFor(undefined, 'hello'), undefined);
+  });
+
+  /* The transcript of a recording is folded in ahead of the question before the
+     model sees it. That belongs in memory and not in the reader's own bubble,
+     which is the whole reason the two are stored separately. */
+  it('keeps the person\'s words when the model was given something else', () => {
+    const kept = askFor(
+      { text: 'what did she say?', attachments: [] },
+      '[Audio: "memo.m4a" …]\n\nwhat did she say?',
+    );
+    assert.equal(kept?.text, 'what did she say?');
+  });
+
+  it('keeps the files even when the words were passed through untouched', () => {
+    const kept = askFor({
+      text: 'read it',
+      attachments: [{ name: 'q3.pdf', mime: 'application/pdf', bytes: 8_100, outcome: 'file' }],
+    }, 'read it');
+    assert.equal(kept?.text, undefined);
+    assert.equal(kept?.attachments.length, 1);
   });
 });

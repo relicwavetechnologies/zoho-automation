@@ -14,7 +14,10 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { FileText, Image as ImageIcon, AudioLines, X } from 'lucide-react'
-import { acceptFiles, formatBytes, kindOf, rejectionSentence, type Rejection } from './attach'
+import {
+  acceptFiles, formatBytes, kindOf, kindOfSent, rejectionSentence,
+  type FileKind, type Rejection, type SentFile,
+} from './attach'
 
 /**
  * Stop a missed drop from replacing the app with the file.
@@ -144,29 +147,75 @@ export function FileChips({
   if (files.length === 0) return null
   return (
     <div className="flex flex-wrap gap-1.5 px-1 pb-1.5">
-      {files.map((file, index) => {
-        const Icon = ICON[kindOf(file)]
-        return (
-          <span
-            key={`${file.name}:${file.size}`}
-            className="flex h-7 max-w-[220px] items-center gap-1.5 rounded-full bg-fill pl-2 pr-1 text-[12px] text-ink"
-            style={{ animation: 'bui-pop-in 160ms cubic-bezier(0.23,1,0.32,1) both' }}
+      {files.map((file, index) => (
+        <Chip key={`${file.name}:${file.size}`} name={file.name} kind={kindOf(file)} bytes={file.size}>
+          <button
+            type="button"
+            aria-label={`Remove ${file.name}`}
+            onClick={(event) => { event.stopPropagation(); onRemove(index) }}
+            className="flex size-5 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors duration-100 hover:bg-surface hover:text-ink"
           >
-            <Icon size={12} className="shrink-0 text-ink-3" />
-            <span className="min-w-0 flex-1 truncate">{file.name}</span>
-            <span className="shrink-0 text-[11px] text-ink-3">{formatBytes(file.size)}</span>
-            <button
-              type="button"
-              aria-label={`Remove ${file.name}`}
-              onClick={(event) => { event.stopPropagation(); onRemove(index) }}
-              className="flex size-5 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors duration-100 hover:bg-surface hover:text-ink"
-            >
-              <X size={11} />
-            </button>
-          </span>
-        )
-      })}
+            <X size={11} />
+          </button>
+        </Chip>
+      ))}
     </div>
+  )
+}
+
+/**
+ * The files a message went with, under the message.
+ *
+ * Same chip as the composer's, deliberately: what somebody saw themselves
+ * attach is what they should recognise in their own message afterwards, and a
+ * second chip drawn from a second description is how the two stop matching.
+ * Right-aligned because the ask is.
+ *
+ * A file nothing could be done with is still shown, dimmed and said so. It is
+ * the one a reader comes back puzzled about, and a transcript that quietly drops
+ * it answers the puzzle with silence.
+ */
+export function SentChips({ files }: { files: readonly SentFile[] }) {
+  if (files.length === 0) return null
+  return (
+    <div className="flex flex-wrap justify-end gap-1.5">
+      {files.map((file) => (
+        <Chip
+          key={`${file.name}:${file.bytes}`}
+          name={file.name}
+          kind={kindOfSent(file)}
+          bytes={file.bytes}
+          muted={file.outcome === 'refused'}
+          note={file.outcome === 'refused' ? 'not readable' : undefined}
+        />
+      ))}
+    </div>
+  )
+}
+
+/** One named file. The composer adds a remove control; the transcript does not. */
+function Chip({ name, kind, bytes, muted, note, children }: {
+  name: string
+  kind: FileKind
+  bytes: number
+  muted?: boolean
+  /** Replaces the size when there is something more worth saying than how big it is. */
+  note?: string
+  children?: React.ReactNode
+}) {
+  const Icon = ICON[kind]
+  return (
+    <span
+      className={`flex h-7 max-w-[220px] items-center gap-1.5 rounded-full bg-fill pl-2 text-[12px] ${
+        children ? 'pr-1' : 'pr-2.5'
+      } ${muted ? 'text-ink-3' : 'text-ink'}`}
+      style={{ animation: 'bui-pop-in 160ms cubic-bezier(0.23,1,0.32,1) both' }}
+    >
+      <Icon size={12} className="shrink-0 text-ink-3" />
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      <span className="shrink-0 text-[11px] text-ink-3">{note ?? formatBytes(bytes)}</span>
+      {children}
+    </span>
   )
 }
 
