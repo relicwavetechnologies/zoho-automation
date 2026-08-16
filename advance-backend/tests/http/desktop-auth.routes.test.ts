@@ -7,6 +7,10 @@ import type { Request, Response } from 'express';
 import { allowsPiRuntimeLease, createDesktopAuthRoutes } from '../../src/http/desktop/desktop-auth.routes.ts';
 import { LARK_USER_OAUTH_SCOPES, LarkOAuthService } from '../../src/infrastructure/lark/lark-oauth.service.ts';
 import { ZohoTokenService } from '../../src/infrastructure/zoho/zoho-token.service.ts';
+import {
+  RunLatencyRecorder,
+  type RunLatencySpanStore,
+} from '../../src/application/observability/run-latency-recorder.ts';
 
 const noopLogger = {
   info:  () => {},
@@ -100,6 +104,8 @@ async function callRoute(
   return new Promise((resolve) => {
     let status = 200;
     let body: unknown = undefined;
+    const listeners = new Map<string, () => void>();
+    const finish = () => listeners.get('finish')?.();
 
     const req = {
       method,
@@ -114,9 +120,10 @@ async function callRoute(
       locals: opts.locals ?? {},
       status: (s: number) => { status = s; return res; },
       setHeader: () => res,
-      json: (b: unknown) => { body = b; resolve({ status, body }); return res; },
-      send: (b: unknown) => { body = b; resolve({ status, body }); return res; },
-      redirect: (s: number, location: string) => { status = s; body = location; resolve({ status, body }); return res; },
+      once: (event: string, listener: () => void) => { listeners.set(event, listener); return res; },
+      json: (b: unknown) => { body = b; finish(); resolve({ status, body }); return res; },
+      send: (b: unknown) => { body = b; finish(); resolve({ status, body }); return res; },
+      redirect: (s: number, location: string) => { status = s; body = location; finish(); resolve({ status, body }); return res; },
     } as unknown as Response;
 
     const stack = (router as any).stack as any[];
@@ -1894,6 +1901,56 @@ describe('desktop auth routes', () => {
     // three of these twice — the two permission queries differing only in a
     // `channel` the resolver never reads.
     assert.deepEqual(calls.sort(), ['listGrantedSkillIds', 'permissions.resolve', 'registryRevision']);
+  });
+
+  it('breaks the controller skills phase into its actual backend reads', async () => {
+    const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
+    const spans: Array<Record<string, any>> = [];
+    const store: RunLatencySpanStore = {
+      findOwnedIdByRequestId: async () => 'execution-1',
+      insertSpans: async batch => { spans.push(...batch); },
+    };
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        departmentMembership: {
+          findFirst: async () => ({
+            department: { id: departmentId, name: 'Operations', slug: 'operations', agentConfig: null },
+          }),
+        },
+      },
+      permissions: {
+        resolve: async () => ({
+          ok: true,
+          value: {
+            allowedToolIds: new Set<string>(),
+            allowedActionsByTool: new Map(),
+            decisions: [],
+            department: { roleSlug: 'MEMBER' },
+          },
+        }),
+      },
+      runLatencyRecorder: new RunLatencyRecorder(store, noopLogger),
+    }));
+
+    const result = await callRoute(router, 'GET', '/runtime-context', {
+      query: { departmentId, capabilityVersion: '3', nativeSkills: '1' },
+      locals: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MEMBER',
+        isPiRuntimeLease: true,
+        runtimeRunId: 'run-1',
+        runtimeDepartmentId: departmentId,
+      },
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.equal(result.status, 200);
+    assert.ok(spans.some(span => span.name === 'runtime.context.personal-memory'));
+    assert.ok(spans.some(span => span.name === 'runtime.context.membership'));
+    assert.ok(spans.some(span => span.name === 'runtime.context.permission'));
+    assert.ok(spans.some(span => span.name === 'runtime.context.native-skills'));
+    assert.equal(spans.every(span => span.parentSpanId === 'controller.phase.skills'), true);
   });
 
   it('returns complete native skill files only to the pinned Pi runtime lease', async () => {

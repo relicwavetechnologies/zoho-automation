@@ -2065,6 +2065,7 @@ model ExecutionRun {
   createdAt               DateTime                 @default(now())
   updatedAt               DateTime                 @updatedAt
   events                  ExecutionEvent[]
+  spans                   ExecutionSpan[]
   stepResults             StepResult[]
   personaLearningEvidence PersonaLearningEvidence?
   shopifyProvenance       ShopifyRunProvenance[]
@@ -2356,22 +2357,52 @@ model ManagerTeachArtifact {
 }
 
 model ExecutionEvent {
-  id          String       @id @default(uuid())
-  executionId String
-  execution   ExecutionRun @relation(fields: [executionId], references: [id], onDelete: Cascade)
-  sequence    Int
-  phase       String
-  eventType   String
-  actorType   String
-  actorKey    String?
-  title       String
-  summary     String?
-  status      String?
-  payload     Json?
-  createdAt   DateTime     @default(now())
+  id              String       @id @default(uuid())
+  executionId     String
+  execution       ExecutionRun @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  sequence        Int
+  phase           String
+  eventType       String
+  actorType       String
+  actorKey        String?
+  title           String
+  summary         String?
+  status          String?
+  payload         Json?
+  // Source time is emitted by Pi before a fire-and-forget batch crosses the
+  // network. `createdAt` remains the durable ingest time; conflating the two
+  // makes a delayed batch look like delayed work.
+  sourceTimestamp DateTime?
+  createdAt       DateTime     @default(now())
 
   @@unique([executionId, sequence])
   @@index([executionId, createdAt])
+  @@index([createdAt])
+}
+
+// Causal latency ledger for one execution run. Event rows explain what
+// happened; span rows explain where wall time went. The two are intentionally
+// separate so backend child spans never compete with Pi event sequence IDs.
+model ExecutionSpan {
+  id           String       @id @default(uuid())
+  executionId  String
+  execution    ExecutionRun @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  spanId       String
+  parentSpanId String?
+  name         String
+  category     String
+  source       String
+  startedAt    DateTime
+  endedAt      DateTime
+  durationMs   Int
+  status       String
+  attributes   Json?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@unique([executionId, spanId])
+  @@index([executionId, startedAt])
+  @@index([name, startedAt])
   @@index([createdAt])
 }
 

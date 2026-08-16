@@ -597,6 +597,9 @@ export function createControllerServer(options = {}) {
 					stream.enqueue({
 						type: "result",
 						text: result.text,
+						...(result.runtimeTelemetry
+							? { runtimeTelemetry: result.runtimeTelemetry }
+							: {}),
 						...(result.protectedDataUsed === true
 							? {
 								protectedDataUsed: true,

@@ -8,6 +8,10 @@ import type { Request, Response } from 'express';
 import { createGatewayRoutes } from '../../src/http/gateway/gateway.routes.ts';
 import type { GatewayDispatcher } from '../../src/application/gateway/gateway-dispatcher.ts';
 import type { GatewayResponse } from '../../src/application/gateway/gateway.types.ts';
+import {
+  RunLatencyRecorder,
+  type RunLatencySpanStore,
+} from '../../src/application/observability/run-latency-recorder.ts';
 
 const noopLogger = {
   info:  () => {},
@@ -129,6 +133,50 @@ describe('createGatewayRoutes', () => {
 
     assert.equal(status, 200);
     assert.deepEqual(body, expected);
+  });
+
+  it('parents governed gateway work beneath the exact Pi tool call', async () => {
+    const spans: Array<Record<string, any>> = [];
+    const store: RunLatencySpanStore = {
+      findOwnedIdByRequestId: async () => 'execution-1',
+      insertSpans: async batch => { spans.push(...batch); },
+    };
+    const router = createGatewayRoutes({
+      dispatcher: makeDispatcher({ ok: true, status: 'success', data: {} }),
+      logger: noopLogger,
+      latencyRecorder: new RunLatencyRecorder(store, noopLogger),
+    });
+
+    await callPost(router, {
+      body: { op: 'tools.invoke', execution: executionFor('thread-1'), payload: { toolId: 'fakeTool', args: {} } },
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    const root = spans.find(span => span.name === 'gateway.request');
+    assert.equal(root?.parentSpanId, 'pi.tool.action-1');
+
+    await callPost(router, {
+      body: {
+        op: 'tools.list',
+        execution: { ...executionFor('thread-1'), actionId: 'native-inputs-eager' },
+      },
+      locals: {
+        companyId: 'co-1',
+        userId: 'user-1',
+        aiRole: 'MEMBER',
+        sessionId: 'sess-1',
+        channel: 'lark',
+        isPiRuntimeLease: true,
+        runtimeRunId: 'run-1',
+        runtimeThreadId: 'thread-1',
+      },
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(spans.some(span => (
+      span.name === 'gateway.request'
+      && span.parentSpanId === 'controller.model'
+      && span.attributes?.op === 'tools.list'
+    )));
   });
 
   it('passes trusted Lark provenance to the dispatcher', async () => {

@@ -39,10 +39,24 @@ import type {
   RunProgressEvent,
   RunProgressTodo,
 } from './run-progress';
+import {
+  measureRunLatency,
+  type RunLatencyRecorder,
+  type RunLatencySpanHandle,
+  type RunLatencyTrace,
+} from '../observability/run-latency-recorder';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
 const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-pro';
 const MAX_CONTROLLER_STREAM_LINE_BYTES = 2 * 1_024 * 1_024;
+
+interface ControllerLatencySample {
+  readonly name: string;
+  readonly startedAt: number;
+  readonly endedAt: number;
+  readonly durationMs: number;
+  readonly status: 'ok' | 'error';
+}
 
 function asyncIterableBody(source: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
   const iterator = source[Symbol.asyncIterator]();
@@ -252,6 +266,8 @@ export interface LarkPiRuntimeServiceDeps {
   readonly allowedModelsFor?: (userId: string) => Promise<readonly string[]>;
   /** Receives provenance only; protected content is deliberately not included. */
   readonly onProtectedRun?: (notice: LarkProtectedRunNotice) => Promise<void> | void;
+  /** Records one correlated critical path without making observability authoritative. */
+  readonly runLatencyRecorder?: RunLatencyRecorder;
 }
 
 export interface LarkPiRuntimeResult {
@@ -758,7 +774,37 @@ export class LarkPiRuntimeService {
   }
 
   async run(input: LarkPiRuntimeInput): Promise<LarkPiRuntimeResult> {
-    const session = await this.findActiveSession(input.runContext, input.sessionId);
+    const latencyTrace = this.deps.runLatencyRecorder?.trace({
+      runId: String(input.incoming.traceId),
+      companyId: String(input.runContext.companyId),
+      userId: String(input.runContext.userId),
+      source: 'lark-runtime',
+    });
+    try {
+      return await measureRunLatency(latencyTrace, {
+        name: 'runtime.request',
+        category: 'runtime',
+        spanId: 'runtime.request',
+        attributes: {
+          channel: input.incoming.channel,
+          chatType: input.incoming.chatType,
+          deliveryMode: input.runContext.deliveryMode ?? null,
+        },
+      }, () => this.runMeasured(input, latencyTrace));
+    } finally {
+      // Persistence is best-effort and cannot delay the answer that was measured.
+      void latencyTrace?.flush();
+    }
+  }
+
+  private async runMeasured(
+    input: LarkPiRuntimeInput,
+    latencyTrace: RunLatencyTrace | undefined,
+  ): Promise<LarkPiRuntimeResult> {
+    const session = await measureRunLatency(latencyTrace, {
+      name: 'runtime.session.resolve',
+      category: 'persistence',
+    }, async () => this.findActiveSession(input.runContext, input.sessionId));
     if (!session) {
       throw new LarkPiRuntimeError(
         'runtime_session_missing',
@@ -776,8 +822,14 @@ export class LarkPiRuntimeService {
     // and the pending-attachment lookup does not depend on it. Both used to be
     // awaited one after the other before the run could begin.
     const [, pendingRows] = await Promise.all([
-      this.rememberRunOrigin(input),
-      this.loadPendingAttachments(input),
+      measureRunLatency(latencyTrace, {
+        name: 'runtime.origin.remember',
+        category: 'cache',
+      }, () => this.rememberRunOrigin(input)),
+      measureRunLatency(latencyTrace, {
+        name: 'runtime.attachments.pending',
+        category: 'persistence',
+      }, () => this.loadPendingAttachments(input)),
     ]);
     const pendingAttachments = pendingRows.map(row => row.descriptor);
     // Sending five screenshots at once is an ordinary thing to do, and refusing
@@ -797,20 +849,31 @@ export class LarkPiRuntimeService {
     }
 
     let response: Response;
+    let controllerSpan: RunLatencySpanHandle | undefined;
     try {
       const stagedAttachments = [
         ...pendingAttachments.map(validateStagedAttachment),
-        ...await this.stageAttachments(
+        ...await measureRunLatency(latencyTrace, {
+          name: 'runtime.attachments.stage',
+          category: 'runtime',
+          attributes: { count: attachments.length },
+        }, () => this.stageAttachments(
           attachments,
           runtimeLease,
           signal,
-        ),
+        )),
       ];
       // The member's model grant is a lookup the recalled context never feeds,
       // so the two resolve together rather than one behind the other.
       const [runtimeMessage, model] = await Promise.all([
-        this.withRecalledKnowledge(input, signal),
-        this.modelFor(String(input.runContext.userId)),
+        measureRunLatency(latencyTrace, {
+          name: 'runtime.knowledge.recall',
+          category: 'memory',
+        }, () => this.withRecalledKnowledge(input, signal)),
+        measureRunLatency(latencyTrace, {
+          name: 'runtime.model.resolve',
+          category: 'authorization',
+        }, () => this.modelFor(String(input.runContext.userId))),
       ]);
       const ask = droppedAttachmentNotice(dropped, runtimeMessage);
       const askWithoutRecall = droppedAttachmentNotice(dropped, input.incoming.text);
@@ -858,7 +921,16 @@ export class LarkPiRuntimeService {
           sentBytes: fitted.sentContextBytes,
         });
       }
-      response = await (this.deps.fetch ?? globalThis.fetch)(
+      controllerSpan = latencyTrace?.startSpan({
+        name: 'runtime.controller.turn',
+        category: 'runtime',
+        spanId: 'runtime.controller',
+      });
+      response = await measureRunLatency(latencyTrace, {
+        name: 'runtime.controller.connect',
+        category: 'runtime',
+        parentSpanId: 'runtime.controller',
+      }, () => (this.deps.fetch ?? globalThis.fetch)(
         `${this.deps.controllerUrl.replace(/\/+$/, '')}/v1/lark-runs`,
         {
           method: 'POST',
@@ -869,8 +941,9 @@ export class LarkPiRuntimeService {
           body: JSON.stringify(fitted.body),
           signal,
         },
-      );
+      ));
     } catch (error) {
+      controllerSpan?.end('error');
       await this.throwIfCallerInterrupted(input);
       // Staging already decided what the user should be told — that a file is
       // too large, or could not be opened. Rewrapping it as
@@ -893,30 +966,61 @@ export class LarkPiRuntimeService {
         text: string;
         protectedDataUsed: boolean;
         protectedReferences: readonly LarkProtectedRunReference[];
+        controllerLatency: readonly ControllerLatencySample[];
       };
       try {
-        streamed = await this.readStream(response, input);
+        streamed = await measureRunLatency(latencyTrace, {
+          name: 'runtime.controller.stream',
+          category: 'runtime',
+          parentSpanId: 'runtime.controller',
+          spanId: 'runtime.controller.stream',
+        }, () => this.readStream(response, input));
       } catch (error) {
+        controllerSpan?.end('error');
         await this.throwIfCallerInterrupted(input);
         throw error;
       }
-      await this.consumePendingAttachments(pendingRows.map(row => row.id));
-      return this.finalizeResult(
+      recordControllerLatencySpans(
+        latencyTrace,
+        streamed.controllerLatency,
+        'runtime.controller.stream',
+      );
+      controllerSpan?.end('ok');
+      await measureRunLatency(latencyTrace, {
+        name: 'runtime.attachments.consume',
+        category: 'persistence',
+      }, () => this.consumePendingAttachments(pendingRows.map(row => row.id)));
+      return measureRunLatency(latencyTrace, {
+        name: 'runtime.finalize',
+        category: 'delivery',
+      }, () => this.finalizeResult(
         streamed.text,
         input,
         streamed.protectedDataUsed,
         streamed.protectedReferences,
-      );
+        latencyTrace,
+      ));
     }
 
-    const body = await response.json().catch(() => null) as {
+    const body = await measureRunLatency(latencyTrace, {
+      name: 'runtime.controller.response.read',
+      category: 'runtime',
+      parentSpanId: 'runtime.controller',
+    }, () => response.json().catch(() => null)) as {
       text?: unknown;
       protectedDataUsed?: unknown;
       protectedRefs?: unknown;
+      runtimeTelemetry?: unknown;
       error?: { code?: unknown; message?: unknown };
     } | null;
-    await this.throwIfCallerInterrupted(input);
+    try {
+      await this.throwIfCallerInterrupted(input);
+    } catch (error) {
+      controllerSpan?.end('error');
+      throw error;
+    }
     if (!response.ok) {
+      controllerSpan?.end('error');
       const code = typeof body?.error?.code === 'string'
         ? body.error.code
         : `controller_http_${response.status}`;
@@ -927,17 +1031,37 @@ export class LarkPiRuntimeService {
       throw new LarkPiRuntimeError(code, userMessage, controllerMessage);
     }
     if (typeof body?.text !== 'string' || !body.text.trim()) {
+      controllerSpan?.end('error');
       throw new LarkPiRuntimeError(
         'empty_runtime_response',
         GENERIC_RUNTIME_FAILURE_MESSAGE,
       );
     }
-    await this.consumePendingAttachments(pendingRows.map(row => row.id));
+    const responseText = body.text.trim();
+    recordControllerLatencySpans(
+      latencyTrace,
+      parseControllerLatency(body.runtimeTelemetry),
+      'runtime.controller',
+    );
+    controllerSpan?.end('ok');
+    await measureRunLatency(latencyTrace, {
+      name: 'runtime.attachments.consume',
+      category: 'persistence',
+    }, () => this.consumePendingAttachments(pendingRows.map(row => row.id)));
     const protectedMetadata = parseProtectedRunMetadata(
       body.protectedDataUsed,
       body.protectedRefs,
     );
-    return this.finalizeResult(body.text.trim(), input, protectedMetadata.used, protectedMetadata.references);
+    return measureRunLatency(latencyTrace, {
+      name: 'runtime.finalize',
+      category: 'delivery',
+    }, () => this.finalizeResult(
+      responseText,
+      input,
+      protectedMetadata.used,
+      protectedMetadata.references,
+      latencyTrace,
+    ));
   }
 
   private async loadPendingAttachments(
@@ -1028,6 +1152,7 @@ export class LarkPiRuntimeService {
     input: LarkPiRuntimeInput,
     protectedDataUsed = false,
     protectedReferences: readonly LarkProtectedRunReference[] = [],
+    latencyTrace?: RunLatencyTrace,
   ): Promise<LarkPiRuntimeResult> {
     if (protectedDataUsed) {
       const notice: LarkProtectedRunNotice = {
@@ -1041,7 +1166,12 @@ export class LarkPiRuntimeService {
         sessionDeletionRequested: true,
       };
       try {
-        await this.deps.onProtectedRun?.(notice);
+        await measureRunLatency(latencyTrace, {
+          name: 'runtime.protected.notice',
+          category: 'delivery',
+        }, async () => {
+          await this.deps.onProtectedRun?.(notice);
+        });
       } catch (error) {
         // Persistence remains disabled even if the provenance sink is down.
         this.log.error('pi.protected_run.notice_failed', {
@@ -1075,7 +1205,10 @@ export class LarkPiRuntimeService {
     let effectVerification: 'verified' | 'unavailable' = 'verified';
     if (this.deps.runEffectReceipts) {
       try {
-        effect = await this.deps.runEffectReceipts.getVerifiedKnowledgeEffect(identity);
+        effect = await measureRunLatency(latencyTrace, {
+          name: 'runtime.effects.knowledge',
+          category: 'cache',
+        }, () => this.deps.runEffectReceipts!.getVerifiedKnowledgeEffect(identity));
       } catch (error) {
         effectVerification = 'unavailable';
         this.log.error('pi.run_effect.lookup_failed', {
@@ -1085,7 +1218,10 @@ export class LarkPiRuntimeService {
         });
       }
       try {
-        workbookEffect = await this.deps.runEffectReceipts.getVerifiedWorkbookConversionOffer(identity);
+        workbookEffect = await measureRunLatency(latencyTrace, {
+          name: 'runtime.effects.workbook',
+          category: 'cache',
+        }, () => this.deps.runEffectReceipts!.getVerifiedWorkbookConversionOffer(identity));
       } catch (error) {
         effectVerification = 'unavailable';
         this.log.error('pi.run_effect.lookup_failed', {
@@ -1099,11 +1235,14 @@ export class LarkPiRuntimeService {
     }
     if (this.deps.runOrigins?.recall) {
       try {
-        googleAuthorization = (await this.deps.runOrigins.recall({
+        googleAuthorization = (await measureRunLatency(latencyTrace, {
+          name: 'runtime.origin.recall',
+          category: 'cache',
+        }, () => this.deps.runOrigins!.recall!({
           runId: input.incoming.traceId,
           companyId: identity.companyId,
           userId: identity.userId,
-        }))?.googleAuthorization;
+        })))?.googleAuthorization;
       } catch (error) {
         this.log.error('pi.google_authorization.lookup_failed', {
           correlationId: input.incoming.traceId,
@@ -1112,7 +1251,10 @@ export class LarkPiRuntimeService {
       }
     }
 
-    const userMessages = await this.persistPrivateConversation(input, assistantText);
+    const userMessages = await measureRunLatency(latencyTrace, {
+      name: 'runtime.conversation.persist',
+      category: 'persistence',
+    }, () => this.persistPrivateConversation(input, assistantText, latencyTrace));
 
     // Only a human-authored direct message can teach private memory here.
     // Group-room facts and scheduled prompts are intentionally excluded; any
@@ -1125,7 +1267,10 @@ export class LarkPiRuntimeService {
       && input.incoming.text.trim()
     ) {
       try {
-        await this.deps.knowledgeLearning.captureCompletedTurn({
+        await measureRunLatency(latencyTrace, {
+          name: 'runtime.learning.capture',
+          category: 'memory',
+        }, () => this.deps.knowledgeLearning!.captureCompletedTurn({
           sourceId: `${input.incoming.channel}:${input.incoming.traceId}`,
           companyId: String(input.runContext.companyId),
           userId: String(input.runContext.userId),
@@ -1133,7 +1278,7 @@ export class LarkPiRuntimeService {
           channel: input.incoming.channel,
           userMessages,
           assistantText,
-        });
+        }));
       } catch (error) {
         // The answer is already complete. The durable learning subsystem is
         // advisory and must not turn a successful user request into a failure.
@@ -1207,6 +1352,7 @@ export class LarkPiRuntimeService {
   private async persistPrivateConversation(
     input: LarkPiRuntimeInput,
     assistantText: string,
+    latencyTrace?: RunLatencyTrace,
   ): Promise<string[]> {
     const turn = this.persistableTurn(input);
     if (!turn) {
@@ -1214,7 +1360,10 @@ export class LarkPiRuntimeService {
       return current ? [current] : [];
     }
     try {
-      const user = await this.deps.conversationHistory!.appendTurn(turn.chatId, {
+      const user = await measureRunLatency(latencyTrace, {
+        name: 'runtime.conversation.user.append',
+        category: 'persistence',
+      }, () => this.deps.conversationHistory!.appendTurn(turn.chatId, {
         role: 'user',
         content: turn.text,
         timestamp: input.incoming.timestamp,
@@ -1230,11 +1379,14 @@ export class LarkPiRuntimeService {
           ...(input.runContext.requesterEmail ? { createdByEmail: input.runContext.requesterEmail } : {}),
           title: webThreadTitle(turn.text),
         },
-      });
+      }));
       if (!user.ok) throw user.error;
 
       const runRecord = input.runRecord?.();
-      const assistant = await this.deps.conversationHistory!.appendTurn(turn.chatId, {
+      const assistant = await measureRunLatency(latencyTrace, {
+        name: 'runtime.conversation.assistant.append',
+        category: 'persistence',
+      }, () => this.deps.conversationHistory!.appendTurn(turn.chatId, {
         role: 'assistant',
         content: assistantText,
         timestamp: new Date().toISOString(),
@@ -1243,10 +1395,13 @@ export class LarkPiRuntimeService {
         sourceMessageId: turn.messageId,
         sourceRunId: String(input.incoming.traceId),
         ...(runRecord !== undefined ? { contentJson: runRecord } : {}),
-      });
+      }));
       if (!assistant.ok) throw assistant.error;
 
-      const history = await this.deps.conversationHistory!.getHistory(turn.chatId, 30, turn.scope);
+      const history = await measureRunLatency(latencyTrace, {
+        name: 'runtime.conversation.history.read',
+        category: 'persistence',
+      }, () => this.deps.conversationHistory!.getHistory(turn.chatId, 30, turn.scope));
       if (!history.ok) throw history.error;
       return history.value
         .filter(item => item.role === 'user')
@@ -1321,6 +1476,7 @@ export class LarkPiRuntimeService {
     text: string;
     protectedDataUsed: boolean;
     protectedReferences: readonly LarkProtectedRunReference[];
+    controllerLatency: readonly ControllerLatencySample[];
   }> {
     if (!response.body) {
       throw new LarkPiRuntimeError(
@@ -1335,6 +1491,7 @@ export class LarkPiRuntimeService {
     let text = '';
     let protectedDataUsed = false;
     let protectedReferences: readonly LarkProtectedRunReference[] = [];
+    let controllerLatency: readonly ControllerLatencySample[] = [];
     let streamError: { code: string; message?: string } | undefined;
 
     const consume = async (line: string): Promise<void> => {
@@ -1374,6 +1531,7 @@ export class LarkPiRuntimeService {
         );
         protectedDataUsed = metadata.used;
         protectedReferences = metadata.references;
+        controllerLatency = parseControllerLatency(record['runtimeTelemetry']);
         return;
       }
       const error = record['error'];
@@ -1412,7 +1570,74 @@ export class LarkPiRuntimeService {
         GENERIC_RUNTIME_FAILURE_MESSAGE,
       );
     }
-    return { text, protectedDataUsed, protectedReferences };
+    return { text, protectedDataUsed, protectedReferences, controllerLatency };
+  }
+}
+
+const CONTROLLER_PHASES = new Set([
+  'image', 'skills', 'idle', 'runtime', 'stage', 'start', 'prepare',
+  'attach', 'bootstrap', 'handshake', 'model', 'finalize',
+]);
+
+function parseControllerLatency(value: unknown): readonly ControllerLatencySample[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const phases = (value as Record<string, unknown>)['phases'];
+  if (!Array.isArray(phases) || phases.length > 50) return [];
+  const earliest = Date.UTC(2020, 0, 1);
+  const latest = Date.now() + 24 * 60 * 60 * 1_000;
+  return phases.flatMap((entry): ControllerLatencySample[] => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const sample = entry as Record<string, unknown>;
+    const name = sample['name'];
+    const startedAt = sample['startedAt'];
+    const endedAt = sample['endedAt'];
+    const durationMs = sample['durationMs'];
+    const status = sample['status'];
+    if (
+      typeof name !== 'string'
+      || !CONTROLLER_PHASES.has(name)
+      || typeof startedAt !== 'number'
+      || !Number.isFinite(startedAt)
+      || typeof endedAt !== 'number'
+      || !Number.isFinite(endedAt)
+      || typeof durationMs !== 'number'
+      || !Number.isFinite(durationMs)
+      || startedAt < earliest
+      || endedAt > latest
+      || endedAt < startedAt
+      || durationMs < 0
+      || durationMs > 24 * 60 * 60 * 1_000
+      || Math.abs((endedAt - startedAt) - durationMs) > 2_000
+      || (status !== 'ok' && status !== 'error')
+    ) return [];
+    return [{ name, startedAt, endedAt, durationMs, status }];
+  });
+}
+
+function recordControllerLatencySpans(
+  trace: RunLatencyTrace | undefined,
+  samples: readonly ControllerLatencySample[],
+  parentSpanId: string,
+): void {
+  if (!trace) return;
+  const occurrences = new Map<string, number>();
+  for (const sample of samples) {
+    const occurrence = (occurrences.get(sample.name) ?? 0) + 1;
+    occurrences.set(sample.name, occurrence);
+    const baseSpanId = sample.name === 'model'
+      ? 'controller.model'
+      : `controller.phase.${sample.name}`;
+    trace.addCompleted({
+      spanId: occurrence === 1 ? baseSpanId : `${baseSpanId}.${occurrence}`,
+      parentSpanId,
+      name: `controller.${sample.name}`,
+      category: sample.name === 'skills' ? 'persistence' : 'runtime',
+      source: 'pi-controller',
+      startedAtMs: sample.startedAt,
+      endedAtMs: sample.endedAt,
+      durationMs: sample.durationMs,
+      status: sample.status,
+    });
   }
 }
 

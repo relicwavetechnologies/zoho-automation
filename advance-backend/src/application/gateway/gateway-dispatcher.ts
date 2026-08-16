@@ -80,6 +80,10 @@ import {
   withWorkDiscoveryPermissions as withGatewayDiscoveryPermissions,
 } from './work-resolution.service';
 import type { WorkContractBootstrapPort } from './work-contract-bootstrap.port';
+import {
+  measureRunLatency,
+  type RunLatencyTrace,
+} from '../observability/run-latency-recorder';
 import { requiresRequesterConfirmation } from '../approval/business-action-routing';
 import {
   WorkBootstrapService,
@@ -160,7 +164,11 @@ export class GatewayDispatcher {
     });
   }
 
-  async dispatch(request: GatewayRequest, member: GatewayMemberContext): Promise<GatewayResponse> {
+  async dispatch(
+    request: GatewayRequest,
+    member: GatewayMemberContext,
+    latencyTrace?: RunLatencyTrace,
+  ): Promise<GatewayResponse> {
     if (!isGatewayOp(request.op)) {
       return gatewayFailure('unknown_op', `Unknown operation: ${request.op}`);
     }
@@ -198,7 +206,7 @@ export class GatewayDispatcher {
       case 'knowledge.review.decide':
         return this.handleKnowledgeReviewDecision(member, request.payload, execution);
       case 'tools.invoke':
-        return this.handleToolsInvoke(member, departmentId, request.payload, execution);
+        return this.handleToolsInvoke(member, departmentId, request.payload, execution, latencyTrace);
       case 'tools.prepare':
         return this.handleToolsPrepare(member, departmentId, request.payload, execution);
       case 'tools.preflight':
@@ -866,6 +874,7 @@ export class GatewayDispatcher {
     departmentId: string | undefined,
     payload: Record<string, unknown> | undefined,
     execution: GatewayExecutionContext | undefined,
+    latencyTrace?: RunLatencyTrace,
   ): Promise<GatewayResponse> {
     const parsed = toolsInvokePayloadSchema.safeParse(payload ?? {});
     if (!parsed.success) {
@@ -877,7 +886,11 @@ export class GatewayDispatcher {
     if (!this.deps.toolRegistry.byId(asToolId(parsed.data.toolId))) {
       return gatewayFailure('unknown_tool', `Unknown toolId: ${parsed.data.toolId}`);
     }
-    const permission = await this.resolvePerm(member, departmentId);
+    const permission = await measureRunLatency(
+      latencyTrace,
+      { name: 'gateway.permission.resolve', category: 'authorization' },
+      () => this.resolvePerm(member, departmentId),
+    );
     if (!permission) return this.permissionDenied('Permission resolution failed');
     if (
       isOpaqueSheetCall(parsed.data.args)
@@ -885,23 +898,31 @@ export class GatewayDispatcher {
     ) {
       return this.permissionDenied(`No access to ${parsed.data.toolId}`);
     }
-    const materialized = await this.materializeSavedSheetCall(
-      member,
-      parsed.data.toolId,
-      parsed.data.args,
-      execution,
+    const materialized = await measureRunLatency(
+      latencyTrace,
+      { name: 'gateway.args.materialize', category: 'persistence' },
+      () => this.materializeSavedSheetCall(
+        member,
+        parsed.data.toolId,
+        parsed.data.args,
+        execution,
+      ),
     );
     if (materialized.kind === 'failure') return materialized.response;
     const effectiveArgs = materialized.kind === 'materialized'
       ? materialized.value.args
       : materialized.args;
 
-    await this.recordAdvisorySkillMismatch(
-      member,
-      departmentId,
-      permission,
-      parsed.data.skillId,
-      parsed.data.toolId,
+    await measureRunLatency(
+      latencyTrace,
+      { name: 'gateway.skill-advisory.check', category: 'authorization' },
+      () => this.recordAdvisorySkillMismatch(
+        member,
+        departmentId,
+        permission,
+        parsed.data.skillId,
+        parsed.data.toolId,
+      ),
     );
 
     this.deps.logger.info('gateway.tools.invoke', {
@@ -925,8 +946,17 @@ export class GatewayDispatcher {
       toolId: parsed.data.toolId,
       args: effectiveArgs,
       ...(execution ? { execution } : {}),
+      ...(latencyTrace ? { latencyTrace } : {}),
     };
-    const prepared = await this.deps.toolExecutor.prepare(input);
+    const prepared = await measureRunLatency(
+      latencyTrace,
+      {
+        name: 'gateway.tool.prepare',
+        category: 'gateway',
+        attributes: { toolId: parsed.data.toolId },
+      },
+      () => this.deps.toolExecutor.prepare(input),
+    );
     if (!prepared.ok || !prepared.data) {
       this.recordToolInvocationAudit(
         member,
@@ -938,6 +968,7 @@ export class GatewayDispatcher {
       );
       return prepared;
     }
+    const expectedAction = prepared.data.action;
     const operation = effectiveArgs['operation'];
     // `knowledge.apply` can only consume an exact, versioned mutation whose
     // requester review and any manager/admin approval were already recorded by
@@ -994,10 +1025,18 @@ export class GatewayDispatcher {
       return response;
     }
 
-    const response = await this.deps.toolExecutor.invoke({
-      ...input,
-      expectedAction: prepared.data.action,
-    });
+    const response = await measureRunLatency(
+      latencyTrace,
+      {
+        name: 'gateway.tool.invoke',
+        category: 'gateway',
+        attributes: { toolId: parsed.data.toolId },
+      },
+      () => this.deps.toolExecutor.invoke({
+        ...input,
+        expectedAction,
+      }),
+    );
     this.recordToolInvocationAudit(
       member,
       departmentId,

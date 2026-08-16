@@ -26,6 +26,10 @@ import { canonicalModel, providerOf, type ModelProvider } from '../../applicatio
 import type { ProxyKeyStore } from '../../application/proxy/proxy-key.store';
 import type { ApiKeyExhaustionNotifierPort } from '../../application/governance/api-key-exhaustion.notifier';
 import { isApiKeyExhausted } from '../../application/governance/api-key-exhaustion.classifier';
+import {
+  measureRunLatency,
+  type RunLatencyRecorder,
+} from '../../application/observability/run-latency-recorder';
 
 export interface LlmProxyRoutesDeps {
   logger:  Logger;
@@ -34,6 +38,7 @@ export interface LlmProxyRoutesDeps {
   /** Upstream origin per provider, e.g. { deepseek: 'https://api.deepseek.com' }. */
   baseUrls: Record<ModelProvider, string>;
   apiKeyExhaustion?: ApiKeyExhaustionNotifierPort;
+  latencyRecorder?: RunLatencyRecorder;
 }
 
 /** How the provider is named to an admin in a 503. */
@@ -49,6 +54,8 @@ interface ProxyBody {
   stream_options?: { include_usage?: boolean };
   divo_run_id?: string;
   divo_trace_mode?: 'desktop';
+  /** Causal parent minted by the Divo Pi extension; never forwarded upstream. */
+  divo_parent_span_id?: string;
   /** Internal, non-conversation request kinds. Never forwarded upstream. */
   divo_request_kind?: 'thread_title';
   /** Local desktop thread id for auxiliary token attribution. */
@@ -138,6 +145,42 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     const model = canonicalModel(typeof body.model === 'string' ? body.model : undefined);
     const provider = providerOf(model);
     const messages = Array.isArray(body.messages) ? body.messages : [];
+    const contentLength = Number(req.header('content-length'));
+    const requestBytes = Number.isSafeInteger(contentLength) && contentLength >= 0
+      ? contentLength
+      : undefined;
+    const toolCount = Array.isArray(body['tools']) ? body['tools'].length : 0;
+    const providedRunId = threadTitleRequest
+      ? undefined
+      : (req.header('x-divo-run')
+        || (typeof body.divo_run_id === 'string' ? body.divo_run_id : '')
+        || req.header('session_id')
+        || (res.locals['sessionId'] as string | undefined));
+    const runId = providedRunId || randomUUID();
+    const latencyTrace = providedRunId && deps.latencyRecorder
+      ? deps.latencyRecorder.trace({
+          runId,
+          companyId,
+          userId,
+          source: 'llm-proxy',
+          ...(typeof body.divo_parent_span_id === 'string'
+            ? { parentSpanId: body.divo_parent_span_id }
+            : {}),
+        })
+      : undefined;
+    const proxySpan = latencyTrace?.startSpan({
+      name: 'provider.proxy.request',
+      category: 'provider',
+      attributes: {
+        provider,
+        model,
+        responsesApi,
+        messageCount: messages.length,
+        toolCount,
+        ...(requestBytes !== undefined ? { requestBytes } : {}),
+      },
+    });
+    const proxyParent = proxySpan ? { parentSpanId: proxySpan.spanId } : {};
     if (threadTitleRequest) {
       log.info('proxy.thread_title.accepted', {
         userId,
@@ -146,8 +189,14 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       });
     }
 
+    let requestFailed = false;
+    try {
     // ── Gate ────────────────────────────────────────────────────────────────
-    const gate = await svc.gate({ companyId, userId, model });
+    const gate = await measureRunLatency(
+      latencyTrace,
+      { name: 'provider.policy.gate', category: 'authorization', ...proxyParent },
+      () => svc.gate({ companyId, userId, model }),
+    );
     if (!gate.allow) {
       log.info('proxy.denied', { userId, model, reason: gate.reason });
       const httpStatus = gate.status ?? 403;
@@ -157,7 +206,11 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     }
 
     // ── Resolve the upstream key (company → platform) ─────────────────────────
-    const resolved = await deps.store.resolve(provider, companyId);
+    const resolved = await measureRunLatency(
+      latencyTrace,
+      { name: 'provider.key.resolve', category: 'persistence', ...proxyParent },
+      () => deps.store.resolve(provider, companyId),
+    );
     if (!resolved) {
       log.warn('proxy.no_key', { companyId, provider });
       res.status(503).json({ error: { message: `The AI proxy has no ${PROVIDER_LABEL[provider]} key configured. Add one in Guardrails.`, type: 'not_configured' } });
@@ -171,13 +224,23 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       && body.divo_run_id.length > 0;
     let executionId: string | null = null;
     if (!threadTitleRequest) {
-      const runId =
-        (req.header('x-divo-run') || (typeof body.divo_run_id === 'string' ? body.divo_run_id : '') ||
-          req.header('session_id') || (res.locals['sessionId'] as string | undefined) || randomUUID());
       try {
-        executionId = await svc.ensureRun({ runId, companyId, userId, channel });
+        executionId = await measureRunLatency(
+          latencyTrace,
+          { name: 'provider.run.resolve', category: 'persistence', ...proxyParent },
+          () => svc.ensureRun({ runId, companyId, userId, channel }),
+        );
+        latencyTrace?.bindExecutionId(executionId);
         if (!desktopOwnsTimeline) {
-          await svc.recordToolResults(executionId, messages as never[]);
+          await measureRunLatency(
+            latencyTrace,
+            {
+              name: 'provider.tool-results.persist',
+              category: 'persistence',
+              ...proxyParent,
+            },
+            () => svc.recordToolResults(executionId!, messages as never[]),
+          );
         }
       } catch (e) {
         log.warn('proxy.trace.pre_failed', { error: String(e) }); // never block the call on trace failure
@@ -193,6 +256,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     const forwardBody: ProxyBody = { ...body, model };
     delete forwardBody.divo_run_id;
     delete forwardBody.divo_trace_mode;
+    delete forwardBody.divo_parent_span_id;
     delete forwardBody.divo_request_kind;
     delete forwardBody.divo_thread_id;
     const wantsStream = forwardBody.stream !== false;
@@ -213,12 +277,21 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     let upstream: globalThis.Response;
     try {
       const endpoint = responsesApi ? '/v1/responses' : '/v1/chat/completions';
-      upstream = await fetch(`${deps.baseUrls[provider]}${endpoint}`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resolved.key}` },
-        body:    JSON.stringify(forwardBody),
-        signal:  controller.signal,
-      });
+      upstream = await measureRunLatency(
+        latencyTrace,
+        {
+          name: 'provider.upstream.headers',
+          category: 'provider',
+          ...proxyParent,
+          attributes: { provider, model },
+        },
+        () => fetch(`${deps.baseUrls[provider]}${endpoint}`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resolved.key}` },
+          body:    JSON.stringify(forwardBody),
+          signal:  controller.signal,
+        }),
+      );
     } catch (e) {
       log.error('proxy.upstream.unreachable', { provider, error: String(e) });
       res.status(502).json({ error: { message: 'Upstream unreachable', type: 'upstream' } });
@@ -247,7 +320,10 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
         ...auxiliaryAuditTarget,
       });
 
-    const recordUsage = async (usage: ProviderUsage | null, responseModel?: string | null) => {
+    const recordUsage = async (usage: ProviderUsage | null, responseModel?: string | null) => measureRunLatency(
+      latencyTrace,
+      { name: 'provider.usage.persist', category: 'persistence', ...proxyParent },
+      async () => {
       if (!usage) return;
       // Prefer the model the provider actually served (aliases resolved), else the request's.
       const served = canonicalModel(responseModel ?? model);
@@ -280,11 +356,16 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       } catch (e) {
         log.warn('proxy.usage.record_failed', { error: String(e) });
       }
-    };
+      },
+    );
 
     // Non-streaming: forward JSON + read usage directly.
     if (!wantsStream || !upstream.body) {
-      const text = await upstream.text();
+      const text = await measureRunLatency(
+        latencyTrace,
+        { name: 'provider.response.read', category: 'provider', ...proxyParent },
+        () => upstream.text(),
+      );
       res.status(upstream.status);
       res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'application/json');
       res.send(text);
@@ -319,21 +400,27 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     const decoder = new TextDecoder();
     let acc = '';
     let interrupted = false;
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (value) {
-          res.write(Buffer.from(value));
-          acc += decoder.decode(value, { stream: true });
+    await measureRunLatency(
+      latencyTrace,
+      { name: 'provider.response.stream', category: 'provider', ...proxyParent },
+      async () => {
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) {
+              res.write(Buffer.from(value));
+              acc += decoder.decode(value, { stream: true });
+            }
+          }
+        } catch (e) {
+          interrupted = true; // client disconnect or upstream stream abort after 200
+          log.warn('proxy.stream.interrupted', { error: String(e) });
+        } finally {
+          res.end();
         }
-      }
-    } catch (e) {
-      interrupted = true; // client disconnect or upstream stream abort after 200
-      log.warn('proxy.stream.interrupted', { error: String(e) });
-    } finally {
-      res.end();
-    }
+      },
+    );
     // A stream that broke mid-flight isn't a clean success — don't count it as an
     // allowed 200 in the audit/metrics, and don't trust a partial usage chunk.
     const ok = upstream.ok && !interrupted;
@@ -350,6 +437,17 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       });
     }
     audit(ok, final.usage, final.model, interrupted ? 'stream_interrupted' : undefined);
+    } catch (error) {
+      requestFailed = true;
+      throw error;
+    } finally {
+      const statusCode = typeof res.statusCode === 'number' ? res.statusCode : null;
+      proxySpan?.end(
+        requestFailed || (statusCode !== null && statusCode >= 400) ? 'error' : 'ok',
+        { httpStatus: statusCode },
+      );
+      void latencyTrace?.flush();
+    }
   };
 
   router.post('/v1/chat/completions', handleRequest);

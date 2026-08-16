@@ -3,6 +3,10 @@ import assert from 'node:assert/strict';
 import type { Request, Response } from 'express';
 import { createLlmProxyRoutes } from '../../src/http/llm/llm-proxy.routes.ts';
 import type { Logger } from '../../src/shared/logger.ts';
+import {
+  RunLatencyRecorder,
+  type RunLatencySpanStore,
+} from '../../src/application/observability/run-latency-recorder.ts';
 
 const silent: Logger = {
   info: () => {}, warn: () => {}, error: () => {}, debug: () => {},
@@ -32,6 +36,8 @@ async function forward(
     keyByProvider?: Record<string, string>;
     endpoint?: 'chat' | 'responses';
     stream?: boolean;
+    bodyOverrides?: Record<string, unknown>;
+    latencyRecorder?: RunLatencyRecorder;
   } = {},
 ): Promise<Forwarded> {
   const originalFetch = globalThis.fetch;
@@ -92,6 +98,7 @@ async function forward(
         deepseek: 'https://api.deepseek.example',
         openai: 'https://api.openai.example',
       },
+      ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}),
     });
 
     const routePath = responsesApi ? '/v1/responses' : '/v1/chat/completions';
@@ -102,8 +109,18 @@ async function forward(
     const req = {
       path: routePath,
       body: responsesApi
-        ? { model: clientModel, input: [{ role: 'user', content: 'hi' }], stream: options.stream === true }
-        : { model: clientModel, messages: [{ role: 'user', content: 'hi' }], stream: options.stream === true },
+        ? {
+            model: clientModel,
+            input: [{ role: 'user', content: 'hi' }],
+            stream: options.stream === true,
+            ...options.bodyOverrides,
+          }
+        : {
+            model: clientModel,
+            messages: [{ role: 'user', content: 'hi' }],
+            stream: options.stream === true,
+            ...options.bodyOverrides,
+          },
       on: () => {},
       header: () => undefined,
       get: () => undefined,
@@ -131,6 +148,44 @@ async function forward(
 }
 
 describe('LLM proxy model forwarding', () => {
+  it('uses Divo correlation locally but never forwards it to DeepSeek', async () => {
+    const { body } = await forward('deepseek-v4-pro', {
+      bodyOverrides: {
+        divo_run_id: 'run-1',
+        divo_trace_mode: 'desktop',
+        divo_parent_span_id: 'pi.provider.1',
+      },
+    });
+
+    assert.equal('divo_run_id' in body, false);
+    assert.equal('divo_trace_mode' in body, false);
+    assert.equal('divo_parent_span_id' in body, false);
+  });
+
+  it('parents proxy internals beneath the exact Pi provider continuation', async () => {
+    const spans: Array<Record<string, any>> = [];
+    const store: RunLatencySpanStore = {
+      findOwnedIdByRequestId: async () => 'run-1',
+      insertSpans: async batch => { spans.push(...batch); },
+    };
+    await forward('deepseek-v4-pro', {
+      bodyOverrides: {
+        divo_run_id: 'run-1',
+        divo_parent_span_id: 'pi.provider.7',
+      },
+      latencyRecorder: new RunLatencyRecorder(store, silent),
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    const root = spans.find(span => span.name === 'provider.proxy.request');
+    assert.equal(root?.parentSpanId, 'pi.provider.7');
+    assert.ok(spans.some(span => (
+      span.name === 'provider.upstream.headers'
+      && span.parentSpanId === root?.spanId
+    )));
+    assert.equal(JSON.stringify(spans).includes('sk-test'), false);
+  });
+
   it('forwards the canonical model, not the name the client sent', async () => {
     // `deepseek-reasoner` is a legacy alias the proxy still accepts from older
     // desktop builds. It is canonicalised for the allow-list, the budget check

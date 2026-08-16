@@ -20,6 +20,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
+import { sanitizeLatencyAttributes } from '../../application/observability/run-latency-recorder';
 import { ExecutionRepository } from '../../infrastructure/persistence/execution.repository';
 import { TokenUsageService } from '../../application/observability/token-usage.service';
 import { PersonaLearningService } from '../../application/persona-learning/persona-learning.service';
@@ -51,12 +52,18 @@ const usageSchema = z.object({
 });
 
 const jsonValue = z.unknown();
+const spanAttributeValue = z.union([z.string().max(200), z.number().finite(), z.boolean(), z.null()]);
+const spanAttributesSchema = z.record(z.string().max(80), spanAttributeValue)
+  .refine(value => Object.keys(value).length <= 20, 'Span attributes are limited to 20 keys')
+  .transform(value => sanitizeLatencyAttributes(value));
+const MAX_SPAN_MS = 24 * 60 * 60 * 1_000;
+const sourceTimeSchema = z.number().finite().nonnegative().optional();
 
 const eventSchema = z.discriminatedUnion('kind', [
   z.object({
     kind:      z.literal('tool'),
     seq:       z.number().int().nonnegative(),
-    ts:        z.number().optional(),
+    ts:        sourceTimeSchema,
     toolName:  z.string().min(1).max(200),
     input:     jsonValue.optional(),
     output:    jsonValue.optional(),
@@ -66,7 +73,7 @@ const eventSchema = z.discriminatedUnion('kind', [
   z.object({
     kind:        z.literal('model'),
     seq:         z.number().int().nonnegative(),
-    ts:          z.number().optional(),
+    ts:          sourceTimeSchema,
     provider:    z.string().min(1).max(100),
     model:       z.string().min(1).max(200),
     responseId:  z.string().max(200).optional(),
@@ -77,7 +84,7 @@ const eventSchema = z.discriminatedUnion('kind', [
   z.object({
     kind:    z.enum(['run_start', 'run_end', 'turn_start', 'turn_end']),
     seq:     z.number().int().nonnegative(),
-    ts:      z.number().optional(),
+    ts:      sourceTimeSchema,
     title:   z.string().max(300).optional(),
     summary: z.string().max(2000).optional(),
     status:  z.enum(['ok', 'error']).optional(),
@@ -85,7 +92,7 @@ const eventSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('learning_context'),
     seq: z.number().int().nonnegative(),
-    ts: z.number().optional(),
+    ts: sourceTimeSchema,
     userMessages: z.array(z.string().max(4_000)).max(12),
     assistantResponse: z.string().max(6_000).optional(),
     toolSummary: z.array(z.object({
@@ -93,6 +100,24 @@ const eventSchema = z.discriminatedUnion('kind', [
       isError: z.boolean(),
       summary: z.string().max(500).optional(),
     }).strict()).max(20),
+  }),
+  z.object({
+    kind:         z.literal('span'),
+    seq:          z.number().int().nonnegative(),
+    ts:           z.number().finite().nonnegative(),
+    spanId:       z.string().min(1).max(300),
+    parentSpanId: z.string().min(1).max(300).optional(),
+    name:         z.string().min(1).max(200),
+    category:     z.enum([
+      'runtime', 'provider', 'gateway', 'authorization',
+      'persistence', 'cache', 'tool', 'delivery',
+    ]),
+    source:       z.string().min(1).max(100),
+    startedAt:    z.number().finite().nonnegative(),
+    endedAt:      z.number().finite().nonnegative(),
+    durationMs:   z.number().finite().nonnegative().max(MAX_SPAN_MS),
+    status:       z.enum(['ok', 'error']),
+    attributes:   spanAttributesSchema.optional(),
   }),
 ]);
 
@@ -111,6 +136,24 @@ const batchSchema = z.object({
   // gateway tool envelopes remain the server's classification authority.
   protectedDataObserved: z.literal(true).optional(),
   events:      z.array(eventSchema).min(1).max(500),
+}).superRefine((batch, ctx) => {
+  batch.events.forEach((event, index) => {
+    if (event.kind !== 'span') return;
+    if (event.endedAt < event.startedAt) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['events', index, 'endedAt'],
+        message: 'Span endedAt precedes startedAt',
+      });
+    }
+    if (Math.abs((event.endedAt - event.startedAt) - event.durationMs) > 2_000) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['events', index, 'durationMs'],
+        message: 'Span duration does not match its timestamps',
+      });
+    }
+  });
 });
 
 type TraceEvent = z.infer<typeof eventSchema>;
@@ -422,6 +465,23 @@ async function persistEvent(
   protectedRun: boolean,
   fallbackRunSummary?: string,
 ): Promise<void> {
+  if (ev.kind === 'span') {
+    await runs.upsertSpan({
+      executionId: ctx.executionId,
+      spanId: ev.spanId,
+      ...(ev.parentSpanId ? { parentSpanId: ev.parentSpanId } : {}),
+      name: ev.name,
+      category: ev.category,
+      source: ev.source,
+      startedAt: sourceTimestamp(ev.startedAt),
+      endedAt: sourceTimestamp(ev.endedAt),
+      durationMs: ev.durationMs,
+      status: ev.status,
+      ...(ev.attributes ? { attributes: sanitizeLatencyAttributes(ev.attributes) } : {}),
+    });
+    return;
+  }
+
   if (ev.kind === 'tool') {
       const success = ev.isError !== true;
       const protectedShopify = protectedShopifyTraceMetadata(ev);
@@ -441,6 +501,7 @@ async function persistEvent(
         ...(protectedShopify
           ? { summary: 'Protected Shopify result redacted' }
           : ev.summary ? { summary: ev.summary } : {}),
+        ...eventSourceTime(ev),
         payload: {
           input: storedInput,
           output: storedOutput,
@@ -478,6 +539,7 @@ async function persistEvent(
         actorKey:    ev.model,
         title:       ev.model,
         status:      'ok',
+        ...eventSourceTime(ev),
         payload: {
           provider:   ev.provider,
           model:      ev.model,
@@ -519,6 +581,7 @@ async function persistEvent(
         actorType: 'engine',
         title: 'Manager learning context captured',
         status: 'ok',
+        ...eventSourceTime(ev),
         payload: {
           userMessageCount: ev.userMessages.length,
           hasAssistantResponse: Boolean(ev.assistantResponse),
@@ -546,6 +609,7 @@ async function persistEvent(
       title:       ev.title ?? ev.kind,
       ...(boundarySummary ? { summary: boundarySummary } : {}),
       ...(ev.status  ? { status:  ev.status }  : {}),
+      ...eventSourceTime(ev),
     });
 
     if (ev.kind === 'run_end') {
@@ -562,6 +626,18 @@ async function persistEvent(
         );
       }
     }
+}
+
+function eventSourceTime(event: { readonly ts?: number | undefined }): { sourceTimestamp?: Date } {
+  return event.ts === undefined ? {} : { sourceTimestamp: sourceTimestamp(event.ts) };
+}
+
+function sourceTimestamp(epochMs: number): Date {
+  // Source time is diagnostic, never an authorization input. Keep malformed
+  // clocks from creating dates outside a useful operational window.
+  const earliest = Date.UTC(2020, 0, 1);
+  const latest = Date.now() + 24 * 60 * 60 * 1_000;
+  return new Date(Math.min(latest, Math.max(earliest, Math.round(epochMs))));
 }
 
 /**

@@ -121,6 +121,7 @@ import type { CachePort } from './shared/cache';
 // Observability
 import { ExecutionRepository } from './infrastructure/persistence/execution.repository';
 import { ExecutionQueryService } from './application/observability/execution-query.service';
+import { RunLatencyRecorder } from './application/observability/run-latency-recorder';
 import { AuditService } from './application/observability/audit.service';
 import { TokenUsageService } from './application/observability/token-usage.service';
 import { ProxyKeyStore } from './application/proxy/proxy-key.store';
@@ -419,6 +420,7 @@ export interface Container {
   // Observability
   executionRepo: ExecutionRepository;
   executionQueryService: ExecutionQueryService;
+  runLatencyRecorder: RunLatencyRecorder;
   auditService: AuditService;
   tokenUsageService: TokenUsageService;
   proxyKeyStore: ProxyKeyStore;
@@ -579,6 +581,10 @@ export async function buildContainer(
     repo:   executionRepo,
     logger: logger.child({ service: 'execution-query' }),
   });
+  const runLatencyRecorder = new RunLatencyRecorder(
+    executionRepo,
+    logger.child({ service: 'run-latency' }),
+  );
   const auditService       = new AuditService(prisma, logger.child({ service: 'audit' }));
   const menhoodQueryService = new MenhoodQueryService(
     env,
@@ -2130,6 +2136,7 @@ export async function buildContainer(
     leaseTtlSeconds: env.PI_RUNTIME_LEASE_TTL_SECONDS,
     runTimeoutMs: env.PI_LARK_RUN_TIMEOUT_MS,
     runEffectReceipts,
+    runLatencyRecorder,
     conversationHistory: conversationRepo,
     knowledgeRecall,
     runOrigins,
@@ -2829,6 +2836,7 @@ export async function buildContainer(
     // Observability
     executionRepo,
     executionQueryService,
+    runLatencyRecorder,
     auditService,
     tokenUsageService,
   proxyKeyStore,

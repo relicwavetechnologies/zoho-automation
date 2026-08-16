@@ -14,6 +14,8 @@
 import type { ExecutionRepository, ExecutionRunView, ExecutionEventView, RunStatsRow } from '../../infrastructure/persistence/execution.repository';
 import type { Logger } from '../../shared/logger';
 import { costUsd } from './pricing';
+import { attributeLatency, type LatencyAttribution } from './latency-attribution';
+import { sanitizeLatencyAttributes } from './run-latency-recorder';
 
 // ─── Redaction ────────────────────────────────────────────────────────────────
 
@@ -80,7 +82,12 @@ export interface EventDto {
   summary:   string | null;
   status:    string | null;
   payload:   unknown;
+  sourceTimestamp: string | null;
   createdAt: string;
+}
+
+export interface LatencySummaryDto extends LatencyAttribution {
+  executionId: string;
 }
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -158,6 +165,34 @@ export class ExecutionQueryService {
     return events.map(e => this.toEventDto(e, input.canViewRawExecutionData));
   }
 
+  /** Ranked, non-double-counted latency attribution for one company-owned run. */
+  async getLatencySummary(input: {
+    executionId: string;
+    companyId: string;
+  }): Promise<LatencySummaryDto | null> {
+    const run = await this.deps.repo.findById(input.executionId, input.companyId);
+    if (!run) return null;
+    const spans = await this.deps.repo.listSpans({
+      executionId: input.executionId,
+      companyId: input.companyId,
+      limit: 5_000,
+    });
+    return {
+      executionId: input.executionId,
+      ...attributeLatency(spans.map(span => ({
+        spanId: span.spanId,
+        parentSpanId: span.parentSpanId,
+        name: span.name,
+        category: span.category,
+        source: span.source,
+        startedAtMs: span.startedAt.getTime(),
+        endedAtMs: span.endedAt.getTime(),
+        status: span.status,
+        ...latencyAttributes(span.attributes),
+      }))),
+    };
+  }
+
   // ─── Private helpers ────────────────────────────────────────────────────
 
   private toBase(run: ExecutionRunView): RunBaseDto {
@@ -215,7 +250,24 @@ export class ExecutionQueryService {
       summary:   event.summary,
       status:    event.status,
       payload:   redactPayload(event.payload, canViewRawExecutionData),
+      sourceTimestamp: event.sourceTimestamp?.toISOString() ?? null,
       createdAt: event.createdAt.toISOString(),
     };
   }
+}
+
+function latencyAttributes(value: unknown): {
+  attributes?: Record<string, string | number | boolean | null>;
+} {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const candidates = Object.fromEntries(
+    Object.entries(value)
+      .filter((entry): entry is [string, string | number | boolean | null] => (
+        entry[1] === null
+        || ['string', 'number', 'boolean'].includes(typeof entry[1])
+      ))
+      .slice(0, 20),
+  );
+  const attributes = sanitizeLatencyAttributes(candidates);
+  return Object.keys(attributes).length > 0 ? { attributes } : {};
 }

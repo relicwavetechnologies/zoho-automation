@@ -291,17 +291,18 @@ export const createServer = (c: Container): DivoServerApplication => {
   );
   cloudinaryCleanupTimer.unref?.();
 
-  // Run-trace retention (Track A): prune detailed ExecutionEvent + StepResult
-  // payloads past the window; AiTokenUsage (cost history) is never pruned.
+  // Run-trace retention (Track A): prune detailed events, step results, and
+  // latency spans past the window; AiTokenUsage (cost history) is never pruned.
   const executionRepoForRetention = new ExecutionRepository(c.prisma);
   const runTraceRetention = () => {
     const cutoff = new Date(Date.now() - c.env.TRACE_RETENTION_DAYS * 86_400_000);
     void executionRepoForRetention.pruneExpiredDetail(cutoff)
       .then((pruned) => {
-        if (pruned.events > 0 || pruned.steps > 0) {
+        if (pruned.events > 0 || pruned.steps > 0 || pruned.spans > 0) {
           c.logger.info('trace.retention.pruned', {
             events: pruned.events,
             steps:  pruned.steps,
+            spans:  pruned.spans,
             cutoff: cutoff.toISOString(),
           });
         }
@@ -626,6 +627,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     createGatewayRoutes({
       dispatcher: c.gatewayDispatcher,
       logger:     c.logger,
+      latencyRecorder: c.runLatencyRecorder,
     }),
   );
   app.use(
@@ -801,6 +803,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       backendPublicUrl:       c.env.BACKEND_PUBLIC_URL,
       appBaseUrl:             c.env.APP_BASE_URL,
       sessionTtlMinutes:      MEMBER_SESSION_TTL_MINUTES,
+      runLatencyRecorder:     c.runLatencyRecorder,
     }),
   );
 
@@ -866,6 +869,7 @@ export const createServer = (c: Container): DivoServerApplication => {
         logger:  c.logger,
         store:   c.proxyKeyStore,
         service: c.llmProxyService,
+        latencyRecorder: c.runLatencyRecorder,
         baseUrls: { deepseek: c.env.DEEPSEEK_BASE_URL, openai: c.env.OPENAI_BASE_URL },
         apiKeyExhaustion: c.apiKeyExhaustionNotifier,
       }),

@@ -5,6 +5,10 @@ import {
   LarkPiRuntimeError,
   LarkPiRuntimeService,
 } from '../../src/application/runtime/lark-pi-runtime.service.ts';
+import {
+  RunLatencyRecorder,
+  type RunLatencySpanStore,
+} from '../../src/application/observability/run-latency-recorder.ts';
 
 const logger = {
   child() { return this; },
@@ -44,6 +48,66 @@ function runtimeInput() {
     threadId: 'lark:chat-1:user-1',
   } as any;
 }
+
+test('records one causal runtime path without storing prompts or answers', async () => {
+  const spans: Array<Record<string, any>> = [];
+  const controllerStartedAt = Date.now() - 5;
+  const store: RunLatencySpanStore = {
+    findOwnedIdByRequestId: async () => 'execution-1',
+    insertSpans: async batch => { spans.push(...batch); },
+  };
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    runLatencyRecorder: new RunLatencyRecorder(store, logger),
+    fetch: async () => new Response(JSON.stringify({
+      text: 'Finished secret answer',
+      runtimeTelemetry: {
+        wallMs: 5,
+        phases: [{
+          name: 'model',
+          startedAt: controllerStartedAt,
+          endedAt: controllerStartedAt + 5,
+          durationMs: 5,
+          status: 'ok',
+        }],
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  await service.run(runtimeInput());
+  await new Promise(resolve => setImmediate(resolve));
+
+  const byName = new Map(spans.map(span => [span.name, span]));
+  assert.equal(byName.get('runtime.request')?.status, 'ok');
+  assert.equal(byName.get('runtime.controller.turn')?.spanId, 'runtime.controller');
+  assert.equal(byName.get('runtime.controller.turn')?.parentSpanId, 'runtime.request');
+  assert.equal(byName.get('runtime.controller.connect')?.parentSpanId, 'runtime.controller');
+  assert.equal(byName.get('controller.model')?.parentSpanId, 'runtime.controller');
+  assert.equal(byName.get('controller.model')?.source, 'pi-controller');
+  assert.equal(byName.has('runtime.session.resolve'), true);
+  assert.equal(byName.has('runtime.effects.knowledge'), true);
+  const serialized = JSON.stringify(spans);
+  assert.equal(serialized.includes('Do the work'), false);
+  assert.equal(serialized.includes('Finished secret answer'), false);
+});
 
 test('mints a scoped Lark lease and sends no caller-selected profile or approval', async () => {
   let controllerBody: Record<string, unknown> | undefined;

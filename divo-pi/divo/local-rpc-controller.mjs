@@ -578,7 +578,15 @@ async function runPrompt(request, effects = defaultTurnEffects) {
 	try {
 		const result = await runTurn(request, effects, phases, record);
 		answered = true;
-		return result;
+		return request.runId
+			? {
+				...result,
+				runtimeTelemetry: {
+					wallMs: phases.wallMs(),
+					phases: phases.samples(),
+				},
+			}
+			: result;
 	} catch (error) {
 		// Latched as the failure surfaces, for the same reason the run latches its
 		// own: by the time the record is written the member may have given up.

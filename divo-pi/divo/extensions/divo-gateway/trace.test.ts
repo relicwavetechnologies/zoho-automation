@@ -131,10 +131,25 @@ describe("Divo trace correlation", () => {
 		const { batches, handlers } = await traceHarness("run-lark", "lark");
 
 		await handlers.get("agent_start")?.({ type: "agent_start" }, {});
+		await handlers.get("before_provider_request")?.(
+			{ payload: { model: "deepseek-v4-pro" } },
+			{ model: { provider: "deepseek" } },
+		);
+		handlers.get("tool_execution_start")?.({ toolCallId: "call-lark", toolName: "divo_lark_calendar" }, {});
+		handlers.get("tool_execution_end")?.({
+			toolCallId: "call-lark",
+			toolName: "divo_lark_calendar",
+			result: {},
+			isError: false,
+		}, {});
+		handlers.get("message_end")?.({ message: SUCCESS_MESSAGE }, {});
 		handlers.get("agent_end")?.({ messages: [SUCCESS_MESSAGE] }, {});
 
 		assert.ok(batches.length > 0);
 		assert.equal(batches.every((batch) => batch.runtimeChannel === "lark"), true);
+		const spans = batches.flatMap(batch => batch.events).filter(event => event.kind === "span");
+		assert.ok(spans.length >= 2);
+		assert.equal(spans.every(span => span.parentSpanId === "controller.model"), true);
 	});
 
 	it("injects desktop run correlation into every governed model request", async () => {
@@ -166,6 +181,7 @@ describe("Divo trace correlation", () => {
 			model: "deepseek-v4-flash",
 			divo_run_id: "run-1",
 			divo_trace_mode: "desktop",
+			divo_parent_span_id: "pi.provider.1",
 		});
 
 		const lunaPayload = await handlers.get("before_provider_request")?.(
@@ -176,6 +192,7 @@ describe("Divo trace correlation", () => {
 			model: "gpt-5.6-luna",
 			divo_run_id: "run-1",
 			divo_trace_mode: "desktop",
+			divo_parent_span_id: "pi.provider.2",
 		});
 
 		const untouched = await handlers.get("before_provider_request")?.(
@@ -211,6 +228,7 @@ describe("Divo trace correlation", () => {
 			model: "deepseek-v4-flash",
 			divo_run_id: "run-recovered",
 			divo_trace_mode: "desktop",
+			divo_parent_span_id: "pi.provider.1",
 		});
 		handlers.get("message_end")?.({ message: SUCCESS_MESSAGE }, {});
 		handlers.get("turn_end")?.({ turnIndex: 0 }, {});
@@ -222,19 +240,26 @@ describe("Divo trace correlation", () => {
 			"run-recovered",
 			"run-recovered",
 		]);
-		assert.deepEqual(events.map((event) => event.seq), [0, 1, 2, 3, 4, 5, 6]);
+		assert.deepEqual(events.map((event) => event.seq), [0, 1, 2, 3, 4, 5, 6, 7]);
 		assert.equal(events.filter((event) => event.kind === "run_start").length, 1);
+		const providerSpan = events.find((event) => event.kind === "span");
+		assert.equal(providerSpan?.spanId, "pi.provider.1");
+		assert.equal(providerSpan?.name, "provider.continuation");
+		assert.equal(providerSpan?.category, "provider");
+		assert.equal(providerSpan?.attributes?.inputTokens, 20);
+		assert.equal(providerSpan?.attributes?.cacheReadTokens, 0);
+		assert.ok(providerSpan?.durationMs >= 0);
 		assert.deepEqual(events.filter((event) => event.kind === "learning_context"), [{
 			kind: "learning_context",
 			userMessages: [],
 			toolSummary: [],
-			seq: 5,
-			ts: events[5].ts,
+			seq: 6,
+			ts: events[6].ts,
 		}]);
 		assert.deepEqual(events.filter((event) => event.kind === "run_end"), [{
 			kind: "run_end",
 			status: "ok",
-			seq: 6,
+			seq: 7,
 			ts: events.at(-1).ts,
 		}]);
 	});

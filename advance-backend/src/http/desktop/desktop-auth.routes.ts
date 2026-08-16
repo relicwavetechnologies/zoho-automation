@@ -52,6 +52,10 @@ import {
   type MailBriefOnboardingResult,
 } from '../../application/mail-ops/mail-brief-onboarding';
 import type { Result } from '../../shared/result';
+import {
+  measureRunLatency,
+  type RunLatencyRecorder,
+} from '../../application/observability/run-latency-recorder';
 
 export interface DesktopAuthRoutesDeps {
   prisma:                 PrismaClient;
@@ -81,6 +85,8 @@ export interface DesktopAuthRoutesDeps {
   /** Where the web app lives — the only origin a callback will postMessage to. */
   appBaseUrl:             string;
   sessionTtlMinutes:      number;
+  /** Optional causal timing; runtime identity remains owned by member auth. */
+  runLatencyRecorder?:    RunLatencyRecorder;
 }
 
 interface StatePayload {
@@ -1883,6 +1889,21 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     const companyId = res.locals['companyId'] as string;
     const departmentId = parsed.data.departmentId;
     const nativeSkillsRequested = parsed.data.nativeSkills === '1';
+    const runtimeRunId = res.locals['runtimeRunId'] as string | undefined;
+    const latencyTrace = runtimeRunId && deps.runLatencyRecorder
+      ? deps.runLatencyRecorder.trace({
+          runId: runtimeRunId,
+          companyId,
+          userId,
+          source: 'runtime-context',
+          parentSpanId: 'controller.phase.skills',
+        })
+      : undefined;
+    if (latencyTrace) {
+      const flush = () => { void latencyTrace.flush(); };
+      res.once('finish', flush);
+      res.once('close', flush);
+    }
     if (nativeSkillsRequested) {
       if (res.locals['isPiRuntimeLease'] !== true) {
         res.status(403).json({ success: false, message: 'Native skills are available only to the Pi runtime' });
@@ -1893,7 +1914,10 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
     }
-    const personalMemoryLoad = getCanonicalPersonalMemorySnapshot(
+    const personalMemoryLoad = measureRunLatency(latencyTrace, {
+      name: 'runtime.context.personal-memory',
+      category: 'memory',
+    }, () => getCanonicalPersonalMemorySnapshot(
       deps.prisma,
       {
         userId,
@@ -1902,7 +1926,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         maxFactChars: 500,
         maxTotalChars: 2_200,
       },
-    ).catch((error: unknown) => {
+    )).catch((error: unknown) => {
       log.warn('runtime_context.personal_memory_failed', {
         error: String(error),
         userId,
@@ -1929,7 +1953,10 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     try {
       const [personalMemory, membership] = await Promise.all([
         personalMemoryLoad,
-        deps.prisma.departmentMembership.findFirst({
+        measureRunLatency(latencyTrace, {
+          name: 'runtime.context.membership',
+          category: 'persistence',
+        }, () => deps.prisma.departmentMembership.findFirst({
           where: {
             userId,
             departmentId,
@@ -1952,7 +1979,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
               },
             },
           },
-        }),
+        })),
       ]);
 
       if (!membership) {
@@ -1985,15 +2012,24 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         Awaited<ReturnType<typeof deps.skillCatalog.registryRevision>>,
       ]> | undefined;
       const resolveMemberScope = () => (resolutionOnce ??= Promise.all([
-        deps.permissions.resolve({
+        measureRunLatency(latencyTrace, {
+          name: 'runtime.context.permission',
+          category: 'authorization',
+        }, () => deps.permissions.resolve({
           companyId: asCompanyId(companyId),
           userId: asUserId(userId),
           companyRole: asCompanyRoleSlug(companyRole),
           departmentId: asDepartmentId(membership.department.id),
           channel: 'lark',
-        }),
-        deps.skillAccessEnforcement.listGrantedSkillIds(companyId, userId),
-        deps.skillCatalog.registryRevision(companyId),
+        })),
+        measureRunLatency(latencyTrace, {
+          name: 'runtime.context.skill-grants',
+          category: 'authorization',
+        }, () => deps.skillAccessEnforcement.listGrantedSkillIds(companyId, userId)),
+        measureRunLatency(latencyTrace, {
+          name: 'runtime.context.registry-revision',
+          category: 'persistence',
+        }, () => deps.skillCatalog.registryRevision(companyId)),
       ]));
 
       let nativeSkillBootstrap;
@@ -2003,14 +2039,17 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           res.status(403).json({ success: false, message: 'Runtime skill access denied' });
           return;
         }
-        const visibleSkills = await deps.skillCatalog.listVisible({
+        const visibleSkills = await measureRunLatency(latencyTrace, {
+          name: 'runtime.context.native-skills',
+          category: 'persistence',
+        }, () => deps.skillCatalog.listVisible({
           companyId,
           departmentId: membership.department.id,
           permission: permissionResult.value,
           grantedSkillIds,
           complete: true,
           failClosed: true,
-        });
+        }));
         const boundedSkills = [];
         const omittedSlugs: string[] = [];
         let totalBytes = 0;
@@ -2052,10 +2091,13 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
       let managerPersonaPrompt = '';
       let managerPersonaVersion: string | null = null;
       try {
-        const brief = await deps.managerPersonaRuntime.getDepartmentBrief({
+        const brief = await measureRunLatency(latencyTrace, {
+          name: 'runtime.context.manager-persona',
+          category: 'persistence',
+        }, () => deps.managerPersonaRuntime.getDepartmentBrief({
           companyId,
           departmentId: membership.department.id,
-        });
+        }));
         managerPersonaPrompt = brief?.prompt ?? '';
         managerPersonaVersion = brief?.version ?? null;
       } catch (error) {
@@ -2071,17 +2113,23 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         const [[permissionResult, grantedSkillIds, registryRevision], zohoConnectionsResult] = await Promise.all([
           resolveMemberScope(),
           finance
-            ? deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId })
+            ? measureRunLatency(latencyTrace, {
+                name: 'runtime.context.connections',
+                category: 'persistence',
+              }, () => deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId }))
             : Promise.resolve(null),
         ]);
         if (permissionResult.ok) {
-          const visibleSkills = await deps.skillCatalog.listVisible({
+          const visibleSkills = await measureRunLatency(latencyTrace, {
+            name: 'runtime.context.capabilities',
+            category: 'persistence',
+          }, () => deps.skillCatalog.listVisible({
             companyId,
             departmentId: membership.department.id,
             permission: permissionResult.value,
             grantedSkillIds,
             limit: 50,
-          });
+          }));
           const builtBootstrap = buildDesktopCapabilityBootstrap({
             departmentName: membership.department.name,
             departmentSlug: membership.department.slug,

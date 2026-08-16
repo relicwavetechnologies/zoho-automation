@@ -22,6 +22,7 @@ function harness() {
   const completions: unknown[] = [];
   const failures: unknown[] = [];
   const stepResults: unknown[] = [];
+  const spans: unknown[] = [];
   const protectedObservations: boolean[] = [];
   let protectedDataObserved = false;
   const runs = {
@@ -33,6 +34,7 @@ function harness() {
     },
     appendEvent: async (event: unknown) => { events.push(event); },
     appendStepResult: async (result: unknown) => { stepResults.push(result); },
+    upsertSpan: async (span: unknown) => { spans.push(span); },
     complete: async (...args: unknown[]) => { completions.push(args); },
     fail: async (...args: unknown[]) => { failures.push(args); },
   } as unknown as ExecutionRepository;
@@ -47,6 +49,7 @@ function harness() {
     completions,
     failures,
     stepResults,
+    spans,
     protectedObservations,
   };
 }
@@ -103,6 +106,74 @@ describe('desktop trace usage ownership', () => {
     );
 
     assert.equal(test.tokenWrites.length, 1);
+  });
+});
+
+describe('desktop causal latency spans', () => {
+  it('persists source timestamps separately from ingest time', async () => {
+    const test = harness();
+    await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'run-source-time',
+        usageAuthority: 'proxy',
+        events: [{
+          kind: 'model',
+          seq: 1,
+          ts: Date.parse('2026-08-16T10:00:00.000Z'),
+          provider: 'deepseek',
+          model: 'deepseek-v4-flash',
+        }],
+      },
+    );
+
+    assert.deepEqual((test.events[0] as any).sourceTimestamp, new Date('2026-08-16T10:00:00.000Z'));
+  });
+
+  it('stores a causal span outside the event sequence stream', async () => {
+    const test = harness();
+    const startedAt = Date.parse('2026-08-16T10:00:00.000Z');
+    await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'run-span',
+        usageAuthority: 'proxy',
+        events: [{
+          kind: 'span',
+          seq: 7,
+          ts: startedAt + 2_500,
+          spanId: 'pi.provider.1',
+          name: 'provider.continuation',
+          category: 'provider',
+          source: 'pi-extension',
+          startedAt,
+          endedAt: startedAt + 2_500,
+          durationMs: 2_500,
+          status: 'ok',
+          attributes: { provider: 'deepseek', attempt: 1, prompt: 'never persist this' },
+        }],
+      },
+    );
+
+    assert.equal(test.events.length, 0);
+    assert.deepEqual(test.spans, [{
+      executionId: 'execution-1',
+      spanId: 'pi.provider.1',
+      name: 'provider.continuation',
+      category: 'provider',
+      source: 'pi-extension',
+      startedAt: new Date(startedAt),
+      endedAt: new Date(startedAt + 2_500),
+      durationMs: 2_500,
+      status: 'ok',
+      attributes: { provider: 'deepseek', attempt: 1 },
+    }]);
   });
 });
 
