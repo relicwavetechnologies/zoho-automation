@@ -16,13 +16,13 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Code2, Copy, Eye, FileText, PanelRight, X } from 'lucide-react'
-import { Markdown } from '../chat/parts'
-import { DocumentSkeleton } from '../chat/loading.view'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import {
-  RENDERABLE_MIME, activeTab, closeTab, focusTab, setOpen, setWidth, useArtifacts,
+  activeTab, closeTab, focusTab, setOpen, setWidth, useArtifacts,
   type ArtifactTab, type Tab,
 } from './store'
+import { formatFor } from './formats'
+import { DocumentSkeleton } from '../chat/loading.view'
 import { loadArtifactBody } from './open'
 
 /**
@@ -209,7 +209,8 @@ function Surface({ tab, token }: { tab: Tab; token: string | null }) {
 }
 
 function ArtifactSurface({ tab, token }: { tab: ArtifactTab; token: string | null }) {
-  const readable = tab.mime === RENDERABLE_MIME
+  const format = formatFor(tab.mime)
+  const readable = format !== undefined
   const [source, setSource] = useState(!readable)
   const [copied, setCopied] = useState(false)
 
@@ -224,6 +225,9 @@ function ArtifactSurface({ tab, token }: { tab: ArtifactTab; token: string | nul
   useEffect(() => {
     if (tab.body === undefined && !tab.failed) void loadArtifactBody(tab.artifactId, token)
   }, [tab.artifactId, tab.body, tab.failed, token])
+
+  const drawingSelfScrollingDocument =
+    format?.selfScrolling === true && !source && !tab.failed && tab.body !== undefined
 
   const copy = async () => {
     if (!tab.body) return
@@ -260,24 +264,31 @@ function ArtifactSurface({ tab, token }: { tab: ArtifactTab; token: string | nul
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/*
+        A frame scrolls its own document. Wrapping one in a scrolling container
+        gives the reader two scrollbars and a document that never reaches its
+        own end, so the container only scrolls for renderers that draw inline.
+      */}
+      <div
+        className={`min-h-0 flex-1 ${
+          drawingSelfScrollingDocument ? 'overflow-hidden' : 'overflow-y-auto'
+        }`}
+      >
         {tab.failed ? (
           <Note>This document could not be loaded. It may have been removed.</Note>
         ) : tab.body === undefined ? (
           <DocumentSkeleton />
-        ) : source || !readable ? (
+        ) : source || !format ? (
           <>
             {/* A type this build has no renderer for is shown as itself, with a
                 reason. Dropping it would hide a document that exists. */}
-            {!readable && <Note>Shown as source — this app cannot render {tab.mime} yet.</Note>}
+            {!format && <Note>Shown as source — this app cannot render {tab.mime} yet.</Note>}
             <pre className="overflow-x-auto px-4 py-4 text-[12px] leading-relaxed text-ink-2">
               <code>{tab.body}</code>
             </pre>
           </>
         ) : (
-          <div className="bui-doc px-5 py-5 text-[13.5px] leading-[1.65] text-ink">
-            <Markdown>{tab.body}</Markdown>
-          </div>
+          format.render(tab.body)
         )}
       </div>
     </div>

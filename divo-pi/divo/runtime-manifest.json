@@ -18,7 +18,8 @@
   ],
   "trustedSkills": [
     "divo-gateway",
-    "divo-chat-history"
+    "divo-chat-history",
+    "divo-artifact"
   ],
   "toolAllowlist": [
     "read",

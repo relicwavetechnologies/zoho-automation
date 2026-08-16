@@ -258,6 +258,11 @@ test("rejects missing files and paths outside the workspace", async () => {
 
 test("helpers derive mime, title, and stable id from path", () => {
 	assert.equal(mimeFromPath("a/b/brief.md"), "text/markdown");
+	assert.equal(mimeFromPath("a/b/review.html"), "text/html");
+	assert.equal(mimeFromPath("a/b/review.HTM"), "text/html");
+	// The extension is the whole contract. A file full of markup that was not
+	// named as a document is not one — otherwise "shown as a document" becomes a
+	// property of the bytes, and any tool output could trip it.
 	assert.equal(mimeFromPath("a/b/note.txt"), undefined);
 	assert.equal(titleFromPath("artifacts/lark-approvals-brief.md"), "Lark Approvals Brief");
 	assert.equal(

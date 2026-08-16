@@ -61,7 +61,7 @@ const ArtifactParams = Type.Object({
 	),
 });
 
-export type ArtifactMime = "text/markdown";
+export type ArtifactMime = "text/markdown" | "text/html";
 
 export type DivoArtifactDetails = {
 	/** This record's shape, not the document's. */
@@ -88,9 +88,19 @@ export function resolveArtifactsDir(env: NodeJS.ProcessEnv = process.env): strin
 	return raw || undefined;
 }
 
+/**
+ * What the reader's panel will make of this file, decided by its extension.
+ *
+ * HTML is a first-class document type, not a hazard being tolerated: the panel
+ * renders it in a frame with no same-origin access and no network, so markup a
+ * model wrote can style itself freely and still reach nothing. The extension is
+ * the whole contract — a `.txt` full of markup is still not a document, because
+ * the writer did not say it was one.
+ */
 export function mimeFromPath(filePath: string): ArtifactMime | undefined {
 	const ext = extname(filePath).toLowerCase();
 	if (ext === ".md" || ext === ".markdown") return "text/markdown";
+	if (ext === ".html" || ext === ".htm") return "text/html";
 	return undefined;
 }
 
@@ -280,13 +290,17 @@ export default function divoArtifactExtension(pi: ExtensionAPI) {
 		description:
 			"Badge an existing workspace file so the desktop sidebar opens and renders it. Create or revise the file first with write/edit; do not pass file contents here.",
 		promptSnippet:
-			"Create/revise durable deliverables with write/edit (prefer artifacts/<name>.md), then call divo_artifact with the file path to open it in the sidebar. Prefer edit for small revisions. Keep ordinary short answers in chat.",
+			"Create/revise durable deliverables with write/edit (prefer artifacts/<name>.html), then call divo_artifact with the file path to open it in the sidebar. Read the divo-artifact skill's DESIGN.md before writing the first HTML document. Prefer edit for small revisions. Keep ordinary short answers in chat.",
 		promptGuidelines: [
 			"Durable multi-section deliverables (research briefs, reports, plans, comparisons, file-like docs) are normal workspace files — create them with write, revise with edit, inspect with read.",
-			"Prefer paths under artifacts/ (for example artifacts/lark-approvals-brief.md). DIVO_ARTIFACTS_DIR points at that folder when configured.",
+			"Prefer paths under artifacts/ (for example artifacts/q4-flavour-review.html). DIVO_ARTIFACTS_DIR points at that folder when configured.",
+			"Use .html for anything with structure or figures — tables, stat rows, charts, several sections. Use .md only when the document is genuinely nothing but prose and headings.",
+			"Before writing the first .html document in a conversation, read DESIGN.md in the divo-artifact skill. It carries the colour tokens, type scale and component recipes that make a document look like Divo.",
+			"An .html document is body markup only: no doctype, html, head or body tags. The panel supplies the wrapper, the design tokens and the chart function at render time. Put the document's own CSS in one <style> block and any interaction in a <script> at the end.",
+			"In .html documents never write a hex colour — every colour is var(--ink), var(--surface), var(--line), var(--green) and the rest, so the document follows the reader's theme. Never hand-write chart SVG; emit <div class=\"chart\" data-chart='{...}'> and let the panel draw it.",
 			"After creating or meaningfully editing such a file, call divo_artifact with its path (and optional title/summaryForChat) so the sidebar opens it. This tool does not write content.",
 			"Prefer edit for small revisions; do not rewrite the whole file with write or by pasting the full body into divo_artifact.",
-			"In markdown artifacts, write real links so the sidebar can render them: use [label](https://…) for web sources, [file.ext](relative/path) for repo files, and a ## Sources list with matching numbered URLs when using [1]/[2] citations.",
+			"Write real links so the sidebar can render them: [label](https://…) in markdown, <a href=\"https://…\"> in HTML, and a Sources section with matching numbered URLs when using [1]/[2] citations.",
 			"Stay in chat for short Q&A, status, confirmations, a single next step, mid-task tool chatter, or ordinary web lookups that only need a few bullets.",
 			"After calling, reply with a brief pointer (prefer summaryForChat). Do not paste the full file body into the transcript.",
 			"Reuse the same artifactId (or the same path) when updating a document already shown in the sidebar.",
@@ -313,7 +327,7 @@ export default function divoArtifactExtension(pi: ExtensionAPI) {
 			const mime = mimeFromPath(resolved.path);
 			if (!mime) {
 				return failure(
-					"only markdown (.md / .markdown) files can be shown",
+					"only .html or markdown (.md / .markdown) files can be shown",
 					"unsupported mime",
 				);
 			}

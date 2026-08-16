@@ -20,13 +20,15 @@
 import { useSyncExternalStore } from 'react'
 
 /**
- * What this build can actually draw.
+ * What a document is assumed to be when nothing said.
  *
- * A tab's `mime` is not narrowed to this, on purpose: the store may hold a type
- * a newer runtime filed and this build has no renderer for, and the honest way
- * to show that is the document's own source with a note — not to drop it.
+ * Only a fallback identity, not a claim about what can be drawn — `formats.tsx`
+ * owns that, and a tab's `mime` is deliberately not narrowed to any union. The
+ * store may hold a type a newer runtime filed and this build has no renderer
+ * for, and the honest way to show that is the document's own source with a note
+ * saying so — not to drop it.
  */
-export const RENDERABLE_MIME = 'text/markdown'
+export const DEFAULT_MIME = 'text/markdown'
 
 /** One thing open in the panel. Every kind carries these. */
 type TabBase = {
@@ -174,7 +176,7 @@ export function openArtifact(input: OpenArtifactInput): string {
     kind: 'artifact',
     artifactId: input.artifactId,
     title: input.title.trim() || existing?.title || 'Document',
-    mime: input.mime ?? existing?.mime ?? RENDERABLE_MIME,
+    mime: input.mime ?? existing?.mime ?? DEFAULT_MIME,
     version: input.version ?? existing?.version ?? 1,
     ...(input.threadId ?? existing?.threadId ? { threadId: input.threadId ?? existing?.threadId } : {}),
     ...(input.body !== undefined ? { body: input.body } : {}),

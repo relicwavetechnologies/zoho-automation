@@ -7,15 +7,24 @@
  * work. So a message may be summarised, truncated and re-rendered per surface,
  * and an artifact may not be — it is stored whole and read back byte for byte.
  *
- * Markdown only, deliberately. HTML written by a model and rendered on our own
- * origin is a script-injection surface, and the honest fix for that is a
- * separate origin, not a sanitiser. Until that exists, an artifact is prose.
+ * That is also why this layer does not sanitise HTML. Rewriting a stored body
+ * would break the one promise the type makes, and it would be buying safety in
+ * the wrong place: the reader renders a document in a frame with no
+ * same-origin access and no network, so the markup can reach nothing whatever
+ * it contains. A sanitiser here would mangle real documents in exchange for a
+ * guarantee the frame already gives.
  */
 
-/** What a surface is able to render. One entry today; the union is the point. */
-export type ArtifactMime = 'text/markdown';
+/**
+ * What a surface is able to render.
+ *
+ * The store accepts a type because *some* reader can draw it, never because
+ * every reader can — a surface without a panel is told it has no artifacts at
+ * all, so it is never offered one of these to fail on.
+ */
+export type ArtifactMime = 'text/markdown' | 'text/html';
 
-export const ARTIFACT_MIMES: readonly ArtifactMime[] = ['text/markdown'];
+export const ARTIFACT_MIMES: readonly ArtifactMime[] = ['text/markdown', 'text/html'];
 
 /**
  * Bounds. Generous enough for a long report, small enough that a row stays a
