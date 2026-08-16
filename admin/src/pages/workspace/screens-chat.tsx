@@ -121,9 +121,22 @@ function ChatThread({ threadId }: { threadId: string }) {
    * before the page lands is recorded here and the difference added back once
    * it has, in a layout effect so it happens before anything is painted.
    */
+  /* Whether the reader is parked at the newest message. Read by the follow
+     below, and cleared by hand when they ask to look at older ones. */
+  const atBottom = useRef(true)
   const anchor = useRef<number | null>(null)
   const readEarlier = () => {
     anchor.current = scroller.current?.scrollHeight ?? 0
+    /* Stop following the bottom. Three things move this scroller — the pin on
+       send, the follow-the-bottom observer, and this restore — and the observer
+       is the one that would win: it fires after layout, when the column has
+       grown by a whole page. A reader at the bottom of a short thread who asked
+       to read upward would be thrown straight back down.
+
+       Cleared rather than suspended, because it is also just true: somebody who
+       has asked for older messages is not reading the newest one. The scroll
+       handler recomputes it the moment they move. */
+    atBottom.current = false
     void live.loadEarlier()
   }
   useLayoutEffect(() => {
@@ -267,7 +280,6 @@ function ChatThread({ threadId }: { threadId: string }) {
      down several times a second and the thread felt stuck to its own bottom.
      A ResizeObserver fires when there is genuinely more to see, which is the
      only moment following is wanted. */
-  const atBottom = useRef(true)
   useEffect(() => {
     const node = scroller.current
     const list = column.current

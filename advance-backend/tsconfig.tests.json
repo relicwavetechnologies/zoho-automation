@@ -1,0 +1,34 @@
+{
+  /*
+   * The tests, typechecked.
+   *
+   * `tsconfig.json` excludes `tests`, so for the whole life of this suite not
+   * one of its ~3,700 tests has been checked against the types it exercises.
+   * The cost is not hypothetical: two dead fields on the channel-neutral
+   * timeline survived a cleanup because a card fixture set them, and nothing
+   * could say the shape no longer had them. A fixture that builds a value
+   * production cannot produce is a test that passes while proving nothing.
+   *
+   * This config makes that checkable. It is deliberately NOT wired into `check`
+   * yet, because it does not pass: 676 errors across 114 files, almost all of
+   * them fixtures built with fewer fields than the type requires or called with
+   * the wrong arity. Turning it on today would mean burning that down first or
+   * silencing it with casts, and a suite full of `as any` is the gap again with
+   * extra steps.
+   *
+   * Run it with `pnpm typecheck:tests`. The number above is the backlog; the
+   * point of committing this is that it is now a number rather than an unknown,
+   * and it can only be argued down.
+   *
+   * `allowImportingTsExtensions` because the runner imports with explicit `.ts`
+   * — that is how `node --import tsx --test` resolves, not a mistake to fix.
+   */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src", "tests"],
+  "exclude": ["node_modules", "dist", "src/generated"]
+}

@@ -135,8 +135,12 @@ export function PinSpacer({ scroller, column, pinId, nonce }: PinSpacerProps) {
      Two passes because the first runs before the browser has laid the new
      message out, so what it measures is the thread as it was a frame ago.
 
-     This is the only scroll in the feature, and it happens once per send. From
-     here the screen's own follow-the-bottom keeps the pin in place for nothing,
+     One of three things that move this scroller, and the only one here: the
+     screen owns the other two — following the bottom while a reply streams, and
+     restoring the reader's place when an earlier page is prepended. They do not
+     collide, because each acts on a different event and the screen's own
+     `atBottom` flag is what arbitrates between the other two. This one happens
+     once per send. From here the follow keeps the pin in place for nothing,
      because the bottom and the pin are now the same position — and the moment
      the reader scrolls up, that follow stops and so does the pinning. */
   useLayoutEffect(() => {
