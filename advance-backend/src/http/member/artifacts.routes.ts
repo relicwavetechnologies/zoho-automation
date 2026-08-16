@@ -88,10 +88,15 @@ export function createArtifactRoutes(deps: {
     const scope = scopeFrom(res);
     if (!scope) return unauthenticated(res);
     const threadId = typeof req.query['threadId'] === 'string' ? req.query['threadId'] : undefined;
-    const listed = await deps.artifacts.list({
-      ...scope,
-      ...(threadId ? { threadId } : {}),
-    });
+    // A band showing four asks for four. Clamped rather than trusted, and
+    // ignored when it is nonsense, because a list route is not the place a
+    // caller gets to choose how much of the table to read.
+    const asked = Number(req.query['limit']);
+    const limit = Number.isFinite(asked) ? Math.min(50, Math.max(1, Math.trunc(asked))) : undefined;
+    const listed = await deps.artifacts.list(
+      { ...scope, ...(threadId ? { threadId } : {}) },
+      limit,
+    );
     if (!listed.ok) {
       log.error('artifacts.list_failed', { error: String(listed.error) });
       res.status(500).json({ ok: false, error: 'artifacts_unavailable' });

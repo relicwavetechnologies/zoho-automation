@@ -1,9 +1,10 @@
-import type { PrismaClient } from '../../generated/prisma';
+import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 import type { Artifact, ArtifactSummary, ArtifactWrite } from '../../domain/artifact/artifact';
 import { isArtifactMime } from '../../domain/artifact/artifact';
+import { ARTIFACT_PREVIEW_SOURCE_CHARS, previewOf } from '../../domain/artifact/preview';
 
 /**
  * Where artifacts live once the container that wrote them is gone.
@@ -42,6 +43,7 @@ type Row = {
   threadId: string | null;
   createdAt: Date;
   updatedAt: Date;
+  preview: string;
 };
 
 /**
@@ -58,6 +60,7 @@ function summaryOf(row: Row): ArtifactSummary {
     ...(row.threadId ? { threadId: row.threadId } : {}),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    preview: row.preview,
   };
 }
 
@@ -111,7 +114,10 @@ export class ArtifactRepository implements ArtifactRepoPort {
         },
         select: SUMMARY_SELECT,
       });
-      return ok(summaryOf(row));
+      // From what was just written rather than read back: the row we hold is
+      // the row we sent, and a second trip for 400 characters we already have
+      // would be a query bought with nothing.
+      return ok(summaryOf({ ...row, preview: previewOf(write.body, write.mime) }));
     } catch (error) {
       return err(wrapInfra('prisma', 'artifact.save', error));
     }
@@ -132,7 +138,7 @@ export class ArtifactRepository implements ArtifactRepoPort {
         select: { ...SUMMARY_SELECT, body: true },
       });
       if (!row) return ok(null);
-      return ok({ ...summaryOf(row), body: row.body });
+      return ok({ ...summaryOf({ ...row, preview: previewOf(row.body, row.mime) }), body: row.body });
     } catch (error) {
       return err(wrapInfra('prisma', 'artifact.get', error));
     }
@@ -143,17 +149,28 @@ export class ArtifactRepository implements ArtifactRepoPort {
     limit = 50,
   ): Promise<Result<ArtifactSummary[], InfraError>> {
     try {
-      const rows = await this.db.artifact.findMany({
-        where: {
-          companyId: scope.companyId,
-          userId: scope.userId,
-          ...(scope.threadId ? { threadId: scope.threadId } : {}),
-        },
-        orderBy: { updatedAt: 'desc' },
-        take: limit,
-        select: SUMMARY_SELECT,
-      });
-      return ok(rows.map(summaryOf));
+      /*
+       * Raw for one reason: `left(body, …)`.
+       *
+       * Prisma can select a column or not select it, and a list that wants the
+       * opening of fifty documents would otherwise pull fifty whole ones — up
+       * to `maxBodyChars` each — to keep a few lines of each. Postgres cuts
+       * them where they lie. Everything else about the query is what `findMany`
+       * was doing, and it still lands on the `[companyId, userId, updatedAt]`
+       * index.
+       *
+       * The `::int` is not decoration: Prisma binds a JS number as `bigint`,
+       * and `left(text, bigint)` is not a function Postgres has.
+       */
+      const rows = await this.db.$queryRaw<(Omit<Row, 'preview'> & { head: string })[]>(Prisma.sql`
+        SELECT "artifactId", "title", "mime", "version", "threadId",
+          "createdAt", "updatedAt", left("body", ${ARTIFACT_PREVIEW_SOURCE_CHARS}::int) AS "head"
+        FROM "Artifact"
+        WHERE "companyId" = ${scope.companyId} AND "userId" = ${scope.userId}
+          ${scope.threadId ? Prisma.sql`AND "threadId" = ${scope.threadId}` : Prisma.empty}
+        ORDER BY "updatedAt" DESC
+        LIMIT ${limit}`);
+      return ok(rows.map(row => summaryOf({ ...row, preview: previewOf(row.head, row.mime) })));
     } catch (error) {
       return err(wrapInfra('prisma', 'artifact.list', error));
     }

@@ -54,9 +54,12 @@ export interface Artifact {
  * Enough to list one without carrying its body.
  *
  * A thread with six artifacts would otherwise send six full documents to draw
- * six tabs, and five of them are not being read.
+ * six tabs, and five of them are not being read. `preview` is the exception
+ * that proves it: a bounded opening — see `preview.ts` — read with the row
+ * rather than fetched per card, because a list of titles alone makes somebody
+ * open four documents to find the one they meant.
  */
-export type ArtifactSummary = Omit<Artifact, 'body'>;
+export type ArtifactSummary = Omit<Artifact, 'body'> & { readonly preview: string };
 
 export interface ArtifactWrite {
   readonly artifactId: string;
