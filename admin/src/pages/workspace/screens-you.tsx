@@ -39,11 +39,12 @@ import {
   type MyRun,
 } from './data/use-my-activity'
 import {
-  AppMark, Avatar, Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
+  Avatar, Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
   Heatmap, Prompt, ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
   providerName, useStaged,
 } from './ui'
 import type { Toast } from './ui'
+import { BrandMark } from '@/components/admin/brand-mark'
 
 const COMPANY_ROLE_LABEL: Record<string, string> = {
   SUPER_ADMIN: 'Super admin', COMPANY_ADMIN: 'Company admin', MEMBER: 'Member',
@@ -399,7 +400,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
     built.push({
       key: 'shopify',
       name: 'Shopify',
-      mark: <AppMark short="S" asset="/brand/shopify.png" fill tint="#008060" ink="#FFFFFF" size={30} />,
+      mark: <BrandMark brand="shopify" size={30} placement="tile" />,
       blurb: shopifyStatus.loading
         ? 'Loading Shopify stores…'
         : shopifyStatus.failed

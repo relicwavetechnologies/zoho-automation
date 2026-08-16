@@ -229,6 +229,9 @@ services:
 
   divo-admin:
     image: ${DIVO_ADMIN_IMAGE:?DIVO_ADMIN_IMAGE is required}
+    environment:
+      # Pass only the browser-safe key; never expose the backend's env file to nginx.
+      LOGO_DEV_PUBLISHABLE_KEY: ${LOGO_DEV_PUBLISHABLE_KEY:-}
     depends_on:
       divo-backend:
         condition: service_started

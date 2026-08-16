@@ -84,6 +84,9 @@ export function AuthCard({ title, description, children }: AuthCardProps) {
             <p>{description}</p>
             {children}
           </div>
+          <a className="ws-auth-attribution" href="https://logo.dev" target="_blank" rel="noopener">
+            Logos provided by Logo.dev
+          </a>
         </main>
       </div>
     </div>

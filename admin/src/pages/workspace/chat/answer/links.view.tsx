@@ -8,28 +8,21 @@
  * and every kind it recognises carries its mark. Bareness survives as one
  * detail of one kind: whether a site's own address is worth printing twice.
  *
- * No third party is ever asked what a site looks like. A public favicon service
- * would learn every domain appearing in this company's answers — and, because
- * the browser makes the request, the reader's own address and user agent with
- * it. That is a strange price for a 16-pixel picture, and it is why this drew
- * initials for years.
- *
- * It now shows real icons, from our own origin: the backend fetches each one
- * once, caches it for a month and serves it back, so the site learns that a
- * server wanted its favicon and nothing about who was reading. The monogram is
- * still here and still does the work whenever that misses.
+ * Known companies use the shared brand catalogue. Arbitrary citations stay on
+ * Divo's own favicon proxy: Logo.dev does not learn every domain a company
+ * researched, and the browser never contacts those sites directly. The backend
+ * caches each favicon for a month; a monogram remains the failure state.
  *
  * Which mark a *known* vendor gets is `tool-identity`'s answer and is checked
  * first, so a Zoho link and a Zoho step in the work log cannot disagree about
- * what Zoho looks like — and no request is made for a domain we can already
- * draw from memory.
+ * what Zoho looks like.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Check, FileArchive, FileCode, FileImage, FileSpreadsheet, FileText, Mail, Presentation,
 } from 'lucide-react'
 import { ToolMark } from '../tools'
-import { API_BASE_URL } from '@/lib/api-base'
+import { SiteBrandMark } from '@/components/admin/brand-mark'
 import { markForUrl } from '../tool-identity'
 import {
   fileNameOf, initialOf, isBareLink, isNavigable, targetOf, tintOf,
@@ -45,9 +38,8 @@ export function SiteMark({ href, domain, size = 14 }: {
   domain: string
   size?: number
 }) {
-  /* A vendor we can draw ourselves is drawn ourselves. Checked before the icon
-     for two reasons: the hand-drawn marks are better than the fetched ones, and
-     asking for a picture of Gmail we already have is a request for nothing. */
+  /* Known vendors use the same catalogue as tool traces; unknown sites stay
+     behind the privacy-preserving favicon adapter. */
   const known = markForUrl(href ?? `https://${domain}`)
 
   /* Reset per domain. Without the key, a chip that failed once keeps its
@@ -73,43 +65,24 @@ export function SiteMark({ href, domain, size = 14 }: {
  * put in it, and the swap is invisible because both are the same size.
  */
 function FetchedMark({ domain, size }: { domain: string; size: number }) {
-  const [state, setState] = useState<'loading' | 'shown' | 'failed'>('loading')
   const hue = tintOf(domain)
-
   return (
-    <span
-      aria-hidden
-      className="relative grid shrink-0 place-items-center rounded-[3px] font-medium"
-      style={{
-        width: size,
-        height: size,
-        fontSize: size * 0.62,
-        ...(state === 'shown' ? {} : {
-          background: `oklch(0.62 0.13 ${hue} / 0.16)`,
-          color: `oklch(0.62 0.13 ${hue})`,
-        }),
-      }}
-    >
-      {state !== 'shown' && initialOf(domain)}
-      {state !== 'failed' && (
-        <img
-          src={`${API_BASE_URL}/api/icon/${encodeURIComponent(domain)}`}
-          alt=""
-          width={size}
-          height={size}
-          /* Off the browser's referrer entirely. Our own origin would tell the
-             backend nothing it does not already know, but this is one of those
-             headers that is easier to never send than to reason about later. */
-          referrerPolicy="no-referrer"
-          loading="lazy"
-          decoding="async"
-          onLoad={() => setState('shown')}
-          onError={() => setState('failed')}
-          className="absolute inset-0 rounded-[3px] object-contain"
-          style={{ opacity: state === 'shown' ? 1 : 0 }}
-        />
+    <SiteBrandMark
+      domain={domain}
+      size={size}
+      fallback={(
+        <span
+          className="grid h-full w-full place-items-center rounded-[3px] font-medium"
+          style={{
+            fontSize: size * 0.62,
+            background: `oklch(0.62 0.13 ${hue} / 0.16)`,
+            color: `oklch(0.62 0.13 ${hue})`,
+          }}
+        >
+          {initialOf(domain)}
+        </span>
       )}
-    </span>
+    />
   )
 }
 

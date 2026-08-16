@@ -18,7 +18,8 @@ import {
   ACTION_GROUPS, DATA_SOURCES, SOURCE_LABEL, ceilingAllows, resolveGrants, toolById,
   type ActionGroup, type GrantMap, type Person, type PermissionSource, type Provider,
 } from './fixtures'
-import { GoogleMark } from './brand'
+import { BrandMark } from '@/components/admin/brand-mark'
+import { BRAND_CATALOG, type BrandKey } from '@/components/admin/brand-catalog'
 import { ApiError } from '@/lib/api'
 
 /* ── Staged loading ───────────────────────────────────
@@ -882,103 +883,16 @@ export const listPhrase = (items: string[], max = 4) => {
 /** A pending permission edit, shown as a diff before it is applied. */
 export type PendingChange = { toolId: string; action: ActionGroup; next: boolean; blocked?: boolean }
 
-/* ── Provider glyphs ─────────────────────────────────
-   Real marks where Divo has the real file, and a branded tile where it does
-   not. These were six identical grey squares carrying a letter, which read as
-   placeholders for logos rather than as a choice — an app list is scanned by
-   shape and colour, and initials give it neither.
-
-   `brand.tsx` sets the rule this follows: a mark is drawn only where the real
-   artwork is known exactly. Google publishes a fixed path and Lark's own PNG is
-   in `public/brand`. The rest get their brand colour rather than an invented
-   logo, because a mark redrawn from memory is recognisable enough to be trusted
-   and wrong enough to be somebody else's product. Drop `<provider>.png` into
-   `public/brand` and add it to `asset` below to promote one. */
-const PROVIDER_META: Record<Provider, {
-  short: string
-  name: string
-  /**
-   * The brand's colour as the tile's *fill*, with `ink` on top.
-   *
-   * Tinting the letter instead — brand colour as text on the card's own surface
-   * — measured 1.54:1 for Airtable's amber and 1.84:1 for Canva's teal in light
-   * mode. A brand colour is chosen to be seen against its own tile, not to be
-   * read as type on white, so the tile takes the colour and the letter takes a
-   * foreground picked to clear 4.5:1 against it.
-   */
-  tint?: string
-  ink?: string
-  /** A drawn mark, where the real artwork is known exactly. */
-  mark?: (size: number) => JSX.Element
-  /** A real file under `public/brand`. */
-  asset?: string
-  /**
-   * True when the file is a finished app icon rather than a glyph.
-   *
-   * Canva, Shopify and AITable publish a mark that already carries its own
-   * background and corner radius; Airtable, Zoho and Lark publish a shape on
-   * transparency. Drawn the same way, the first three get a tile around a tile
-   * and the second three float in a box too big for them — which is what
-   * "the icons are not placed well" looks like.
-   */
-  fill?: boolean
-}> = {
-  google_workspace: { short: 'G', name: 'Google Workspace', mark: (s) => <GoogleMark size={s} /> },
-  lark: { short: 'L', name: 'Lark', asset: '/brand/lark.png' },
-  canva: { short: 'C', name: 'Canva', asset: '/brand/canva.png', fill: true },
-  airtable: { short: 'A', name: 'Airtable', asset: '/brand/airtable.png' },
-  aitable: { short: 'Ai', name: 'AITable', asset: '/brand/aitable.png', fill: true },
-  zoho: { short: 'Z', name: 'Zoho', asset: '/brand/zoho.png' },
+/* Provider identity is mapped here because Provider is a workspace domain
+   type. BrandMark owns every rendering and fallback decision after that. */
+const PROVIDER_BRAND: Record<Provider, BrandKey> = {
+  google_workspace: 'google',
+  lark: 'lark',
+  canva: 'canva',
+  airtable: 'airtable',
+  aitable: 'aitable',
+  zoho: 'zoho',
 }
-
-/**
- * An app icon for something outside the `Provider` union.
- *
- * Shopify is company-owned and reaches the UI through its own status hook, so
- * it is not a `Provider` and could not use the mark below — it drew a bare grey
- * `ws-ic` with an "S" instead, and sat in a list where every other app had its
- * own colour. One app looking unlike the rest reads as unfinished, not as a
- * different kind of connection.
- */
-/** How much of the tile a glyph-on-transparency takes. Full-bleed icons ignore it. */
-const GLYPH_SHARE = 0.62
-
-export const AppMark = ({ asset, fill, short, tint, ink, size = 34 }: {
-  /** A real file under `public/brand`, when there is one. */
-  asset?: string
-  /** True when the file is a finished app icon rather than a glyph. */
-  fill?: boolean
-  short: string
-  tint?: string
-  ink?: string
-  size?: number
-}) => (
-  <span
-    className="ws-app"
-    aria-hidden
-    data-plain={asset ? 'true' : undefined}
-    data-fill={fill ? 'true' : undefined}
-    style={{ ['--ws-app' as string]: `${size}px` }}
-  >
-    {asset
-      ? (
-        <img
-          src={asset}
-          alt=""
-          loading="lazy"
-          decoding="async"
-          style={fill
-            ? { width: '100%', height: '100%', display: 'block' }
-            : { width: Math.round(size * GLYPH_SHARE), height: Math.round(size * GLYPH_SHARE), display: 'block' }}
-        />
-      )
-      : (
-        <span className="ws-app-l" style={{ color: ink, background: tint, fontSize: Math.round(size * 0.44) }}>
-          {short}
-        </span>
-      )}
-  </span>
-)
 
 /**
  * An app icon, at the size the row asks for.
@@ -994,42 +908,7 @@ export const AppMark = ({ asset, fill, short, tint, ink, size = 34 }: {
  * and one that looks pasted.
  */
 export const ProviderMark = ({ provider, size = 34 }: { provider: Provider; size?: number }) => {
-  const meta = PROVIDER_META[provider]
-  const glyph = Math.round(size * GLYPH_SHARE)
-  return (
-    <span
-      className="ws-app"
-      aria-hidden
-      data-plain={meta.mark || meta.asset ? 'true' : undefined}
-      data-fill={meta.fill ? 'true' : undefined}
-      style={{ ['--ws-app' as string]: `${size}px` }}
-    >
-      {meta.mark
-        ? meta.mark(glyph)
-        : meta.asset
-          ? (
-            <img
-              src={meta.asset}
-              alt=""
-              loading="lazy"
-              decoding="async"
-              style={meta.fill
-                ? { width: '100%', height: '100%', display: 'block' }
-                : { width: glyph, height: glyph, display: 'block' }}
-            />
-          )
-          : (
-            /* Only reached by a provider with no artwork. Kept so adding one to
-               `Provider` cannot render an empty square while its file is found. */
-            <span
-              className="ws-app-l"
-              style={{ color: meta.ink, background: meta.tint, fontSize: Math.round(size * 0.44) }}
-            >
-              {meta.short}
-            </span>
-          )}
-    </span>
-  )
+  return <BrandMark brand={PROVIDER_BRAND[provider]} size={size} placement="tile" />
 }
 
 /**
@@ -1064,9 +943,9 @@ export const toolProvider = (toolName: string): Provider | null =>
  * a tool grant with no connection object at all. Both are somebody else's
  * product with a published mark, so both get it.
  */
-const TOOL_ASSET: Array<{ match: string; asset: string; short: string; tint: string; ink: string; fill?: boolean }> = [
-  { match: 'shopify', asset: '/brand/shopify.png', short: 'S', tint: '#008060', ink: '#FFFFFF', fill: true },
-  { match: 'semrush', asset: '/brand/semrush.png', short: 'Se', tint: '#FF642D', ink: '#FFFFFF' },
+const TOOL_BRAND: Array<{ match: string; brand: BrandKey }> = [
+  { match: 'shopify', brand: 'shopify' },
+  { match: 'semrush', brand: 'semrush' },
 ]
 
 /**
@@ -1095,18 +974,11 @@ export const ToolMark = ({ toolName }: { toolName: string }) => {
     return <span className="ws-toolmark"><ProviderMark provider={provider} size={24} /></span>
   }
 
-  const asset = TOOL_ASSET.find((a) => key.startsWith(a.match))
-  if (asset) {
+  const branded = TOOL_BRAND.find((candidate) => key.startsWith(candidate.match))
+  if (branded) {
     return (
       <span className="ws-toolmark">
-        <AppMark
-          short={asset.short}
-          asset={asset.asset}
-          {...(asset.fill ? { fill: true } : {})}
-          tint={asset.tint}
-          ink={asset.ink}
-          size={24}
-        />
+        <BrandMark brand={branded.brand} size={24} placement="tile" />
       </span>
     )
   }
@@ -1127,7 +999,7 @@ export const ToolMark = ({ toolName }: { toolName: string }) => {
   return <span className="ws-toolmark" aria-hidden />
 }
 
-export const providerName = (p: Provider) => PROVIDER_META[p].name
+export const providerName = (provider: Provider) => BRAND_CATALOG[PROVIDER_BRAND[provider]].label
 
 export const money = (n: number) => `$${n.toFixed(2)}`
 export const compact = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))

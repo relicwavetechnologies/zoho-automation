@@ -618,8 +618,14 @@ jobs:
       - name: Upload development environment
         env:
           DEVELOPMENT_ENV_FILE: ${{ secrets.DEVELOPMENT_ENV_FILE }}
+          LOGO_DEV_PUBLISHABLE_KEY: ${{ secrets.LOGO_DEV_PUBLISHABLE_KEY }}
         run: |
-          printf '%s' "${DEVELOPMENT_ENV_FILE}" | ssh -i ~/.ssh/id_ed25519 \
+          test -n "${LOGO_DEV_PUBLISHABLE_KEY}"
+          merged_env="$(mktemp)"
+          trap 'rm -f "${merged_env}"' EXIT
+          printf '%s\n' "${DEVELOPMENT_ENV_FILE}" | sed '/^LOGO_DEV_PUBLISHABLE_KEY=/d' > "${merged_env}"
+          printf 'LOGO_DEV_PUBLISHABLE_KEY=%s\n' "${LOGO_DEV_PUBLISHABLE_KEY}" >> "${merged_env}"
+          ssh -i ~/.ssh/id_ed25519 \
             "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
             "install -d -m 700 '${DEPLOY_DIR}' && \
              if test -s '${DEPLOY_DIR}/.env.development.local'; then \
@@ -627,7 +633,7 @@ jobs:
                      '${DEPLOY_DIR}/.release-rollback.env.development.local'; \
              fi && \
              cat > '${DEPLOY_DIR}/.env.development.local' && \
-             chmod 600 '${DEPLOY_DIR}/.env.development.local'"
+             chmod 600 '${DEPLOY_DIR}/.env.development.local'" < "${merged_env}"
 
       - name: Verify development environment is provisioned
         run: |

@@ -913,6 +913,8 @@
 /* Right: the form. Bounded, centred, never full-bleed. */
 .cur .ws-auth-main { display: flex; align-items: center; justify-content: center; padding: 44px 32px; position: relative; }
 .cur .ws-auth-theme { position: absolute; top: 22px; right: 22px; }
+.cur .ws-auth-attribution { position: absolute; bottom: 16px; color: var(--cur-muted-soft); font-size: 10px; }
+.cur .ws-auth-attribution:hover { color: var(--cur-muted); }
 .cur .ws-auth-box { width: 100%; max-width: 372px; }
 /* The mark inside the box is the fallback identity for narrow screens, where
    the aside that carries it is gone. Two marks side by side is one too many. */
