@@ -93,19 +93,73 @@ function Row({ item, onPick }: { item: UpNextItem; onPick: (item: UpNextItem) =>
   )
 }
 
+/**
+ * The band's own shape, while the two reads behind it are still out.
+ *
+ * Not `SkelRows`, which is the shape of a `.ws-row` — an icon tile, two lines
+ * and a button — and this band has none of those. A placeholder that resolves
+ * into something a different height is the reflow skeletons exist to prevent,
+ * so the bars here are the line boxes of the real row: 15px for the title,
+ * 14px for the source, the same `gap-0.5` between them.
+ *
+ * Four rows rather than the six the band can hold. It is a guess either way,
+ * and a band that shrinks as it loads is gentler than one that grows: the
+ * content below settles upward into space that was already on screen.
+ */
+function Loading() {
+  return (
+    <section className="mb-6" aria-busy="true">
+      <div className="mb-3">
+        <h2 className="text-[15px] font-medium leading-tight tracking-[-0.01em] text-ink">
+          Up next
+        </h2>
+        <p className="mt-1 text-[12.5px] leading-tight text-ink-3">Looking for what needs you</p>
+      </div>
+      <div className="overflow-hidden rounded-card bg-surface shadow-card">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="flex items-center gap-3 border-t border-line px-4 py-3 first:border-t-0">
+            <span className="grid w-4 shrink-0 place-items-center">
+              <span className="block h-[7px] w-[7px] animate-pulse rounded-full bg-fill" />
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              {/* Uneven, and the same unevenness every time. A column of equal
+                  bars reads as a table of one repeated value; a column that
+                  reshuffles on each render reads as content arriving. */}
+              <span
+                className="block h-[15px] animate-pulse rounded-full bg-fill"
+                style={{ width: `${38 + ((i * 17) % 30)}%` }}
+              />
+              <span className="block h-[14px] w-[54px] animate-pulse rounded-full bg-fill" />
+            </span>
+            <span className="block h-[14px] w-[52px] shrink-0 animate-pulse rounded-full bg-fill" />
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
 export function UpNext({
-  tasks, approvals, reachable, limit = 6, onStartTask, onOpenApproval, now,
+  tasks, approvals, reachable, limit = 6, loading = false, onStartTask, onOpenApproval, now,
 }: {
   tasks: readonly OpenTask[]
   approvals: readonly Decision[]
   /** False when Divo cannot see this person's Lark at all. */
   reachable: boolean
   limit?: number
+  /** True until both reads behind the band have answered. */
+  loading?: boolean
   onStartTask: (task: OpenTask) => void
   onOpenApproval: (approval: Decision) => void
   /** Injected by the tests that pin a clock; the app never passes it. */
   now?: Date
 }) {
+  /* The band held the page open with nothing in it while both reads were out,
+     then appeared under whatever the reader was looking at. It has a size
+     before it has contents now — and it still leaves entirely when the answer
+     turns out to be "nothing", which is one settle rather than a jump. */
+  if (loading) return <Loading />
+
   /* Counted before the cut, so the header does not quietly agree with the
      limit and under-report the day. */
   const all = upNext(tasks, approvals, Number.MAX_SAFE_INTEGER, now)

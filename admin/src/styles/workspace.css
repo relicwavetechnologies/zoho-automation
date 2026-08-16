@@ -1336,7 +1336,144 @@
 /* The Home column is narrower than a data page. The composer is a writing
    surface and long measure hurts it, so the page is centred and capped rather
    than filling a 1600px monitor. */
-.cur .ws-home { max-width: 940px; margin: 0 auto; padding-bottom: 40px; }
+.cur .ws-home { max-width: 940px; margin: 0 auto; padding: 0 34px 40px; }
+
+/* ── The landing ──────────────────────────────────────
+   Home scrolls itself rather than being scrolled by the shell. That is what
+   makes "one screenful" a number this file can use: `.ws-scroller` has a
+   definite height, so the hero can be exactly that height minus the bar the
+   composer ends up as, and the dashboard reaches the top at the same moment
+   the composer finishes compressing. Inside `.page`, the same section is
+   always a topbar and 30 pixels too tall. */
+.cur .ws-scroller { height: 100%; overflow-y: auto; }
+
+/* The composer's rail. Sticky from the first pixel and only as tall as the
+   bar it becomes — while nobody has scrolled, the composer inside is pushed
+   down into the middle of the screen by a transform, which costs no layout. */
+.cur .ws-stage {
+  position: sticky; top: 0; z-index: 20; height: 96px;
+  display: flex; justify-content: center; pointer-events: none;
+  /* Not `stretch`, which is the default and was the bug: the inner block was
+     being stretched to the rail's 96px rather than taking the composer's own
+     height, so anything positioned off its bottom edge — the scroll
+     invitation — landed partway UP the composer, on top of the quick starts. */
+  align-items: flex-start;
+}
+/* Appears only once the composer has become a bar. Before that there is
+   nothing behind it to hide, and a backdrop on an empty screen reads as a
+   toolbar somebody forgot to fill. */
+.cur .ws-stage::before {
+  content: ''; position: absolute; inset: -30px 0 -22px;
+  opacity: var(--chrome, 0);
+  /* A fade rather than an edge. A rule across the full width drew a lid over
+     the page, and the composer is not a header — what it needs is for the band
+     scrolling under it to stop being legible, which a gradient does without
+     announcing itself. */
+  background: linear-gradient(var(--cur-canvas) 76%, transparent);
+}
+.cur .ws-stage-in { position: relative; pointer-events: auto; max-width: calc(100% - 68px); }
+
+/* One screenful, minus the bar the composer becomes. Empty: the stage floats
+   everything over it. It exists to be the distance you scroll. */
+.cur .ws-hero { height: calc(100dvh - 46px - 96px); }
+
+/* Greeting above the box, invitation below it, both measured off the box's own
+   edges rather than the screen's — that is what keeps the three reading as one
+   cluster instead of as three things at three heights. */
+.cur .ws-hero-greet {
+  position: absolute; left: 6px; right: 6px; bottom: 100%;
+  margin-bottom: 20px; pointer-events: none;
+}
+/* Small line first, big line second. The question is the thing being asked of
+   the reader, so it is the one set at title size; the greeting is context for
+   it and sits above in the quiet colour. */
+.cur .ws-hero-hi { font-size: 13px; color: var(--cur-muted); }
+.cur .ws-hero-ask {
+  font-size: 27px; letter-spacing: -0.025em; color: var(--cur-ink); margin-top: 5px;
+}
+.cur .ws-hero-more {
+  position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+  /* Measured from the bottom of the whole composer, tray included. */
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 26px;
+  font-size: 12.5px; color: var(--cur-muted); background: none; border: 0;
+  cursor: pointer; padding: 6px 12px; border-radius: 999px; white-space: nowrap;
+}
+.cur .ws-hero-more:hover { color: var(--cur-ink); background: var(--cur-surface); }
+.cur .ws-hero-more svg { animation: ws-nudge 2.2s cubic-bezier(0.23, 1, 0.32, 1) infinite; }
+@keyframes ws-nudge { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(3px); } }
+
+/* ── The composer, on the landing ─────────────────────
+   Box on a plate, tray under the box: one object with two levels, rather than
+   a box with a row of buttons parked beneath it. The plate is what makes the
+   tray read as part of the composer instead of as page content that happens to
+   sit close to it. */
+.cur .ws-comp-plate { position: relative; padding: 5px; border-radius: 22px; }
+.cur .ws-comp-plate::before {
+  content: ''; position: absolute; inset: 0; border-radius: 22px;
+  /* `surface-strong`, not `canvas-soft`. Soft is one step off the page in
+     light — #f4f5f6 on #f1f2f3 — so the plate simply vanished there while
+     reading fine in dark, and the tray under the box looked like loose buttons
+     on the page. This tone is a real step in both themes: grey under a white
+     box in light, raised under a recessed box in dark. */
+  background: var(--cur-surface-strong); border: 1px solid var(--cur-hairline);
+  /* Fades out with the rest of the landing geometry, so what is left at the
+     top of a scrolled page is a single-edged bar rather than a box inside a
+     box. */
+  opacity: var(--plate, 1);
+}
+.cur .ws-comp-plate > * { position: relative; }
+.cur .ws-comp-tray { overflow: hidden; }
+/* The tray's own row. It sets no gap and no spacing of any kind: what goes in
+   it is one composed thing — today a deck of app marks that overlap on purpose
+   — so the spacing belongs to whatever is put here, not to the strip holding
+   it. Scrolls rather than squashes, because a flex row's default is to shrink
+   its children and a squashed logo is not a logo. */
+.cur .ws-comp-tray-in {
+  display: flex; align-items: center; padding: 9px 8px 4px;
+  overflow-x: auto; scrollbar-width: none;
+}
+.cur .ws-comp-tray-in::-webkit-scrollbar { display: none; }
+.cur .ws-comp-tray-in > * { flex: none; }
+
+/* ── The app deck ─────────────────────────────────────
+   A stack of marks, overlapping by roughly a third.
+
+   It was a row of pills reading Gmail · Drive · Sheets · Calendar, which spanned
+   the whole box and read as a toolbar — eight things of equal weight competing
+   with the field above them. The names were never the information: a person
+   knows the Gmail mark faster than they can read the word, and the tray is a
+   glance rather than a menu. The word is still there for anyone who needs it,
+   as the button's own label, which is also what a screen reader announces.
+
+   Nothing here runs anything. A press types the app's name into the box, which
+   is why these are marks the way a stack of avatars is, not a row of buttons. */
+.cur .ws-app-chip {
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+  border-radius: 999px; cursor: pointer; position: relative;
+  border: 1px solid var(--cur-hairline); background: var(--cur-surface);
+  transition: transform .12s ease, border-color .12s ease;
+}
+/* A third of a mark. Enough that the set reads as one object rather than eight,
+   and not so much that any single logo becomes a sliver. */
+.cur .ws-app-chip + .ws-app-chip { margin-left: -10px; }
+/* Out of the deck rather than merely tinted. Without the z-index the mark you
+   are pointing at stays half-buried under its neighbour, which reads as a
+   control that did not notice you. */
+.cur .ws-app-chip:hover,
+.cur .ws-app-chip:focus-visible {
+  z-index: 2; transform: translateY(-2px); border-color: var(--cur-hairline-strong);
+}
+/* The deck before the connections are known: the same circles, empty. The tray
+   is the right height from the first frame, so the composer does not resize
+   under somebody's hands when the read lands. */
+.cur .ws-app-chip[data-ghost] {
+  background: var(--cur-canvas-soft); border-color: transparent; cursor: default;
+  animation: ws-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cur .ws-hero-more svg { animation: none; }
+}
 
 /* ── Composer ─────────────────────────────────────────
    Home no longer draws its own composer. It renders the SAME component
@@ -1344,7 +1481,10 @@
    into is identical on both sides of the handoff — one control, one set of
    keybindings, one place to change it. All this rule does is give it the
    breathing room the old panel had. */
-.cur .ws-comp-slot { margin-bottom: 26px; }
+/* No margin any more: the composer rides in `.ws-stage`, whose own height is
+   the space it is allowed, and a margin under it would push every band down by
+   26px for a gap the sticky bar already accounts for. */
+.cur .ws-comp-slot { margin-bottom: 0; }
 
 /* ── Connected apps ───────────────────────────────────
    A grid of cards rather than a list of rows. Seven full-width rows all the

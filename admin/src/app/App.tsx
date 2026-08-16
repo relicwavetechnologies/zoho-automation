@@ -271,7 +271,11 @@ const RequireScope = ({ kind, children }: { kind: ScopeKind; children: JSX.Eleme
 
 /* Workspace screens, adapted to routes. Live, apart from the few panels
    that mark themselves as sample data. */
-const MeHome = routed(WorkspaceHome)
+/* `full` because Home owns its own scroller now. The landing has to be exactly
+   one screenful, and "one screenful" is only knowable inside a box with a
+   definite height — measured against the shell's padding it is always a topbar
+   and 30 pixels out. See the hero note in `screens-home.tsx`. */
+const MeHome = routed(WorkspaceHome, { full: true })
 const MeChat = routed(WorkspaceChat, { full: true })
 const MeApprovals = routed(YouApprovals)
 const MeArtifacts = routed(Artifacts)

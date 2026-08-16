@@ -24,10 +24,11 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  Activity, ArrowUpRight, ChevronLeft, ChevronRight, CircleAlert, Link2, Lock,
-  MessageSquare, Plus, Send, Sparkles, X,
+  Activity, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, CircleAlert,
+  Link2, Plus, X,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { BrandMark } from '@/components/admin/brand-mark'
 import { Composer as ChatComposer } from './chat/composer'
 import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
 import { stageHandoff } from './chat/handoff'
@@ -42,12 +43,16 @@ import {
 import { useConnections, CONNECTABLE } from './data/use-connections'
 import { useMyTasks, type OpenTask } from './data/use-my-tasks'
 import { UpNext } from './home/upnext.view'
+import { appChips, withReference, type AppChip } from './home/apps'
+import { Made } from './home/made.view'
+import { ArtifactWorkspace } from './artifacts/panel'
+import { showSavedArtifact } from './artifacts/open'
 import { DotField, HexShare, hueAt } from './charts'
 import type { MyRun } from './data/use-my-activity'
 import type { Provider } from './fixtures'
 import {
   ClickRow, Empty, Fade, Panel, ProviderMark, Skel, SkelRows,
-  money, providerName, useStaged, type Toast,
+  money, providerName, type Toast,
 } from './ui'
 
 type ScreenProps = {
@@ -137,9 +142,18 @@ function useCarousel(count: number) {
   return { setEl, edge, measure, page }
 }
 
-export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
-  const [r1, r2, r3] = useStaged([260, 520, 800], replay)
-  const { session } = useAdminAuth()
+/*
+ * There is no staged reveal here any more.
+ *
+ * The page used to hold `useStaged([260, 520, 800])` and gate every band on
+ * `!rN || somethingLoading` — a mock-era device that lit the regions up in
+ * reading order. Against real queries it only ever added delay: a band whose
+ * data had already arrived sat as a skeleton until its timer fired, and one
+ * whose query was slow ignored the timer anyway. Every band now shows its own
+ * shape for exactly as long as its own read takes.
+ */
+export function WorkspaceHome({ persona, go }: ScreenProps) {
+  const { session, token } = useAdminAuth()
   const { awaitingMe, loading: approvalsLoading } = useDecisions()
   const { usage, loading: usageLoading } = useMyUsage(USAGE_DAYS)
   const { runs, loading: runsLoading } = useMyRuns(6)
@@ -147,7 +161,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
   /* Twelve for a band that shows six. `UpNext` orders by urgency and then
      cuts, so the read has to be wider than the band or the cut happens first
      and the late task is the one that never arrived. */
-  const { tasks, reachable: tasksReachable } = useMyTasks(12)
+  const { tasks, reachable: tasksReachable, loading: tasksLoading } = useMyTasks(12)
   const { dismissed, dismiss } = useDismissed()
 
   /* The composer's draft lives here rather than inside it, because a task in
@@ -156,11 +170,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
      about to be asked and change it, which is the difference between a
      suggestion and a button that runs something on their behalf. */
   const [draft, setDraft] = useState('')
-  /* Scrolled to by ref rather than `window.scrollTo`, because whether the
-     window or some ancestor is the scrolling element is the shell's business
-     and has changed before. Asking the node to bring itself into view is right
-     either way. */
-  const composerRef = useRef<HTMLDivElement>(null)
+  const { scroller, hero, drop } = useHeroScroll()
 
   // First name only. "Welcome back, Ananya Mehta" is a form letter; the
   // surname adds nothing the person does not already know about themselves.
@@ -171,6 +181,11 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
   const connected = CONNECTABLE
     .map((provider) => ({ provider, status: byProvider.get(provider) }))
     .filter((entry) => entry.status?.connected)
+
+  /* The same list the Connected panel draws, opened into the apps behind each
+     connection — one row that says what Divo can reach, under the box you ask
+     it in. See `home/apps.ts` for why a connection is not a chip. */
+  const apps = appChips(connected.map((entry) => entry.provider))
 
   const cards = useMemo<StartCard[]>(() => {
     const unconnected = CARD_ORDER.filter((p) => CONNECTABLE.includes(p) && !byProvider.get(p)?.connected)
@@ -245,22 +260,92 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
   ]
 
   return (
-    <div className="ws-home">
+    /* The same split the chat uses, around the dashboard this time.
+       A document belongs to the person rather than to the conversation that
+       produced it, so "read it" has to mean the same thing on both pages — and
+       the panel's state is module-level, so one opened here is still open after
+       walking into a chat. */
+    <ArtifactWorkspace>
+    <div className="ws-scroller" ref={scroller}>
       {/*
-        The only page in the app with no heading of its own.
-        Every other screen gets one from `PageHeader`; this one opens straight
-        into the composer, which is right on screen and wrong underneath — a
-        document whose outline starts at h2 gives a screen reader nothing to
-        announce the page by, and leaves five sibling panels with no parent.
-        Named, not shown: the composer is a better greeting than a title bar.
+        The composer rides in a bar that is sticky from the very first pixel,
+        and is pushed down into the middle of the first screen while nobody has
+        scrolled. One element the whole way: the alternative — a big one on the
+        landing and a small one that appears at the top afterwards — is two
+        composers, and the moment they swap is the moment a half-typed sentence
+        is somewhere the reader was not looking.
       */}
-      <h1 className="ws-a11y-title">Your workspace</h1>
-      <Composer go={go} value={draft} onChange={setDraft} slotRef={composerRef} />
+      <div className="ws-stage" style={{ ['--chrome' as string]: 1 - hero }}>
+        {/* Greeting, box and invitation move as one. They used to be pinned to
+            the top, the middle and the bottom edge of the landing, which read
+            as three unrelated things on a tall screen rather than as one place
+            to start. The two either side are positioned off the box, so the
+            group stays composed at every size the box passes through. */}
+        <div
+          className="ws-stage-in"
+          style={{
+            transform: `translateY(${(drop * hero).toFixed(1)}px)`,
+            width: `${620 + 100 * hero}px`,
+          }}
+        >
+          <div className="ws-hero-greet" style={{ opacity: Math.max(0, hero * 2 - 1) }}>
+            <p className="ws-hero-hi">Good {partOfDay()}, {viewer}</p>
+            <p className="ws-hero-ask">What should Divo work on?</p>
+          </div>
 
-      <ActionTiles
+          <Composer
+            go={go}
+            value={draft}
+            onChange={setDraft}
+            hero={hero}
+            apps={apps}
+            appsLoading={connectionsLoading}
+          />
+
+          {/* Gone rather than transparent once it has faded: a control at zero
+              opacity is still in the tab order, so a keyboard reader would land
+              on an invisible button offering to scroll somewhere they already
+              are. */}
+          {hero > 0.7 && (
+            <button
+              type="button"
+              className="ws-hero-more"
+              style={{ opacity: Math.max(0, hero * 3 - 2.1) }}
+              /* A control rather than a caption. Somebody who reads it and
+                 clicks has said what they want, and a label that does nothing
+                 when pressed is a worse answer than no label at all. */
+              onClick={() => scroller.current?.scrollTo({
+                top: scroller.current.clientHeight - HERO_BAR,
+                behavior: 'smooth',
+              })}
+            >
+              Your dashboard
+              <ChevronDown size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="ws-home">
+        {/*
+          The only page in the app with no heading of its own.
+          Every other screen gets one from `PageHeader`; this one opens straight
+          into the composer, which is right on screen and wrong underneath — a
+          document whose outline starts at h2 gives a screen reader nothing to
+          announce the page by, and leaves five sibling panels with no parent.
+          Named, not shown: the composer is a better greeting than a title bar.
+        */}
+        <h1 className="ws-a11y-title">Your workspace</h1>
+
+        {/* The landing is empty on purpose — everything on it is drawn by the
+            stage above, which floats over this. What this section is, is the
+            one screenful of room that makes it a landing at all. */}
+        <div className="ws-hero" aria-hidden="true" />
+
+        <ActionTiles
         attention={attention.length}
         running={runs.filter((run) => run.status === 'running').length}
-        loading={!r1 || approvalsLoading}
+        loading={approvalsLoading}
         go={go}
       />
 
@@ -268,17 +353,35 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
         tasks={tasks}
         approvals={awaitingMe}
         reachable={tasksReachable}
-        onStartTask={(task) => {
-          setDraft(taskPrompt(task))
-          // The composer is above a band the reader has scrolled down to;
-          // seeding a box they cannot see reads as the button having done
-          // nothing at all.
-          composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-        }}
+        /* Both reads, not either: the band merges tasks with approvals, so
+           filling in as the first one lands would rank a list against half its
+           input and then reorder it under the reader. */
+        loading={tasksLoading || approvalsLoading}
+        /* Seeds the bar that is already on screen. It used to scroll the
+           composer into view, which was right when the composer sat a few
+           rows above; now it is stuck to the top of every screenful, and
+           scrolling to something already in front of somebody moves the page
+           under them for no reason. */
+        onStartTask={(task) => setDraft(taskPrompt(task))}
         onOpenApproval={() => go('approvals')}
       />
 
-      {cards.length > 0 ? (
+      {/* Under what is waiting, above what could be set up: the documents are
+          finished work, so they come after the things that are not. */}
+      <Made onOpen={(item) => { void showSavedArtifact(item, token) }} />
+
+      {/*
+        Nothing at all until the connections are known, unlike the two bands
+        above, which hold their shape.
+
+        Those are lists of what exists; this is a list of what does NOT. While
+        the read is out `byProvider` is empty, which reads as "you have
+        connected nothing" — so the optimistic version of this band is six
+        onboarding cards shown to somebody who finished onboarding months ago,
+        and it takes a whole screenful to say it before vanishing. A band whose
+        content is an assumption should wait for the answer.
+      */}
+      {!connectionsLoading && cards.length > 0 ? (
         <section className="ws-band">
           <div className="ws-band-hd">
             <div>
@@ -301,46 +404,33 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
             </div>
           </div>
 
-          {!r1 || connectionsLoading ? (
-            <div className="ws-gs">
-              {[0, 1, 2].map((i) => (
-                <div className="ws-gs-card" key={i}>
-                  <Skel w={30} h={30} />
-                  <div style={{ height: 12 }} />
-                  <Skel w="62%" h={13} />
-                  <div style={{ height: 9 }} />
-                  <Skel w="100%" h={40} />
-                  <div style={{ height: 14 }} />
-                  <Skel w="100%" h={34} />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="ws-gs" ref={carousel.setEl} onScroll={carousel.measure}>
-              {cards.map((card) => (
-                <article className="ws-gs-card" data-featured={card.featured ? 'true' : undefined} key={card.id}>
-                  <button
-                    type="button" className="ws-gs-x" aria-label={`Dismiss ${card.title}`}
-                    onClick={() => dismiss(card.id)}
-                  >
-                    <X size={13} />
-                  </button>
-                  <span className="ws-gs-mark" data-plain={card.markPlain ? 'true' : undefined} aria-hidden>
-                    {card.mark}
-                  </span>
-                  <h3>{card.title}</h3>
-                  <p>{card.body}</p>
-                  <button
-                    type="button"
-                    className={`btn wide ${card.featured ? 'accent' : 'primary'}`}
-                    onClick={card.onClick}
-                  >
-                    {card.cta}
-                  </button>
-                </article>
-              ))}
-            </div>
-          )}
+          {/* No skeleton here any more: the band itself waits for the read, so
+              a placeholder inside it could only ever draw after the answer had
+              arrived. */}
+          <div className="ws-gs" ref={carousel.setEl} onScroll={carousel.measure}>
+            {cards.map((card) => (
+              <article className="ws-gs-card" data-featured={card.featured ? 'true' : undefined} key={card.id}>
+                <button
+                  type="button" className="ws-gs-x" aria-label={`Dismiss ${card.title}`}
+                  onClick={() => dismiss(card.id)}
+                >
+                  <X size={13} />
+                </button>
+                <span className="ws-gs-mark" data-plain={card.markPlain ? 'true' : undefined} aria-hidden>
+                  {card.mark}
+                </span>
+                <h3>{card.title}</h3>
+                <p>{card.body}</p>
+                <button
+                  type="button"
+                  className={`btn wide ${card.featured ? 'accent' : 'primary'}`}
+                  onClick={card.onClick}
+                >
+                  {card.cta}
+                </button>
+              </article>
+            ))}
+          </div>
         </section>
       ) : null}
 
@@ -386,7 +476,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
           </div>
         </div>
         <Panel source="myUsage">
-          {!r2 || usageLoading ? <SkelRows n={2} icon={false} /> : (
+          {usageLoading ? <MetricsSkeleton /> : (
             <Fade>
               <div className="ws-metrics">
                 <div className="ws-metric">
@@ -431,7 +521,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
 
       <SpendBands
         usage={usage}
-        loading={!r2 || usageLoading}
+        loading={usageLoading}
         spendLabel={spend.last ? dayLabel(spend.last) : null}
       />
 
@@ -456,7 +546,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
             source="myRuns"
             aside={<button type="button" className="btn" onClick={() => go('usage')}>All activity</button>}
           >
-            {!r3 || runsLoading ? <SkelRows n={4} icon={false} /> : runs.length === 0 ? (
+            {runsLoading ? <SkelRows n={4} icon={false} /> : runs.length === 0 ? (
               <Empty icon={Activity} title="Nothing yet" body="Runs appear here once you ask Divo to do something." />
             ) : (
               <Fade><RunList runs={runs} /></Fade>
@@ -464,7 +554,7 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
           </Panel>
 
           <Panel title="Connected" aside={<button type="button" className="btn" onClick={() => go('connections')}>Manage</button>}>
-            {!r2 || connectionsLoading ? <SkelRows n={3} /> : connected.length === 0 ? (
+            {connectionsLoading ? <SkelRows n={3} /> : connected.length === 0 ? (
               <Empty icon={Link2} title="Nothing connected yet" body="Divo can only act through accounts you connect." />
             ) : (
               <Fade>
@@ -501,8 +591,49 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
           </Panel>
         </div>
       </section>
+      </div>
+    </div>
+    </ArtifactWorkspace>
+  )
+}
+
+/**
+ * The Performance row, empty.
+ *
+ * It used to load as two `SkelRows` — an icon tile, two lines and a button,
+ * three times over — and resolve into four bordered columns of figures. Two
+ * unrelated shapes in the same box is the reflow a skeleton is supposed to
+ * prevent, so this is the metrics grid itself with the figures missing: same
+ * columns, same dividers, same three line heights.
+ */
+function MetricsSkeleton() {
+  return (
+    <div className="ws-metrics" aria-busy="true">
+      {[0, 1, 2, 3].map((i) => (
+        <div className="ws-metric" key={i}>
+          {/* Bar heights are the line boxes they stand in for — an 11px label,
+              a 20px figure, a 12px note — because these divs have no text to
+              give the tile its height while the read is out. */}
+          <div className="k"><Skel w={i % 2 ? 62 : 74} h={12} /></div>
+          <div className="v"><Skel w={i === 0 ? 46 : 70} h={24} /></div>
+          <div className="s"><Skel w={`${58 + ((i * 11) % 24)}%`} h={14} /></div>
+        </div>
+      ))}
     </div>
   )
+}
+
+/**
+ * "morning", "afternoon", "evening".
+ *
+ * The reader's own clock, never the server's — a greeting is the one thing on
+ * this page that has to agree with the window they are sitting next to.
+ */
+function partOfDay(now = new Date()): string {
+  const hour = now.getHours()
+  if (hour < 12) return 'morning'
+  if (hour < 17) return 'afternoon'
+  return 'evening'
 }
 
 /**
@@ -524,11 +655,86 @@ export function WorkspaceHome({ persona, replay, toast, go }: ScreenProps) {
  * A task in the band below has to be able to put a sentence into the box, and a
  * composer holding its own text is a composer nothing else can reach.
  */
-function Composer({ go, value: prompt, onChange: setPrompt, slotRef }: {
+/**
+ * How far out of the landing the reader has scrolled, as one number.
+ *
+ * 1 is the composer at full size in the middle of an empty first screen; 0 is
+ * the compact bar at the top with the dashboard under it. Everything that moves
+ * — the composer's own geometry, the greeting, the scroll hint, the bar's
+ * background — is a function of this and nothing else, so nothing can get out
+ * of step with anything else.
+ *
+ * Read straight off the scroller on a frame rather than kept in React state: it
+ * changes on every scroll event, and a `setState` per frame would re-render the
+ * whole dashboard underneath to move one element by a pixel. What React holds
+ * is only the rounded value the composer needs, which settles in a handful of
+ * steps and then stops.
+ */
+function useHeroScroll(): {
+  scroller: React.RefObject<HTMLDivElement>
+  hero: number
+  /** How far the composer is pushed down to sit in the middle of the landing. */
+  drop: number
+} {
+  const scroller = useRef<HTMLDivElement>(null)
+  const [hero, setHero] = useState(1)
+  const [drop, setDrop] = useState(0)
+
+  useEffect(() => {
+    const node = scroller.current
+    if (!node) return
+    let queued = false
+
+    const frame = () => {
+      queued = false
+      /* Measured here rather than read during render: a component that reads
+         layout while rendering gets whatever the previous pass left behind,
+         and on the first pass gets nothing at all. */
+      setDrop(Math.max(0, (node.clientHeight - HERO_BAR) * 0.44))
+      /* The travel is one screenful minus the bar the composer ends up as —
+         the same distance the hero section occupies, so the transformation
+         finishes exactly as the dashboard reaches the top. */
+      const travel = Math.max(1, node.clientHeight - HERO_BAR)
+      const t = Math.min(1, Math.max(0, node.scrollTop / travel))
+      const eased = t * t * (3 - 2 * t)
+      /* Quantised to 24 steps. Smooth enough that no frame is missing, coarse
+         enough that a scroll costs a couple of dozen renders rather than one
+         per pixel. */
+      const next = Math.round((1 - eased) * 24) / 24
+      setHero((current) => (current === next ? current : next))
+    }
+
+    const onScroll = () => {
+      if (queued) return
+      queued = true
+      requestAnimationFrame(frame)
+    }
+
+    node.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', frame)
+    frame()
+    return () => {
+      node.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', frame)
+    }
+  }, [])
+
+  return { scroller, hero, drop }
+}
+
+/** The height the composer settles into once it has finished compressing. */
+const HERO_BAR = 96
+
+function Composer({ go, value: prompt, onChange: setPrompt, slotRef, hero, apps, appsLoading }: {
   go: (screen: string) => void
   value: string
   onChange: (next: string) => void
   slotRef?: React.Ref<HTMLDivElement>
+  /** 1 on the landing, 0 once it has compressed into the bar. See `Composer`. */
+  hero?: number
+  /** The apps Divo can reach for this person. See `home/apps.ts`. */
+  apps: readonly AppChip[]
+  appsLoading: boolean
 }) {
   const attach = useAttachments()
   const modelChoice = useChatModelChoice()
@@ -562,6 +768,35 @@ function Composer({ go, value: prompt, onChange: setPrompt, slotRef }: {
         rejected={attach.rejected}
         onAttach={attach.add}
         onRemoveFile={attach.remove}
+        {...(hero !== undefined ? { hero } : {})}
+        {/* The tray exists only on the landing, and only while there is
+            something to put in it: a person with nothing connected gets the box
+            on its own rather than an empty strip under it. The placeholders
+            hold the row open while the connections are being read, so the
+            composer does not change height under somebody's hands. */
+        ...(hero !== undefined && (appsLoading || apps.length > 0) ? {
+          actions: appsLoading
+            ? [0, 1, 2, 3, 4].map((i) => (
+              <span key={i} className="ws-app-chip" data-ghost="true" aria-hidden />
+            ))
+            : apps.map((app) => (
+              <button
+                key={app.key}
+                type="button"
+                className="ws-app-chip"
+                /* The name is the button's label rather than its contents. A
+                   screen reader announces it, a pointer gets it as a tooltip,
+                   and the tray stays a glance instead of a menu. */
+                title={app.label}
+                aria-label={`Ask about ${app.label}`}
+                /* Focus follows for free: the chip sits inside the composer,
+                   whose click handler puts the caret back in the field. */
+                onClick={() => setPrompt(withReference(prompt, app))}
+              >
+                <BrandMark brand={app.key} size={17} />
+              </button>
+            )),
+        } : {})}
       />
     </div>
   )
@@ -675,10 +910,32 @@ function SpendBands({ usage, loading, spendLabel }: {
   const points = usage.series.map((point) => ({ date: point.date, value: point.spendUsd }))
 
 
+  /*
+   * Two panels, not two grey slabs.
+   *
+   * The pair used to load as bare 200px blocks and resolve into titled panels
+   * with a 176px chart and a legend under it — taller, and bordered, so the
+   * whole bottom half of the page stepped down as the read landed. The chrome
+   * is known before the numbers are, so it is drawn: only the chart and its
+   * legend are missing.
+   */
   if (loading) {
     return (
-      <section className="ws-band">
-        <div className="ws-cols"><Skel w="100%" h={200} block /><Skel w="100%" h={200} block /></div>
+      <section className="ws-band" aria-busy="true">
+        <div className="ws-cols">
+          <Panel title="Where your spend went" source="myUsage">
+            <div className="ws-panel-body">
+              <Skel w="100%" h={176} block />
+              <div style={{ height: 14 }} />
+              <Skel w="72%" h={11} />
+              <div style={{ height: 9 }} />
+              <Skel w="54%" h={11} />
+            </div>
+          </Panel>
+          <Panel title="Spend over time" source="myUsage">
+            <div className="ws-panel-body"><Skel w="100%" h={176} block /></div>
+          </Panel>
+        </div>
       </section>
     )
   }

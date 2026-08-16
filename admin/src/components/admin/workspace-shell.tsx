@@ -327,8 +327,13 @@ export function WorkspaceShell() {
             `/chat/web_…` matched no nav item and fell through to the workspace
             name, so the one thing on screen the reader could not have wanted
             was the only thing it said.
+
+            Home is the same case for the same reason. Its first screen is a
+            greeting and a composer; "Home" above that is a second title, and a
+            duller one. Only the landing itself — everything under `/me/…` is an
+            ordinary page and keeps its name.
           */}
-          {location.pathname.startsWith('/chat') ? null : (
+          {location.pathname.startsWith('/chat') || location.pathname === '/me' ? null : (
             <header className="topbar">
               <b className="ws-crumb-now">
                 {groups.flatMap((g) => g.items).find((i) => i.to === location.pathname)?.label ?? active.label}
