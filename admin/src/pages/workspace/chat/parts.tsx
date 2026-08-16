@@ -561,7 +561,11 @@ export function Composer({
             >
               <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{candidate.label}</span>
               <span className="shrink-0 text-[11px] text-ink-3">
-                {candidate.vision ? 'Vision' : candidate.provider === 'deepseek' ? 'DeepSeek' : 'OpenAI'}
+                {candidate.provider === 'deepseek'
+                  ? 'DeepSeek'
+                  : candidate.provider === 'openai'
+                    ? 'OpenAI'
+                    : candidate.provider}
               </span>
               <Check size={13} className={`shrink-0 text-ink ${candidate.id === model?.id ? '' : 'invisible'}`} />
             </button>
