@@ -18,7 +18,7 @@ import {
   Plus, Send, Sparkles, X,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
-import { Composer as ChatComposer } from './chat/parts'
+import { Composer as ChatComposer } from './chat/composer'
 import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
 import { stageHandoff } from './chat/handoff'
 import { useChatModelChoice } from './chat/model-choice'
