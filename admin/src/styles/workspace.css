@@ -158,7 +158,11 @@
 }
 
 /* ── Panel ───────────────────────────────────────────── */
-.cur .ws-panel { background: var(--cur-surface); border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); }
+/* The app's five card primitives — `.card`, `.section`, `.ws-panel`,
+   `.set-group`, `.prof-card` — draw the same border, radius and lift. They had
+   drifted into two groups, one with a shadow and one without, which is what
+   made a settings page read as flatter than the screen it was reached from. */
+.cur .ws-panel { background: var(--cur-surface); border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); box-shadow: var(--cur-shadow-card); }
 .cur .ws-panel > header { padding: 15px 18px; border-bottom: 1px solid var(--cur-hairline); display: flex; align-items: center; gap: 12px; }
 .cur .ws-panel > header .ws-panel-t { flex: 1; min-width: 0; }
 .cur .ws-panel > header h2 { font-size: 14px; font-weight: 500; letter-spacing: -0.01em; }
@@ -1847,20 +1851,17 @@
 .cur .topbar { width: 100%; max-width: 1160px; margin-inline: auto; padding-inline: 34px; }
 
 /*
-  Focus rings, on the tokens.
+  Focus, inset where the box has no room outside it.
 
-  global.css applies `ring-2 ring-ring ring-offset-2` to every `:focus-visible`,
-  and `--ring` resolves to the brand orange — so clicking a nav row left a
-  bright orange halo around it that read as a selected state rather than as
-  keyboard focus. Inside `.cur` it becomes a quiet outline, still clearly
-  visible to a keyboard user and no longer shouting at a mouse user.
+  The colour and the ring itself now come from `global.css`, which draws focus
+  as the accent — the reference's own answer. This block used to override that
+  to a grey outline because `--ring` resolved to the brand orange and a clicked
+  nav row kept a bright halo that read as the selected state. `--ring` is gone
+  and focus is blue everywhere; the only thing still worth saying here is that
+  a nav row is flush to the rail's padding, so its ring is drawn inside.
 */
-.cur :focus-visible {
-  box-shadow: none;
-  outline: 2px solid var(--cur-muted-soft);
-  outline-offset: 1px;
-}
-.cur .nav-item:focus-visible { outline-offset: -2px; }
+.cur .nav-item:focus-visible,
+.cur .set-back:focus-visible { outline-offset: -2px; }
 
 /* ══════════════════════════════════════════════════════
    SETTINGS TAKEOVER
@@ -1872,18 +1873,66 @@
    ══════════════════════════════════════════════════════ */
 .cur.set { display: flex; height: 100vh; overflow: hidden; }
 
+/*
+  The rail, in the same language as the app's.
+
+  It used to be the base `.nav-item` styling and nothing else: 262px wide,
+  10px padding, sentence-case 12px group labels, 8px rows with 16px icons, and
+  an active row marked by a fill plus a 2px accent bar down its left edge. The
+  product rail had since been rebuilt under `.workspace-sidebar` — 240px, 8px
+  padding, uppercase 10.5px labels, 7px rows, 14px icons, and an active row
+  that is a plain fill — and the takeover was never brought along. Somebody
+  going into Settings crossed into a rail from the previous design.
+
+  Every metric below is `.workspace-sidebar`'s. What is deliberately NOT copied
+  is the moving highlight pill: that is a measured element the product nav
+  animates between rows, and its resting appearance is exactly this fill, so a
+  static rail loses the travel and nothing else.
+*/
 .cur .set-rail {
-  width: 262px; flex-shrink: 0; display: flex; flex-direction: column;
-  padding: 10px 10px 12px; overflow-y: auto;
+  width: 240px; flex-shrink: 0; display: flex; flex-direction: column;
+  padding: 8px; overflow-y: auto;
   border-right: 1px solid var(--cur-hairline); background: var(--cur-sidebar);
 }
 .cur .set-back {
-  display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; margin-bottom: 6px;
-  border: 0; border-radius: var(--cur-r-cta); background: none; cursor: pointer;
-  font-family: inherit; font-size: 13.5px; color: var(--cur-body);
+  display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; margin-bottom: 8px;
+  border: 0; border-radius: 7px; background: transparent; cursor: pointer;
+  font-family: inherit; font-size: 13px; color: var(--cur-body);
+  transition: color .15s ease, background-color .15s ease, transform .15s ease;
 }
 .cur .set-back:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
-.cur .set-rail-nav { display: flex; flex-direction: column; gap: 1px; }
+.cur .set-back:active { transform: scale(.98); }
+.cur .set-back svg { color: var(--cur-muted); }
+
+/* Groups are spaced; rows inside a group are not. Same rhythm as the product
+   rail, where the gap belongs between one scope and the next rather than
+   between two links that mean the same kind of thing. */
+.cur .set-rail-nav { display: flex; flex-direction: column; gap: 8px; }
+.cur .set-rail-nav > div { display: flex; flex-direction: column; gap: 1px; }
+.cur .set-rail .nav-label {
+  padding: 5px 8px 4px; color: var(--cur-muted);
+  font-size: 10.5px; font-weight: 500; line-height: 1.4;
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.cur .set-rail .nav-item {
+  height: 30px; gap: 8px; padding: 0 8px; border-radius: 7px;
+  background: transparent; color: var(--cur-body);
+  transition: color .15s ease, background-color .15s ease, transform .15s ease;
+}
+.cur .set-rail .nav-item:hover { background: var(--cur-canvas-soft); color: var(--cur-ink); }
+.cur .set-rail .nav-item:active { transform: scale(.98); }
+.cur .set-rail .nav-item.active {
+  background: var(--cur-surface-strong); color: var(--cur-ink); font-weight: 500;
+}
+/* The accent bar goes. The product rail marks the current row with the fill
+   alone, and two rails marking the same fact two ways is the inconsistency
+   this block exists to close. */
+.cur .set-rail .nav-item.active::before { display: none; }
+.cur .set-rail .nav-item .g {
+  width: 14px; color: var(--cur-muted); opacity: 1; transition: color .15s ease;
+}
+.cur .set-rail .nav-item:hover .g,
+.cur .set-rail .nav-item.active .g { color: var(--cur-ink); }
 
 .cur .set-body { flex: 1; min-width: 0; overflow-y: auto; }
 /*
@@ -2032,7 +2081,7 @@
 .cur .set-group {
   max-width: 720px; margin-inline: auto; background: var(--cur-surface);
   border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
-  overflow: hidden;
+  box-shadow: var(--cur-shadow-card); overflow: hidden;
 }
 /* Inside a card the rows carry their own padding and a divider between them,
    rather than a rule above each that also draws one at the very top. */
@@ -2083,7 +2132,7 @@
 
 /* The team selector in the rail. Full width so it reads as part of the group
    heading rather than as a control floating beside the links. */
-.cur .set-picker { padding: 2px 10px 8px; }
+.cur .set-picker { padding: 2px 8px 6px; }
 .cur .set-picker .select { width: 100%; height: 30px; font-size: 12.5px; }
 
 /* ══════════════════════════════════════════════════════
@@ -2113,7 +2162,8 @@
 
 .cur .prof-card {
   background: var(--cur-surface); border: 1px solid var(--cur-hairline);
-  border-radius: var(--cur-r-card); overflow: hidden; margin-bottom: 16px;
+  border-radius: var(--cur-r-card); box-shadow: var(--cur-shadow-card);
+  overflow: hidden; margin-bottom: 16px;
 }
 
 /*

@@ -72,7 +72,7 @@
   --cur-featured-to: var(--bui-surface);
   --cur-featured-ring: color-mix(in oklab, var(--bui-orange) 22%, transparent);
 
-  --cur-shadow-card: var(--bui-shadow-card);
+  --cur-shadow-card: var(--bui-lift);
   --cur-r-cta: var(--bui-r-control);
   --cur-r-card: var(--bui-r-card);
   --cur-sidebar-w: 252px;
@@ -167,8 +167,8 @@
 .cur .crumbs a { color: var(--cur-body); cursor: pointer; text-decoration: none; } .cur .crumbs a:hover { color: var(--cur-accent); }
 
 /* ── Cards & grids ───────────────────────────────────── */
-.cur .card { background: var(--cur-surface); border-radius: var(--cur-r-card); box-shadow: var(--bui-shadow-card); }
-.cur .section { background: var(--cur-surface); border-radius: var(--cur-r-card); overflow: hidden; box-shadow: var(--bui-shadow-card); }
+.cur .card { background: var(--cur-surface); border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); box-shadow: var(--cur-shadow-card); }
+.cur .section { background: var(--cur-surface); border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); overflow: hidden; box-shadow: var(--cur-shadow-card); }
 .cur .section > header { padding: 16px 18px; border-bottom: 1px solid var(--cur-hairline); }
 .cur .section > header h3 { font-size: 14.5px; font-weight: 500; letter-spacing: -0.01em; }
 .cur .section > header p { font-size: 12.5px; color: var(--cur-muted); margin-top: 3px; }
@@ -200,14 +200,14 @@
 
 /* ── Buttons / inputs ────────────────────────────────── */
 .cur .btn { height: 36px; padding: 0 15px; border-radius: var(--cur-r-cta); font-size: 13px; font-weight: 500; cursor: pointer;
-  border: 0; box-shadow: var(--bui-shadow-btn); background: var(--cur-surface); color: var(--cur-ink); display: inline-flex; align-items: center; gap: 7px; }
-.cur .btn:hover { box-shadow: 0 0 0 1px var(--cur-muted-soft); }
+  border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface); color: var(--cur-ink); display: inline-flex; align-items: center; gap: 7px; }
+.cur .btn:hover { border-color: var(--cur-muted-soft); }
 /* Default primary is ink. See the note on --cur-cta for why it stopped being orange. */
-.cur .btn.primary { background: var(--cur-cta); color: var(--cur-on-cta); box-shadow: none; }
+.cur .btn.primary { background: var(--cur-cta); color: var(--cur-on-cta); border-color: transparent; }
 .cur .btn.primary:hover { background: var(--cur-cta-hover); }
 /* The scarce one. Reserved for the featured onboarding card — if a second one
    appears in a view, one of them is not actually the most important thing. */
-.cur .btn.accent { background: var(--cur-primary); color: var(--cur-on-primary); box-shadow: none; }
+.cur .btn.accent { background: var(--cur-primary); color: var(--cur-on-primary); border-color: transparent; }
 .cur .btn.accent:hover { background: var(--cur-primary-active); }
 .cur .btn.wide { width: 100%; justify-content: center; }
 .cur .select, .cur .input { height: 34px; padding: 0 12px; border-radius: var(--cur-r-cta); border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface); font-size: 13px; color: var(--cur-ink); }
