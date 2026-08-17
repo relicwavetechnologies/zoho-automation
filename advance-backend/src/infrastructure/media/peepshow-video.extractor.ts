@@ -2,9 +2,9 @@ import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type {
-  ManagerTeachMediaExtraction,
-  ManagerTeachMediaExtractor,
-} from '../../application/persona-learning/manager-teach-media.types';
+  VideoExtraction,
+  VideoFrameExtractor,
+} from '../../application/video-understanding/video-understanding.types';
 
 const nullableNumber = z.number().finite().nullable().default(null);
 const nullableString = z.string().nullable().default(null);
@@ -48,7 +48,7 @@ const peepshowResultSchema = z.object({
   }).passthrough().nullable().default(null),
 });
 
-export interface PeepshowManagerTeachExtractorOptions {
+export interface PeepshowVideoExtractorOptions {
   readonly maxFrames: number;
   readonly minFrames?: number;
   readonly width?: number;
@@ -57,15 +57,15 @@ export interface PeepshowManagerTeachExtractorOptions {
   readonly cliPath?: string;
 }
 
-export class PeepshowManagerTeachExtractor implements ManagerTeachMediaExtractor {
+export class PeepshowVideoExtractor implements VideoFrameExtractor {
   private readonly cliPath: string;
 
-  constructor(private readonly options: PeepshowManagerTeachExtractorOptions) {
+  constructor(private readonly options: PeepshowVideoExtractorOptions) {
     const packageDir = dirname(require.resolve('peepshow/package.json'));
     this.cliPath = options.cliPath ?? join(packageDir, 'dist', 'cli.js');
   }
 
-  async extract(input: { videoPath: string; outputDir: string }): Promise<ManagerTeachMediaExtraction> {
+  async extract(input: { videoPath: string; outputDir: string }): Promise<VideoExtraction> {
     const stdout = await runProcess(
       process.execPath,
       [

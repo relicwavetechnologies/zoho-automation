@@ -65,9 +65,11 @@ export interface AskAttachment {
    * had no skill for is exactly the one a reader will come back puzzled about,
    * and a transcript that quietly omits it answers their question with silence.
    * `audio` was heard and folded into the words — the recording itself is not
-   * staged, so this is the only record that it was ever attached.
+   * staged, so this is the only record that it was ever attached. `video` is the
+   * same bargain one step further on: it was watched, what was understood went
+   * into the ask, and the recording was deleted the moment that was written.
    */
-  readonly outcome: 'file' | 'audio' | 'refused';
+  readonly outcome: 'file' | 'audio' | 'refused' | 'video';
 }
 
 export interface WebThreadTurn {
@@ -254,7 +256,7 @@ export function webAsk(contentJson: unknown): WebAsk | undefined {
   const value = contentJson as Record<string, unknown>;
   if (value['kind'] !== WEB_ASK_CONTENT_KIND) return undefined;
   const listed = Array.isArray(value['attachments']) ? value['attachments'] : [];
-  const OUTCOMES = new Set(['file', 'audio', 'refused']);
+  const OUTCOMES = new Set(['file', 'audio', 'refused', 'video']);
   const text = value['text'];
   return {
     ...(typeof text === 'string' && text.trim() ? { text } : {}),

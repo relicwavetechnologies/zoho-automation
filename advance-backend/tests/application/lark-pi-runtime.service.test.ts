@@ -520,6 +520,97 @@ test('persists private turns idempotently and teaches from the recent human conv
   ]);
 });
 
+/*
+ * A web ask carrying a video reads, to the model, as the evidence block first
+ * and the member's question after it. Anything that learns durable personal
+ * facts must be handed the question — screen text is not something the member
+ * said, and the extractor's input window would be spent on the excerpt before
+ * ever reaching their words.
+ */
+const VIDEO_ASK = '[Video: "flow.mov" — Divo watched this recording (30s, 1 screens examined). '
+  + 'frame:1 Zoho Books — Overdue invoice 4182]\n\nwhich of these is overdue?';
+
+function learningService(history: {
+  ok: boolean;
+  value?: unknown;
+  error?: unknown;
+}, capture: (input: any) => void) {
+  return new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    conversationHistory: {
+      appendTurn: async (_chatId, turn) => ({ ok: true as const, value: { id: 'turn-1', ...turn } }),
+      getHistory: async () => history as any,
+    },
+    knowledgeLearning: { captureCompletedTurn: async (input: any) => { capture(input); } },
+    fetch: async () => new Response(JSON.stringify({ text: 'Invoice 4182.' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  } as any);
+}
+
+const videoRun = () => ({
+  ...runtimeInput(),
+  incoming: {
+    ...runtimeInput().incoming,
+    chatType: 'p2p' as const,
+    messageId: 'om-video-1',
+    timestamp: '2026-08-18T00:00:02.000Z',
+    text: VIDEO_ASK,
+  },
+  ask: { text: 'which of these is overdue?', attachments: [] },
+});
+
+test('learns from what the member typed, not from what Divo read off the screen', async () => {
+  let captured: any;
+  const service = learningService({
+    ok: true,
+    value: [
+      { id: '1', role: 'user', content: 'earlier question', timestamp: '2026-08-18T00:00:00.000Z' },
+      { id: '2', role: 'user', content: VIDEO_ASK, timestamp: '2026-08-18T00:00:02.000Z' },
+    ],
+  }, input => { captured = input; });
+
+  await service.run(videoRun() as any);
+
+  assert.equal(captured.userMessages.at(-1), 'which of these is overdue?');
+  assert.equal(
+    JSON.stringify(captured.userMessages).includes('Overdue invoice 4182'),
+    false,
+    'machine-read screen text must never be learned as the member\'s own words',
+  );
+});
+
+test('keeps the member\'s words even when the conversation could not be read back', async () => {
+  let captured: any;
+  // The degraded path: persistence threw, so there is no history to correct —
+  // and it is exactly the path a guard on the happy path alone would miss.
+  const service = learningService(
+    { ok: false, error: new Error('postgres is down') },
+    input => { captured = input; },
+  );
+
+  await service.run(videoRun() as any);
+
+  assert.equal(captured.userMessages.at(-1), 'which of these is overdue?');
+  assert.equal(JSON.stringify(captured.userMessages).includes('Overdue invoice 4182'), false);
+});
+
 test('a protected run is neither persisted nor learned and emits cleanup-confirmed provenance', async () => {
   let persisted = 0;
   let learned = 0;

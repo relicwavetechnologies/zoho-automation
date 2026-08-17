@@ -3,15 +3,15 @@ import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { OpenAiManagerTeachTranscriber } from '../../src/infrastructure/ai/transcription/openai-manager-teach.transcriber';
+import { OpenAiVideoTranscriber } from '../../src/infrastructure/ai/transcription/openai-video.transcriber';
 
-describe('OpenAiManagerTeachTranscriber', () => {
+describe('OpenAiVideoTranscriber', () => {
   it('uploads bounded chunks and assigns chunk-level time windows', async () => {
     const root = await mkdtemp(join(tmpdir(), 'divo-teach-stt-'));
     const workDir = join(root, 'chunks');
     const prompts: string[] = [];
     let call = 0;
-    const transcriber = new OpenAiManagerTeachTranscriber({
+    const transcriber = new OpenAiVideoTranscriber({
       apiKey: 'sk-test',
       model: 'gpt-4o-mini-transcribe',
       chunkSeconds: 300,
@@ -59,7 +59,7 @@ describe('OpenAiManagerTeachTranscriber', () => {
     const root = await mkdtemp(join(tmpdir(), 'divo-teach-stt-retry-'));
     const waits: number[] = [];
     let calls = 0;
-    const transcriber = new OpenAiManagerTeachTranscriber({
+    const transcriber = new OpenAiVideoTranscriber({
       apiKey: 'sk-test',
       chunkSeconds: 300,
       sleepImpl: async ms => {
@@ -97,7 +97,7 @@ describe('OpenAiManagerTeachTranscriber', () => {
   it('keeps the narration it did get when one chunk cannot be recovered', async () => {
     const root = await mkdtemp(join(tmpdir(), 'divo-teach-stt-partial-'));
     let calls = 0;
-    const transcriber = new OpenAiManagerTeachTranscriber({
+    const transcriber = new OpenAiVideoTranscriber({
       apiKey: 'sk-test',
       chunkSeconds: 300,
       chunkAttempts: 1,
@@ -133,7 +133,7 @@ describe('OpenAiManagerTeachTranscriber', () => {
 
   it('fails the job when no narration survived, rather than learning from silence', async () => {
     const root = await mkdtemp(join(tmpdir(), 'divo-teach-stt-empty-'));
-    const transcriber = new OpenAiManagerTeachTranscriber({
+    const transcriber = new OpenAiVideoTranscriber({
       apiKey: 'sk-test',
       chunkAttempts: 2,
       sleepImpl: async () => {},
@@ -160,7 +160,7 @@ describe('OpenAiManagerTeachTranscriber', () => {
   it('does not retry a request OpenAI has refused outright', async () => {
     const root = await mkdtemp(join(tmpdir(), 'divo-teach-stt-4xx-'));
     let calls = 0;
-    const transcriber = new OpenAiManagerTeachTranscriber({
+    const transcriber = new OpenAiVideoTranscriber({
       apiKey: 'sk-test',
       sleepImpl: async () => {},
       audioChunker: async input => {

@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  MAX_FILES, MAX_FILE_BYTES, acceptFiles, formatBytes, isUnopenable, kindOf,
-  kindOfSent, namedForClipboard, rejectionSentence, sentFrom,
+  MAX_FILES, MAX_FILE_BYTES, MAX_VIDEO_BYTES, acceptFiles, formatBytes, isUnopenable,
+  kindOf, kindOfSent, namedForClipboard, rejectionSentence, sentFrom, videoMimeFor,
 } from './attach'
 
 /** A file of a given size without allocating it — only `size` is ever read. */
@@ -27,12 +27,19 @@ describe('kindOf', () => {
 })
 
 describe('isUnopenable', () => {
-  it('turns away video and binaries', () => {
-    // The short, stable half of the server's policy — the set the container has
-    // no skill for and is not going to grow.
-    assert.equal(isUnopenable(fake('clip.mp4', 'video/mp4')), true)
+  it('turns away binaries, and the video containers the server has not committed to', () => {
     assert.equal(isUnopenable(fake('setup.exe', 'application/octet-stream')), true)
-    assert.equal(isUnopenable(fake('recording', 'video/quicktime')), true)
+    assert.equal(isUnopenable(fake('clip.mkv', 'video/x-matroska')), true)
+    assert.equal(isUnopenable(fake('clip.avi', 'video/x-msvideo')), true)
+  })
+
+  it('lets a readable recording through, because Divo watches it', () => {
+    assert.equal(isUnopenable(fake('clip.mp4', 'video/mp4')), false)
+    assert.equal(isUnopenable(fake('workflow.mov', 'video/quicktime')), false)
+    // Some file managers hand over a `.mov` with no type at all; the extension
+    // is what the upload falls back to naming it.
+    assert.equal(isUnopenable(fake('workflow.mov', '')), false)
+    assert.equal(videoMimeFor(fake('workflow.mov', '')), 'video/quicktime')
   })
 
   it('lets audio through, because the backend transcribes it', () => {
@@ -79,10 +86,22 @@ describe('acceptFiles', () => {
   })
 
   it('names a format it will not carry', () => {
-    const result = acceptFiles([], [fake('clip.mp4', 'video/mp4')])
+    const result = acceptFiles([], [fake('clip.mkv', 'video/x-matroska')])
     assert.equal(result.files.length, 0)
     assert.match(result.rejected[0]!.reason, /no skill/i)
-    assert.equal(result.rejected[0]!.name, 'clip.mp4')
+    assert.equal(result.rejected[0]!.name, 'clip.mkv')
+  })
+
+  it('measures a recording against its own ceiling, not the multipart one', () => {
+    // A recording never rides the multipart ask, so the limit protecting that
+    // path would refuse ordinary screen recordings for no reason.
+    const big = acceptFiles([], [fake('workflow.mp4', 'video/mp4', MAX_FILE_BYTES + 1)])
+    assert.equal(big.files.length, 1)
+    assert.equal(big.rejected.length, 0)
+
+    const huge = acceptFiles([], [fake('workflow.mp4', 'video/mp4', MAX_VIDEO_BYTES + 1)])
+    assert.equal(huge.files.length, 0)
+    assert.match(huge.rejected[0]!.reason, /larger than/)
   })
 
   it('names a file that is too large', () => {
@@ -177,8 +196,20 @@ describe('a file the browser no longer holds', () => {
     assert.equal(kindOfSent({ name: 'q3.pdf', mime: '', bytes: 1, outcome: 'file' }), 'doc')
   })
 
-  it('describes what the composer is holding without keeping hold of it', () => {
-    const sent = sentFrom(fake('q3.pdf', 'application/pdf', 8_100))
-    assert.deepEqual(sent, { name: 'q3.pdf', mime: 'application/pdf', bytes: 8_100, outcome: 'file' })
+  it('describes what the composer is holding, and keeps the bytes for a preview', () => {
+    const file = fake('q3.pdf', 'application/pdf', 8_100)
+    const sent = sentFrom(file)
+    assert.equal(sent.name, 'q3.pdf')
+    assert.equal(sent.mime, 'application/pdf')
+    assert.equal(sent.bytes, 8_100)
+    assert.equal(sent.outcome, 'file')
+    // Held so a message sent in this tab can show the thing itself rather than
+    // an icon. A reload drops it, and the card falls back to the typed tile.
+    assert.equal(sent.file, file)
+  })
+
+  it('marks a recording as one, so the transcript can say "Video"', () => {
+    assert.equal(sentFrom(fake('workflow.mp4', 'video/mp4')).outcome, 'video')
+    assert.equal(kindOf(fake('workflow.mp4', 'video/mp4')), 'video')
   })
 })

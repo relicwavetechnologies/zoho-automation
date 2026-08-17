@@ -3,9 +3,9 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
-import { PeepshowManagerTeachExtractor } from '../../src/infrastructure/media/peepshow-manager-teach.extractor';
+import { PeepshowVideoExtractor } from '../../src/infrastructure/media/peepshow-video.extractor';
 
-describe('PeepshowManagerTeachExtractor', () => {
+describe('PeepshowVideoExtractor', () => {
   it('runs the constrained CLI contract and validates its JSON manifest', async () => {
     const root = await mkdtemp(join(tmpdir(), 'divo-peepshow-'));
     const cliPath = join(root, 'mock-peepshow.cjs');
@@ -29,7 +29,7 @@ process.stdout.write(JSON.stringify({
   audio: { path: outputDir + '/audio.m4a', codec: 'aac', channels: 1, sampleRateHz: 16000, durationSeconds: 12, sizeBytes: 200, skippedReason: null }
 }));
 `);
-    const extractor = new PeepshowManagerTeachExtractor({
+    const extractor = new PeepshowVideoExtractor({
       maxFrames: 40,
       width: 1_600,
       sceneThreshold: 0.12,

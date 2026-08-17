@@ -334,6 +334,28 @@ export const EnvSchema = z.object({
   MANAGER_TEACH_WORKER_CONCURRENCY: positiveInt(1),
   /** Raw videos are streamed here; never buffer them in Express memory. */
   MANAGER_TEACH_UPLOAD_DIR: z.string().default('.data/manager-teach'),
+  /** Where conversation video is held while it is being read. */
+  CONVERSATION_VIDEO_DIR: z.string().default('.data/conversation-video'),
+  /** Matches the Teach ceiling; a screen recording is the same object either way. */
+  CONVERSATION_VIDEO_MAX_MB: positiveInt(2_047),
+  /**
+   * How long the on-disk artefacts live: the extracted stills and the stored
+   * reading. The recording itself goes sooner — the moment it has been read.
+   *
+   * Not the lifetime of what Divo remembers. The excerpt folded into the ask is
+   * part of the conversation turn and lives as long as the thread, because the
+   * answer above it stops making sense otherwise. Said plainly here, because a
+   * retention review will read this line and believe it.
+   */
+  CONVERSATION_VIDEO_RETENTION_HOURS: positiveInt(24),
+  /** Videos read at once, across everybody. Teach's worker concurrency, by hand. */
+  CONVERSATION_VIDEO_READ_CONCURRENCY: positiveInt(2),
+  /** Unread video one company may be holding at once, across all its members. */
+  CONVERSATION_VIDEO_COMPANY_BUDGET_MB: positiveInt(8_192),
+  /** Readings one company may start per hour. Bounds spend, which bytes do not. */
+  CONVERSATION_VIDEO_READS_PER_HOUR: positiveInt(60),
+  /** Unread video the whole deployment may hold. Bounds the sum of all tenants. */
+  CONVERSATION_VIDEO_TOTAL_BUDGET_MB: positiveInt(32_768),
   MANAGER_TEACH_MAX_VIDEO_MB: positiveInt(2_047),
   MANAGER_TEACH_RAW_RETENTION_HOURS: positiveInt(24),
   MANAGER_TEACH_MAX_FRAMES: positiveInt(40),

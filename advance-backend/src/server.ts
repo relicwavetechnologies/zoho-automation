@@ -287,6 +287,31 @@ export const createServer = (c: Container): DivoServerApplication => {
   );
   conversationAttachmentCleanupTimer.unref?.();
 
+  /* Readings age out on the same clock an ordinary chat attachment does. The
+     recordings themselves are already gone by now — deleted the moment each one
+     was read — so this only ever sweeps transcripts, screen text and the frames
+     they were taken from. */
+  const videoStore = c.conversationVideo;
+  const pruneConversationVideo = () => {
+    if (!videoStore) return;
+    void videoStore
+      .prune(c.env.CONVERSATION_VIDEO_RETENTION_HOURS * 3_600_000)
+      .then(removed => {
+        if (removed > 0) c.logger.info('conversation_video.prune.complete', { removed });
+      })
+      .catch(error => {
+        c.logger.warn('conversation_video.prune.failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+  pruneConversationVideo();
+  const conversationVideoPruneTimer = setInterval(
+    pruneConversationVideo,
+    c.env.KNOWLEDGE_FILE_CLEANUP_INTERVAL_SECONDS * 1_000,
+  );
+  conversationVideoPruneTimer.unref?.();
+
   if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) {
     c.scheduledWorkflowService.start();
   }
@@ -368,7 +393,12 @@ export const createServer = (c: Container): DivoServerApplication => {
       res.header('Access-Control-Allow-Origin', origin);
     }
     res.header('Vary', 'Origin');
-    res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, x-api-key, x-company-id');
+    res.header(
+      'Access-Control-Allow-Headers',
+      // `x-file-name` carries a recording's name on the video upload, whose body
+      // is the file itself and so has no multipart envelope to put it in.
+      'Authorization, Content-Type, x-api-key, x-company-id, x-file-name',
+    );
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     res.header('Access-Control-Allow-Credentials', 'true');
 
@@ -668,6 +698,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       threads: c.webThreads,
       logger:  c.logger,
       maxUploadBytes: c.env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
+      ...(c.conversationVideo ? { videos: c.conversationVideo } : {}),
       attachmentAssets: c.conversationAttachmentAssets,
       // The same client the Lark voice-note path uses, so a recording is heard
       // identically whichever surface it was handed over on.

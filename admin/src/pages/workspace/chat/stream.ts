@@ -123,6 +123,19 @@ export type RunEvent =
       mime: string
       version: number
     }
+  /**
+   * Divo is taking in a video that came with the ask.
+   *
+   * Arrives before any timeline exists, because the recording has to be read
+   * before the model can be asked about it. Without this the thread would sit
+   * silent for the minutes that takes.
+   */
+  | {
+      type: 'watching'
+      fileName: string
+      percent: number
+      step: 'watching' | 'transcribing' | 'reading_screens' | 'ready'
+    }
   | { type: 'error'; message: string; code: string }
 
 export type AskInput = {
@@ -130,6 +143,8 @@ export type AskInput = {
   text: string
   modelSelection: ModelSelection
   files?: readonly File[]
+  /** Videos already uploaded to this thread, by id. */
+  videoIds?: readonly string[]
   token: string
   signal?: AbortSignal
 }
@@ -141,6 +156,60 @@ export type AskInput = {
  * `EventSource` only does credential-less GETs. The framing is still SSE, so
  * anything pointed at this endpoint reads it the same way.
  */
+/**
+ * Hand a recording over before the ask that talks about it.
+ *
+ * Its own request, and its own endpoint: a screen recording is orders of
+ * magnitude larger than anything the multipart ask carries, and sending it
+ * early is what lets the server start watching it while the question is still
+ * being typed. The body is the file — there is one of them, and its name and
+ * type fit in headers.
+ */
+export async function uploadVideo(input: {
+  threadId: string
+  file: File
+  mimeType: string
+  token: string
+  signal?: AbortSignal
+}): Promise<string> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/web-chat/threads/${encodeURIComponent(input.threadId)}/video`,
+    {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${input.token}`,
+        'Content-Type': input.mimeType,
+        // Encoded, because a header may not carry a newline or a non-ASCII byte
+        // and a file name may contain both.
+        'X-File-Name': encodeURIComponent(input.file.name),
+      },
+      body: input.file,
+      // Required by fetch whenever a request has a streaming body, and harmless
+      // when the body is a File.
+      duplex: 'half',
+      ...(input.signal ? { signal: input.signal } : {}),
+    } as RequestInit,
+  )
+  const body = await response.json().catch(() => null) as
+    { ok?: boolean; video?: { videoId?: string }; error?: string } | null
+  if (!response.ok || !body?.ok || !body.video?.videoId) {
+    throw new Error(uploadFailureMessage(response.status, body?.error))
+  }
+  return body.video.videoId
+}
+
+function uploadFailureMessage(status: number, error?: string): string {
+  if (status === 413 || error === 'file_too_large') return 'That recording is too large to send.'
+  // The one refusal a member can act on, so it keeps its own words instead of
+  // being flattened into "could not be sent".
+  if (status === 429 || error === 'video_budget_reached') {
+    return 'Divo is still working through the recordings this workspace has sent. Try again shortly.'
+  }
+  if (status === 415 || error === 'unsupported_video') return 'Divo reads MP4, MOV and WebM recordings.'
+  if (status === 503) return 'Divo cannot watch video in this workspace yet.'
+  return 'That recording could not be sent.'
+}
+
 export async function* ask(input: AskInput): AsyncGenerator<RunEvent> {
   const body = new FormData()
   body.append('threadId', input.threadId)
@@ -148,6 +217,7 @@ export async function* ask(input: AskInput): AsyncGenerator<RunEvent> {
   body.append('model', input.modelSelection.model)
   body.append('reasoningEffort', input.modelSelection.reasoningEffort)
   for (const file of input.files ?? []) body.append('files', file)
+  for (const videoId of input.videoIds ?? []) body.append('videoIds', videoId)
 
   const response = await fetch(`${API_BASE_URL}/api/web-chat/runs`, {
     method: 'POST',
@@ -255,6 +325,7 @@ function parseFrame(frame: string): RunEvent | null {
     return parsed.type === 'timeline' || parsed.type === 'answer'
       || parsed.type === 'answer_delta' || parsed.type === 'answer_reset'
       || parsed.type === 'final' || parsed.type === 'artifact' || parsed.type === 'error'
+      || parsed.type === 'watching'
       ? parsed
       : null
   } catch {

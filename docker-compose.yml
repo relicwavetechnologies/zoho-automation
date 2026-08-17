@@ -92,6 +92,15 @@ services:
     ports:
       - "127.0.0.1:${DIVO_BACKEND_PORT:-13002}:3001"
     restart: unless-stopped
+    # Media the backend holds while it works on it: Teach recordings and the
+    # videos attached to ordinary chats, both of which are gigabyte-scale and
+    # short-lived. On a named volume rather than the container's writable layer,
+    # because that layer shares a filesystem with Postgres, Redis and every
+    # other container on the host — a member uploading recordings faster than
+    # they are read would otherwise take the database down with it. Survives a
+    # redeploy too, so an upload in flight during one is not silently lost.
+    volumes:
+      - divo_main_backend_media:/app/.data
     networks:
       - divo-main-internal
       - divo-main-agent-control
@@ -300,6 +309,7 @@ networks:
     driver: bridge
 
 volumes:
+  divo_main_backend_media:
   divo_main_postgres_data:
   divo_main_redis_queue_data:
   divo_main_redis_cache_data:

@@ -210,11 +210,13 @@ import { ManagerPersonaRuntimeService } from './application/persona-learning/man
 import { ManagerPersonaRevisionService } from './application/persona-learning/manager-persona-revision.service';
 import { ManagerTeachQueue } from './application/persona-learning/manager-teach.queue';
 import { ManagerTeachService } from './application/persona-learning/manager-teach.service';
-import { ManagerTeachMediaProcessor } from './application/persona-learning/manager-teach-media.processor';
+import { VideoUnderstandingService } from './application/video-understanding/video-understanding.service';
+import { ConversationVideoService } from './application/conversation-video/conversation-video.service';
+import { ConversationVideoStore } from './application/conversation-video/conversation-video.store';
 import { ManagerTeachPersonaProcessor } from './application/persona-learning/manager-teach-persona.processor';
-import { PeepshowManagerTeachExtractor } from './infrastructure/media/peepshow-manager-teach.extractor';
-import { OpenRouterManagerTeachFrameOcr } from './infrastructure/ai/ocr/openrouter-manager-teach.ocr';
-import { OpenAiManagerTeachTranscriber } from './infrastructure/ai/transcription/openai-manager-teach.transcriber';
+import { PeepshowVideoExtractor } from './infrastructure/media/peepshow-video.extractor';
+import { OpenRouterFrameReader } from './infrastructure/ai/ocr/openrouter-frame.reader';
+import { OpenAiVideoTranscriber } from './infrastructure/ai/transcription/openai-video.transcriber';
 
 // Central knowledge authority and semantic recall projection
 import type { MemoryService } from './application/knowledge/semantic-memory.port';
@@ -491,6 +493,9 @@ export interface Container {
   larkPiRuntime: import('./application/runtime/lark-pi-runtime.service').LarkPiRuntimeService;
   /** The same runtime, driven from the browser. Not a second agent — a second view. */
   webRuns: import('./application/runtime/web-run.service').WebRunService;
+  /** Video attached to a conversation: taken in, read, and thrown away. */
+  /** Absent when the deployment has no vision or transcription key. */
+  conversationVideo: import('./application/conversation-video/conversation-video.service').ConversationVideoService | undefined;
   /** Web runs in flight. They outlive the connection that started them. */
   webRunRegistry: import('./application/runtime/web-run-registry').WebRunRegistry;
   /** The reader's view of their own conversations: list, read, rename, delete. */
@@ -1507,26 +1512,46 @@ export async function buildContainer(
   const managerPersonaRevisionService = new ManagerPersonaRevisionService({ prisma, logger });
   const managerTeachQueue = new ManagerTeachQueue(queueRedisUrl, env.REDIS_MANAGER_TEACH_QUEUE_NAME);
   const managerTeachUploadDir = resolve(env.MANAGER_TEACH_UPLOAD_DIR);
-  const managerTeachMediaProcessor = new ManagerTeachMediaProcessor({
-    extractor: new PeepshowManagerTeachExtractor({
+  const videoUnderstanding = new VideoUnderstandingService({
+    extractor: new PeepshowVideoExtractor({
       maxFrames: env.MANAGER_TEACH_MAX_FRAMES,
       width: env.MANAGER_TEACH_FRAME_WIDTH,
       sceneThreshold: env.MANAGER_TEACH_SCENE_THRESHOLD,
       timeoutMs: env.MANAGER_TEACH_MEDIA_TIMEOUT_SECONDS * 1_000,
     }),
-    ocr: new OpenRouterManagerTeachFrameOcr({
+    reader: new OpenRouterFrameReader({
       apiKey: env.OPENROUTER_API_KEY ?? '',
       model: env.VISION_OCR_MODEL,
     }),
-    transcriber: new OpenAiManagerTeachTranscriber({
+    transcriber: new OpenAiVideoTranscriber({
       apiKey: env.OPENAI_API_KEY,
       model: env.MANAGER_TEACH_TRANSCRIPTION_MODEL,
       chunkSeconds: env.MANAGER_TEACH_TRANSCRIPTION_CHUNK_SECONDS,
     }),
     logger,
-    ocrConcurrency: env.MANAGER_TEACH_OCR_CONCURRENCY,
+    readConcurrency: env.MANAGER_TEACH_OCR_CONCURRENCY,
     transcriptionModel: env.MANAGER_TEACH_TRANSCRIPTION_MODEL,
   });
+  /* Video in an ordinary conversation. Shares the one reader with Teach — the
+     work is identical, and a second copy of it would drift.
+     Wired only when both halves of reading are configured. Without them the
+     upload would still be accepted, the disk still filled and ffmpeg still run,
+     only to fail at the last step — so the route says "not here" up front
+     instead, which is what its 503 was written for. */
+  const conversationVideo = env.OPENROUTER_API_KEY && env.OPENAI_API_KEY
+    ? new ConversationVideoService({
+      store: new ConversationVideoStore({
+        rootDir: resolve(env.CONVERSATION_VIDEO_DIR),
+        maxBytes: env.CONVERSATION_VIDEO_MAX_MB * 1_024 * 1_024,
+      }),
+      understanding: videoUnderstanding,
+      maxConcurrentReads: env.CONVERSATION_VIDEO_READ_CONCURRENCY,
+      maxCompanyBytes: env.CONVERSATION_VIDEO_COMPANY_BUDGET_MB * 1_024 * 1_024,
+      maxReadsPerWindow: env.CONVERSATION_VIDEO_READS_PER_HOUR,
+      maxTotalBytes: env.CONVERSATION_VIDEO_TOTAL_BUDGET_MB * 1_024 * 1_024,
+      logger,
+    })
+    : undefined;
   const managerTeachPersonaProcessor = new ManagerTeachPersonaProcessor({
     prisma,
     logger,
@@ -1540,7 +1565,7 @@ export async function buildContainer(
     prisma,
     queue: managerTeachQueue,
     logger,
-    mediaProcessor: managerTeachMediaProcessor,
+    understanding: videoUnderstanding,
     personaProcessor: managerTeachPersonaProcessor,
     maxVideoBytes: env.MANAGER_TEACH_MAX_VIDEO_MB * 1_024 * 1_024,
     rawRetentionHours: env.MANAGER_TEACH_RAW_RETENTION_HOURS,
@@ -2939,8 +2964,10 @@ export async function buildContainer(
       identity: channelIdentityRepo,
       departments: deptRepo,
       transcript: conversationRepo,
+      ...(conversationVideo ? { videos: conversationVideo } : {}),
       logger: logger.child({ service: 'web-run' }),
     }),
+    conversationVideo,
     webRunRegistry: new (await import('./application/runtime/web-run-registry')).WebRunRegistry({
       logger: logger.child({ service: 'web-run-registry' }),
     }),

@@ -3,10 +3,10 @@ import { basename, join } from 'node:path';
 import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import type {
-  ManagerTeachTranscript,
-  ManagerTeachTranscriptSegment,
-  ManagerTeachTranscriber,
-} from '../../../application/persona-learning/manager-teach-media.types';
+  VideoTranscript,
+  TranscriptSegment,
+  VideoTranscriber,
+} from '../../../application/video-understanding/video-understanding.types';
 
 const transcriptionResponseSchema = z.object({ text: z.string() });
 const MAX_OPENAI_FILE_BYTES = 24 * 1_024 * 1_024;
@@ -56,7 +56,7 @@ function describeWindow(start: number, end: number): string {
   return `${format(start)}–${format(end)}`;
 }
 
-export interface OpenAiManagerTeachTranscriberOptions {
+export interface OpenAiVideoTranscriberOptions {
   readonly apiKey: string;
   readonly model?: string;
   readonly chunkSeconds?: number;
@@ -74,11 +74,11 @@ export interface OpenAiManagerTeachTranscriberOptions {
   }) => Promise<readonly string[]>;
 }
 
-export class OpenAiManagerTeachTranscriber implements ManagerTeachTranscriber {
+export class OpenAiVideoTranscriber implements VideoTranscriber {
   private readonly model: string;
   private readonly chunkSeconds: number;
 
-  constructor(private readonly options: OpenAiManagerTeachTranscriberOptions) {
+  constructor(private readonly options: OpenAiVideoTranscriberOptions) {
     if (!options.apiKey.trim()) throw new Error('OpenAI transcription is not configured');
     this.model = options.model?.trim() || 'gpt-4o-mini-transcribe';
     this.chunkSeconds = options.chunkSeconds ?? 300;
@@ -89,7 +89,7 @@ export class OpenAiManagerTeachTranscriber implements ManagerTeachTranscriber {
     ffmpegPath: string;
     durationSeconds: number;
     workDir: string;
-  }): Promise<ManagerTeachTranscript> {
+  }): Promise<VideoTranscript> {
     await rm(input.workDir, { recursive: true, force: true });
     await mkdir(input.workDir, { recursive: true });
 
@@ -109,7 +109,7 @@ export class OpenAiManagerTeachTranscriber implements ManagerTeachTranscriber {
         });
       if (chunkPaths.length === 0) throw new Error('Audio chunking produced no files');
 
-      const segments: ManagerTeachTranscriptSegment[] = [];
+      const segments: TranscriptSegment[] = [];
       const warnings: string[] = [
         'Transcript timing is available at audio-chunk level; this model does not return native word or segment timestamps.',
       ];

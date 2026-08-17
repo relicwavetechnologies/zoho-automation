@@ -1408,9 +1408,19 @@ export class LarkPiRuntimeService {
     assistantText: string,
     latencyTrace?: RunLatencyTrace,
   ): Promise<string[]> {
+    /*
+     * What the person typed, whenever we have it.
+     *
+     * `incoming.text` is what the model was given, and for a web ask carrying a
+     * recording that begins with everything Divo read off the screen. Anything
+     * downstream that learns from "the member's messages" must never be handed
+     * that — so the substitution happens on every exit from here, not only the
+     * one where persistence succeeded.
+     */
+    const typed = input.ask?.text.trim();
     const turn = this.persistableTurn(input);
     if (!turn) {
-      const current = input.incoming.text.trim();
+      const current = typed || input.incoming.text.trim();
       return current ? [current] : [];
     }
     const readerAsk = askFor(input.ask, turn.text);
@@ -1464,17 +1474,30 @@ export class LarkPiRuntimeService {
         category: 'persistence',
       }, () => this.deps.conversationHistory!.getHistory(turn.chatId, 30, turn.scope));
       if (!history.ok) throw history.error;
-      return history.value
+      /*
+       * What the *person* said, for anything that learns from them.
+       *
+       * The stored turn is what the model read, which now begins with whatever
+       * Divo understood from an attached recording. Handing that back as the
+       * member's own words is wrong twice over: machine-read screen text
+       * becomes evidence nobody authored, and the extractor's 4 000-character
+       * window is spent on the excerpt before it ever reaches the question.
+       * Only the newest turn can be corrected here — older history has no
+       * record of the typed half — and the newest is the one being learnt from.
+       */
+      const messages = history.value
         .filter(item => item.role === 'user')
         .map(item => item.content.trim())
-        .filter(Boolean)
-        .slice(-12);
+        .filter(Boolean);
+      if (typed && messages.length > 0) messages[messages.length - 1] = typed;
+      return messages.slice(-12);
     } catch (error) {
       this.log.warn('pi.private-conversation.persist_failed', {
         correlationId: input.incoming.traceId,
         error: String(error),
       });
-      return [turn.text];
+      // Degraded, but still never the evidence block — see `typed` above.
+      return [typed || turn.text];
     }
   }
 

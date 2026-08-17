@@ -23,11 +23,21 @@ import {
   ask, stop, watch,
   type LedgerRow, type RunEvent, type Timeline,
 } from './stream'
-import { sentFrom, type SentFile } from './attach'
+import { uploadVideo } from './stream'
+import { isVideo, sentFrom, videoMimeFor, type SentFile } from './attach'
 import { getThread, threadSettled, type ThreadRunRecord, type ThreadTurn } from './threads'
 import { showArtifact } from '../artifacts/open'
 import type { RunState } from './player'
 import type { ModelSelection } from './model-choice'
+
+/** "Watching workflow.mov · reading screens 62%" */
+function watchingLabel(watching: { fileName: string; percent: number; step: string }): string {
+  if (watching.step === 'uploading') return `sending ${watching.fileName}`
+  const step = watching.step === 'transcribing'
+    ? 'listening to'
+    : watching.step === 'reading_screens' ? 'reading screens in' : 'watching'
+  return `${step} ${watching.fileName} · ${Math.round(watching.percent)}%`
+}
 
 function stepBeat(row: LedgerRow): Beat {
   return {
@@ -320,6 +330,15 @@ export function useThreadRun(input: {
   const [sent, setSent] = useState<SentFile[]>([])
   const [timeline, setTimeline] = useState<Timeline | null>(null)
   const [liveAnswer, setLiveAnswer] = useState('')
+  /* What Divo is taking in before the run proper starts. Null once it is done —
+     a finished reading is not something the thread should keep reporting. */
+  const [watching, setWatching] = useState<
+    { fileName: string; percent: number; step: string } | null
+  >(null)
+  /* Whether the ask is still waiting on an upload, so Stop knows whether the
+     server has anything to cancel yet. A ref because Stop reads it from a
+     callback that must not be rebuilt on every progress tick. */
+  const uploading = useRef(false)
   const [final, setFinal] = useState<{ text: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
@@ -351,6 +370,11 @@ export function useThreadRun(input: {
     try {
       for await (const event of events) {
         if (controller.signal.aborted) return answered
+        if (event.type === 'watching') {
+          setWatching(event.step === 'ready'
+            ? null
+            : { fileName: event.fileName, percent: event.percent, step: event.step })
+        }
         if (event.type === 'timeline') setTimeline(event.timeline)
         if (event.type === 'answer') setLiveAnswer(event.text)
         if (event.type === 'answer_delta') setLiveAnswer(current => current + event.delta)
@@ -396,6 +420,7 @@ export function useThreadRun(input: {
     setTitle(null)
     setPrompt(null)
     setTimeline(null)
+    setWatching(null)
     setLiveAnswer('')
     setFinal(null)
     setError(null)
@@ -482,6 +507,7 @@ export function useThreadRun(input: {
     setPrompt(null)
     setSent([])
     setTimeline(null)
+    setWatching(null)
     setLiveAnswer('')
     setFinal(null)
     setError(null)
@@ -509,24 +535,78 @@ export function useThreadRun(input: {
     setPrompt(text)
     setSent((files ?? []).map(sentFrom))
     setTimeline(null)
+    setWatching(null)
     setLiveAnswer('')
     setFinal(null)
     setError(null)
     setRunning(true)
 
-    void consume(ask({
-      threadId: input.threadId,
-      text,
-      modelSelection,
-      ...(files?.length ? { files } : {}),
-      token: input.token,
-      signal: controller.signal,
-    }), controller)
+    /* Recordings go first, on their own endpoint, and only their ids travel
+       with the ask. Doing it here rather than inside `ask` keeps the upload
+       visible: it is the slowest part of sending and the composer has already
+       locked, so the thread has to say what is happening. */
+    const recordings = (files ?? []).filter(isVideo)
+    const ordinary = (files ?? []).filter(file => !isVideo(file))
+
+    uploading.current = recordings.length > 0
+    void (async () => {
+      const videoIds: string[] = []
+      for (const recording of recordings) {
+        setWatching({ fileName: recording.name, percent: 0, step: 'uploading' })
+        try {
+          videoIds.push(await uploadVideo({
+            threadId: input.threadId,
+            file: recording,
+            mimeType: videoMimeFor(recording),
+            token: input.token!,
+            signal: controller.signal,
+          }))
+        } catch (error) {
+          uploading.current = false
+          if (controller.signal.aborted) return
+          setWatching(null)
+          setRunning(false)
+          setError(error instanceof Error ? error.message : 'That recording could not be sent.')
+          return
+        }
+      }
+      uploading.current = false
+      if (controller.signal.aborted) return
+      await consume(ask({
+        threadId: input.threadId,
+        text,
+        modelSelection,
+        ...(ordinary.length ? { files: ordinary } : {}),
+        ...(videoIds.length ? { videoIds } : {}),
+        token: input.token!,
+        signal: controller.signal,
+      }), controller)
+    })()
     return true
   }, [input.threadId, input.token, running, consume])
 
   const stopRun = useCallback(() => {
     if (!input.token || !running) return
+    /* Only the upload is cancelled locally.
+       While a recording is still going up there is no run on the server yet, so
+       `stop` has nothing to cancel — without this the upload finished and then
+       started the very turn the member had just withdrawn. Aborting
+       unconditionally is worse than not aborting at all: for an ordinary run it
+       closes this view's own stream, so the runtime's "Stopped" reply never
+       arrives, nothing clears `running`, and the composer is wedged until the
+       thread changes. */
+    if (uploading.current) {
+      uploading.current = false
+      abort.current?.abort()
+      setWatching(null)
+      setRunning(false)
+      /* Said out loud, not left blank. Without an error the append effect skips
+         this exchange entirely, so the message sits in the thread looking as
+         though Divo answered with nothing — and vanishes on reload. The server
+         path says "Stopped…" for the same reason; this is its equivalent for a
+         stop that happened before the server had anything to stop. */
+      setError('Stopped before the recording finished sending.')
+    }
     void stop(input.threadId, input.token)
   }, [input.threadId, input.token, running])
 
@@ -620,7 +700,12 @@ export function useThreadRun(input: {
     hasEarlier,
     loadingEarlier,
     loadEarlier,
-    liveLabel: running ? timeline?.liveLabel ?? null : null,
+    /* The reading takes over the live label while it runs: there is no timeline
+       yet, and "Divo is watching workflow.mov (40%)" is the only true thing the
+       thread can say during a wait that lasts minutes. */
+    liveLabel: running
+      ? (watching ? watchingLabel(watching) : timeline?.liveLabel ?? null)
+      : null,
     running,
     plan,
     stopRun,

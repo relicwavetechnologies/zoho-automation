@@ -49,6 +49,8 @@ interface Entry {
    * every token or every historical timeline frame.
    */
   latestTimeline: Extract<WebRunEvent, { type: 'timeline' }> | undefined;
+  /** The reading in progress, so a reader who attaches mid-wait sees it too. */
+  latestWatching: Extract<WebRunEvent, { type: 'watching' }> | undefined;
   latestAnswer: Extract<WebRunEvent, { type: 'answer' }> | undefined;
   answerOverflowed: boolean;
   /**
@@ -132,6 +134,7 @@ export class WebRunRegistry {
       },
       controller: input.controller,
       latestTimeline: undefined,
+      latestWatching: undefined,
       latestAnswer: undefined,
       answerOverflowed: false,
       artifacts: new Map(),
@@ -175,7 +178,12 @@ export class WebRunRegistry {
           entry.answerOverflowed = false;
         } else if (event.type === 'artifact') {
           entry.artifacts.set(event.artifactId, event);
-        } else {
+        } else if (event.type === 'watching') {
+          // Nothing is remembered. A reader who attaches after the reading has
+          // finished should see the run, not a stale progress bar for a video
+          // that was taken in minutes ago.
+          entry.latestWatching = event.step === 'ready' ? undefined : event;
+        } else if (event.type === 'answer') {
           if (event.text.length <= MAX_RECONNECT_ANSWER_CHARS) {
             entry.latestAnswer = event;
             entry.answerOverflowed = false;
@@ -229,6 +237,7 @@ export class WebRunRegistry {
 
     const queue: WebRunEvent[] = [];
     if (entry.latestTimeline) queue.push(entry.latestTimeline);
+    if (entry.latestWatching) queue.push(entry.latestWatching);
     if (entry.latestAnswer) queue.push(entry.latestAnswer);
     // Before the terminal event, so a view that attaches after the run finished
     // still opens the documents rather than receiving them behind the ending.
@@ -335,6 +344,16 @@ function enqueueViewEvent(queue: WebRunEvent[], event: WebRunEvent): void {
   if (event.type === 'answer') {
     removeQueuedAnswerEvents(queue);
     queue.push(event);
+    return;
+  }
+  if (event.type === 'watching') {
+    // Progress replaces progress. A view that fell behind wants to know how far
+    // along the reading is now, never how far along it was three redraws ago.
+    const index = queue.findIndex(
+      candidate => candidate.type === 'watching' && candidate.fileName === event.fileName,
+    );
+    if (index >= 0) queue[index] = event;
+    else queue.push(event);
     return;
   }
   if (event.type === 'artifact') {
