@@ -110,6 +110,7 @@ function makeTool(overrides: {
   booksClient?: ZohoBooksPaginatedClient;
   review?: any;
   attachmentSource?: any;
+  documentParser?: any;
 } = {}) {
   return createZohoBooksTool({
     booksClient: overrides.booksClient ?? makeBooksClient(),
@@ -117,6 +118,9 @@ function makeTool(overrides: {
     invoiceStaging: (overrides.store ?? makeStore()) as never,
     invoiceReviewer: { review: async () => overrides.review ?? passingReview },
     ...(overrides.attachmentSource ? { attachmentSource: overrides.attachmentSource } : {}),
+    documentParser: overrides.documentParser ?? {
+      parse: async () => ({ units: [{ text: 'Tax Invoice' }] }),
+    },
     appBaseUrl: 'https://books.zoho.com',
   });
 }
@@ -651,7 +655,14 @@ describe('the same invoice, staged a second time', () => {
     // A list row has no line_items and no sub_total. Comparing the draft
     // against one invents differences and tells the member their invoice is
     // wrong when it is not.
-    const numbered = { ...soundPayload, invoice_number: 'EMI/2026/114' };
+    const numbered = {
+      ...soundPayload,
+      // Match the test clock: staging deliberately replaces any supplied
+      // historical date with the day this new invoice is created.
+      date: '2025-01-01',
+      due_date: '2025-01-31',
+      invoice_number: 'EMI/2026/114',
+    };
     const listRow = {
       invoice_id: 'inv-landed', invoice_number: 'EMI/2026/114',
       customer_id: numbered.customer_id, date: numbered.date,
@@ -998,8 +1009,16 @@ describe('the file the summary promised', () => {
   it('says the invoice stands without its file when the attachment fails', async () => {
     // The member approved a summary promising the file. Silence here would let
     // them assume it landed.
+    let resolutions = 0;
     const tool = makeTool({
-      attachmentSource: { resolve: async () => ({ kind: 'unavailable', message: 'No file called "acme-po.pdf" was sent in this conversation.' }) },
+      attachmentSource: {
+        resolve: async () => {
+          resolutions += 1;
+          return resolutions === 1
+            ? pdf
+            : { kind: 'unavailable', message: 'No file called "acme-po.pdf" was sent in this conversation.' };
+        },
+      },
     });
 
     const staged = await tool.execute({
@@ -1014,6 +1033,66 @@ describe('the file the summary promised', () => {
     assert.match((created as any).value.message, /never uploaded/);
     assert.match((created as any).value.message, /No file called/);
     assert.match((created as any).value.message, /attach_document can still put it on/);
+  });
+});
+
+describe('source-document invoice policy', () => {
+  it('stages the creation date and exact saved Bill To address in the Zoho payload', async () => {
+    const store = makeStore();
+    const client = {
+      ...makeBooksClient(),
+      listOrganizations: async () => [{
+        organizationId: 'org-1', name: 'Books', isDefault: true, timeZone: 'Asia/Kolkata',
+      }],
+      getEndpoint: async ({ path }: { path: string }) => path.startsWith('/contacts/')
+        ? {
+            contact: {
+              contact_id: soundPayload.customer_id,
+              contact_name: 'VASAN HEALTH CARE PRIVATE LIMITED',
+              billing_address: {
+                address_id: 'wrong-default',
+                address: '15 - A, First Floor B Block, THILLAI NAGAR MAIN ROAD',
+                city: 'Tiruchirappalli',
+              },
+              addresses: [{
+                address_id: 'correct-po-address',
+                address: 'No: 10, Annamalai Nagar, Thillai Nagar',
+                city: 'Trichy', state: 'Tamil Nadu', zip: '620018', country: 'India',
+              }],
+            },
+          }
+        : {},
+    } as unknown as ZohoBooksPaginatedClient;
+    const tool = makeTool({
+      store,
+      booksClient: client,
+      attachmentSource: {
+        resolve: async () => ({
+          kind: 'resolved' as const,
+          fileName: 'EST4387.pdf',
+          mimeType: 'application/pdf',
+          content: Buffer.from('%PDF-1.4'),
+        }),
+      },
+      documentParser: {
+        parse: async () => ({
+          units: [{
+            text: 'Quote\nBill To\nVASAN HEALTH CARE PRIVATE LIMITED\nNo: 10, Annamalai Nagar, Thillai Nagar\nTrichy 620018',
+          }],
+        }),
+      },
+    });
+
+    const staged = await tool.execute({
+      op: 'stage_invoice', fields: soundPayload, fileName: 'EST4387.pdf',
+    } as never, larkCtx);
+
+    assert.equal(staged.ok, true);
+    const row = store.rows.get((staged as any).value.stagingId)!;
+    assert.equal(row.payload['date'], '2025-01-01');
+    assert.equal(row.payload['due_date'], '2025-01-31');
+    assert.equal(row.payload['billing_address_id'], 'correct-po-address');
+    assert.match(row.summary, /Billing address: No: 10, Annamalai Nagar, Thillai Nagar, Trichy, Tamil Nadu, 620018, India/);
   });
 });
 

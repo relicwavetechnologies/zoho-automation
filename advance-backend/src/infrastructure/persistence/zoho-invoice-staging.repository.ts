@@ -28,6 +28,7 @@ export class PrismaStagedInvoiceStore implements StagedInvoiceStore {
         reviewJson: {
           findings: staged.findings,
           review: staged.review,
+          ...(staged.sourcePolicy ? { sourcePolicy: staged.sourcePolicy } : {}),
         } as unknown as Prisma.InputJsonValue,
         ...(staged.attachFileName ? { attachFileName: staged.attachFileName } : {}),
         attempt: staged.attempt,
@@ -119,6 +120,9 @@ export class PrismaStagedInvoiceStore implements StagedInvoiceStore {
       summary: row.summary,
       findings: Array.isArray(review['findings']) ? review['findings'] as never : [],
       review: asRecord(review['review']) as never,
+      ...(Object.keys(asRecord(review['sourcePolicy'])).length > 0
+        ? { sourcePolicy: asRecord(review['sourcePolicy']) as never }
+        : {}),
       ...(row.attachFileName ? { attachFileName: row.attachFileName } : {}),
       attempt: row.attempt,
       ...(row.supersedesId ? { supersedesId: row.supersedesId } : {}),

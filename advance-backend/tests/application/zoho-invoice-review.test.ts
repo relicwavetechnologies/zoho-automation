@@ -140,6 +140,29 @@ describe('what the reviewer is shown', () => {
     assert.match(prompt, /OTHER CUSTOMERS THAT ALSO MATCHED/);
   });
 
+  it('shows nested billing addresses instead of silently discarding them', () => {
+    const prompt = buildInvoiceReviewPrompt({
+      ...base,
+      chosenCustomer: {
+        contact_id: '1',
+        contact_name: 'VASAN HEALTH CARE PRIVATE LIMITED',
+        billing_address: {
+          address_id: 'default',
+          address: '15 - A, First Floor B Block',
+          city: 'Tiruchirappalli',
+        },
+        addresses: [{
+          address_id: 'po-address',
+          address: 'No: 10, Annamalai Nagar, Thillai Nagar',
+          city: 'Trichy',
+        }],
+      },
+    });
+
+    assert.match(prompt, /15 - A, First Floor B Block/);
+    assert.match(prompt, /No: 10, Annamalai Nagar, Thillai Nagar/);
+  });
+
   it('fences everything a stranger can write into', () => {
     // Customer names, item text and document contents all arrive from outside.
     // A reviewer that reads them unframed is one that can be instructed.
@@ -187,11 +210,22 @@ describe('what the member is shown', () => {
         line_items: [{ name: 'Retainer', quantity: 1, rate: 50000 }],
       },
       customerName: 'Acme Ltd',
+      sourcePolicy: {
+        billingAddress: {
+          addressId: 'address-1',
+          address: '10 Main Road',
+          city: 'Mumbai',
+          state: 'Maharashtra',
+          zip: '400001',
+          country: 'India',
+        },
+      },
       findings: [{ code: 'x', severity: 'warning', message: 'GST direction not checked.' }],
       attachFileName: 'acme.pdf',
     });
 
     assert.match(summary, /Customer: Acme Ltd/);
+    assert.match(summary, /Billing address: 10 Main Road, Mumbai, Maharashtra, 400001, India/);
     assert.match(summary, /Invoice number: assigned by Zoho/);
     assert.match(summary, /₹50,000\.00/);
     assert.match(summary, /Attachment: acme\.pdf/);
@@ -215,5 +249,33 @@ describe('what Zoho did to the approved payload', () => {
       { customer_id: '1', sub_total: 50000, line_items: [{ quantity: 1, rate: 50000 }] },
     );
     assert.deepEqual(drift, []);
+  });
+
+  it('reports an inherited billing address that differs from the approved source address', () => {
+    const drift = compareStagedToStored(
+      { customer_id: '1', billing_address_id: 'correct', line_items: [] },
+      {
+        customer_id: '1',
+        billing_address: {
+          address: '15 - A, First Floor B Block',
+          city: 'Tiruchirappalli',
+          zip: '620018',
+          country: 'India',
+        },
+        line_items: [],
+      },
+      {
+        billingAddress: {
+          addressId: 'correct',
+          address: 'No: 10, Annamalai Nagar, Thillai Nagar',
+          city: 'Trichy',
+          state: 'Tamil Nadu',
+          zip: '620018',
+          country: 'India',
+        },
+      },
+    );
+
+    assert.deepEqual(drift.map(item => item.field), ['billing address']);
   });
 });

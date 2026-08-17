@@ -109,6 +109,11 @@ describe('Zoho Finance system skill provisioning', () => {
     assert.ok(invoice);
     assert.match(invoice.markdown, /storages with out_quantity/);
     assert.match(invoice.markdown, /Show any inferred convention as unconfirmed/i);
+    assert.match(invoice.markdown, /every new invoice is dated on its creation day/i);
+    assert.match(invoice.markdown, /quote, estimate, or older invoice date is source history/i);
+    assert.match(invoice.markdown, /creation day in the Zoho organisation's timezone/i);
+    assert.match(invoice.markdown, /matches that address against every saved customer address/i);
+    assert.match(invoice.markdown, /allowing Zoho's default address/i);
     const bill = ZOHO_FINANCE_SYSTEM_SKILLS.find(skill => skill.slug === 'zoho-books-bill');
     assert.ok(bill);
     assert.match(bill.markdown, /storage and storage with in_quantity|location and storage with in_quantity/i);
