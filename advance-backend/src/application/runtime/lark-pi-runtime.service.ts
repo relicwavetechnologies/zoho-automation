@@ -1072,7 +1072,7 @@ export class LarkPiRuntimeService {
           category: 'runtime',
           parentSpanId: 'runtime.controller',
           spanId: 'runtime.controller.stream',
-        }, () => this.readStream(response, input));
+        }, () => this.readStream(response, input, latencyTrace));
       } catch (error) {
         controllerSpan?.end('error');
         await this.throwIfCallerInterrupted(input);
@@ -1581,6 +1581,7 @@ export class LarkPiRuntimeService {
   private async readStream(
     response: Response,
     input: LarkPiRuntimeInput,
+    latencyTrace?: RunLatencyTrace,
   ): Promise<{
     text: string;
     protectedDataUsed: boolean;
@@ -1602,6 +1603,9 @@ export class LarkPiRuntimeService {
     let protectedReferences: readonly LarkProtectedRunReference[] = [];
     let controllerLatency: readonly ControllerLatencySample[] = [];
     let streamError: { code: string; message?: string } | undefined;
+    let firstProgressRecorded = false;
+    let firstReasoningRecorded = false;
+    let firstTextRecorded = false;
 
     const consume = async (line: string): Promise<void> => {
       if (!line.trim()) return;
@@ -1619,6 +1623,34 @@ export class LarkPiRuntimeService {
       if (record['type'] === 'heartbeat') return;
       if (record['type'] === 'progress') {
         const progress = parseProgressEvent(record['progress']);
+        if (progress && !firstProgressRecorded) {
+          firstProgressRecorded = true;
+          latencyTrace?.milestone({
+            name: 'runtime.output.first_progress',
+            category: 'runtime',
+            parentSpanId: 'runtime.controller.stream',
+          });
+        }
+        if (
+          progress
+          && !firstReasoningRecorded
+          && (progress.type === 'thinking' || progress.type === 'thought')
+        ) {
+          firstReasoningRecorded = true;
+          latencyTrace?.milestone({
+            name: 'runtime.output.first_reasoning',
+            category: 'runtime',
+            parentSpanId: 'runtime.controller.stream',
+          });
+        }
+        if (progress && !firstTextRecorded && progress.type === 'answer_delta') {
+          firstTextRecorded = true;
+          latencyTrace?.milestone({
+            name: 'runtime.output.first_text',
+            category: 'runtime',
+            parentSpanId: 'runtime.controller.stream',
+          });
+        }
         if (progress && input.onProgress) {
           try {
             await input.onProgress(progress);

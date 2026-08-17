@@ -177,6 +177,29 @@ export class RunLatencyTrace {
     });
   }
 
+  /** Record a first-only point in time without claiming wall-clock ownership. */
+  milestone(input: StartSpanInput): void {
+    const atMs = this.now();
+    const spanId = (input.spanId ?? `${this.input.source}:${this.makeId()}`).slice(0, 300);
+    const parentSpanId = (
+      input.parentSpanId
+      ?? this.parent.getStore()
+      ?? this.input.parentSpanId
+    )?.slice(0, 300);
+    this.addCompleted({
+      spanId,
+      ...(parentSpanId ? { parentSpanId } : {}),
+      name: input.name,
+      category: input.category,
+      source: this.input.source,
+      startedAtMs: atMs,
+      endedAtMs: atMs,
+      durationMs: 0,
+      status: 'ok',
+      ...(input.attributes ? { attributes: input.attributes } : {}),
+    });
+  }
+
   snapshot(): readonly CompletedRunLatencySpan[] {
     return [...this.spans];
   }

@@ -775,6 +775,7 @@ test('does not accept another Lark workspace session for the same member', async
 
 test('streams sanitized controller progress before returning the final text', async () => {
   const progress: unknown[] = [];
+  const spans: Array<Record<string, any>> = [];
   const service = new LarkPiRuntimeService({
     prisma: {
       memberSession: {
@@ -791,6 +792,14 @@ test('streams sanitized controller progress before returning the final text', as
     instanceId: 'pi-local-1',
     leaseTtlSeconds: 3_600,
     runTimeoutMs: 30_000,
+    runLatencyRecorder: new RunLatencyRecorder({
+      findOwnedIdByRequestId: async () => { throw new Error('run is bound at admission'); },
+      insertSpans: async batch => { spans.push(...batch); },
+    }, logger),
+    executionRuns: {
+      admit: async () => 'execution-1',
+      failDetached() {},
+    },
     fetch: async () => new Response([
       JSON.stringify({
         type: 'progress',
@@ -823,6 +832,9 @@ test('streams sanitized controller progress before returning the final text', as
       }),
       JSON.stringify({ type: 'heartbeat' }),
       JSON.stringify({ type: 'progress', progress: { type: 'working' } }),
+      JSON.stringify({ type: 'progress', progress: { type: 'thinking' } }),
+      JSON.stringify({ type: 'progress', progress: { type: 'thought', index: 0, text: 'Checking.' } }),
+      JSON.stringify({ type: 'progress', progress: { type: 'answer_delta', index: 0, delta: 'Fin' } }),
       JSON.stringify({ type: 'progress', progress: { type: 'writing' } }),
       JSON.stringify({ type: 'result', text: 'Finished' }),
       '',
@@ -857,8 +869,20 @@ test('streams sanitized controller progress before returning the final text', as
       isError: false,
     },
     { type: 'working' },
+    { type: 'thinking' },
+    { type: 'thought', index: 0, text: 'Checking.' },
+    { type: 'answer_delta', index: 0, delta: 'Fin' },
     { type: 'writing' },
   ]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(
+    spans.filter(span => span.name.startsWith('runtime.output.')).map(span => span.name),
+    [
+      'runtime.output.first_progress',
+      'runtime.output.first_reasoning',
+      'runtime.output.first_text',
+    ],
+  );
 });
 
 test('rejects an unterminated oversized controller frame without buffering indefinitely', async () => {

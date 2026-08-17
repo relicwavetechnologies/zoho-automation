@@ -38,6 +38,7 @@ async function forward(
     stream?: boolean;
     bodyOverrides?: Record<string, unknown>;
     latencyRecorder?: RunLatencyRecorder;
+    streamFrames?: string[];
   } = {},
 ): Promise<Forwarded> {
   const originalFetch = globalThis.fetch;
@@ -62,7 +63,8 @@ async function forward(
           usage: { prompt_tokens: 1, completion_tokens: 1 },
         };
     const responseBody = options.stream
-      ? `data: ${JSON.stringify(responsesApi ? { type: 'response.completed', response: payload } : payload)}\n\n`
+      ? options.streamFrames?.join('')
+        ?? `data: ${JSON.stringify(responsesApi ? { type: 'response.completed', response: payload } : payload)}\n\n`
       : JSON.stringify(payload);
     return new Response(responseBody, {
       status: 200,
@@ -184,6 +186,34 @@ describe('LLM proxy model forwarding', () => {
       && span.parentSpanId === root?.spanId
     )));
     assert.equal(JSON.stringify(spans).includes('sk-test'), false);
+  });
+
+  it('records first byte, reasoning, and text from the streamed provider body', async () => {
+    const spans: Array<Record<string, any>> = [];
+    const store: RunLatencySpanStore = {
+      findOwnedIdByRequestId: async () => 'run-1',
+      insertSpans: async batch => { spans.push(...batch); },
+    };
+    await forward('deepseek-v4-flash', {
+      stream: true,
+      bodyOverrides: { divo_run_id: 'run-1', divo_parent_span_id: 'pi.provider.1' },
+      latencyRecorder: new RunLatencyRecorder(store, silent),
+      streamFrames: [
+        'data: {"choices":[{"delta":{"reasoning_content":"checking"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"done"}}]}\n\n',
+        'data: {"model":"deepseek-v4-flash","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}\n\n',
+      ],
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    const root = spans.find(span => span.name === 'provider.proxy.request');
+    const milestones = spans.filter(span => span.name.startsWith('provider.upstream.first_'));
+    assert.deepEqual(milestones.map(span => span.name), [
+      'provider.upstream.first_byte',
+      'provider.upstream.first_reasoning',
+      'provider.upstream.first_text',
+    ]);
+    assert.equal(milestones.every(span => span.parentSpanId === root?.spanId), true);
   });
 
   it('forwards the canonical model, not the name the client sent', async () => {
