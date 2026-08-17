@@ -2000,10 +2000,57 @@
 }
 .cur .workspace-sidebar .sidebar-foot .nav-item { border-radius: 7px; }
 
-/* Off-canvas only when the rail would otherwise consume most of the viewport.
-   Desktop keeps the reference's fixed 240px root column. */
+/* ── Putting the rail away ────────────────────────────
+   Two behaviours behind one pair of controls, split by width because the rail
+   is two different objects at the two sizes. Narrow: a sheet over the page,
+   which must shut itself. Wide: a column of the layout, which collapses and
+   hands its width to the content — and stays collapsed, because a reader who
+   closed it wants the room, not a reminder on the next reload. */
 .cur .ws-sidebar-trigger,
 .cur .ws-sidebar-backdrop { display: none; }
+
+/* Sits in the identity row, quiet until wanted: the rail is read constantly and
+   its own close button is pressed once a session. Full opacity on keyboard focus
+   as well as hover — a control you can reach with Tab but not see is not one. */
+.cur .workspace-sidebar .ws-rail-hide {
+  width: 28px; height: 28px; flex-shrink: 0; display: grid; place-items: center;
+  padding: 0; border: 0; border-radius: 7px; background: transparent;
+  color: var(--cur-muted); cursor: pointer; opacity: 0;
+  transition: opacity .12s ease, background-color .12s ease, color .12s ease;
+}
+.cur .workspace-sidebar:hover .ws-rail-hide,
+.cur .workspace-sidebar .ws-rail-hide:focus-visible { opacity: 1; }
+.cur .workspace-sidebar .ws-rail-hide:hover {
+  background: var(--cur-surface-strong); color: var(--cur-ink);
+}
+
+/* The button that brings it back. Fixed rather than in the flow: the surfaces it
+   would have to sit inside are three different headers, and two of the screens
+   (a chat, the landing) deliberately have none. */
+.cur .ws-sidebar-trigger {
+  place-items: center; position: fixed; top: 8px; left: 8px; z-index: 45;
+  width: 30px; height: 30px; padding: 0;
+  border: 1px solid var(--cur-hairline); border-radius: 8px;
+  background: color-mix(in srgb, var(--cur-canvas) 84%, transparent);
+  color: var(--cur-body); backdrop-filter: blur(10px); cursor: pointer;
+}
+.cur .ws-sidebar-trigger:hover { color: var(--cur-ink); border-color: var(--cur-hairline-strong); }
+
+@media (min-width: 761px) {
+  /* Width, not `display: none`: the rail keeps its place in the flex row, so the
+     content slides across rather than jumping, and `overflow: hidden` on the
+     rail clips its rows as they go. */
+  .cur.workspace-app .workspace-sidebar {
+    transition: width 200ms cubic-bezier(.23, 1, .32, 1), padding 200ms cubic-bezier(.23, 1, .32, 1);
+  }
+  .cur.workspace-app[data-rail="hidden"] .workspace-sidebar {
+    width: 0; padding-left: 0; padding-right: 0; border-right-width: 0;
+  }
+  .cur.workspace-app[data-rail="hidden"] .ws-sidebar-trigger { display: grid; }
+  /* Room for that button, and only while it is there. */
+  .cur.workspace-app[data-rail="hidden"] .topbar { padding-left: 50px; }
+  .cur.workspace-app[data-rail="hidden"] .ws-chat-head > div { padding-left: 50px; }
+}
 
 @media (max-width: 760px) {
   .cur.workspace-app .workspace-sidebar {
@@ -2014,7 +2061,7 @@
     box-shadow: var(--ws-float);
     transition: transform 220ms cubic-bezier(.23, 1, .32, 1);
   }
-  .cur.workspace-app[data-sidebar-open="true"] .workspace-sidebar { transform: translateX(0); }
+  .cur.workspace-app[data-drawer-open="true"] .workspace-sidebar { transform: translateX(0); }
 
   .cur .ws-sidebar-backdrop {
     display: block; position: fixed; inset: 0; z-index: 55;
@@ -2022,18 +2069,14 @@
     opacity: 0; visibility: hidden; pointer-events: none;
     transition: opacity .18s ease, visibility .18s ease;
   }
-  .cur.workspace-app[data-sidebar-open="true"] .ws-sidebar-backdrop {
+  .cur.workspace-app[data-drawer-open="true"] .ws-sidebar-backdrop {
     opacity: 1; visibility: visible; pointer-events: auto;
   }
-  .cur .ws-sidebar-trigger {
-    display: grid; place-items: center; position: fixed; top: 8px; left: 8px; z-index: 45;
-    width: 30px; height: 30px; padding: 0;
-    border: 1px solid var(--cur-hairline); border-radius: 8px;
-    background: color-mix(in srgb, var(--cur-canvas) 84%, transparent);
-    color: var(--cur-body); backdrop-filter: blur(10px); cursor: pointer;
-  }
-  .cur .ws-sidebar-trigger:hover { color: var(--cur-ink); border-color: var(--cur-hairline-strong); }
-  .cur.workspace-app[data-sidebar-open="true"] .ws-sidebar-trigger { visibility: hidden; }
+  .cur .ws-sidebar-trigger { display: grid; }
+  .cur.workspace-app[data-drawer-open="true"] .ws-sidebar-trigger { visibility: hidden; }
+  /* Always shown here: on a touch screen there is no pointer to reveal it with,
+     and the sheet covers the page until something dismisses it. */
+  .cur .workspace-sidebar .ws-rail-hide { opacity: 1; }
 
   .cur.workspace-app .topbar { padding-left: 50px; }
   .cur.workspace-app .ws-chat-head > div { padding-left: 50px; }
@@ -2043,6 +2086,7 @@
 @media (prefers-reduced-motion: reduce) {
   .cur .workspace-sidebar .ws-nav-highlight,
   .cur.workspace-app .workspace-sidebar,
+  .cur .ws-rail-hide,
   .cur .ws-sidebar-backdrop { transition: none; }
 }
 

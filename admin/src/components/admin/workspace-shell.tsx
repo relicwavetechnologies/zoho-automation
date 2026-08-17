@@ -18,8 +18,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, Bot, Building2, Check, ChevronsUpDown, CircleCheck, CircleDashed, Diamond, FileClock,
-  FileStack, Grid2X2, LogOut, Mail, Menu, MessageSquare, Minus, Moon, MoreHorizontal, Pencil, Plus, Search,
-  Settings, ShieldCheck, Sun, Trash2, Users, UserSquare, Waypoints, type LucideIcon,
+  FileStack, Grid2X2, LogOut, Mail, MessageSquare, Minus, Moon, MoreHorizontal, PanelLeft,
+  PanelLeftClose, Pencil, Plus, Search, Settings, ShieldCheck, Sun, Trash2, Users, UserSquare,
+  Waypoints, type LucideIcon,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { notify } from '@/lib/notify'
@@ -107,15 +108,39 @@ export function WorkspaceShell() {
   const { resolved, setTheme } = useTheme()
   const [scopeOpen, setScopeOpen] = useState(false)
   const [palette, setPalette] = useState(false)
-  const [sidebarOpen, setSidebarOpen] = useState(false)
+  /*
+   * Two ways for the rail to be absent, because they are two different things.
+   *
+   * `drawerOpen` is the narrow-screen sheet: it floats over the page, so it has
+   * to shut on the way out — after a navigation, or on Escape. `railHidden` is
+   * the desktop preference, where the rail is a column of the layout and hiding
+   * it gives the width to the page. Sharing one flag meant either the drawer
+   * outstayed its click or every navigation quietly took a desktop reader's
+   * sidebar away. The one control drives both, so nothing here has to ask how
+   * wide the window is — that breakpoint stays in the stylesheet.
+   */
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  // Remembered, unlike the drawer. Hiding the rail is deliberate — you did it to
+  // get the room back — and handing it back on every reload undoes the request.
+  const [railHidden, setRailHidden] = useState(
+    () => window.localStorage.getItem('divo.sidebar.hidden') === '1',
+  )
   const scopeRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
+
+  const hideRail = useCallback((hidden: boolean) => {
+    setRailHidden(hidden)
+    try { window.localStorage.setItem('divo.sidebar.hidden', hidden ? '1' : '0') } catch { /* private mode */ }
+  }, [])
+
+  const showNav = useCallback(() => { hideRail(false); setDrawerOpen(true) }, [hideRail])
+  const closeNav = useCallback(() => { hideRail(true); setDrawerOpen(false) }, [hideRail])
 
   // Land at the top of a new screen. Without this the router keeps the previous
   // page's offset, so a short page opens scrolled past its own header.
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: 0 })
-    setSidebarOpen(false)
+    setDrawerOpen(false)
   }, [location.pathname])
 
   const scope = scopeOfPath(location.pathname)
@@ -130,11 +155,13 @@ export function WorkspaceShell() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setPalette((v) => !v) }
       if (e.key === '/' && !isEditableTarget(e.target)) { e.preventDefault(); setPalette(true) }
-      if (e.key === 'Escape') setSidebarOpen(false)
+      // The shortcut every editor with a side panel uses for this.
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') { e.preventDefault(); hideRail(!railHidden) }
+      if (e.key === 'Escape') setDrawerOpen(false)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [hideRail, railHidden])
 
   useEffect(() => {
     if (!scopeOpen) return
@@ -172,12 +199,16 @@ export function WorkspaceShell() {
 
   return (
     <RoleProvider>
-      <div className="cur app workspace-app" data-sidebar-open={sidebarOpen ? 'true' : 'false'}>
+      <div
+        className="cur app workspace-app"
+        data-drawer-open={drawerOpen ? 'true' : 'false'}
+        data-rail={railHidden ? 'hidden' : 'shown'}
+      >
         <button
           type="button"
           className="ws-sidebar-backdrop"
           aria-label="Close navigation"
-          onClick={() => setSidebarOpen(false)}
+          onClick={() => setDrawerOpen(false)}
         />
 
         <aside className="sidebar workspace-sidebar" id="workspace-navigation" aria-label="Workspace navigation">
@@ -221,6 +252,27 @@ export function WorkspaceShell() {
                 <span>{active.detail}</span>
               </span>
               {scopes.length > 1 ? <ChevronsUpDown size={13} className="muted" /> : null}
+            </button>
+
+            {/*
+              The way out, on the row it belongs to.
+
+              The rail had no way to close on a desktop at all — only the narrow
+              layout got a control, so on the screen where 240px of chrome is
+              worth reclaiming it was the one place you could not. It sits beside
+              the identity row rather than at the foot because that is the corner
+              the eye goes to for "put this panel away", and the row was already
+              built to share its width with a second button.
+            */}
+            <button
+              type="button"
+              className="ws-rail-hide"
+              aria-controls="workspace-navigation"
+              aria-label="Hide sidebar"
+              title="Hide sidebar (⌘B)"
+              onClick={closeNav}
+            >
+              <PanelLeftClose size={15} />
             </button>
 
             {scopeOpen && scopes.length > 1 ? (
@@ -306,15 +358,19 @@ export function WorkspaceShell() {
         </aside>
 
         <div className="shell">
+          {/* The same control read the other way: on a narrow screen it slides
+              the sheet in, on a wide one it gives the column back. Which of the
+              two happens is the stylesheet's business, so this asks for both. */}
           <button
             type="button"
             className="ws-sidebar-trigger"
             aria-controls="workspace-navigation"
-            aria-expanded={sidebarOpen}
-            aria-label="Open navigation"
-            onClick={() => setSidebarOpen(true)}
+            aria-expanded={false}
+            aria-label="Show sidebar"
+            title="Show sidebar (⌘B)"
+            onClick={showNav}
           >
-            <Menu size={17} />
+            <PanelLeft size={16} />
           </button>
           {/*
             The reference has no top chrome — a page begins with its own title
