@@ -44,6 +44,8 @@ export interface ZohoBooksOrganization {
   readonly organizationId: string;
   readonly name?:          string;
   readonly isDefault?:     boolean;
+  /** IANA zone used for accounting dates, for example "Asia/Kolkata". */
+  readonly timeZone?:      string;
   /**
    * The selling state, as Zoho writes it — "RJ", "KA".
    *
@@ -231,10 +233,13 @@ export class ZohoBooksPaginatedClient {
         const gstNo = nonBlank(asString(org['gst_no']))
           ?? nonBlank(asString(org['tax_reg_no']))
           ?? nonBlank(asString(org['gstin']));
+        const timeZone = nonBlank(asString(org['time_zone']))
+          ?? nonBlank(asString(org['timezone']));
         return {
           organizationId: asString(org['organization_id']) ?? asString(org['organizationId']) ?? '',
           ...(name      !== undefined ? { name }      : {}),
           ...(isDefault !== undefined ? { isDefault } : {}),
+          ...(timeZone  !== undefined ? { timeZone }  : {}),
           ...(stateCode !== undefined ? { stateCode } : {}),
           ...(gstNo     !== undefined ? { gstNo }     : {}),
         };

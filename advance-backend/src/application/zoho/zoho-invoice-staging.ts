@@ -28,6 +28,10 @@ import {
   type InvoiceFinding,
 } from './zoho-invoice-checks';
 import type { InvoiceReviewVerdict } from './zoho-invoice-reviewer';
+import {
+  formatInvoiceAddress,
+  type InvoiceSourcePolicySnapshot,
+} from './zoho-invoice-source-policy';
 
 export interface StagedInvoice {
   readonly stagingId: string;
@@ -42,6 +46,8 @@ export interface StagedInvoice {
   readonly attachFileName?: string | undefined;
   readonly findings: readonly InvoiceFinding[];
   readonly review: InvoiceReviewVerdict;
+  /** Backend-decided source facts kept out of the exact Zoho request body. */
+  readonly sourcePolicy?: InvoiceSourcePolicySnapshot | undefined;
   readonly attempt: number;
   /** The draft this one corrects, when it is a retry. */
   readonly supersedesId?: string | undefined;
@@ -295,6 +301,7 @@ const num = (value: unknown): number | null => {
 export function renderStagedInvoice(input: {
   payload: Record<string, unknown>;
   customerName?: string | undefined;
+  sourcePolicy?: InvoiceSourcePolicySnapshot | undefined;
   findings: readonly InvoiceFinding[];
   attachFileName?: string | undefined;
 }): string {
@@ -305,6 +312,9 @@ export function renderStagedInvoice(input: {
   const lines: string[] = [];
   const customer = input.customerName || str(payload['customer_name']) || str(payload['customer_id']);
   lines.push(`Customer: ${customer || 'not set'}`);
+  if (input.sourcePolicy?.billingAddress) {
+    lines.push(`Billing address: ${formatInvoiceAddress(input.sourcePolicy.billingAddress)}`);
+  }
 
   const invoiceNumber = str(payload['invoice_number']);
   lines.push(`Invoice number: ${invoiceNumber || 'assigned by Zoho'}`);
@@ -395,6 +405,7 @@ export interface StoredInvoiceDrift {
 export function compareStagedToStored(
   staged: Record<string, unknown>,
   stored: Record<string, unknown>,
+  sourcePolicy?: InvoiceSourcePolicySnapshot,
 ): StoredInvoiceDrift[] {
   const drift: StoredInvoiceDrift[] = [];
 
@@ -408,6 +419,26 @@ export function compareStagedToStored(
   compare('due date', str(staged['due_date']), str(stored['due_date']));
   compare('currency', str(staged['currency_code']), str(stored['currency_code']));
   compare('place of supply', str(staged['place_of_supply']), str(stored['place_of_supply']));
+
+  if (sourcePolicy?.billingAddress) {
+    const expected = formatInvoiceAddress(sourcePolicy.billingAddress);
+    const rawStoredAddress = stored['billing_address'];
+    const address = rawStoredAddress && typeof rawStoredAddress === 'object' && !Array.isArray(rawStoredAddress)
+      ? rawStoredAddress as Record<string, unknown>
+      : {};
+    const actual = [
+      str(address['address'] ?? address['street']),
+      str(address['street2']),
+      str(address['city']),
+      str(address['state']),
+      str(address['zip']),
+      str(address['country']),
+    ].filter(Boolean).join(', ');
+    const comparable = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+    if (comparable(expected) !== comparable(actual)) {
+      drift.push({ field: 'billing address', staged: expected, stored: actual || '(missing)' });
+    }
+  }
 
   const stagedItems = invoiceLineItems(staged);
   const storedItems = invoiceLineItems(stored);

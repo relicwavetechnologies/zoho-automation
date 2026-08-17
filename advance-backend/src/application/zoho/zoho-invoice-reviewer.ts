@@ -192,11 +192,19 @@ const describeRecord = (
 ): string =>
   keys
     .map(key => [key, record[key]] as const)
-    .filter(([, value]) => typeof value === 'string' || typeof value === 'number')
-    .map(([key, value]) => `${key}=${String(value).slice(0, 120)}`)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([key, value]) => {
+      const rendered = typeof value === 'string' || typeof value === 'number'
+        ? String(value)
+        : JSON.stringify(value);
+      return `${key}=${rendered.slice(0, 1_000)}`;
+    })
     .join('  ');
 
-const CUSTOMER_KEYS = ['contact_id', 'contact_name', 'company_name', 'email', 'gst_no', 'gst_treatment', 'place_of_contact', 'billing_address', 'currency_code'] as const;
+const CUSTOMER_KEYS = [
+  'contact_id', 'contact_name', 'company_name', 'email', 'gst_no', 'gst_treatment',
+  'place_of_contact', 'billing_address', 'addresses', 'currency_code',
+] as const;
 const ITEM_KEYS = ['item_id', 'name', 'sku', 'rate', 'unit', 'tax_name', 'tax_percentage'] as const;
 const TAX_KEYS = ['tax_id', 'tax_name', 'tax_percentage', 'tax_type'] as const;
 
