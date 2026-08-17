@@ -11,6 +11,7 @@ import { writeZohoDocument, type ZohoDocumentAttachment } from './zoho-document-
 import { summarizeZohoWrite, unwrapZohoRecord } from './zoho-books-write-result';
 import { mapZohoError } from './zoho-error.utils';
 import { normalizeInvoiceFields } from './zoho-invoice-fields';
+import { applyInvoiceSourcePolicy } from './zoho-invoice-source-policy';
 import {
   checkInvoice,
   hasBlockingFinding,
@@ -195,6 +196,7 @@ export function createZohoInvoiceService(deps: {
       catalogueItems: items,
       reviewedOrganizationId: reviewOrg,
       reviewedOrganizationStateCode: chosenOrg?.stateCode,
+      reviewedOrganizationTimeZone: chosenOrg?.timeZone,
       taxDirectionById: Object.fromEntries(
         taxes.flatMap(tax => {
           const id = String(tax['tax_id'] ?? '');
@@ -228,7 +230,7 @@ export function createZohoInvoiceService(deps: {
 
   const gatherDocument = async (input: CallContext, fileName: string | undefined) => {
     if (!fileName || !deps.documentParser || !deps.attachmentSource) return undefined;
-    if (input.channel !== 'lark' || !input.chatId) return undefined;
+    if (!input.chatId) return undefined;
     const resolved = await deps.attachmentSource.resolve({
       companyId: input.companyId,
       userId: input.userId,
@@ -269,7 +271,7 @@ export function createZohoInvoiceService(deps: {
       if (!normalized.ok) {
         return err(new ToolError({ toolId: 'zohoBooks', reason: 'bad_args', message: normalized.message }));
       }
-      const payload = normalized.fields;
+      const normalizedPayload = normalized.fields;
       const previous = input.supersedesStagingId
         ? await deps.staging.get({ stagingId: input.supersedesStagingId, companyId: input.companyId, userId: input.userId })
         : null;
@@ -277,7 +279,7 @@ export function createZohoInvoiceService(deps: {
 
       input.onProgress?.('Checking the draft invoice…');
       const [sources, turns, sourceDocument] = await Promise.all([
-        gatherReviewSources(input, payload),
+        gatherReviewSources(input, normalizedPayload),
         gatherTurns(input),
         gatherDocument(input, input.fileName),
       ]);
@@ -287,6 +289,7 @@ export function createZohoInvoiceService(deps: {
         reviewedOrganizationId,
         duplicateCheckUnavailable,
         reviewedOrganizationStateCode,
+        reviewedOrganizationTimeZone,
         taxDirectionById,
         ...reviewSources
       } = sources;
@@ -299,6 +302,29 @@ export function createZohoInvoiceService(deps: {
             + 'so it will not stage one that might be created in the wrong set of books. Try again.',
         }));
       }
+      if (input.fileName && input.chatId && !sourceDocument) {
+        return err(new ToolError({
+          toolId: 'zohoBooks',
+          reason: 'upstream_failure',
+          message: `Divo could not read ${input.fileName}, so it cannot verify its invoice date or Bill To address. Nothing was staged. Ask the member to send the file again or fix document reading before retrying.`,
+        }));
+      }
+
+      const policy = applyInvoiceSourcePolicy({
+        payload: normalizedPayload,
+        ...(sourceDocument ? { sourceDocument } : {}),
+        ...(reviewSources.chosenCustomer ? { chosenCustomer: reviewSources.chosenCustomer } : {}),
+        now: input.now,
+        ...(reviewedOrganizationTimeZone ? { organizationTimeZone: reviewedOrganizationTimeZone } : {}),
+      });
+      if (!policy.ok) {
+        return err(new ToolError({
+          toolId: 'zohoBooks',
+          reason: 'bad_args',
+          message: policy.message,
+        }));
+      }
+      const payload = policy.payload;
 
       const homeState = reviewedOrganizationStateCode ?? deps.homeGstStateCode;
       const findings = checkInvoice({
@@ -316,11 +342,12 @@ export function createZohoInvoiceService(deps: {
         renderStagedInvoice({
           payload,
           ...(customerName ? { customerName } : {}),
+          sourcePolicy: policy.sourcePolicy,
           findings,
           ...(input.fileName ? { attachFileName: input.fileName } : {}),
         }),
-        ...(normalized.notes.length > 0
-          ? ['', `Divo read: ${normalized.notes.join('; ')}.`]
+        ...([...normalized.notes, ...policy.notes].length > 0
+          ? ['', `Divo read: ${[...normalized.notes, ...policy.notes].join('; ')}.`]
           : []),
       ].join('\n');
 
@@ -346,6 +373,7 @@ export function createZohoInvoiceService(deps: {
         ...(input.fileName ? { attachFileName: input.fileName } : {}),
         findings,
         review,
+        sourcePolicy: policy.sourcePolicy,
         attempt,
         ...(input.supersedesStagingId ? { supersedesId: input.supersedesStagingId } : {}),
         expiresAt: new Date(input.now.getTime() + STAGED_INVOICE_TTL_MS),
@@ -652,7 +680,9 @@ export function createZohoInvoiceService(deps: {
         : undefined;
       const stored = verified?.record ?? createdRecord;
       const storedWasReadBack = verified?.verified || (createdFromReadBack && !shouldVerifyFinalRecord);
-      const drift = storedWasReadBack ? compareStagedToStored(staged.payload, stored) : [];
+      const drift = storedWasReadBack
+        ? compareStagedToStored(staged.payload, stored, staged.sourcePolicy)
+        : [];
       const base = drift.length > 0
         ? `${verified?.message ?? createdMessage} Zoho stored some values differently from the draft the member approved: `
           + `${drift.map(d => `${d.field} was ${d.staged}, Zoho has ${d.stored}`).join('; ')}. Tell them before doing anything else with it.`
