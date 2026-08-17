@@ -34,6 +34,7 @@ import {
   ProviderStreamMilestones,
   type ProviderStreamMilestone,
 } from '../../application/observability/provider-stream-milestones';
+import { providerPayloadDimensions } from '../../application/observability/provider-payload-dimensions';
 
 export interface LlmProxyRoutesDeps {
   logger:  Logger;
@@ -154,6 +155,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       ? contentLength
       : undefined;
     const toolCount = Array.isArray(body['tools']) ? body['tools'].length : 0;
+    const payloadDimensions = providerPayloadDimensions(body, responsesApi);
     const providedRunId = threadTitleRequest
       ? undefined
       : (req.header('x-divo-run')
@@ -181,6 +183,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
         responsesApi,
         messageCount: messages.length,
         toolCount,
+        ...payloadDimensions,
         ...(requestBytes !== undefined ? { requestBytes } : {}),
       },
     });

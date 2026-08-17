@@ -48,7 +48,7 @@ type TraceEvent =
 		spanId: string;
 		parentSpanId?: string;
 		name: string;
-		category: "provider" | "tool";
+		category: "runtime" | "provider" | "gateway" | "persistence" | "tool";
 		source: "pi-extension";
 		startedAt: number;
 		endedAt: number;
@@ -92,6 +92,20 @@ interface RunState {
 		model: string;
 		attempt: number;
 	};
+}
+
+type PendingPreparationSpan = Omit<
+	Extract<TraceEvent, { kind: "span" }>,
+	"seq" | "ts"
+>;
+
+export interface DivoPreparationTrace {
+	startPreparation(): void;
+	measure<T>(
+		name: string,
+		category: PendingPreparationSpan["category"],
+		work: () => Promise<T> | T,
+	): Promise<T>;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -149,8 +163,10 @@ export function isRecoverableDivoRequestTooLarge(messages: readonly unknown[]): 
 	return /request[_ ]too[_ ]large|payload[_ ]too[_ ]large|entity\.too\.large|PayloadTooLargeError|\b413\b/i.test(errorMessage);
 }
 
-export function registerTraceCapture(pi: ExtensionAPI): void {
+export function registerTraceCapture(pi: ExtensionAPI): DivoPreparationTrace {
 	let run: RunState | null = null;
+	let pendingPreparation: PendingPreparationSpan[] = [];
+	let preparationSpanSequence = 0;
 	const pendingTools = new Map<string, {
 		args: unknown;
 		startedAt: number;
@@ -276,6 +292,8 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			}
 			startRun(correlation);
 			push({ kind: "run_start", title: "Run started" });
+			for (const span of pendingPreparation) push(span);
+			pendingPreparation = [];
 		});
 	});
 
@@ -478,6 +496,37 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			);
 		});
 	});
+
+	return {
+		startPreparation() {
+			pendingPreparation = [];
+			preparationSpanSequence = 0;
+		},
+		async measure(name, category, work) {
+			const startedAt = Date.now();
+			let status: "ok" | "error" = "ok";
+			try {
+				return await work();
+			} catch (error) {
+				status = "error";
+				throw error;
+			} finally {
+				const endedAt = Date.now();
+				pendingPreparation.push({
+					kind: "span",
+					spanId: `pi.prepare.${++preparationSpanSequence}`,
+					parentSpanId: "controller.model",
+					name,
+					category,
+					source: "pi-extension",
+					startedAt,
+					endedAt,
+					durationMs: Math.max(0, endedAt - startedAt),
+					status,
+				});
+			}
+		},
+	};
 }
 
 /** Stable parent ID shared with the backend gateway adapter. */

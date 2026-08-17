@@ -38,7 +38,10 @@ const SAFE_LATENCY_ATTRIBUTE_KEYS = new Set([
   'reason',
   'requestBytes',
   'responsesApi',
+  'messagesBytes',
+  'systemPromptBytes',
   'toolCount',
+  'toolSchemaBytes',
   'toolId',
   'toolName',
 ]);
