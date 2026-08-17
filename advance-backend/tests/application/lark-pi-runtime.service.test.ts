@@ -51,9 +51,12 @@ function runtimeInput() {
 
 test('records one causal runtime path without storing prompts or answers', async () => {
   const spans: Array<Record<string, any>> = [];
+  const admissions: unknown[] = [];
   const controllerStartedAt = Date.now() - 5;
   const store: RunLatencySpanStore = {
-    findOwnedIdByRequestId: async () => 'execution-1',
+    findOwnedIdByRequestId: async () => {
+      throw new Error('bound execution id should avoid a late lookup');
+    },
     insertSpans: async batch => { spans.push(...batch); },
   };
   const service = new LarkPiRuntimeService({
@@ -74,6 +77,13 @@ test('records one causal runtime path without storing prompts or answers', async
     runTimeoutMs: 30_000,
     runEffectReceipts,
     runLatencyRecorder: new RunLatencyRecorder(store, logger),
+    executionRuns: {
+      admit: async input => {
+        admissions.push(input);
+        return 'execution-1';
+      },
+      failDetached() {},
+    },
     fetch: async () => new Response(JSON.stringify({
       text: 'Finished secret answer',
       runtimeTelemetry: {
@@ -96,6 +106,8 @@ test('records one causal runtime path without storing prompts or answers', async
   await new Promise(resolve => setImmediate(resolve));
 
   const byName = new Map(spans.map(span => [span.name, span]));
+  assert.equal(admissions.length, 1);
+  assert.equal(byName.get('runtime.run.admit')?.parentSpanId, 'runtime.request');
   assert.equal(byName.get('runtime.request')?.status, 'ok');
   assert.equal(byName.get('runtime.controller.turn')?.spanId, 'runtime.controller');
   assert.equal(byName.get('runtime.controller.turn')?.parentSpanId, 'runtime.request');
@@ -854,6 +866,7 @@ test('does not accept another Lark workspace session for the same member', async
 
 test('streams sanitized controller progress before returning the final text', async () => {
   const progress: unknown[] = [];
+  const spans: Array<Record<string, any>> = [];
   const service = new LarkPiRuntimeService({
     prisma: {
       memberSession: {
@@ -870,6 +883,14 @@ test('streams sanitized controller progress before returning the final text', as
     instanceId: 'pi-local-1',
     leaseTtlSeconds: 3_600,
     runTimeoutMs: 30_000,
+    runLatencyRecorder: new RunLatencyRecorder({
+      findOwnedIdByRequestId: async () => { throw new Error('run is bound at admission'); },
+      insertSpans: async batch => { spans.push(...batch); },
+    }, logger),
+    executionRuns: {
+      admit: async () => 'execution-1',
+      failDetached() {},
+    },
     fetch: async () => new Response([
       JSON.stringify({
         type: 'progress',
@@ -902,6 +923,9 @@ test('streams sanitized controller progress before returning the final text', as
       }),
       JSON.stringify({ type: 'heartbeat' }),
       JSON.stringify({ type: 'progress', progress: { type: 'working' } }),
+      JSON.stringify({ type: 'progress', progress: { type: 'thinking' } }),
+      JSON.stringify({ type: 'progress', progress: { type: 'thought', index: 0, text: 'Checking.' } }),
+      JSON.stringify({ type: 'progress', progress: { type: 'answer_delta', index: 0, delta: 'Fin' } }),
       JSON.stringify({ type: 'progress', progress: { type: 'writing' } }),
       JSON.stringify({ type: 'result', text: 'Finished' }),
       '',
@@ -936,8 +960,20 @@ test('streams sanitized controller progress before returning the final text', as
       isError: false,
     },
     { type: 'working' },
+    { type: 'thinking' },
+    { type: 'thought', index: 0, text: 'Checking.' },
+    { type: 'answer_delta', index: 0, delta: 'Fin' },
     { type: 'writing' },
   ]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(
+    spans.filter(span => span.name.startsWith('runtime.output.')).map(span => span.name),
+    [
+      'runtime.output.first_progress',
+      'runtime.output.first_reasoning',
+      'runtime.output.first_text',
+    ],
+  );
 });
 
 test('rejects an unterminated oversized controller frame without buffering indefinitely', async () => {

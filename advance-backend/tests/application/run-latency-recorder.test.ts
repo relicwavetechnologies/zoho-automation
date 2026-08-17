@@ -83,4 +83,36 @@ describe('RunLatencyRecorder', () => {
     assert.deepEqual(persisted[0].attributes, { errorType: 'TypeError' });
     assert.equal(JSON.stringify(persisted).includes('secret provider response'), false);
   });
+
+  it('records milestones as zero-duration causal points', async () => {
+    let now = 42;
+    const persisted: any[] = [];
+    const recorder = new RunLatencyRecorder({
+      findOwnedIdByRequestId: async () => 'execution-1',
+      insertSpans: async input => { persisted.push(...input); },
+    }, noopLogger, () => now, () => 'first-output');
+    const trace = recorder.trace({ runId: 'run-1', companyId: 'co-1', userId: 'u-1', source: 'test' });
+
+    trace.milestone({
+      name: 'runtime.output.first_reasoning',
+      category: 'runtime',
+      parentSpanId: 'runtime.request',
+    });
+    now = 100;
+    await trace.flush();
+
+    assert.deepEqual(persisted, [{
+      executionId: 'execution-1',
+      spanId: 'test:first-output',
+      parentSpanId: 'runtime.request',
+      name: 'runtime.output.first_reasoning',
+      category: 'runtime',
+      source: 'test',
+      startedAt: new Date(42),
+      endedAt: new Date(42),
+      durationMs: 0,
+      status: 'ok',
+      attributes: {},
+    }]);
+  });
 });

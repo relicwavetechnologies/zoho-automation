@@ -341,6 +341,19 @@ export class ExecutionRepository {
     });
   }
 
+  /** Complete only while no other runtime adapter has terminalized the run. */
+  async completeIfRunning(executionId: string, latestSummary?: string): Promise<boolean> {
+    const result = await this.prisma.executionRun.updateMany({
+      where: { id: executionId, status: 'running' },
+      data: {
+        status: 'completed',
+        finishedAt: new Date(),
+        ...(latestSummary ? { latestSummary } : {}),
+      },
+    });
+    return result.count === 1;
+  }
+
   /** Mark a run as failed with an error code + message. */
   async fail(executionId: string, errorCode: string, errorMessage: string): Promise<void> {
     await this.prisma.executionRun.update({
@@ -352,6 +365,24 @@ export class ExecutionRepository {
         errorMessage: errorMessage.slice(0, 2000),
       },
     });
+  }
+
+  /** Fail only while no other runtime adapter has terminalized the run. */
+  async failIfRunning(
+    executionId: string,
+    errorCode: string,
+    errorMessage: string,
+  ): Promise<boolean> {
+    const result = await this.prisma.executionRun.updateMany({
+      where: { id: executionId, status: 'running' },
+      data: {
+        status: 'failed',
+        finishedAt: new Date(),
+        errorCode,
+        errorMessage: errorMessage.slice(0, 2000),
+      },
+    });
+    return result.count === 1;
   }
 
   // ─── Query surface (used by REST layer) ─────────────────────────────────

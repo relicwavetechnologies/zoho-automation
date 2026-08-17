@@ -30,6 +30,11 @@ import {
   measureRunLatency,
   type RunLatencyRecorder,
 } from '../../application/observability/run-latency-recorder';
+import {
+  ProviderStreamMilestones,
+  type ProviderStreamMilestone,
+} from '../../application/observability/provider-stream-milestones';
+import { providerPayloadDimensions } from '../../application/observability/provider-payload-dimensions';
 
 export interface LlmProxyRoutesDeps {
   logger:  Logger;
@@ -150,6 +155,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
       ? contentLength
       : undefined;
     const toolCount = Array.isArray(body['tools']) ? body['tools'].length : 0;
+    const payloadDimensions = providerPayloadDimensions(body, responsesApi);
     const providedRunId = threadTitleRequest
       ? undefined
       : (req.header('x-divo-run')
@@ -177,6 +183,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
         responsesApi,
         messageCount: messages.length,
         toolCount,
+        ...payloadDimensions,
         ...(requestBytes !== undefined ? { requestBytes } : {}),
       },
     });
@@ -275,6 +282,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
     });
 
     let upstream: globalThis.Response;
+    const upstreamStartedAtMs = Date.now();
     try {
       const endpoint = responsesApi ? '/v1/responses' : '/v1/chat/completions';
       upstream = await measureRunLatency(
@@ -398,6 +406,28 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
 
     const reader = upstream.body.getReader();
     const decoder = new TextDecoder();
+    const milestoneParentId = proxySpan?.spanId ?? `llm-proxy:${randomUUID()}`;
+    const milestones = latencyTrace
+      ? new ProviderStreamMilestones(event => {
+          const names: Record<ProviderStreamMilestone, string> = {
+            first_byte: 'provider.upstream.first_byte',
+            first_reasoning: 'provider.upstream.first_reasoning',
+            first_text: 'provider.upstream.first_text',
+          };
+          latencyTrace.addCompleted({
+            spanId: `${milestoneParentId}.${event.kind}`,
+            parentSpanId: milestoneParentId,
+            name: names[event.kind],
+            category: 'provider',
+            source: 'llm-proxy',
+            startedAtMs: upstreamStartedAtMs,
+            endedAtMs: event.atMs,
+            durationMs: Math.max(0, event.atMs - upstreamStartedAtMs),
+            status: 'ok',
+            attributes: { provider, model },
+          });
+        })
+      : undefined;
     let acc = '';
     let interrupted = false;
     await measureRunLatency(
@@ -409,6 +439,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
             const { done, value } = await reader.read();
             if (done) break;
             if (value) {
+              milestones?.observe(value);
               res.write(Buffer.from(value));
               acc += decoder.decode(value, { stream: true });
             }
@@ -417,6 +448,7 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
           interrupted = true; // client disconnect or upstream stream abort after 200
           log.warn('proxy.stream.interrupted', { error: String(e) });
         } finally {
+          milestones?.finish();
           res.end();
         }
       },

@@ -35,8 +35,8 @@ function harness() {
     appendEvent: async (event: unknown) => { events.push(event); },
     appendStepResult: async (result: unknown) => { stepResults.push(result); },
     upsertSpan: async (span: unknown) => { spans.push(span); },
-    complete: async (...args: unknown[]) => { completions.push(args); },
-    fail: async (...args: unknown[]) => { failures.push(args); },
+    completeIfRunning: async (...args: unknown[]) => { completions.push(args); return true; },
+    failIfRunning: async (...args: unknown[]) => { failures.push(args); return true; },
   } as unknown as ExecutionRepository;
   const tokens = {
     recordForRun: async (usage: unknown) => { tokenWrites.push(usage); },
@@ -276,6 +276,37 @@ describe('execution run correlation ownership', () => {
       runId: 'backend-run',
       executionId: 'execution-1',
       backendIssued: true,
+    });
+  });
+
+  it('accepts late runtime spans after the lifecycle owner terminalizes the exact leased run', async () => {
+    const result = await resolveBackendTraceProvenance(
+      {
+        executionRun: {
+          findUnique: async () => ({
+            id: 'execution-1',
+            companyId: 'company-1',
+            userId: 'user-1',
+            channel: 'web',
+            entrypoint: 'pi',
+            status: 'failed',
+          }),
+        },
+        aiTokenUsage: { findFirst: async () => null },
+      } as any,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'leased-run',
+        runtimeChannel: 'web',
+        runtimeRunId: 'leased-run',
+      },
+    );
+
+    assert.deepEqual(result, {
+      runId: 'leased-run',
+      executionId: 'execution-1',
+      backendIssued: true,
+      priorTerminalStatus: 'failed',
     });
   });
 });
@@ -688,6 +719,52 @@ describe('desktop trace terminal status', () => {
     );
 
     assert.deepEqual(captured, []);
+  });
+
+  it('does not learn from a late success batch after a runtime failure won the latch', async () => {
+    const test = harness();
+    (test.runs as any).completeIfRunning = async () => false;
+    const personaCaptured: unknown[] = [];
+    const personalCaptured: unknown[] = [];
+    const personaLearning = {
+      captureCompletedManagerRun: async (input: unknown) => { personaCaptured.push(input); },
+    } as any;
+    const knowledgeLearning = {
+      captureCompletedTurn: async (input: unknown) => { personalCaptured.push(input); },
+    };
+
+    await ingestTraceBatch(
+      test.runs,
+      test.tokens,
+      noopLogger,
+      { companyId: 'company-1', userId: 'manager-1', companyRole: 'MEMBER' },
+      {
+        runId: 'late-success',
+        threadId: 'thread-1',
+        usageAuthority: 'desktop',
+        events: [
+          {
+            kind: 'learning_context',
+            seq: 1,
+            userMessages: ['Never learn this stale result'],
+            assistantResponse: 'Stale success',
+            toolSummary: [],
+          },
+          { kind: 'run_end', seq: 2, status: 'ok', summary: 'Stale success' },
+        ],
+      },
+      personaLearning,
+      knowledgeLearning,
+      {
+        runId: 'late-success',
+        executionId: 'execution-1',
+        backendIssued: true,
+        priorTerminalStatus: 'failed',
+      },
+    );
+
+    assert.deepEqual(personaCaptured, []);
+    assert.deepEqual(personalCaptured, []);
   });
 
   it('durably captures a successful desktop turn for policy-governed personal learning', async () => {

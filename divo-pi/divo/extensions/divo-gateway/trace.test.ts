@@ -39,12 +39,12 @@ async function traceHarness(runId: string, channel?: "lark") {
 		return new Response(JSON.stringify({ success: true }), { status: 202 });
 	}) as typeof fetch;
 	const handlers = new Map<string, (event: any, ctx: any) => unknown>();
-	registerTraceCapture({
+	const preparation = registerTraceCapture({
 		on: (name: string, handler: (event: any, ctx: any) => unknown) => {
 			handlers.set(name, handler);
 		},
 	} as never);
-	return { batches, handlers };
+	return { batches, handlers, preparation };
 }
 
 const REQUEST_TOO_LARGE_MESSAGE = {
@@ -127,6 +127,34 @@ describe("Divo trace terminal classification", () => {
 });
 
 describe("Divo trace correlation", () => {
+	it("carries preparation spans into the run that starts after them", async () => {
+		const { batches, handlers, preparation } = await traceHarness("run-preparation", "lark");
+		preparation.startPreparation();
+		await preparation.measure("pi.prepare.context", "persistence", async () => {});
+		await preparation.measure("pi.prepare.prompt", "runtime", () => "ready");
+
+		await handlers.get("agent_start")?.({ type: "agent_start" }, {});
+		await handlers.get("before_provider_request")?.(
+			{ payload: { model: "deepseek-v4-flash" } },
+			{ model: { provider: "deepseek" } },
+		);
+		handlers.get("message_end")?.({ message: SUCCESS_MESSAGE }, {});
+		handlers.get("agent_end")?.({ messages: [SUCCESS_MESSAGE] }, {});
+
+		const spans = batches.flatMap(batch => batch.events).filter(event => event.kind === "span");
+		assert.deepEqual(
+			spans.filter(span => span.name.startsWith("pi.prepare.")).map(span => [
+				span.name,
+				span.parentSpanId,
+				span.category,
+			]),
+			[
+				["pi.prepare.context", "controller.model", "persistence"],
+				["pi.prepare.prompt", "controller.model", "runtime"],
+			],
+		);
+	});
+
 	it("marks a Lark trace so the backend does not capture personal learning twice", async () => {
 		const { batches, handlers } = await traceHarness("run-lark", "lark");
 

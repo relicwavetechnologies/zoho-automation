@@ -21,6 +21,7 @@ import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { sanitizeLatencyAttributes } from '../../application/observability/run-latency-recorder';
+import { ExecutionRunLifecycle } from '../../application/observability/execution-run-lifecycle';
 import { ExecutionRepository } from '../../infrastructure/persistence/execution.repository';
 import { TokenUsageService } from '../../application/observability/token-usage.service';
 import { PersonaLearningService } from '../../application/persona-learning/persona-learning.service';
@@ -262,6 +263,8 @@ export interface BackendTraceProvenance {
   readonly runId: string;
   readonly executionId?: string;
   readonly backendIssued: true;
+  /** A terminal state that existed before this batch began. */
+  readonly priorTerminalStatus?: 'completed' | 'failed';
 }
 
 export interface IngestResult {
@@ -307,16 +310,26 @@ export async function resolveBackendTraceProvenance(
   });
 
   if (run) {
+    const statusAcceptable = input.runtimeRunId
+      ? ['running', 'completed', 'failed'].includes(run.status)
+      : run.status === 'running';
     if (
       run.companyId !== identity.companyId
       || run.userId !== identity.userId
       || run.channel !== expectedChannel
       || run.entrypoint !== 'pi'
-      || run.status !== 'running'
+      || !statusAcceptable
     ) return null;
 
     if (input.runtimeRunId) {
-      return { runId: input.runId, executionId: run.id, backendIssued: true };
+      return {
+        runId: input.runId,
+        executionId: run.id,
+        backendIssued: true,
+        ...(run.status === 'completed' || run.status === 'failed'
+          ? { priorTerminalStatus: run.status }
+          : {}),
+      };
     }
 
     const usage = await prisma.aiTokenUsage.findFirst({
@@ -354,6 +367,7 @@ export async function ingestTraceBatch(
   knowledgeLearning?: Pick<KnowledgeLearningService, 'captureCompletedTurn'>,
   provenance?: BackendTraceProvenance,
 ): Promise<IngestResult> {
+  const lifecycle = new ExecutionRunLifecycle(runs, log);
   const batchContainsProtectedShopifyData = batch.protectedDataObserved === true
     || batch.events.some(isProtectedShopifyTraceEvent);
   const executionId = provenance?.executionId ?? await runs.findOrCreateByRequestId({
@@ -389,13 +403,19 @@ export async function ingestTraceBatch(
       batch.usageAuthority,
       containsProtectedShopifyData,
       fallbackRunSummary,
+      lifecycle,
     )),
   );
   const failed = results.filter((r) => r.status === 'rejected').length;
   if (failed > 0) {
     log.warn('trace-ingest.partial', { runId: batch.runId, failed, total: batch.events.length });
   }
-  if (provenance?.backendIssued && !containsProtectedShopifyData) {
+  const completedByThisBatch = results.some(result => (
+    result.status === 'fulfilled' && result.value === true
+  ));
+  const learningAllowed = completedByThisBatch
+    || provenance?.priorTerminalStatus === 'completed';
+  if (provenance?.backendIssued && learningAllowed && !containsProtectedShopifyData) {
     await Promise.all([
       capturePersonaLearningEvidence(personaLearning, log, {
         executionId,
@@ -464,7 +484,8 @@ async function persistEvent(
   usageAuthority: 'desktop' | 'proxy',
   protectedRun: boolean,
   fallbackRunSummary?: string,
-): Promise<void> {
+  lifecycle?: ExecutionRunLifecycle,
+): Promise<boolean | void> {
   if (ev.kind === 'span') {
     await runs.upsertSpan({
       executionId: ctx.executionId,
@@ -614,16 +635,24 @@ async function persistEvent(
 
     if (ev.kind === 'run_end') {
       if (ev.status === 'error') {
-        await runs.fail(
+        await (lifecycle?.fail(
           ctx.executionId,
           'pi_run_error',
           protectedRun ? 'Protected Shopify run failed; details redacted' : boundarySummary ?? 'Run failed',
-        );
+        ) ?? runs.fail(
+          ctx.executionId,
+          'pi_run_error',
+          protectedRun ? 'Protected Shopify run failed; details redacted' : boundarySummary ?? 'Run failed',
+        ));
+        return false;
       } else {
-        await runs.complete(
+        return (lifecycle?.complete(
           ctx.executionId,
           boundarySummary,
-        );
+        ) ?? runs.complete(
+          ctx.executionId,
+          boundarySummary,
+        ).then(result => result ?? true));
       }
     }
 }

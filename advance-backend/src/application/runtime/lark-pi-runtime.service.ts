@@ -49,6 +49,7 @@ import {
   type RunLatencySpanHandle,
   type RunLatencyTrace,
 } from '../observability/run-latency-recorder';
+import type { ExecutionRunLifecycle } from '../observability/execution-run-lifecycle';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
 const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
@@ -251,6 +252,16 @@ function controllerFailureMessage(code: string, detail?: string): string {
   return GENERIC_RUNTIME_FAILURE_MESSAGE;
 }
 
+function runtimeExecutionFailure(error: unknown): { code: string; message: string } {
+  if (error instanceof LarkPiRuntimeError) {
+    return { code: error.code, message: error.userMessage };
+  }
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return { code: 'interrupted', message: 'The Divo run was interrupted.' };
+  }
+  return { code: 'runtime_failed', message: GENERIC_RUNTIME_FAILURE_MESSAGE };
+}
+
 export interface LarkPiRuntimeServiceDeps {
   readonly prisma: PrismaClient;
   readonly logger: Logger;
@@ -294,6 +305,8 @@ export interface LarkPiRuntimeServiceDeps {
   readonly onProtectedRun?: (notice: LarkProtectedRunNotice) => Promise<void> | void;
   /** Records one correlated critical path without making observability authoritative. */
   readonly runLatencyRecorder?: RunLatencyRecorder;
+  /** Production run lifecycle owner. Optional only for direct legacy/test hosts. */
+  readonly executionRuns?: Pick<ExecutionRunLifecycle, 'admit' | 'failDetached'>;
 }
 
 export interface LarkPiRuntimeResult {
@@ -828,6 +841,7 @@ export class LarkPiRuntimeService {
       userId: String(input.runContext.userId),
       source: 'lark-runtime',
     });
+    let executionId: string | undefined;
     try {
       return await measureRunLatency(latencyTrace, {
         name: 'runtime.request',
@@ -838,7 +852,41 @@ export class LarkPiRuntimeService {
           chatType: input.incoming.chatType,
           deliveryMode: input.runContext.deliveryMode ?? null,
         },
-      }, () => this.runMeasured(input, latencyTrace));
+      }, async () => {
+        if (this.deps.executionRuns) {
+          try {
+            executionId = await measureRunLatency(latencyTrace, {
+              name: 'runtime.run.admit',
+              category: 'persistence',
+            }, () => this.deps.executionRuns!.admit({
+              runId: String(input.incoming.traceId),
+              companyId: String(input.runContext.companyId),
+              userId: String(input.runContext.userId),
+              channel: input.incoming.channel,
+              entrypoint: 'pi',
+              threadId: input.threadId,
+              chatId: String(input.incoming.chatId),
+              ...(input.incoming.messageId
+                ? { messageId: String(input.incoming.messageId) }
+                : {}),
+            }));
+            latencyTrace?.bindExecutionId(executionId);
+          } catch (error) {
+            // Observability cannot become authority over whether work runs.
+            this.log.warn('pi.execution.admission_failed', {
+              correlationId: input.incoming.traceId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return this.runMeasured(input, latencyTrace);
+      });
+    } catch (error) {
+      if (executionId && this.deps.executionRuns) {
+        const failure = runtimeExecutionFailure(error);
+        this.deps.executionRuns.failDetached(executionId, failure.code, failure.message);
+      }
+      throw error;
     } finally {
       // Persistence is best-effort and cannot delay the answer that was measured.
       void latencyTrace?.flush();
@@ -1024,7 +1072,7 @@ export class LarkPiRuntimeService {
           category: 'runtime',
           parentSpanId: 'runtime.controller',
           spanId: 'runtime.controller.stream',
-        }, () => this.readStream(response, input));
+        }, () => this.readStream(response, input, latencyTrace));
       } catch (error) {
         controllerSpan?.end('error');
         await this.throwIfCallerInterrupted(input);
@@ -1556,6 +1604,7 @@ export class LarkPiRuntimeService {
   private async readStream(
     response: Response,
     input: LarkPiRuntimeInput,
+    latencyTrace?: RunLatencyTrace,
   ): Promise<{
     text: string;
     protectedDataUsed: boolean;
@@ -1577,6 +1626,9 @@ export class LarkPiRuntimeService {
     let protectedReferences: readonly LarkProtectedRunReference[] = [];
     let controllerLatency: readonly ControllerLatencySample[] = [];
     let streamError: { code: string; message?: string } | undefined;
+    let firstProgressRecorded = false;
+    let firstReasoningRecorded = false;
+    let firstTextRecorded = false;
 
     const consume = async (line: string): Promise<void> => {
       if (!line.trim()) return;
@@ -1594,6 +1646,34 @@ export class LarkPiRuntimeService {
       if (record['type'] === 'heartbeat') return;
       if (record['type'] === 'progress') {
         const progress = parseProgressEvent(record['progress']);
+        if (progress && !firstProgressRecorded) {
+          firstProgressRecorded = true;
+          latencyTrace?.milestone({
+            name: 'runtime.output.first_progress',
+            category: 'runtime',
+            parentSpanId: 'runtime.controller.stream',
+          });
+        }
+        if (
+          progress
+          && !firstReasoningRecorded
+          && (progress.type === 'thinking' || progress.type === 'thought')
+        ) {
+          firstReasoningRecorded = true;
+          latencyTrace?.milestone({
+            name: 'runtime.output.first_reasoning',
+            category: 'runtime',
+            parentSpanId: 'runtime.controller.stream',
+          });
+        }
+        if (progress && !firstTextRecorded && progress.type === 'answer_delta') {
+          firstTextRecorded = true;
+          latencyTrace?.milestone({
+            name: 'runtime.output.first_text',
+            category: 'runtime',
+            parentSpanId: 'runtime.controller.stream',
+          });
+        }
         if (progress && input.onProgress) {
           try {
             await input.onProgress(progress);
