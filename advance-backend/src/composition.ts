@@ -2616,6 +2616,10 @@ export async function buildContainer(
     toolExecutor: gatewayToolExecutor,
     permissions,
     automationPlanExecutor,
+    /* The same store the web run writes its own turns through, so a resumed
+       approval lands in the thread as an ordinary message. Without it a web
+       approval executed correctly and reported into the void. */
+    webTranscript: conversationRepo,
     logger: logger.child({ service: 'approval-resumer' }),
   });
   const approvalCardHandler = new LarkApprovalCardHandler(
