@@ -263,6 +263,8 @@ export interface BackendTraceProvenance {
   readonly runId: string;
   readonly executionId?: string;
   readonly backendIssued: true;
+  /** A terminal state that existed before this batch began. */
+  readonly priorTerminalStatus?: 'completed' | 'failed';
 }
 
 export interface IngestResult {
@@ -320,7 +322,14 @@ export async function resolveBackendTraceProvenance(
     ) return null;
 
     if (input.runtimeRunId) {
-      return { runId: input.runId, executionId: run.id, backendIssued: true };
+      return {
+        runId: input.runId,
+        executionId: run.id,
+        backendIssued: true,
+        ...(run.status === 'completed' || run.status === 'failed'
+          ? { priorTerminalStatus: run.status }
+          : {}),
+      };
     }
 
     const usage = await prisma.aiTokenUsage.findFirst({
@@ -401,7 +410,12 @@ export async function ingestTraceBatch(
   if (failed > 0) {
     log.warn('trace-ingest.partial', { runId: batch.runId, failed, total: batch.events.length });
   }
-  if (provenance?.backendIssued && !containsProtectedShopifyData) {
+  const completedByThisBatch = results.some(result => (
+    result.status === 'fulfilled' && result.value === true
+  ));
+  const learningAllowed = completedByThisBatch
+    || provenance?.priorTerminalStatus === 'completed';
+  if (provenance?.backendIssued && learningAllowed && !containsProtectedShopifyData) {
     await Promise.all([
       capturePersonaLearningEvidence(personaLearning, log, {
         executionId,
@@ -471,7 +485,7 @@ async function persistEvent(
   protectedRun: boolean,
   fallbackRunSummary?: string,
   lifecycle?: ExecutionRunLifecycle,
-): Promise<void> {
+): Promise<boolean | void> {
   if (ev.kind === 'span') {
     await runs.upsertSpan({
       executionId: ctx.executionId,
@@ -630,14 +644,15 @@ async function persistEvent(
           'pi_run_error',
           protectedRun ? 'Protected Shopify run failed; details redacted' : boundarySummary ?? 'Run failed',
         ));
+        return false;
       } else {
-        await (lifecycle?.complete(
+        return (lifecycle?.complete(
           ctx.executionId,
           boundarySummary,
         ) ?? runs.complete(
           ctx.executionId,
           boundarySummary,
-        ));
+        ).then(result => result ?? true));
       }
     }
 }

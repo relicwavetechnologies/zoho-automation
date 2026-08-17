@@ -21,10 +21,11 @@ describe('providerPayloadDimensions', () => {
   it('counts Responses instructions and input separately', () => {
     const result = providerPayloadDimensions({
       instructions: 'system',
-      input: [{ role: 'user', content: 'question' }],
+      input: 'question',
+      tools: [{ type: 'function', name: 'lookup', parameters: { type: 'object' } }],
     }, true);
     assert.equal(result.systemPromptBytes, Buffer.byteLength('system'));
-    assert.ok(result.messagesBytes > 0);
-    assert.equal(result.toolSchemaBytes, 0);
+    assert.equal(result.messagesBytes, Buffer.byteLength('question'));
+    assert.ok(result.toolSchemaBytes > 0);
   });
 });

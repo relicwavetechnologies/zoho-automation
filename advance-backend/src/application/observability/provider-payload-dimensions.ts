@@ -13,9 +13,12 @@ export function providerPayloadDimensions(
   let toolSchemaBytes = 0;
   for (const candidate of tools) {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
-    const fn = (candidate as Record<string, unknown>)['function'];
-    if (!fn || typeof fn !== 'object' || Array.isArray(fn)) continue;
-    toolSchemaBytes += byteLength((fn as Record<string, unknown>)['parameters']);
+    const tool = candidate as Record<string, unknown>;
+    const fn = tool['function'];
+    const nestedParameters = fn && typeof fn === 'object' && !Array.isArray(fn)
+      ? (fn as Record<string, unknown>)['parameters']
+      : undefined;
+    toolSchemaBytes += byteLength(nestedParameters ?? tool['parameters']);
   }
 
   const messageValue = responsesApi ? payload['input'] : payload['messages'];
@@ -30,7 +33,7 @@ export function providerPayloadDimensions(
   return {
     toolSchemaBytes,
     systemPromptBytes,
-    messagesBytes: byteLength(messages),
+    messagesBytes: byteLength(messageValue),
   };
 }
 
