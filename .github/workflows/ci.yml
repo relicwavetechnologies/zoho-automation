@@ -704,6 +704,16 @@ jobs:
           chmod 600 .env.development.local
           REMOTE
 
+      # The retirement pre-check runs the newly published backend image, so the
+      # remote Docker daemon must be authenticated before that first pull. Keep
+      # this as the single VPS registry-login seam for the whole deployment.
+      - name: Log Development VPS in to GHCR
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "${GHCR_TOKEN}" | ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
+            "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
+
       - name: Retire removed Development dataExport storage when present
         run: |
           ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
@@ -743,12 +753,7 @@ jobs:
           REMOTE
 
       - name: Pull images, migrate, and restart
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          printf '%s' "${GHCR_TOKEN}" | ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
-            "docker login ghcr.io -u '${{ github.actor }}' --password-stdin"
-
           ssh -i ~/.ssh/id_ed25519 "${DIVO_DEV_USER}@${DIVO_DEV_HOST}" \
             "cd '${DEPLOY_DIR}' && \
              case '${BACKEND_IMAGE} ${ADMIN_IMAGE} ${PI_IMAGE} ${PI_CONTROLLER_IMAGE}' in *:main-latest*|*:latest*|*:dev-latest*) echo 'Mutable image tag refused in development deploy.' >&2; exit 1 ;; esac && \
