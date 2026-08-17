@@ -278,6 +278,36 @@ describe('execution run correlation ownership', () => {
       backendIssued: true,
     });
   });
+
+  it('accepts late runtime spans after the lifecycle owner terminalizes the exact leased run', async () => {
+    const result = await resolveBackendTraceProvenance(
+      {
+        executionRun: {
+          findUnique: async () => ({
+            id: 'execution-1',
+            companyId: 'company-1',
+            userId: 'user-1',
+            channel: 'web',
+            entrypoint: 'pi',
+            status: 'failed',
+          }),
+        },
+        aiTokenUsage: { findFirst: async () => null },
+      } as any,
+      { companyId: 'company-1', userId: 'user-1', companyRole: 'MEMBER' },
+      {
+        runId: 'leased-run',
+        runtimeChannel: 'web',
+        runtimeRunId: 'leased-run',
+      },
+    );
+
+    assert.deepEqual(result, {
+      runId: 'leased-run',
+      executionId: 'execution-1',
+      backendIssued: true,
+    });
+  });
 });
 
 describe('desktop trace terminal status', () => {

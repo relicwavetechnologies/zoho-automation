@@ -51,9 +51,12 @@ function runtimeInput() {
 
 test('records one causal runtime path without storing prompts or answers', async () => {
   const spans: Array<Record<string, any>> = [];
+  const admissions: unknown[] = [];
   const controllerStartedAt = Date.now() - 5;
   const store: RunLatencySpanStore = {
-    findOwnedIdByRequestId: async () => 'execution-1',
+    findOwnedIdByRequestId: async () => {
+      throw new Error('bound execution id should avoid a late lookup');
+    },
     insertSpans: async batch => { spans.push(...batch); },
   };
   const service = new LarkPiRuntimeService({
@@ -74,6 +77,13 @@ test('records one causal runtime path without storing prompts or answers', async
     runTimeoutMs: 30_000,
     runEffectReceipts,
     runLatencyRecorder: new RunLatencyRecorder(store, logger),
+    executionRuns: {
+      admit: async input => {
+        admissions.push(input);
+        return 'execution-1';
+      },
+      failDetached() {},
+    },
     fetch: async () => new Response(JSON.stringify({
       text: 'Finished secret answer',
       runtimeTelemetry: {
@@ -96,6 +106,8 @@ test('records one causal runtime path without storing prompts or answers', async
   await new Promise(resolve => setImmediate(resolve));
 
   const byName = new Map(spans.map(span => [span.name, span]));
+  assert.equal(admissions.length, 1);
+  assert.equal(byName.get('runtime.run.admit')?.parentSpanId, 'runtime.request');
   assert.equal(byName.get('runtime.request')?.status, 'ok');
   assert.equal(byName.get('runtime.controller.turn')?.spanId, 'runtime.controller');
   assert.equal(byName.get('runtime.controller.turn')?.parentSpanId, 'runtime.request');
