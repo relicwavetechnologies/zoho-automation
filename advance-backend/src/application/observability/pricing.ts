@@ -33,12 +33,17 @@ export interface ModelRate {
 export type ModelProvider = 'deepseek' | 'openai'
 
 /**
- * Pi's provider-neutral reasoning controls.
+ * Pi's provider-neutral reasoning controls, in ascending order of effort.
  *
  * A value is offered only when the selected provider/model can honour it as a
  * distinct mode. In particular, DeepSeek V4 does not expose a real `medium`:
  * Pi would clamp it upward to `high`, so advertising it would give the member
  * a control that changes its label but not the request.
+ *
+ * `xhigh` and `max` are two rungs, not one word for whichever ceiling a model
+ * has. Upstream Pi uses `xhigh` for both, which stops working the moment a
+ * model implements them separately — GPT-5.6 does. Each model's list below
+ * therefore names the value that actually reaches the provider.
  */
 export const RUNTIME_REASONING_EFFORTS = [
   'off',
@@ -47,6 +52,7 @@ export const RUNTIME_REASONING_EFFORTS = [
   'medium',
   'high',
   'xhigh',
+  'max',
 ] as const
 export type RuntimeReasoningEffort = (typeof RUNTIME_REASONING_EFFORTS)[number]
 
@@ -80,7 +86,9 @@ const SPECS: readonly ProxyModelSpec[] = [
     provider: 'deepseek',
     label: 'Flash',
     vision: false,
-    reasoningEfforts: ['off', 'high', 'xhigh'],
+    // DeepSeek's top effort is literally the string `max`; the runtime layer
+    // overrides the vendored table so the rung and the wire value agree.
+    reasoningEfforts: ['off', 'high', 'max'],
     defaultReasoningEffort: 'high',
     rate: { cacheHitIn: 0.0028, cacheMissIn: 0.14, output: 0.28 },
   },
@@ -89,7 +97,7 @@ const SPECS: readonly ProxyModelSpec[] = [
     provider: 'deepseek',
     label: 'Pro',
     vision: false,
-    reasoningEfforts: ['off', 'high', 'xhigh'],
+    reasoningEfforts: ['off', 'high', 'max'],
     defaultReasoningEffort: 'high',
     rate: { cacheHitIn: 0.0145, cacheMissIn: 1.74, output: 3.48 },
   },
@@ -98,7 +106,11 @@ const SPECS: readonly ProxyModelSpec[] = [
     provider: 'openai',
     label: 'Luna',
     vision: true,
-    reasoningEfforts: ['off', 'minimal', 'low', 'medium', 'high'],
+    // Luna's wire levels are none/low/medium/high/xhigh/max (docs, verified
+    // 2026-08-17); `off` carries `none` and the rest are named as sent. 5.6
+    // removed `minimal`, so offering it would relabel `low` without changing
+    // the run.
+    reasoningEfforts: ['off', 'low', 'medium', 'high', 'xhigh', 'max'],
     defaultReasoningEffort: 'high',
     rate: { cacheHitIn: 0.02, cacheMissIn: 0.2, output: 1.2 },
   },

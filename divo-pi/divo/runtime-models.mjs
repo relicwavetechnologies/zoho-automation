@@ -27,14 +27,21 @@ export const VISION_MODELS = new Set(["gpt-5.6-luna"]);
 /**
  * Exact Pi reasoning levels each provider model honours as a distinct mode.
  *
- * DeepSeek maps `medium` to `high`; exposing both would create a control whose
- * label changes while the provider request does not. `xhigh` is Pi's portable
- * name for DeepSeek's `max` effort.
+ * Every rung is named after the value that reaches the provider, which breaks
+ * with upstream's habit of routing any model's ceiling through `xhigh`. That
+ * shorthand works until one model offers both — GPT-5.6 does — because then the
+ * same word means `xhigh` on Luna and `max` on DeepSeek, and no picker can be
+ * read. So DeepSeek's ceiling sits on `max`, its literal wire value, applied as
+ * a model override in `buildAgentConfiguration`; Luna spends all six of its own.
+ *
+ * A level is left out when the provider will not honour it as a distinct mode:
+ * DeepSeek folds `low`/`medium` into `high`, and GPT-5.6 retired `minimal`.
+ * Offering either is a control whose label changes while the request does not.
  */
 export const RUNTIME_REASONING_LEVELS = Object.freeze({
-	"deepseek-v4-flash": Object.freeze(["off", "high", "xhigh"]),
-	"deepseek-v4-pro": Object.freeze(["off", "high", "xhigh"]),
-	"gpt-5.6-luna": Object.freeze(["off", "minimal", "low", "medium", "high"]),
+	"deepseek-v4-flash": Object.freeze(["off", "high", "max"]),
+	"deepseek-v4-pro": Object.freeze(["off", "high", "max"]),
+	"gpt-5.6-luna": Object.freeze(["off", "low", "medium", "high", "xhigh", "max"]),
 });
 
 export const DEFAULT_RUNTIME_REASONING_LEVEL = "high";

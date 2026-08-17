@@ -69,14 +69,13 @@ describe("Divo Pi runtime boundary", () => {
 			reserveTokens: 24_576,
 			keepRecentTokens: 20_000,
 		});
-		assert.deepEqual(
-			configuration.models.providers.deepseek.modelOverrides["deepseek-v4-pro"],
-			{ contextWindow: 150_000, maxTokens: 32_768 },
-		);
-		assert.deepEqual(
-			configuration.models.providers.deepseek.modelOverrides["deepseek-v4-flash"],
-			{ contextWindow: 150_000, maxTokens: 32_768 },
-		);
+		// The caps, not the whole override — the reasoning map that travels
+		// alongside them is a separate concern with its own test below.
+		for (const id of ["deepseek-v4-pro", "deepseek-v4-flash"]) {
+			const override = configuration.models.providers.deepseek.modelOverrides[id];
+			assert.equal(override.contextWindow, 150_000, `context for ${id}`);
+			assert.equal(override.maxTokens, 32_768, `output for ${id}`);
+		}
 	});
 
 	it("keeps signed gateway correlation separate from the filesystem thread", () => {
@@ -558,12 +557,43 @@ describe("How a run is told to look at a picture", () => {
 	it("uses only reasoning levels the selected model can honour", () => {
 		assert.equal(thinkingLevelForModel("deepseek-v4-flash"), "high");
 		assert.equal(thinkingLevelForModel("gpt-5.6-luna"), "high");
-		assert.equal(thinkingLevelForModel("deepseek-v4-pro", "xhigh"), "xhigh");
+		assert.equal(thinkingLevelForModel("deepseek-v4-pro", "max"), "max");
 		assert.equal(thinkingLevelForModel("gpt-5.6-luna", "medium"), "medium");
 		assert.throws(
 			() => thinkingLevelForModel("deepseek-v4-pro", "medium"),
-			/must be one of: off, high, xhigh/,
+			/must be one of: off, high, max/,
 		);
+		// 5.6 replaced `minimal` with `none`; a launch asking for it is a bug in
+		// the caller's table, not a preference to round.
+		assert.throws(
+			() => thinkingLevelForModel("gpt-5.6-luna", "minimal"),
+			/must be one of: off, low, medium, high, xhigh, max/,
+		);
+	});
+
+	// The two rungs above `high` are different amounts of thinking on GPT-5.6 and
+	// only one of them exists on DeepSeek. Sharing a rung between them would cap
+	// every Max run at xhigh, and nothing would report that it had happened.
+	it("keeps xhigh and max as separate rungs per model", () => {
+		assert.equal(thinkingLevelForModel("gpt-5.6-luna", "xhigh"), "xhigh");
+		assert.equal(thinkingLevelForModel("gpt-5.6-luna", "max"), "max");
+		assert.throws(
+			() => thinkingLevelForModel("deepseek-v4-flash", "xhigh"),
+			/must be one of: off, high, max/,
+		);
+	});
+
+	// Pi reaches DeepSeek's ceiling through `xhigh` in its vendored table, so the
+	// override is what makes the rung Divo offers land on the value DeepSeek
+	// actually accepts. Without it a "Max" run is rejected as an invalid effort.
+	it("points DeepSeek's max rung at the provider's own max", () => {
+		const overrides =
+			buildAgentConfiguration({ provider: "deepseek", model: "deepseek-v4-pro", thinkingLevel: "max" })
+				.models.providers.deepseek.modelOverrides;
+
+		for (const id of ["deepseek-v4-flash", "deepseek-v4-pro"]) {
+			assert.deepEqual(overrides[id].thinkingLevelMap, { xhigh: null, max: "max" });
+		}
 	});
 
 	it("passes the selected reasoning level to Pi instead of forcing high", () => {

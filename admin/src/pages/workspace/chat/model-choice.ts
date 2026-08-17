@@ -103,8 +103,13 @@ export function useChatModelChoice() {
   }
 }
 
+/**
+ * `xhigh` used to read "Max", because it was the only rung above `high` and on
+ * every model it carried whatever that provider called its ceiling. Luna has
+ * both, so the top rung needs its own word and this one gets its real name.
+ */
 export function reasoningEffortLabel(effort: ReasoningEffort): string {
-  if (effort === 'xhigh') return 'Max'
+  if (effort === 'xhigh') return 'Extra high'
   return `${effort.slice(0, 1).toUpperCase()}${effort.slice(1)}`
 }
 
@@ -113,5 +118,6 @@ export function reasoningEffortHint(effort: ReasoningEffort): string {
   if (effort === 'minimal' || effort === 'low') return 'Faster'
   if (effort === 'medium') return 'Balanced'
   if (effort === 'high') return 'Thorough'
+  if (effort === 'xhigh') return 'Slower'
   return 'Slowest'
 }

@@ -44,8 +44,17 @@ export function buildBaseOptions(
 	};
 }
 
-export function clampReasoning(effort: ThinkingLevel | undefined): Exclude<ThinkingLevel, "xhigh"> | undefined {
-	return effort === "xhigh" ? "high" : effort;
+/**
+ * Drop the two rungs above `high` for providers whose budgets stop there.
+ *
+ * `high` rather than a larger budget of our own invention: these APIs take a
+ * token count, and a provider that never defined a level above `high` has not
+ * told us what a bigger one would be worth.
+ */
+export function clampReasoning(
+	effort: ThinkingLevel | undefined,
+): Exclude<ThinkingLevel, "xhigh" | "max"> | undefined {
+	return effort === "xhigh" || effort === "max" ? "high" : effort;
 }
 
 export function adjustMaxTokensForThinking(

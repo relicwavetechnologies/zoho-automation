@@ -29,6 +29,13 @@ export function buildAgentConfiguration({ provider, model, thinkingLevel }) {
 	const deepseekOverride = {
 		contextWindow: DIVO_CONTEXT_WINDOW,
 		maxTokens: DIVO_MAX_OUTPUT_TOKENS,
+		// DeepSeek's top effort is the string `max`, and the vendored table
+		// reaches it through the `xhigh` rung — upstream's shorthand for "the
+		// ceiling, whatever it is called". Divo names rungs after the value
+		// sent, because the alternative is a picker whose top entry has to read
+		// "XHigh" on one model and mean `max`, while on another it reads the
+		// same and means `xhigh`.
+		thinkingLevelMap: { xhigh: null, max: "max" },
 	};
 	return {
 		settings: {

@@ -408,7 +408,7 @@ export function useMyTools() {
 
 /* ── Which models this person may pick ────────────────── */
 
-export type ReasoningEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+export type ReasoningEffort = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type ModelOption = {
   id: string
   label: string
