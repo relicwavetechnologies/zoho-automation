@@ -187,4 +187,71 @@ describe('OpenAiVideoTranscriber', () => {
     assert.equal(calls, 1);
     await rm(root, { recursive: true, force: true });
   });
+
+  it('does not retry a 429 that means the account is out of credits', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'divo-teach-stt-quota-'));
+    let calls = 0;
+    const transcriber = new OpenAiVideoTranscriber({
+      apiKey: 'sk-test',
+      sleepImpl: async () => {},
+      audioChunker: async input => {
+        const only = join(input.workDir, 'chunk-0000.m4a');
+        await writeFile(only, 'audio');
+        return [only];
+      },
+      fetchImpl: (async () => {
+        calls += 1;
+        return new Response(
+          JSON.stringify({ error: { type: 'insufficient_quota', code: 'credit_balance_exhausted' } }),
+          { status: 429 },
+        );
+      }) as typeof fetch,
+    });
+
+    await assert.rejects(
+      transcriber.transcribe({
+        audioPath: join(root, 'audio.m4a'),
+        ffmpegPath: '/usr/bin/ffmpeg',
+        durationSeconds: 60,
+        workDir: join(root, 'chunks'),
+      }),
+      /429/,
+    );
+    /* An exhausted account is a standing condition wearing a transient status.
+       Three attempts and fifteen seconds of backoff learn nothing, and every
+       reader waiting on the video waits through all of it. */
+    assert.equal(calls, 1);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it('still retries a real rate limit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'divo-teach-stt-ratelimit-'));
+    let calls = 0;
+    const transcriber = new OpenAiVideoTranscriber({
+      apiKey: 'sk-test',
+      sleepImpl: async () => {},
+      audioChunker: async input => {
+        const only = join(input.workDir, 'chunk-0000.m4a');
+        await writeFile(only, 'audio');
+        return [only];
+      },
+      fetchImpl: (async () => {
+        calls += 1;
+        return calls === 1
+          ? new Response(JSON.stringify({ error: { type: 'rate_limit_exceeded' } }), { status: 429 })
+          : new Response(JSON.stringify({ text: 'open the invoice' }), { status: 200 });
+      }) as typeof fetch,
+    });
+
+    const transcript = await transcriber.transcribe({
+      audioPath: join(root, 'audio.m4a'),
+      ffmpegPath: '/usr/bin/ffmpeg',
+      durationSeconds: 60,
+      workDir: join(root, 'chunks'),
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(transcript.text, 'open the invoice');
+    await rm(root, { recursive: true, force: true });
+  });
 });

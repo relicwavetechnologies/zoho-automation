@@ -54,9 +54,16 @@ export function askNoticeFor(input: {
 }): string {
   const { understanding } = input;
   const spoken = understanding.transcript.text.trim();
+  /* Three sentences for three states, and the third is the one that matters:
+     a recording whose narration Divo failed to hear must never be described as
+     one that had nothing to say. A model told "there was no speech" will answer
+     as though the screens were the whole of it. */
   const heard = spoken
     ? `Speech was transcribed (${spoken.split(/\s+/).length} words).`
-    : 'There was no speech to transcribe.';
+    : understanding.transcript.emptyBecause === 'unheard'
+      ? 'The speech could not be transcribed, so any narration is missing here — '
+        + 'do not treat this recording as silent.'
+      : 'There was no speech to transcribe.';
   const failed = understanding.warnings.length > 0
     ? ` ${understanding.warnings.length} part(s) could not be read.`
     : '';

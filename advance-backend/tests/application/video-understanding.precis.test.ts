@@ -93,10 +93,30 @@ describe('askNoticeFor', () => {
       fileName: 'silent.mp4',
       understanding: {
         ...understanding,
-        transcript: { ...understanding.transcript, text: '', segments: [] },
+        transcript: {
+          ...understanding.transcript, text: '', segments: [], emptyBecause: 'silent',
+        },
       },
     });
     assert.match(silent, /no speech to transcribe/);
+  });
+
+  /* A transcript that failed and a recording that was silent both arrive as an
+     empty string. Saying the wrong one of those has the model answer from the
+     screens alone while believing it has the whole recording. */
+  it('does not call an untranscribed recording a silent one', () => {
+    const unheard = askNoticeFor({
+      fileName: 'narrated.mp4',
+      understanding: {
+        ...understanding,
+        transcript: {
+          ...understanding.transcript, text: '', segments: [], emptyBecause: 'unheard',
+        },
+      },
+    });
+    assert.equal(/no speech to transcribe/.test(unheard), false);
+    assert.match(unheard, /could not be transcribed/);
+    assert.match(unheard, /do not treat this recording as silent/);
   });
 });
 

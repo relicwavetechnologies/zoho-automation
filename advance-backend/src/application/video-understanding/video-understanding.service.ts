@@ -123,10 +123,17 @@ export class VideoUnderstandingService {
   /**
    * The words, or an honest account of why there are none.
    *
-   * A silent recording is a normal thing to be handed, so it produces an empty
-   * transcript and a warning rather than an error — but the warning is carried
-   * all the way out, because "Divo heard nothing" and "the video said nothing"
-   * are different facts and only one of them is about the video.
+   * Three ways there can be no narration, and all three end the same way: an
+   * empty transcript, a warning carried all the way out, and a reading that
+   * still happened. "The video said nothing", "there was no audio track" and
+   * "Divo could not hear it" are different facts and none of them is a reason
+   * to throw away thirteen screens that read perfectly well.
+   *
+   * The last of those used to be fatal while the first two were not, which is
+   * how an expired provider key came back to a member as "this recording can't
+   * be opened" — a claim about their file, made about our billing. A caller
+   * that genuinely needs narration can see it is missing: the transcript is
+   * empty and the warning says why.
    */
   private async transcribe(
     extracted: VideoExtraction,
@@ -134,26 +141,45 @@ export class VideoUnderstandingService {
     warnings: string[],
   ): Promise<VideoTranscript> {
     if (!extracted.audio?.path || extracted.audio.skippedReason) {
-      const warning = extracted.audio?.skippedReason
+      return this.noWords(extracted, warnings, 'silent', extracted.audio?.skippedReason
         ? `Audio was unavailable: ${extracted.audio.skippedReason}`
-        : 'The recording did not contain an audio track.';
-      warnings.push(warning);
-      return {
-        provider: 'openai',
-        model: this.deps.transcriptionModel,
-        timing: 'chunk',
-        durationSeconds: extracted.video.durationSeconds,
-        segments: [],
-        text: '',
-        warnings: [warning],
-      };
+        : 'The recording did not contain an audio track.');
     }
-    return this.deps.transcriber.transcribe({
-      audioPath: extracted.audio.path,
-      ffmpegPath: extracted.extraction.ffmpegPath,
-      durationSeconds: extracted.audio.durationSeconds || extracted.video.durationSeconds,
-      workDir: join(workDir, '.audio-chunks'),
-    });
+    try {
+      return await this.deps.transcriber.transcribe({
+        audioPath: extracted.audio.path,
+        ffmpegPath: extracted.extraction.ffmpegPath,
+        durationSeconds: extracted.audio.durationSeconds || extracted.video.durationSeconds,
+        workDir: join(workDir, '.audio-chunks'),
+      });
+    } catch (error) {
+      this.log.warn('video.transcription_failed', { error: safeErrorMessage(error) });
+      return this.noWords(
+        extracted,
+        warnings,
+        'unheard',
+        `The speech in this recording could not be transcribed: ${safeErrorMessage(error)}`,
+      );
+    }
+  }
+
+  private noWords(
+    extracted: VideoExtraction,
+    warnings: string[],
+    emptyBecause: 'silent' | 'unheard',
+    warning: string,
+  ): VideoTranscript {
+    warnings.push(warning);
+    return {
+      provider: 'openai',
+      model: this.deps.transcriptionModel,
+      timing: 'chunk',
+      durationSeconds: extracted.video.durationSeconds,
+      segments: [],
+      text: '',
+      warnings: [warning],
+      emptyBecause,
+    };
   }
 
   /**

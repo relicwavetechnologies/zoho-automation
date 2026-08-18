@@ -93,6 +93,19 @@ export interface VideoTranscript {
   readonly segments: readonly TranscriptSegment[];
   readonly text: string;
   readonly warnings: readonly string[];
+  /**
+   * Why there are no words, when there are none.
+   *
+   * An empty transcript has two causes that read identically downstream and
+   * mean opposite things: `silent` is a fact about the recording, `unheard` is
+   * a fact about us. Told apart here rather than guessed at from the warning
+   * text, because the one place it matters is a sentence shown to a model —
+   * and "there was no speech" said about a recording full of narration is Divo
+   * asserting something false about the member's own file.
+   *
+   * Absent whenever words came back.
+   */
+  readonly emptyBecause?: 'silent' | 'unheard';
 }
 
 export interface VideoTranscriber {

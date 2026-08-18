@@ -19,9 +19,15 @@ const CHUNK_RETRY_DELAYS_MS = [1_000, 4_000, 10_000] as const;
  * Their 500s are routine and clear on a second attempt seconds later; retrying
  * a 400 or a 401 just burns the upload again. Rate limits are retryable by
  * definition, and the caller honours `Retry-After` when one is offered.
+ *
+ * Except one: an exhausted account answers 429 as well, and that is a standing
+ * condition wearing a transient status. Retrying it spends fifteen seconds of
+ * backoff to be told the same thing three times, and every caller waiting on
+ * the reading waits through all of it.
  */
-function isRetryableTranscriptionStatus(status: number): boolean {
-  return status === 408 || status === 409 || status === 429 || status >= 500;
+function isRetryableTranscriptionStatus(status: number, body: string): boolean {
+  if (status === 429) return !/insufficient_quota|credit_balance_exhausted|billing/i.test(body);
+  return status === 408 || status === 409 || status >= 500;
 }
 
 /** Network-level faults never reach a status code, but are always worth a retry. */
@@ -159,6 +165,9 @@ export class OpenAiVideoTranscriber implements VideoTranscriber {
         segments,
         text: segments.map(segment => segment.text).join(' ').trim(),
         warnings,
+        // Reached only when every chunk came back empty and none of them
+        // failed, which is what an audio track with nobody talking sounds like.
+        ...(segments.length === 0 ? { emptyBecause: 'silent' as const } : {}),
       };
     } finally {
       await rm(input.workDir, { recursive: true, force: true });
@@ -226,7 +235,7 @@ export class OpenAiVideoTranscriber implements VideoTranscriber {
     const raw = await response.text();
     if (!response.ok) {
       const message = `OpenAI transcription failed (${response.status}): ${raw.slice(0, 500)}`;
-      throw isRetryableTranscriptionStatus(response.status)
+      throw isRetryableTranscriptionStatus(response.status, raw)
         ? new RetryableTranscriptionError(
           message,
           parseRetryAfterMs(response.headers.get('retry-after')),

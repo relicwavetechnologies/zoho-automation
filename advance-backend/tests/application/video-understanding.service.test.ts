@@ -140,6 +140,58 @@ describe('VideoUnderstandingService', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it('still reads the screens when the words could not be transcribed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'divo-video-deaf-'));
+    const service = new VideoUnderstandingService({
+      extractor: {
+        extract: async ({ outputDir }): Promise<VideoExtraction> => {
+          await mkdir(outputDir, { recursive: true });
+          const frame = join(outputDir, 'frame.jpg');
+          const audio = join(outputDir, 'audio.m4a');
+          await Promise.all([writeFile(frame, 'frame'), writeFile(audio, 'audio')]);
+          return {
+            outputDir, strategy: 'fps', frames: [{ path: frame, bytes: 5 }],
+            video: videoFacts, extraction: extractionFacts,
+            audio: {
+              path: audio, codec: 'aac', channels: 1, sampleRateHz: 16_000,
+              durationSeconds: 20, sizeBytes: 5, skippedReason: null,
+            },
+          };
+        },
+      },
+      /* The shape a spent provider key arrives in. Nothing about it is a fact
+         about the member's recording, so nothing about it may end up being
+         reported as one. */
+      transcriber: {
+        transcribe: async () => {
+          throw new Error('OpenAI transcription failed (429): insufficient_quota');
+        },
+      },
+      reader: {
+        read: async () => ({
+          ocrText: 'Invoice 4182 overdue', caption: 'Zoho Books', uiElements: [],
+          confidence: 0.9, warnings: [], provider: 'openrouter', model: 'qwen/qwen3-vl-32b-instruct',
+        }),
+      },
+      logger: noopLogger,
+      readConcurrency: 1,
+      transcriptionModel: 'gpt-4o-mini-transcribe',
+    });
+
+    const understanding = await service.understand({
+      videoPath: join(root, 'raw.mp4'),
+      workDir: join(root, 'evidence'),
+    });
+
+    assert.equal(understanding.frames.length, 1);
+    assert.equal(understanding.frames[0]?.reading.ocrText, 'Invoice 4182 overdue');
+    assert.deepEqual(understanding.transcript.segments, []);
+    assert.match(understanding.warnings[0] ?? '', /could not be transcribed/);
+    // The one thing the notice must not be free to say about this recording.
+    assert.equal(understanding.transcript.emptyBecause, 'unheard');
+    await rm(root, { recursive: true, force: true });
+  });
+
   it('fails the whole reading when no frame could be read, and leaves nothing behind', async () => {
     const root = await mkdtemp(join(tmpdir(), 'divo-video-fail-'));
     const workDir = join(root, 'evidence');
