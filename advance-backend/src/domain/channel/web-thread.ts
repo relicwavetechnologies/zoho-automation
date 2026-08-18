@@ -112,6 +112,23 @@ export interface WebThreadDetail extends WebThreadSummary {
 /** How much of a conversation one read returns. */
 export const WEB_THREAD_PAGE = 40;
 
+/**
+ * How many conversations one read of the list returns.
+ *
+ * The rail shows a window, not a history. Everything older is a "Show more"
+ * away rather than absent — which is what it used to be, silently, at eight.
+ */
+export const WEB_THREAD_LIST_PAGE = 25;
+
+/**
+ * The most a single read of the list may ask for.
+ *
+ * A ceiling rather than a promise of everything: the window grows a page at a
+ * time as a reader asks for it, and a client that asks for a hundred thousand
+ * rows gets a bounded answer instead of a slow one.
+ */
+export const WEB_THREAD_LIST_MAX = 500;
+
 /** One stored turn, as much of it as assembling a page needs. */
 export interface WebThreadPageRow {
   readonly id: string;

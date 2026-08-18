@@ -16,6 +16,7 @@ import {
   isSupportedConversationVideoMime,
 } from '../../application/conversation-video/conversation-video.store';
 import type { WebThreadRepoPort } from '../../infrastructure/persistence/web-thread.repository';
+import { WEB_THREAD_LIST_PAGE } from '../../domain/channel/web-thread';
 import type { DecisionService } from '../../application/decision/decision.service';
 import { statusFor } from './desktop-approvals.routes';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
@@ -144,13 +145,19 @@ export function createWebChatRoutes(deps: {
      it away. Retention is the reader's decision and never a timer — see the
      retention note in `plans/divo-one-soul-two-surfaces.md`. */
 
-  router.get('/threads', async (_req, res) => {
+  router.get('/threads', async (req, res) => {
     const identity = identityFrom(res);
     if (!identity) return unauthenticated(res);
+    /* How much of the list the reader is currently looking at. Anything
+       unparseable falls back to one page rather than being rejected — the
+       worst a junk limit can do is return the newest page, which is what a
+       first open asks for anyway. The repository clamps the rest. */
+    const asked = Number(req.query['limit']);
+    const limit = Number.isSafeInteger(asked) && asked > 0 ? asked : WEB_THREAD_LIST_PAGE;
     const listed = await deps.threads.list({
       companyId: String(identity.runContext.companyId),
       userId: identity.userId,
-    });
+    }, limit);
     if (!listed.ok) {
       log.error('web_chat.threads.list_failed', { error: String(listed.error) });
       res.status(500).json({ ok: false, error: 'threads_unavailable' });
@@ -162,7 +169,10 @@ export function createWebChatRoutes(deps: {
     const running = new Set(deps.registry.activeFor(identity.userId).map(run => run.threadId));
     res.json({
       ok: true,
-      threads: listed.value.map(thread => ({ ...thread, running: running.has(thread.threadId) })),
+      threads: listed.value.threads.map(
+        thread => ({ ...thread, running: running.has(thread.threadId) }),
+      ),
+      hasMore: listed.value.hasMore,
     });
   });
 
