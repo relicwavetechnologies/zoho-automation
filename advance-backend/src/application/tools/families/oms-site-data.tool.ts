@@ -49,9 +49,11 @@ export const createOmsSiteDataTool = (deps: {
   actionGroups: new Set(['read']),
   argsSchema: OmsSiteDataToolArgsSchema,
   resultSchema: ResultSchema,
-  description: 'Search the company-approved OMS website inventory through a governed, read-only backend capability.',
+  description: 'Sanitize OMS website inputs, look up OMS vendors, or search the company-approved OMS website inventory through a governed, read-only backend capability.',
   parameterDocs: [
-    'operation: search_sites, get_site_profiles, or list_catalog_values.',
+    'operation: sanitize_website_inputs, lookup_vendors, search_sites, get_site_profiles, or list_catalog_values.',
+    'sanitize_website_inputs: pass pasted emails, http/https URLs, or hostnames in inputs; returns deterministic OMS-ready website hostnames without calling OMS. Credential-bearing URLs and non-web URL schemes are rejected.',
+    'lookup_vendors: pass 1-20 exact OMS-ready websites in www.example.com format; returns vendor rows from OMS Vendor Fetch. If the user gives emails, URLs, or messy domains, run sanitize_website_inputs first and pass only sanitized website values that start with www.',
     'search_sites: use one or more vetted website, niche, classification, price, quality, traffic, or authority criteria; returns the standard inventory view.',
     'search_sites quality filters: maxSpamScore (lower is better, use it for clean/safe site requests), minDomainRating, minDomainAuthority, minPageAuthority.',
     'search_sites spam score: OMS stores "never measured" as a negative spam score. Setting maxSpamScore, or ranking cleanest-first, automatically excludes those unmeasured sites, so such a result is the set of sites with a MEASURED spam score, not every matching site. Set minSpamScore yourself to override.',
@@ -79,17 +81,21 @@ export const createOmsSiteDataTool = (deps: {
   async execute(args: OmsSiteDataToolArgs, ctx: ToolExecutionContext): Promise<Result<Res, ToolError>> {
     const startedAt = Date.now();
     try {
-      ctx.onProgress?.('Retrieving governed OMS site inventory…');
+      ctx.onProgress?.(progressMessageFor(args.operation));
       const data = await deps.service.execute({ companyId: ctx.runContext.companyId, args });
       const preview = createDatasetPreview({
         rows: data.rows,
-        coverage: {
-          kind: 'provider_limited',
-          returnedRows: data.rows.length,
-          reason: data.status === 'partial'
-            ? 'oms_100_row_cap_without_pagination_or_total'
-            : 'oms_snapshot_without_pagination_or_total',
-        },
+        coverage: args.operation === 'sanitize_website_inputs'
+          ? { kind: 'complete', totalRows: data.rows.length }
+          : {
+              kind: 'provider_limited',
+              returnedRows: data.rows.length,
+              reason: args.operation === 'lookup_vendors'
+                ? 'oms_vendor_fetch_per_website_response'
+                : data.status === 'partial'
+                ? 'oms_100_row_cap_without_pagination_or_total'
+                : 'oms_snapshot_without_pagination_or_total',
+            },
       });
       const result: Res = {
         status: data.status,
@@ -101,6 +107,7 @@ export const createOmsSiteDataTool = (deps: {
           data.status,
           data.rows.length,
           preview.rows.length,
+          data.coverage,
           args,
         ),
       };
@@ -159,8 +166,30 @@ function messageFor(
   status: 'complete' | 'empty' | 'partial',
   rowCount: number,
   returnedRows: number,
+  coverage: Record<string, unknown>,
   args: OmsSiteDataToolArgs,
 ): string {
+  if (args.operation === 'sanitize_website_inputs') {
+    const sanitizedRows = typeof coverage.sanitizedRows === 'number' ? coverage.sanitizedRows : 0;
+    const invalidRows = typeof coverage.invalidRows === 'number' ? coverage.invalidRows : rowCount - sanitizedRows;
+    const parts = [`Sanitized ${sanitizedRows} of ${rowCount} candidate input${rowCount === 1 ? '' : 's'} into OMS-ready website hostnames.`];
+    if (invalidRows > 0) parts.push(`${invalidRows} candidate${invalidRows === 1 ? ' was' : 's were'} invalid and kept in the preview with a reason.`);
+    parts.push('Use the website column for exact OMS lookups. This operation did not call OMS or any vendor API.');
+    if (rowCount > returnedRows) parts.push(`Showing the first ${returnedRows} rows in chat.`);
+    return parts.join(' ');
+  }
+  if (args.operation === 'lookup_vendors') {
+    const inputCount = typeof coverage.inputCount === 'number' ? coverage.inputCount : rowCount;
+    const foundWebsites = typeof coverage.foundWebsites === 'number' ? coverage.foundWebsites : 0;
+    const notFoundWebsites = typeof coverage.notFoundWebsites === 'number' ? coverage.notFoundWebsites : Math.max(inputCount - foundWebsites, 0);
+    const vendorRows = typeof coverage.vendorRows === 'number' ? coverage.vendorRows : rowCount - notFoundWebsites;
+    const parts = [`Found vendor records for ${foundWebsites} of ${inputCount} website${inputCount === 1 ? '' : 's'}.`];
+    if (vendorRows > 0) parts.push(`${vendorRows} vendor row${vendorRows === 1 ? '' : 's'} returned.`);
+    if (notFoundWebsites > 0) parts.push(`${notFoundWebsites} website${notFoundWebsites === 1 ? ' had' : 's had'} no vendor match.`);
+    parts.push('Vendor lookup used OMS Vendor Fetch only; it did not search public web or site inventory.');
+    if (rowCount > returnedRows) parts.push(`Showing the first ${returnedRows} rows in chat.`);
+    return parts.join(' ');
+  }
   // Divo injects a spamScore >= 0 filter to drop the unmeasured sentinel, which
   // changes the result set. Saying so keeps "complete" and "no matches" honest.
   const spamNote = args.operation === 'search_sites' && excludesUnmeasuredSpamScore(args)
@@ -197,9 +226,16 @@ function partialAdviceFor(args: OmsSiteDataToolArgs): string {
   if (args.operation === 'get_site_profiles') {
     return `${capped} Sites are stored per listing, so some listings for the requested hostnames may be missing. Request fewer hostnames if you need every listing.`;
   }
+  if (args.operation !== 'search_sites') return capped;
   return args.sortBy
     ? `${capped} OMS sorts before it truncates, so these are genuinely the top 100 by ${args.sortBy} ${args.sortDirection ?? defaultSortDirection(args.sortBy)}; any lower-ranked matches are excluded. Narrow the filters to see past them.`
     : `${capped} No sort was requested, so these 100 rows are an arbitrary subset of the matches rather than the best ones. Re-run with sortBy, or narrow the filters, before drawing any conclusion.`;
+}
+
+function progressMessageFor(operation: OmsSiteDataToolArgs['operation']): string {
+  if (operation === 'sanitize_website_inputs') return 'Cleaning OMS website inputs…';
+  if (operation === 'lookup_vendors') return 'Looking up OMS vendors…';
+  return 'Retrieving governed OMS site inventory…';
 }
 
 function toToolError(error: unknown): ToolError {

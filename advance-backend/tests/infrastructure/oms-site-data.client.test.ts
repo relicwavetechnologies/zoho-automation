@@ -1,9 +1,143 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { OmsSiteDataClient } from '../../src/infrastructure/oms/oms-site-data.client.ts';
-import { OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, SEARCH_SORT_FIELDS, buildOmsProviderRequest } from '../../src/application/oms/oms-site-data.types.ts';
+import { OmsSiteDataServiceError, OmsSiteDataToolArgsSchema, SEARCH_SORT_FIELDS, buildOmsProviderRequest, sanitizeOmsWebsiteInputs } from '../../src/application/oms/oms-site-data.types.ts';
 
 describe('OmsSiteDataClient', () => {
+  it('sanitizes pasted emails, URLs, and hostnames into OMS-ready websites', () => {
+    const rows = sanitizeOmsWebsiteInputs([
+      'Sales@Example.COM',
+      'https://example.com/path?utm=1',
+      'www.partner.co.in/',
+      'blog.example.com/articles',
+      'not-a-domain',
+    ]);
+
+    assert.deepEqual(rows, [
+      { input: 'Sales@Example.COM', status: 'sanitized', inputKind: 'email', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'https://example.com/path?utm=1', status: 'sanitized', inputKind: 'url', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'www.partner.co.in/', status: 'sanitized', inputKind: 'url', hostname: 'www.partner.co.in', website: 'www.partner.co.in' },
+      { input: 'blog.example.com/articles', status: 'sanitized', inputKind: 'url', hostname: 'blog.example.com', website: 'blog.example.com' },
+      { input: 'not-a-domain', status: 'invalid', reason: 'No URL, email, or hostname found.' },
+    ]);
+  });
+
+  it('handles real pasted email and URL shapes without following embedded URLs', () => {
+    const rows = sanitizeOmsWebsiteInputs([
+      ' <Sales@Example.COM>, ',
+      'mailto:support@Example.org?subject=Hi',
+      'HTTP://WWW.Example.NET./path?utm=1',
+      'example.com:443/path',
+      'example.com/path?redirect=https://evil.com',
+      'sales@example.com, admin@test.co.in; https://foo.com/a',
+    ]);
+
+    assert.deepEqual(rows, [
+      { input: 'Sales@Example.COM', status: 'sanitized', inputKind: 'email', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'mailto:support@Example.org?subject=Hi', status: 'sanitized', inputKind: 'email', hostname: 'example.org', website: 'www.example.org' },
+      { input: 'HTTP://WWW.Example.NET./path?utm=1', status: 'sanitized', inputKind: 'url', hostname: 'www.example.net', website: 'www.example.net' },
+      { input: 'example.com:443/path', status: 'sanitized', inputKind: 'url', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'example.com/path?redirect=https://evil.com', status: 'sanitized', inputKind: 'url', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'sales@example.com', status: 'sanitized', inputKind: 'email', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'admin@test.co.in', status: 'sanitized', inputKind: 'email', hostname: 'test.co.in', website: 'www.test.co.in' },
+      { input: 'https://foo.com/a', status: 'sanitized', inputKind: 'url', hostname: 'foo.com', website: 'www.foo.com' },
+    ]);
+  });
+
+  it('handles a bulk Lark or sheet paste with mixed separators and bad rows', () => {
+    const rows = sanitizeOmsWebsiteInputs([
+      [
+        'Priya <founder@Acme.ai>',
+        'https://www.Notion.so/customers?utm_source=newsletter',
+        'hello@stripe.com',
+        'shopify.com/partners',
+        'blog.hubspot.com/sales',
+        'https://sub.example.co.uk/articles',
+        // Plain words inside a paste are ignored rather than each becoming an
+        // invalid row. Standalone bad inputs are still rejected below.
+        'not-a-domain',
+        'ftp://legacy.example.com/file',
+        'https://accounts.google.com@fake.biz/login',
+      ].join('\n'),
+      'not-a-domain',
+      'ops+billing@vendor.co.in; http://WWW.Example.NET:443/path, (https://foo.com/a).',
+      Array.from({ length: 40 }, (_, index) => `bulk${index}@example${index}.com`).join(', '),
+    ]);
+
+    assert.equal(rows.length, 52);
+    assert.equal(rows.filter(row => row.status === 'sanitized').length, 49);
+    assert.equal(rows.filter(row => row.status === 'invalid').length, 3);
+    assert.deepEqual(rows.slice(0, 6).map(row => row.website), [
+      'www.acme.ai',
+      'www.notion.so',
+      'www.stripe.com',
+      'www.shopify.com',
+      'blog.hubspot.com',
+      'sub.example.co.uk',
+    ]);
+    assert.equal(rows.find(row => row.input === 'ops+billing@vendor.co.in')?.website, 'www.vendor.co.in');
+    assert.equal(rows.find(row => row.input === 'http://WWW.Example.NET:443/path')?.website, 'www.example.net');
+    assert.equal(rows.find(row => row.input === 'ftp://legacy.example.com/file')?.reason, 'Only http and https URLs are accepted.');
+    assert.equal(rows.find(row => row.input === 'https://accounts.google.com@fake.biz/login')?.reason, 'URLs with usernames or passwords are not accepted.');
+  });
+
+  it('bounds sanitizer input size before runtime execution', () => {
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({
+      operation: 'sanitize_website_inputs',
+      inputs: Array.from({ length: 200 }, (_, index) => `site${index}.com`),
+    }).success, true);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({
+      operation: 'sanitize_website_inputs',
+      inputs: Array.from({ length: 201 }, (_, index) => `site${index}.com`),
+    }).success, false);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({
+      operation: 'sanitize_website_inputs',
+      inputs: ['a'.repeat(2_001)],
+    }).success, false);
+  });
+
+  it('bounds vendor lookup to exact OMS-ready www websites', () => {
+    const valid = OmsSiteDataToolArgsSchema.safeParse({
+      operation: 'lookup_vendors',
+      websites: ['WWW.Example.COM', 'www.partner.co.in'],
+    });
+    assert.equal(valid.success, true);
+    if (valid.success) assert.deepEqual(valid.data.websites, ['www.example.com', 'www.partner.co.in']);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({ operation: 'lookup_vendors', websites: ['example.com'] }).success, false);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({ operation: 'lookup_vendors', websites: ['https://www.example.com'] }).success, false);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({ operation: 'lookup_vendors', websites: ['www.example.com', 'www.example.com'] }).success, false);
+    assert.equal(OmsSiteDataToolArgsSchema.safeParse({
+      operation: 'lookup_vendors',
+      websites: Array.from({ length: 21 }, (_, index) => `www.site${index}.com`),
+    }).success, false);
+  });
+
+  it('rejects unsafe or malformed website inputs instead of guessing a host', () => {
+    const rows = sanitizeOmsWebsiteInputs([
+      'john@@example.com',
+      'https://user:pass@example.com/path',
+      'https://example.com@evil.com/path',
+      'ftp://example.com/file',
+      'javascript://example.com/%0aalert',
+      'https://127.0.0.1',
+      'http://localhost:3000',
+      'www.-bad.com',
+      'foo..com',
+    ]);
+
+    assert.deepEqual(rows, [
+      { input: 'john@@example.com', status: 'invalid', reason: 'URLs with usernames or passwords are not accepted.' },
+      { input: 'https://user:pass@example.com/path', status: 'invalid', reason: 'URLs with usernames or passwords are not accepted.' },
+      { input: 'https://example.com@evil.com/path', status: 'invalid', reason: 'URLs with usernames or passwords are not accepted.' },
+      { input: 'ftp://example.com/file', status: 'invalid', reason: 'Only http and https URLs are accepted.' },
+      { input: 'javascript://example.com/%0aalert', status: 'invalid', reason: 'Only http and https URLs are accepted.' },
+      { input: 'https://127.0.0.1', status: 'invalid', reason: 'Hostname must be a public domain, not an IP, localhost, or malformed value.' },
+      { input: 'http://localhost:3000', status: 'invalid', reason: 'Hostname must be a public domain, not an IP, localhost, or malformed value.' },
+      { input: 'www.-bad.com', status: 'invalid', reason: 'Hostname must be a public domain, not an IP, localhost, or malformed value.' },
+      { input: 'foo..com', status: 'invalid', reason: 'Hostname must be a public domain, not an IP, localhost, or malformed value.' },
+    ]);
+  });
+
   it('uses the fixed POST contract, exact op filter key, and no browser/session headers', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const client = new OmsSiteDataClient({
@@ -37,6 +171,81 @@ describe('OmsSiteDataClient', () => {
     assert.equal(JSON.stringify(body).includes('operator'), false);
     assert.equal(result.status, 'complete');
     assert.equal(JSON.stringify(result).includes('never-log-this'), false);
+  });
+
+  it('uses the vendor_fetch POST contract and reports per-website matches', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = [];
+    const client = new OmsSiteDataClient({
+      timeoutMs: 1_000,
+      vendorEndpoint: 'https://oms.example.test/webhook/vendor_fetch',
+      fetchImpl: async (url, init) => {
+        calls.push({ url: String(url), init });
+        const website = new URL(String(url)).searchParams.get('website');
+        if (website === 'www.whatmycarworth.com') {
+          return new Response(JSON.stringify([{
+            website,
+            name: 'Adv Voronsoft',
+            email: 'adv.voronsoft@example.com',
+            pitchedFrom: 'care@outreachdeal.com',
+          }]), { status: 200 });
+        }
+        return new Response('', { status: 200 });
+      },
+    });
+
+    const result = await client.fetchVendors('never-log-this', ['www.whatmycarworth.com', 'www.missing.com']);
+
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls.map(call => new URL(call.url).searchParams.get('website')), ['www.whatmycarworth.com', 'www.missing.com']);
+    for (const call of calls) {
+      assert.equal(call.url.startsWith('https://oms.example.test/webhook/vendor_fetch?'), true);
+      const headers = call.init?.headers as Record<string, string>;
+      assert.equal(headers['X-API-Key'], 'never-log-this');
+      assert.equal(headers.Authorization, undefined);
+      assert.equal(call.init?.body, undefined);
+    }
+    assert.equal(result.operation, 'lookup_vendors');
+    assert.equal(result.status, 'complete');
+    assert.deepEqual(result.coverage, {
+      source: 'OMS Vendor Fetch API',
+      inputCount: 2,
+      foundWebsites: 1,
+      notFoundWebsites: 1,
+      vendorRows: 1,
+    });
+    assert.deepEqual(result.rows, [
+      {
+        website: 'www.whatmycarworth.com',
+        status: 'found',
+        name: 'Adv Voronsoft',
+        email: 'adv.voronsoft@example.com',
+        pitchedFrom: 'care@outreachdeal.com',
+      },
+      { website: 'www.missing.com', status: 'not_found' },
+    ]);
+    assert.equal(JSON.stringify(result).includes('never-log-this'), false);
+  });
+
+  it('maps vendor_fetch auth envelopes without treating them as no vendor found', async () => {
+    const client = new OmsSiteDataClient({
+      timeoutMs: 1_000,
+      fetchImpl: async () => new Response(
+        JSON.stringify({ success: false, error: 'Unauthorized', message: 'Missing or invalid API key.' }),
+        { status: 200 },
+      ),
+    });
+    await assert.rejects(
+      () => client.fetchVendors('wrong-key', ['www.example.com']),
+      (error: unknown) => error instanceof OmsSiteDataServiceError && error.code === 'provider_auth_failed',
+    );
+  });
+
+  it('rejects malformed vendor_fetch responses', async () => {
+    const client = new OmsSiteDataClient({ timeoutMs: 1_000, fetchImpl: async () => new Response('{', { status: 200 }) });
+    await assert.rejects(
+      () => client.fetchVendors('key', ['www.example.com']),
+      (error: unknown) => error instanceof OmsSiteDataServiceError && error.code === 'provider_failure',
+    );
   });
 
   it('sorts grouped catalog values locally and marks a provider-cap response partial', async () => {
