@@ -70,22 +70,22 @@ export type DocumentTheme = 'light' | 'dark'
  * app's blue is spent on links, and inline code takes a neutral fill instead.
  */
 const LIGHT = `
-  --canvas: #f1f2f3; --surface: #ffffff; --inset: #f7f8f9; --field: #f2f2f3;
-  --hover: #f4f5f6;
-  --ink: #1f2124; --ink-2: #62656b; --ink-3: #9a9da3;
-  --line: #ecedef; --line-strong: #e0e2e5;
+  --canvas: #f1f2f3; --surface: #ffffff; --inset: #f7f8f9; --field: #ebeced;
+  --hover: #ebeced;
+  --ink: #1f2124; --ink-2: #4f5257; --ink-3: #6b6d72;
+  --line: #e7e9ea; --line-strong: #d4d6d7;
   --green: #189a4d; --green-tint: #e8f5ed;
   --red: #e3474c; --red-tint: #fcecec;
   --orange: #ef720c; --orange-tint: #fdf1e5;
-  --accent: #1f2124; --accent-tint: #f2f2f3; --accent-ink: #1f2124;
-  --link: #0170dd;
+  --accent: #1f2124; --accent-tint: #ebeced; --accent-ink: #1f2124;
+  --link: #026cd0;
   --lift: 0 1px 2px #1018280a;
 `
 
 const DARK = `
   --canvas: #1c1d1f; --surface: #232427; --inset: #1f2022; --field: #2b2c2f;
   --hover: #2a2b2e;
-  --ink: #f2f3f4; --ink-2: #a5a8ad; --ink-3: #6c6f75;
+  --ink: #f2f3f4; --ink-2: #a5a8ad; --ink-3: #898c91;
   --line: #2e3033; --line-strong: #3a3c40;
   --green: #3dbb72; --green-tint: #3dbb7224;
   --red: #ee5c61; --red-tint: #ee5c6124;

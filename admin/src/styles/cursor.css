@@ -45,16 +45,40 @@
   --cur-hairline: var(--bui-line);
   --cur-hairline-soft: var(--bui-line);
   --cur-hairline-strong: var(--bui-line-strong);
+  --cur-hairline-hover: var(--bui-line-hover);
 
   --cur-ink: var(--bui-ink);
   --cur-body: var(--bui-ink-2);
   --cur-muted: var(--bui-ink-3);
   --cur-muted-soft: var(--bui-ink-3);
+  /* Muted text on a plane that is ink rather than paper — the featured metric,
+     and anything else that inverts. It cannot be `--cur-muted`: that token
+     darkens as the page lightens, which is correct everywhere except on the one
+     surface whose ground is the ink itself, where it converges on invisible.
+     The tooltip is the app's other inverted surface and already had the right
+     value, so this is that value rather than a fifth grey. */
+  --cur-muted-on-ink: var(--bui-tooltip-muted);
 
+  /*
+    Two weights per hue, split by job.
+
+    The plain name fills things — a bar, a dot, a badge's ground, a border. The
+    `-ink` name spells words. They are the same colour in dark and they differ
+    in light, which is the entire reason the split exists: a hue bright enough
+    to read against near-black is not dark enough to read against white, and
+    for a long time this app used one value for both and lost that bet in every
+    light-mode view. See the chromatics note in `palette.css`.
+
+    Pick by asking whether the colour will be a letterform. If it will, it is
+    `-ink`.
+  */
   --cur-accent: var(--bui-accent);
+  --cur-accent-ink: var(--bui-accent-ink);
   --cur-on-accent: #ffffff;
   --cur-success: var(--bui-green);
+  --cur-success-ink: var(--bui-green-ink);
   --cur-error: var(--bui-red);
+  --cur-error-ink: var(--bui-red-ink);
 
   /*
     Primary CTA is INK, not orange.
@@ -147,7 +171,7 @@
   border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface); font-size: 12.5px; cursor: pointer; color: var(--cur-body); }
 .cur .role-pill b { color: var(--cur-ink); }
 .cur .icon-btn { width: 36px; height: 36px; border-radius: var(--cur-r-cta); border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface); display: grid; place-items: center; cursor: pointer; color: var(--cur-ink); }
-.cur .icon-btn:hover, .cur .role-pill:hover, .cur .search:hover { border-color: var(--cur-muted-soft); }
+.cur .icon-btn:hover, .cur .role-pill:hover, .cur .search:hover { border-color: var(--cur-hairline-hover); }
 
 .cur .content { flex: 1; min-height: 0; overflow: hidden; }
 .cur .scroll { height: 100%; overflow-y: auto; }
@@ -180,7 +204,7 @@
 .cur .metric .val { font-size: 30px; letter-spacing: -0.03em; font-weight: 400; margin-top: 10px; }
 .cur .metric .sub { font-size: 12px; color: var(--cur-muted); margin-top: 5px; }
 .cur .metric.feat { background: var(--cur-ink); color: var(--cur-canvas); border-color: var(--cur-ink); }
-.cur .metric.feat .lbl, .cur .metric.feat .sub { color: var(--cur-muted-soft); }
+.cur .metric.feat .lbl, .cur .metric.feat .sub { color: var(--cur-muted-on-ink); }
 
 /* ── Badges / pills ──────────────────────────────────── */
 .cur .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 999px; font-size: 11px; font-weight: 600;
@@ -201,7 +225,7 @@
 /* ── Buttons / inputs ────────────────────────────────── */
 .cur .btn { height: 36px; padding: 0 15px; border-radius: var(--cur-r-cta); font-size: 13px; font-weight: 500; cursor: pointer;
   border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface); color: var(--cur-ink); display: inline-flex; align-items: center; gap: 7px; }
-.cur .btn:hover { border-color: var(--cur-muted-soft); }
+.cur .btn:hover { border-color: var(--cur-hairline-hover); }
 /* Default primary is ink. See the note on --cur-cta for why it stopped being orange. */
 .cur .btn.primary { background: var(--cur-cta); color: var(--cur-on-cta); border-color: transparent; }
 .cur .btn.primary:hover { background: var(--cur-cta-hover); }
