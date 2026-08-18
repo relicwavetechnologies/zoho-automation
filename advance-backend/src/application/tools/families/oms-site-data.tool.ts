@@ -52,7 +52,7 @@ export const createOmsSiteDataTool = (deps: {
   description: 'Sanitize OMS website inputs, look up OMS vendors, or search the company-approved OMS website inventory through a governed, read-only backend capability.',
   parameterDocs: [
     'operation: sanitize_website_inputs, lookup_vendors, search_sites, get_site_profiles, or list_catalog_values.',
-    'sanitize_website_inputs: pass pasted emails, http/https URLs, or hostnames in inputs; returns deterministic OMS-ready website hostnames without calling OMS. Credential-bearing URLs and non-web URL schemes are rejected.',
+    'sanitize_website_inputs: pass each pasted email, http/https URL, hostname, or Markdown link as its own inputs entry when the user provides a list; returns deterministic OMS-ready website hostnames without calling OMS. Credential-bearing URLs and non-web URL schemes are rejected. For copyable cleanup answers, show website values as plain one-per-line text, not Markdown links or tables.',
     'lookup_vendors: pass 1-20 exact OMS-ready websites in www.example.com format; returns vendor rows from OMS Vendor Fetch. If the user gives emails, URLs, or messy domains, run sanitize_website_inputs first and pass only sanitized website values that start with www.',
     'search_sites: use one or more vetted website, niche, classification, price, quality, traffic, or authority criteria; returns the standard inventory view.',
     'search_sites quality filters: maxSpamScore (lower is better, use it for clean/safe site requests), minDomainRating, minDomainAuthority, minPageAuthority.',

@@ -81,6 +81,22 @@ describe('OmsSiteDataClient', () => {
     assert.equal(rows.find(row => row.input === 'https://accounts.google.com@fake.biz/login')?.reason, 'URLs with usernames or passwords are not accepted.');
   });
 
+  it('unwraps Markdown links into OMS-ready copyable websites', () => {
+    const rows = sanitizeOmsWebsiteInputs([
+      '[Example.com](http://Example.com)',
+      '[https://www.google.com/about](https://www.google.com/about)',
+      'invalid text',
+      '[example.com](http://example.com).',
+    ]);
+
+    assert.deepEqual(rows, [
+      { input: 'http://Example.com', status: 'sanitized', inputKind: 'url', hostname: 'example.com', website: 'www.example.com' },
+      { input: 'https://www.google.com/about', status: 'sanitized', inputKind: 'url', hostname: 'www.google.com', website: 'www.google.com' },
+      { input: 'invalid text', status: 'invalid', reason: 'No URL, email, or hostname found.' },
+      { input: 'http://example.com', status: 'sanitized', inputKind: 'url', hostname: 'example.com', website: 'www.example.com' },
+    ]);
+  });
+
   it('bounds sanitizer input size before runtime execution', () => {
     assert.equal(OmsSiteDataToolArgsSchema.safeParse({
       operation: 'sanitize_website_inputs',
