@@ -192,6 +192,8 @@ export const EnvSchema = z.object({
   // independent key rotation for OMS.
   OMS_CONNECTION_ENCRYPTION_KEY: z.string().optional(),
   OMS_SITE_DATA_API_KEY:      z.string().optional(),
+  // Vendor Fetch is a separate OMS webhook/key from Site Data Read.
+  OMS_VENDOR_FETCH_API_KEY:   z.string().optional(),
   OMS_SITE_DATA_TIMEOUT_MS:      positiveInt(15_000),
   CONTEXT_SEARCH_TIMEOUT_ENABLED: booleanStr.default('true'),
   CONTEXT_SEARCH_TIMEOUT_MS:     positiveInt(8_000),

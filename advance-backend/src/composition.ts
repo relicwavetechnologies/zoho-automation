@@ -727,6 +727,7 @@ export async function buildContainer(
     ephemeralCache,
     logger.child({ service: 'company-oms-site-data' }),
     env.OMS_SITE_DATA_API_KEY ?? '',
+    env.OMS_VENDOR_FETCH_API_KEY ?? '',
   );
 
   // ── Lark user OAuth ───────────────────────────────────────────────────────
