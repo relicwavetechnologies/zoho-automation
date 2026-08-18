@@ -24,14 +24,17 @@
   /*
     What a chart is drawn in.
 
-    Brand orange by default, because that is what every existing chart already
-    is and a silent recolouring of the spend panels is not a profile page's
-    business. It is a token rather than a literal so a surface can say
-    otherwise: on a page that is one large calendar and two charts, orange stops
-    being the scarce mark that means "this is the thing being asked for" and
-    starts being the background — the same reason `Avatar` is accent-tinted.
+    The accent, not the brand. This was brand orange, and one page — the
+    profile — had already overridden it back to the accent with the note that
+    on a surface made of charts, orange "stops being the scarce mark that means
+    'this is the thing being asked for' and starts being the background". That
+    was true of every settings screen, not of one of them, so the exception has
+    become the rule and the local override is gone.
+
+    Still a token rather than a literal, so a one-off surface can still say
+    otherwise. Nothing does today.
   */
-  --ws-chart-ink: var(--cur-primary);
+  --ws-chart-ink: var(--cur-accent);
   /* Scrim must NOT derive from --cur-ink: ink inverts in dark and would tint the overlay light. */
   --ws-scrim: rgba(0, 0, 0, 0.34);
   --ws-float: 0 16px 40px -12px rgba(0, 0, 0, 0.24), 0 0 0 1px var(--cur-hairline);
@@ -92,7 +95,7 @@
   text-align: left; color: var(--cur-ink);
 }
 .cur .ws-scope-opt:hover { background: var(--cur-canvas-soft); }
-.cur .ws-scope-opt .ck { margin-left: auto; color: var(--cur-primary); }
+.cur .ws-scope-opt .ck { margin-left: auto; color: var(--cur-accent); }
 
 /* ── Sidebar additions ───────────────────────────────── */
 /* Sizes to its own rows and no further. It used to be `flex: 1`, which handed
@@ -112,7 +115,7 @@
 /* ── Topbar additions ────────────────────────────────── */
 .cur .ws-crumb { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--cur-muted); flex: 1; min-width: 0; }
 .cur .ws-crumb button { border: 0; background: none; padding: 0; font-size: 13px; color: var(--cur-body); cursor: pointer; }
-.cur .ws-crumb button:hover { color: var(--cur-primary); }
+.cur .ws-crumb button:hover { color: var(--cur-accent); }
 .cur .ws-crumb b { color: var(--cur-ink); font-weight: 500; }
 .cur .ws-kbd {
   font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 11px;
@@ -133,29 +136,6 @@
 .cur .ws-run-detail .ws-ph-act { margin-top: 12px; width: fit-content; }
 .cur .ws-run-detail .ws-raw-toggle { height: 34px; padding: 0 12px; }
 
-/* A page that is not built yet, said beside its name.
-   Reads as a label, not a control: no pointer, no hover, nothing to press. The
-   accent carries it — this is the one thing on the page that should be noticed
-   before the content, since the content is a preview of something absent. */
-.cur .ws-soon {
-  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
-  padding: 4px 11px; border-radius: 999px;
-  font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
-  white-space: nowrap; position: relative; top: -3px;
-  color: var(--cur-accent);
-  background: color-mix(in srgb, var(--cur-accent) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--cur-accent) 30%, transparent);
-}
-/* The dot is the eye-catch. It pulses slowly enough to register as alive and
-   not as an alarm, and holds still for anyone who asked motion to stop. */
-.cur .ws-soon::before {
-  content: ''; width: 5px; height: 5px; border-radius: 999px;
-  background: var(--cur-accent); animation: ws-soon-pulse 2.4s ease-in-out infinite;
-}
-@keyframes ws-soon-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.35 } }
-@media (prefers-reduced-motion: reduce) {
-  .cur .ws-soon::before { animation: none }
-}
 
 /* ── Panel ───────────────────────────────────────────── */
 /* The app's five card primitives — `.card`, `.section`, `.ws-panel`,
@@ -199,17 +179,11 @@
 /* ── Attention list — replaces the KPI carousel ───────
    The old mock opened every screen with four equal-weight counts. This opens
    with the far smaller set of things that actually want a human. */
-/* A column of decision cards, on the page that lists them rather than in the
-   thread that raised one. The card draws its own surface and ring, so this is
-   only the gap between them — and the padding the panel would otherwise put
-   flush against a card that already has its own. */
-.cur .ws-decisions { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
-
 .cur .ws-attn { display: flex; flex-direction: column; }
 .cur .ws-attn-item { display: flex; gap: 13px; padding: 15px 18px; border-top: 1px solid var(--cur-hairline-soft); align-items: flex-start; }
 .cur .ws-attn-item:first-child { border-top: 0; }
 .cur .ws-attn-bar { width: 2px; align-self: stretch; border-radius: 999px; background: var(--cur-hairline-strong); flex-shrink: 0; }
-.cur .ws-attn-item[data-tone="act"] .ws-attn-bar { background: var(--cur-primary); }
+.cur .ws-attn-item[data-tone="act"] .ws-attn-bar { background: var(--cur-accent); }
 .cur .ws-attn-item[data-tone="warn"] .ws-attn-bar { background: var(--ws-warning); }
 .cur .ws-attn-main { flex: 1; min-width: 0; }
 .cur .ws-attn-main b { font-size: 13px; font-weight: 500; }
@@ -233,7 +207,7 @@
   font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none;
   background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); color: var(--cur-muted);
 }
-.cur .ws-prov[data-src="department_user_override"] { color: var(--cur-primary); border-color: color-mix(in srgb, var(--cur-primary) 34%, transparent); background: color-mix(in srgb, var(--cur-primary) 9%, transparent); }
+.cur .ws-prov[data-src="department_user_override"] { color: var(--cur-accent); border-color: color-mix(in srgb, var(--cur-accent) 34%, transparent); background: color-mix(in srgb, var(--cur-accent) 9%, transparent); }
 .cur .ws-prov[data-src="derived"] { font-style: italic; }
 
 /* ── Change preview — never apply a permission edit blind ── */
@@ -310,14 +284,18 @@
 }
 .cur .ws-cell:hover { border-color: var(--cur-muted-soft); }
 .cur .ws-cell[data-on="true"] { background: var(--cur-ink); border-color: var(--cur-ink); color: var(--cur-canvas); }
-.cur .ws-cell[data-on="true"][data-src="department_user_override"] { background: var(--cur-primary); border-color: var(--cur-primary); color: var(--cur-on-primary); }
+.cur .ws-cell[data-on="true"][data-src="department_user_override"] { background: var(--cur-accent); border-color: var(--cur-accent); color: var(--cur-on-accent); }
 .cur .ws-cell[data-locked="true"] { cursor: not-allowed; opacity: 0.45; background: var(--cur-canvas-soft); }
 .cur .ws-cell-na { color: var(--cur-muted-soft); font-size: 13px; }
 
 /* ── Usage bar ───────────────────────────────────────── */
 .cur .ws-bar { height: 6px; border-radius: 999px; background: var(--cur-surface-strong); overflow: hidden; }
 .cur .ws-bar i { display: block; height: 100%; border-radius: 999px; background: var(--cur-ink); }
-.cur .ws-bar i[data-tone="brand"] { background: var(--cur-primary); }
+/* One bar in a set can be marked. The base bar is ink, so the mark has to be
+   a hue rather than a weight — the accent, the same one the charts draw in.
+   The attribute said "brand" while meaning "the one worth looking at", which is
+   why it was painted in the brand; both are now called what they are. */
+.cur .ws-bar i[data-tone="mark"] { background: var(--ws-chart-ink); }
 .cur .ws-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--cur-muted); }
 
 /* ── Segmented control ───────────────────────────────── */
@@ -338,7 +316,7 @@
   position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
   background: var(--cur-surface); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); transition: transform .14s ease;
 }
-.cur .ws-switch[data-on="true"] { background: var(--cur-primary); border-color: var(--cur-primary); }
+.cur .ws-switch[data-on="true"] { background: var(--cur-ink); border-color: var(--cur-ink); }
 .cur .ws-switch[data-on="true"] i { transform: translateX(14px); }
 
 /* ── Data-honesty note ────────────────────────────────
@@ -351,11 +329,16 @@
 }
 .cur .ws-note[data-kind="new"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 40%, transparent); }
 /* Fixtures rendered at a real path. Solid, not dashed — this one is a claim
-   about the numbers on screen, not a note about the roadmap. */
+   about the numbers on screen, not a note about the roadmap.
+
+   The warning orange, not the brand's. These two notes sat next to each other
+   wearing #ef720c and #f54e00, which is one colour told apart by nothing and
+   two meanings told apart by nothing either. Caution is orange here; Divo is
+   orange nowhere but its own mark. */
 .cur .ws-note[data-kind="sample"] {
-  border-style: solid; color: var(--cur-primary);
-  border-color: color-mix(in srgb, var(--cur-primary) 38%, transparent);
-  background: color-mix(in srgb, var(--cur-primary) 8%, transparent);
+  border-style: solid; color: var(--ws-warning);
+  border-color: color-mix(in srgb, var(--ws-warning) 38%, transparent);
+  background: color-mix(in srgb, var(--ws-warning) 8%, transparent);
 }
 /* The positive case, used only where a real block sits beside a proposed one.
    `DataNote` still renders nothing for a live source — this is for a section
@@ -484,7 +467,7 @@
 .cur .ws-sub { font-size: 12px; color: var(--cur-muted); }
 .cur .ws-spark { height: 46px; display: flex; align-items: flex-end; gap: 3px; }
 .cur .ws-spark i { flex: 1; border-radius: 2px 2px 0 0; background: var(--cur-surface-strong); min-height: 2px; }
-.cur .ws-spark i[data-hot="true"] { background: color-mix(in srgb, var(--cur-primary) 60%, transparent); }
+.cur .ws-spark i[data-hot="true"] { background: color-mix(in srgb, var(--ws-chart-ink) 60%, transparent); }
 .cur .ws-person-stats {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px;
 }
@@ -683,99 +666,6 @@
 }
 .cur .ws-land-acts { display: flex; gap: 8px; justify-content: center; margin-top: 22px; flex-wrap: wrap; }
 
-/* ── Artifacts ────────────────────────────────────────
-   Things Divo makes during a chat — a deck, a plan, a research brief. Today
-   they die inside the container workspace. These styles are the surface that
-   gives them somewhere to live. */
-.cur .ws-art-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 14px; }
-.cur .ws-art-card {
-  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); background: var(--cur-surface);
-  overflow: hidden; cursor: pointer; text-align: left; padding: 0; color: var(--cur-ink); display: block; width: 100%;
-}
-.cur .ws-art-card:hover { border-color: var(--cur-muted-soft); }
-.cur .ws-art-thumb {
-  height: 116px; background: var(--cur-canvas-soft); border-bottom: 1px solid var(--cur-hairline);
-  display: grid; place-items: center; color: var(--cur-muted-soft); position: relative; overflow: hidden;
-}
-.cur .ws-art-thumb[data-kind="deck"] { background: linear-gradient(135deg, var(--cur-canvas-soft), var(--cur-surface-strong)); }
-.cur .ws-art-live {
-  position: absolute; top: 9px; right: 9px; display: inline-flex; align-items: center; gap: 5px;
-  padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
-  background: var(--cur-primary); color: var(--cur-on-primary);
-}
-.cur .ws-art-meta { padding: 12px 14px; }
-.cur .ws-art-meta b { display: block; font-size: 13px; font-weight: 500; letter-spacing: -0.005em; }
-.cur .ws-art-meta p { font-size: 11px; color: var(--cur-muted); margin-top: 4px; }
-
-/* Pulsing dot — "Divo is editing this right now". The whole point of the
-   file-write event: the open render updates without a refresh. */
-@keyframes ws-live { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.82); } }
-.cur .ws-live-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: ws-live 1.1s ease-in-out infinite; }
-
-/* Viewer */
-.cur .ws-view { display: grid; grid-template-columns: 1fr 296px; gap: 16px; align-items: start; }
-@media (max-width: 1180px) { .cur .ws-view { grid-template-columns: 1fr; } }
-.cur .ws-canvas {
-  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
-  background: var(--cur-surface); overflow: hidden;
-}
-.cur .ws-canvas-bar {
-  height: 40px; display: flex; align-items: center; gap: 9px; padding: 0 14px;
-  border-bottom: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft); font-size: 12px; color: var(--cur-muted);
-}
-.cur .ws-canvas-body { padding: 22px; }
-
-/* Sandboxed HTML frame. Agent-written HTML cannot run on the dashboard
-   origin — it renders in a sandboxed iframe, and the chrome says so. */
-.cur .ws-sandbox { border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-cta); overflow: hidden; background: #fff; }
-.cur .ws-slide {
-  aspect-ratio: 16 / 9; padding: 34px 38px; display: flex; flex-direction: column; justify-content: center;
-  background: #faf9f6; color: #211f1a; font-family: Inter, system-ui, sans-serif;
-}
-.cur .ws-slide h3 { font-size: 26px; font-weight: 400; letter-spacing: -0.025em; line-height: 1.15; }
-.cur .ws-slide p { font-size: 13px; color: #5f5c54; margin-top: 12px; line-height: 1.55; max-width: 60ch; }
-.cur .ws-slide ul { margin-top: 16px; display: flex; flex-direction: column; gap: 9px; }
-.cur .ws-slide li { font-size: 13px; color: #3d3a34; display: flex; gap: 9px; align-items: flex-start; }
-.cur .ws-slide li::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #f54e00; margin-top: 6px; flex-shrink: 0; }
-.cur .ws-slide .eyebrow-s { font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #f54e00; margin-bottom: 14px; }
-.cur .ws-slide-nav { display: flex; align-items: center; gap: 8px; justify-content: center; padding: 12px; border-top: 1px solid var(--cur-hairline); }
-.cur .ws-slide-pip { width: 22px; height: 3px; border-radius: 999px; background: var(--cur-hairline-strong); border: 0; padding: 0; cursor: pointer; }
-.cur .ws-slide-pip[data-on="true"] { background: var(--cur-primary); }
-
-/* Todo artifact */
-.cur .ws-todo { display: flex; flex-direction: column; }
-.cur .ws-todo-grp { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--cur-muted-soft); margin: 18px 0 8px; }
-.cur .ws-todo-grp:first-child { margin-top: 0; }
-.cur .ws-todo-i { display: flex; align-items: flex-start; gap: 11px; padding: 9px 0; border-top: 1px solid var(--cur-hairline-soft); }
-.cur .ws-todo-box {
-  width: 17px; height: 17px; border-radius: 5px; border: 1px solid var(--cur-hairline-strong); flex-shrink: 0;
-  margin-top: 1px; display: grid; place-items: center; background: var(--cur-surface); cursor: pointer; padding: 0; color: transparent;
-}
-.cur .ws-todo-box[data-done="true"] { background: var(--cur-ink); border-color: var(--cur-ink); color: var(--cur-canvas); }
-.cur .ws-todo-i b { font-size: 13px; font-weight: 400; }
-.cur .ws-todo-i[data-done="true"] b { color: var(--cur-muted); text-decoration: line-through; }
-.cur .ws-todo-i p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; }
-
-/* Sources */
-.cur .ws-src { display: flex; gap: 11px; padding: 12px 0; border-top: 1px solid var(--cur-hairline-soft); }
-.cur .ws-src:first-child { border-top: 0; }
-.cur .ws-src-fav {
-  width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0; display: grid; place-items: center;
-  background: var(--cur-surface-strong); color: var(--cur-body); font-size: 11px; font-weight: 600;
-}
-.cur .ws-src b { font-size: 13px; font-weight: 500; display: block; }
-.cur .ws-src p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; line-height: 1.45; }
-.cur .ws-src .host { font-size: 11px; color: var(--cur-muted-soft); margin-top: 5px; display: block; }
-
-/* Version rail */
-.cur .ws-ver { display: flex; gap: 11px; padding: 10px 0; }
-.cur .ws-ver-line { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
-.cur .ws-ver-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cur-hairline-strong); margin-top: 5px; }
-.cur .ws-ver-dot[data-now="true"] { background: var(--cur-primary); }
-.cur .ws-ver-rail { flex: 1; width: 1px; background: var(--cur-hairline); margin-top: 4px; }
-.cur .ws-ver b { font-size: 12px; font-weight: 500; display: block; }
-.cur .ws-ver p { font-size: 11px; color: var(--cur-muted); margin-top: 2px; }
-
 /* ══════════════════════════════════════════════════════
    Company list surfaces.
 
@@ -807,7 +697,7 @@
   font-size: 11px; font-weight: 500; background: var(--cur-canvas-soft);
   border: 1px solid var(--cur-hairline); color: var(--cur-muted);
 }
-.cur .ws-delta[data-tone="warn"] { color: var(--cur-primary); border-color: color-mix(in srgb, var(--cur-primary) 32%, transparent); background: color-mix(in srgb, var(--cur-primary) 8%, transparent); }
+.cur .ws-delta[data-tone="warn"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 32%, transparent); background: color-mix(in srgb, var(--ws-warning) 8%, transparent); }
 .cur .ws-delta[data-tone="good"] { color: var(--cur-success); border-color: color-mix(in srgb, var(--cur-success) 32%, transparent); background: color-mix(in srgb, var(--cur-success) 8%, transparent); }
 
 /* ── Day chart ────────────────────────────────────────
@@ -816,10 +706,10 @@
 .cur .ws-chart { display: flex; align-items: flex-end; gap: 4px; height: 118px; }
 .cur .ws-chart-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; position: relative; }
 .cur .ws-chart-col i { display: block; border-radius: 3px 3px 0 0; background: var(--cur-surface-strong); min-height: 2px; transition: background .12s ease; }
-/* The current window reads as "now" in ink. Orange is spent on the single
-   outlier the annotation below explains — not on a whole week of bars. */
+/* The current window reads as "now" in ink. The chart's own ink is spent on
+   the single outlier the annotation below explains — not on a whole week. */
 .cur .ws-chart-col[data-hot="true"] i { background: color-mix(in srgb, var(--cur-ink) 34%, transparent); }
-.cur .ws-chart-col[data-peak="true"] i { background: var(--cur-primary); }
+.cur .ws-chart-col[data-peak="true"] i { background: var(--ws-chart-ink); }
 .cur .ws-chart-col:hover i { background: var(--cur-ink); }
 .cur .ws-chart-tip {
   position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 5;
@@ -838,7 +728,7 @@
 }
 .cur .ws-why svg { color: var(--cur-muted); flex-shrink: 0; margin-top: 1px; }
 .cur .ws-why b { color: var(--cur-ink); font-weight: 500; }
-.cur .ws-why button { border: 0; background: none; padding: 0; font: inherit; color: var(--cur-primary); cursor: pointer; }
+.cur .ws-why button { border: 0; background: none; padding: 0; font: inherit; color: var(--cur-accent); cursor: pointer; }
 
 /* ── Filter chips ─────────────────────────────────────
    Counts live on the chip. Filtering to an empty set is a dead end you should
@@ -938,8 +828,8 @@
 .cur .ws-field .input, .cur .ws-field .select { width: 100%; height: 38px; font-family: inherit; }
 .cur .ws-field .input::placeholder { color: var(--cur-muted-soft); }
 .cur .ws-field .input:focus, .cur .ws-field .select:focus {
-  outline: none; border-color: var(--cur-primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cur-primary) 16%, transparent);
+  outline: none; border-color: var(--cur-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cur-accent) 16%, transparent);
 }
 .cur .ws-field .hint { font-size: 11px; color: var(--cur-muted); margin-top: 6px; line-height: 1.45; }
 
@@ -967,7 +857,7 @@
   padding-top: 16px; border-top: 1px solid var(--cur-hairline); font-size: 12px;
 }
 .cur .ws-auth-alt a { color: var(--cur-muted); }
-.cur .ws-auth-alt a:hover { color: var(--cur-primary); }
+.cur .ws-auth-alt a:hover { color: var(--cur-accent); }
 
 /* Separator between the two ways in. A rule through the middle rather than a
    heading, because neither side is a section — they are one choice. */
@@ -1005,7 +895,7 @@
 
 /* ── Disclosure row ──────────────────────────────────── */
 .cur .ws-more {
-  border: 0; background: none; padding: 0; font-size: 12px; color: var(--cur-primary);
+  border: 0; background: none; padding: 0; font-size: 12px; color: var(--cur-accent);
   cursor: pointer; display: inline-flex; align-items: center; gap: 5px; font-family: inherit;
 }
 .cur .ws-more svg { transition: transform .14s ease; }
@@ -1209,7 +1099,7 @@
 /* Separator only between adjacent metadata, never before the right-aligned
    cost — a dot pushed to the far right separates nothing. */
 .cur .ws-turn-m + .ws-turn-m::before { content: "·"; margin-right: 12px; color: var(--cur-hairline-strong); }
-.cur .ws-turn-c { font-size: 11.5px; color: var(--cur-primary); margin-left: auto; }
+.cur .ws-turn-c { font-size: 11.5px; color: var(--cur-body); margin-left: auto; }
 .cur .ws-turn-m:last-child { margin-left: auto; }
 .cur .ws-turn-m:last-child::before { content: none; }
 
@@ -1306,7 +1196,7 @@
   border: 0; background: none; padding: 0; cursor: pointer;
   font-family: inherit; font-size: 12.5px; color: var(--cur-body);
 }
-.cur .ws-linkish:hover { color: var(--cur-primary); }
+.cur .ws-linkish:hover { color: var(--cur-accent); }
 .cur .ws-linkish:disabled { color: var(--cur-muted-soft); cursor: default; }
 
 /* ── Granted scopes ───────────────────────────────────
@@ -1569,6 +1459,16 @@
 .cur .ws-appcard-act .ws-tag {
   width: 100%; justify-content: center; min-height: 34px; box-sizing: border-box;
 }
+/* A second way to connect, offered quietly under the first.
+   Airtable takes either a sign-in or a company token and only an admin may post
+   the token, so two buttons of equal weight would put a decision in front of
+   everybody that most people do not have. Text under the control, centred on
+   it, reads as a footnote to the button rather than as a rival to it. */
+.cur .ws-appcard-alt {
+  display: flex; width: 100%; justify-content: center;
+  margin-top: 8px; font-size: 12px; color: var(--cur-muted);
+}
+.cur .ws-appcard-alt:hover { color: var(--cur-accent); }
 
 /* The accounts under an app. Compact rows, because the card is about the app
    and these are what it currently holds. */
@@ -1739,6 +1639,18 @@
 }
 .cur .ws-recent-empty { padding: 4px 10px; font-size: 12px; color: var(--cur-muted-soft); line-height: 1.5; }
 
+/* Deliberately not a row. It sits in the same column as the chats but reads as
+   an action rather than a destination — no card, no hover surface — so the eye
+   does not count it as one more chat at the bottom of the list. */
+.cur .ws-recent-expand {
+  display: block; width: 100%; text-align: left; border: 0; cursor: pointer;
+  font-family: inherit; font-size: 12px; line-height: 1.4;
+  padding: 7px 10px; margin: 2px 0 4px; border-radius: 8px;
+  background: transparent; color: var(--cur-muted);
+  transition: background .12s ease, color .12s ease;
+}
+.cur .ws-recent-expand:hover { background: var(--cur-canvas-soft); color: var(--cur-ink); }
+
 /* A chat's own controls, on the chat.
    Hidden at rest: this rail is scanned, not operated, and a delete control
    sitting on every row is a list you read carefully instead of quickly. The
@@ -1776,7 +1688,7 @@
    reader off the list they are naming something in. */
 .cur .ws-recent-rename {
   display: block; width: 100%; padding: 8px 10px; margin-bottom: 4px;
-  border: 1px solid var(--cur-primary); border-radius: 10px;
+  border: 1px solid var(--cur-accent); border-radius: 10px;
   background: var(--cur-canvas-soft); color: var(--cur-ink);
   font-family: inherit; font-size: 13px; line-height: 1.35; outline: none;
 }
@@ -1874,6 +1786,19 @@
   margin-top: 2px; font-size: 11px; line-height: 1.2;
 }
 .cur .workspace-sidebar .ws-scope-menu { top: calc(100% + 4px); }
+
+/* Only the recent list gives up height.
+   The rail is a flex column, and every child of it shrinks by default. These
+   have an intrinsic height — a 32px control, a 44px switcher — so left
+   shrinkable they get squeezed the moment the column is over-full, which is
+   what a long chat list does to it. The search field lost four pixels and read
+   as distorted; `.ws-nav` already carried this declaration for the same reason.
+   `.ws-recent` is the one that should absorb it: it scrolls, and it has the
+   `min-height: 0` that lets it. */
+.cur .workspace-sidebar > .ws-workspace,
+.cur .ws-quick-search,
+.cur .ws-new-chat,
+.cur .sidebar-foot { flex: none; }
 
 /* Quick search is the existing route palette, now placed where the reference
    puts it. Slash joins Cmd/Ctrl+K, but is ignored while a field is editable. */
@@ -2242,6 +2167,56 @@
 /* Two lines exactly: the label's line-height is 1.5, so 3em is 2 × 16.5px at
    its 11px size. 2.5em looked right and left the first figure 5px low. */
 .cur .ws-stat3 .ws-lbl { min-height: 3em; }
+/* ── Usage: figures, and a model's share of the bill ───
+   Three cards rather than three columns in one. The numbers are in different
+   units and answer unrelated questions, so a shared surface only invites a
+   comparison that means nothing. `auto-fit` rather than a fixed three: the
+   settings takeover is a narrow column on a laptop and a wide one on a
+   monitor, and three 30px figures crushed side by side read worse than two
+   above one. */
+.cur .ws-tiles {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.cur .ws-tile {
+  padding: 16px 18px 18px; border-radius: 12px;
+  border: 1px solid var(--cur-hairline); background: var(--cur-surface);
+}
+.cur .ws-tile-num { margin-top: 10px; }
+/* Cost is the figure this page exists for, so it is the only one of the three
+   wearing a colour. A palette where everything is emphasised emphasises
+   nothing — and the colour is the accent, because the figure is the answer to
+   the question the page asks, not a piece of Divo's identity. */
+.cur .ws-tile-num[data-accent="true"] { color: var(--cur-accent); }
+.cur .ws-tile-foot { margin-top: 6px; }
+
+/* The sentence under the chart. Sits close to it because it describes the peak
+   the chart is drawing, not the panel as a whole. */
+.cur .ws-usage-read { margin: 12px 0 0; line-height: 1.5; }
+
+/* One model's share of the bill.
+   The row used to be a name, a bar, and "n calls · $x" on the same line with
+   the percentage nowhere — so the share, which is the whole reason the bar is
+   there, had to be eyeballed against its neighbours. */
+.cur .ws-model + .ws-model { margin-top: 18px; }
+.cur .ws-model-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; margin-bottom: 8px;
+}
+/* `min-width: 0` or a long model id refuses to shrink and pushes the share off
+   the end of the card instead of ellipsing inside it. */
+.cur .ws-model-id {
+  font-size: 13px; font-weight: 500; color: var(--cur-ink);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cur .ws-model-share {
+  font-size: 13px; font-weight: 500; color: var(--cur-ink);
+  font-variant-numeric: tabular-nums; flex: none;
+}
+.cur .ws-model-foot {
+  margin-top: 7px; font-size: 11.5px; line-height: 1.3; color: var(--cur-muted);
+}
+
 
 /* The brief, as the lines it was written as. Markdown from the composer, so
    the newlines are the structure and collapsing them would run a summary into
@@ -2404,19 +2379,13 @@
    year of somebody's activity — a calendar, two charts, four figures — none of
    which fits the 720px reading measure the settings rows use, so the page sets
    its own and every block inside it, rows included, takes that width. Mixing
-   the two produced a heatmap indented from the card above it.
-   ══════════════════════════════════════════════════════ */
-/*
-  Drawn in the accent, not the brand.
+   the two produced a heatmap indented from the card above it. The column is
+   880 now, which is what this page used to have to ask for.
 
-  This page is a calendar of three hundred and sixty-five squares and two
-  charts. In orange it is a wall of the one colour the rest of the app reserves
-  for the thing it is asking you to do, and the actual controls stop standing
-  out. The accent is the same tint the avatar carries, which is the app's
-  existing answer for "this is identity, not an action".
-*/
-/* The column is 880 now, which is what this page used to have to ask for. */
-.cur .prof { --ws-chart-ink: var(--cur-accent); }
+   It also used to override `--ws-chart-ink` back to the accent, because in
+   brand orange a wall of 365 calendar squares read as a brand exercise. That
+   is now the default for every chart in the app, so the override is gone.
+   ══════════════════════════════════════════════════════ */
 
 .cur .prof-card {
   background: var(--cur-surface); border: 1px solid var(--cur-hairline);
@@ -3262,7 +3231,7 @@
   display: inline-flex; align-items: center; gap: 7px;
   font-size: 12.5px; color: var(--cur-body); cursor: pointer;
 }
-.cur .ws-mk-tog input { accent-color: var(--cur-primary); cursor: pointer; }
+.cur .ws-mk-tog input { accent-color: var(--cur-ink); cursor: pointer; }
 .cur .ws-mk-q { width: 100%; resize: vertical; min-height: 58px; line-height: 1.5; }
 
 /* An option with the reason for it attached, instead of a bare box whose
@@ -3282,7 +3251,7 @@
   border-color: var(--cur-muted-soft); background: var(--cur-surface-strong);
 }
 .cur .ws-opt > input {
-  margin: 2px 0 0; accent-color: var(--cur-primary); cursor: pointer;
+  margin: 2px 0 0; accent-color: var(--cur-ink); cursor: pointer;
 }
 .cur .ws-opt b { display: block; font-size: 12.5px; font-weight: 500; color: var(--cur-ink); }
 /* Capped, like every other explanatory line in this sheet. The card is around
@@ -3544,7 +3513,7 @@
   border-radius: 7px; cursor: pointer;
 }
 .cur .agm-pick-r:hover { background: var(--cur-canvas-soft); }
-.cur .agm-pick-r input { accent-color: var(--cur-primary); cursor: pointer; }
+.cur .agm-pick-r input { accent-color: var(--cur-ink); cursor: pointer; }
 .cur .agm-pick-n { flex: 1; min-width: 0; font-size: 12.5px; color: var(--cur-ink); }
 .cur .agm-pick-m { font-size: 11px; color: var(--cur-muted); flex: 0 0 auto; }
 /* Taken, not hidden — knowing Gmail belongs to the finance desk is more useful
@@ -3562,7 +3531,7 @@
   cursor: col-resize; z-index: 2;
 }
 .cur .ws-drawer-grip::after {
-  content: ''; position: absolute; inset: 0 3px; background: var(--cur-primary);
+  content: ''; position: absolute; inset: 0 3px; background: var(--cur-accent);
   opacity: 0; transition: opacity .12s ease;
 }
 .cur .ws-drawer-grip:hover::after { opacity: .5; }

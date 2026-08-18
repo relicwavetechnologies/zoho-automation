@@ -487,7 +487,16 @@ export function Seg<T extends string>({ value, onChange, options }: {
   )
 }
 
-export const Bar = ({ pct, tone }: { pct: number; tone?: 'brand' }) => (
+/**
+ * A proportion, with one bar in the set allowed to be marked.
+ *
+ * `tone` was called `brand`, so it was painted in the brand — and every list of
+ * bars in the app ended up with a Divo-orange row in it that meant nothing
+ * about Divo. What it actually means at all seven call sites is "this is the
+ * one worth looking at": the biggest share, the top spender, the budget that is
+ * nearly spent. It is called that now, and it draws in the chart ink.
+ */
+export const Bar = ({ pct, tone }: { pct: number; tone?: 'mark' }) => (
   <div className="ws-bar"><i style={{ width: `${Math.min(100, Math.max(2, pct))}%` }} data-tone={tone} /></div>
 )
 

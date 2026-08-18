@@ -6,9 +6,9 @@
  * person who is both an individual and a lead is never left guessing whether
  * "Connections" means theirs or their team's.
  *
- * Every scope now runs on real endpoints. A few panels are still fixtures —
- * /me/skills, /me/memory and /me/artifacts — and each marks itself in the UI
- * rather than relying on a note here that goes stale the moment one is wired.
+ * Every scope now runs on real endpoints. /me/memory is the last panel still
+ * running on fixtures, and it marks itself in the UI rather than relying on a
+ * note here that goes stale the moment it is wired.
  *
  * Scope availability: one member session serves everybody, so Team appears for
  * whoever actually manages a department and Company for admins. Nothing is
@@ -17,9 +17,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Activity, Bot, Building2, Check, ChevronsUpDown, CircleCheck, CircleDashed, Diamond, FileClock,
-  FileStack, Grid2X2, LogOut, Mail, MessageSquare, Minus, Moon, MoreHorizontal, PanelLeft,
-  PanelLeftClose, Pencil, Plus, Search, Settings, ShieldCheck, Sun, Trash2, Users, UserSquare,
+  Activity, Building2, Check, ChevronsUpDown, CircleCheck, CircleDashed, Diamond, FileClock,
+  Grid2X2, LogOut, Mail, Minus, Moon, MoreHorizontal, PanelLeft,
+  PanelLeftClose, Pencil, Plus, Search, Settings, Sun, Trash2, Users, UserSquare,
   Waypoints, type LucideIcon,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -27,11 +27,11 @@ import { notify } from '@/lib/notify'
 import { useManagedDepartments } from '@/pages/workspace/data/use-team'
 import { useOnboarding } from '@/pages/workspace/data/use-onboarding'
 import {
-  deleteThread, listThreads, onThreadsChanged, renameThread, startedThreads,
+  deleteThread, listThreads, onThreadsChanged, renameThread, startedThreads, THREAD_PAGE,
   withStartedThreads, type ThreadSummary,
 } from '@/pages/workspace/chat/threads'
 import { PixelGrid } from '@/pages/workspace/chat/loader'
-import { Avatar } from '@/pages/workspace/ui'
+import { Avatar, Confirm } from '@/pages/workspace/ui'
 import { RAIL } from '@/components/admin/settings-shell'
 import { RoleProvider } from '@/cursor/role-context'
 import { useTheme } from '@/lib/use-theme'
@@ -51,24 +51,28 @@ type NavGroup = { label?: string; items: NavItem[] }
  */
 const NAV: Record<ScopeKind, NavGroup[]> = {
   you: [
-    {
-      label: 'Workspace',
-      items: [
-        { to: '/me', label: 'Home', icon: Grid2X2, end: true },
-        { to: '/chat', label: 'Chat', icon: MessageSquare },
-      ],
-    },
-    {
-      label: 'Work',
-      items: [
-        /* Work, not configuration: a mail rule is Divo acting on your behalf
-           every hour of every day, and you come back to check it still is. */
-        { to: '/me/mail', label: 'Mail', icon: Mail },
-        { to: '/me/approvals', label: 'Approvals', icon: ShieldCheck },
-        { to: '/me/automations', label: 'Automations', icon: Bot },
-        { to: '/me/artifacts', label: 'Things Divo made', icon: FileStack },
-      ],
-    },
+    /*
+     * No "Home" and no "Chat" row.
+     *
+     * Both named a place rather than a thing to do, and between them they said
+     * the same thing twice: Home *is* the composer, so "Chat" went to the
+     * surface you reach by typing in Home, and "Home" went to the page you are
+     * returned to anyway. New chat above covers the whole of it — one control,
+     * for the one thing this scope is for — and a conversation you have already
+     * had is a row in Recent, which is where you would look for it.
+     */
+    /*
+     * Mail with no heading over it.
+     *
+     * "Work" was a group of four. Approvals is answered in the thread that
+     * asked, Automations had no route behind it, and Things Divo made stood in
+     * front of a real feature with invented rows — so one row is left, and a
+     * heading over one row reads as a mistake rather than as a grouping.
+     *
+     * Work, not configuration: a mail rule is Divo acting on your behalf every
+     * hour of every day, and you come back to check it still is.
+     */
+    { items: [{ to: '/me/mail', label: 'Mail', icon: Mail }] },
   ],
   team: [
     { label: 'Your team', items: [{ to: '/team', label: 'Overview', icon: Grid2X2, end: true }] },
@@ -311,7 +315,9 @@ export function WorkspaceShell() {
             <kbd>/</kbd>
           </button>
 
-          <button type="button" className="ws-new-chat" onClick={() => navigate('/chat')}>
+          {/* Home, because Home is the composer — landing on the empty chat
+              screen asked you to start over on a page with nothing on it. */}
+          <button type="button" className="ws-new-chat" onClick={() => navigate('/me')}>
             <span>New chat</span>
             <span className="ws-new-chat-plus" aria-hidden="true"><Plus size={10} /></span>
           </button>
@@ -534,6 +540,11 @@ function shortAgo(iso: string): string {
 function RecentChats() {
   const { token } = useAdminAuth()
   const [chats, setChats] = useState<ThreadSummary[]>([])
+  const [hasMore, setHasMore] = useState(false)
+  /* How much of the list the reader has asked to see, in chats. Grows a page at
+     a time and never shrinks, so a refresh redraws the window they are looking
+     at rather than collapsing it back to the first page under them. */
+  const [shown, setShown] = useState(THREAD_PAGE)
   /* The last list the server gave, kept so a claim can be drawn over it without
      waiting for a fresh one. */
   const known = useRef<ThreadSummary[]>([])
@@ -550,13 +561,14 @@ function RecentChats() {
        first pass would remove the row and the second would put it back a fetch
        later. The chat would blink out of the rail at the moment it finished. */
     const claims = startedThreads()
-    if (claims.length > 0) setChats(withStartedThreads(known.current, claims).slice(0, 8))
+    if (claims.length > 0) setChats(withStartedThreads(known.current, claims))
     if (!token) return
-    void listThreads(token).then((threads) => {
-      known.current = threads
-      setChats(withStartedThreads(threads, startedThreads()).slice(0, 8))
+    void listThreads(token, shown).then((page) => {
+      known.current = page.threads
+      setChats(withStartedThreads(page.threads, startedThreads()))
+      setHasMore(page.hasMore)
     })
-  }, [token])
+  }, [token, shown])
 
   useEffect(() => {
     refresh()
@@ -575,6 +587,17 @@ function RecentChats() {
       {chats.map((chat) => (
         <ChatRow key={chat.threadId} chat={chat} token={token} onChanged={refresh} />
       ))}
+      {/* Only when the server says there is something behind the window. A
+          control that is always there is a promise the list cannot keep. */}
+      {hasMore && (
+        <button
+          type="button"
+          className="ws-recent-expand"
+          onClick={() => setShown((seen) => seen + THREAD_PAGE)}
+        >
+          Show more
+        </button>
+      )}
     </div>
   )
 }
@@ -603,6 +626,7 @@ function ChatRow({
   const location = useLocation()
   const [menu, setMenu] = useState(false)
   const [renaming, setRenaming] = useState(false)
+  const [confirming, setConfirming] = useState(false)
   const [title, setTitle] = useState(chat.title)
   const row = useRef<HTMLDivElement>(null)
 
@@ -633,10 +657,17 @@ function ChatRow({
     else { setTitle(chat.title); notify.failed('Could not rename that chat.') }
   }
 
+  /*
+   * The app's own dialog, not the browser's.
+   *
+   * `window.confirm` was the one place the workspace handed a decision back to
+   * Chrome: unthemed, unstyled, stamped with "localhost:5173 says", and blocking
+   * the whole tab while it sat there. It also froze every other surface — the
+   * rail could not refresh and a running chat could not stream — because a
+   * native confirm halts the event loop until it is answered.
+   */
   const remove = async () => {
-    setMenu(false)
     if (!token) return
-    if (!window.confirm(`Delete "${chat.title}"? The whole conversation goes with it.`)) return
     if (!await deleteThread(chat.threadId, token)) {
       notify.failed('Could not delete that chat.')
       return
@@ -644,8 +675,10 @@ function ChatRow({
     notify.done('Chat deleted.')
     onChanged()
     // Leaving a reader inside a conversation that no longer exists would show
-    // them an empty thread under a name that is gone.
-    if (location.pathname === `/chat/${chat.threadId}`) navigate('/chat', { replace: true })
+    // them an empty thread under a name that is gone. Home rather than the bare
+    // chat screen: it is where a new question is asked, and it is the same place
+    // New chat goes.
+    if (location.pathname === `/chat/${chat.threadId}`) navigate('/me', { replace: true })
   }
 
   return (
@@ -715,10 +748,25 @@ function ChatRow({
           >
             <Pencil size={13} /> Rename
           </button>
-          <button type="button" role="menuitem" data-danger onClick={() => void remove()}>
+          <button
+            type="button"
+            role="menuitem"
+            data-danger
+            onClick={() => { setMenu(false); setConfirming(true) }}
+          >
             <Trash2 size={13} /> Delete
           </button>
         </div>
+      )}
+
+      {confirming && (
+        <Confirm
+          title={`Delete "${chat.title}"?`}
+          body="The whole conversation goes with it. This cannot be undone."
+          confirm="Delete"
+          onConfirm={remove}
+          onClose={() => setConfirming(false)}
+        />
       )}
     </div>
   )

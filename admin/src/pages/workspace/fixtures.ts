@@ -450,7 +450,9 @@ export type DataState = 'live' | 'not-wired' | 'needs-endpoint' | 'needs-backend
 export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = {
   connections: { state: 'live', note: 'GET /api/desktop/auth/{provider}/status — real today' },
   connectionCoverage: { state: 'needs-backend', note: 'No route reports per-provider coverage or expiry across a company. Token expiry is stored but never evaluated.' },
-  approvals: { state: 'live', note: 'GET /api/desktop/approvals — real today' },
+  /* `approvals` went with its page. The route is live and still read — Home's
+     "Up next" band and the chat composer both use it — but neither of them
+     draws a DataNote, so nothing looks the state up any more. */
   permissions: { state: 'live', note: 'GET /api/desktop/auth/tools/:toolId/manage — real today' },
   teamPeople: { state: 'live', note: 'GET /api/desktop/departments/:id/manage — real today' },
   skills: { state: 'live', note: 'GET /api/desktop/skills — resolved per person by the same catalogue and grant services a run asks, so this list and a run agree.' },
@@ -470,26 +472,18 @@ export const DATA_SOURCES: Record<string, { state: DataState; note: string }> = 
    */
   memory: { state: 'not-wired', note: 'These rows are invented. Memory is admin-only — no route lets a member list or delete their own memories, so nothing here was read from anywhere.' },
   overrideRemoval: { state: 'live', note: 'DELETE /tools/:toolId/departments/:id/members/:userId/actions/:action — real today' },
-  /**
-   * The Pi artifact extension exists but is switched off, and runtime.test.mjs
-   * asserts it stays off. Its mime map is markdown-only, the file never leaves
-   * the container workspace, and it badges a desktop sidebar path rather than
-   * a URL — so there is nothing for a Lark card to link to and nothing a web
-   * viewer could read.
-   */
-  artifacts: { state: 'needs-backend', note: 'divo_artifact is disabled, markdown-only, and never leaves the container.' },
-  artifactSharing: { state: 'needs-backend', note: 'An artifact has no owner or grants today — it is only a file path.' },
-  artifactHistory: { state: 'needs-backend', note: 'No versioned storage; the workspace file is overwritten in place.' },
+  /* The three artifact entries went with the "Things Divo made" page. They
+     described a tool that was switched off, which stopped being true: a web run
+     writes a real artifact and `GET /api/artifacts` lists it. The two surfaces
+     that show them — the chat panel and Home's "Made" band — read the route
+     directly and have never needed a note saying they are fake. */
   reconnect: { state: 'live', note: 'A refresh Google rejects with invalid_grant writes reauthorization_required to the connection; /google/status reports it. Stored token expiry is still never evaluated, so this is reactive — the account is marked when it is next used, not the moment Google revokes it.' },
-  /**
-   * The domain is complete and the UI is fabricated, which is an unusual pair.
-   * ScheduledWorkflow / Run / Message are real Prisma models and
-   * ScheduledWorkflowControlService already implements create, list, pause,
-   * resume, cancel and runNow. None of it is reachable from a browser: there is
-   * no HTTP route for scheduled workflows anywhere in src/http, and create()
-   * refuses any channel that is not desktop or lark. So the rows are invented.
-   */
-  automations: { state: 'not-wired', note: 'The rows are invented. ScheduledWorkflowControlService is real and complete, but no HTTP route reaches it — automations are created by asking Divo, and nothing here was read from anywhere.' },
+  /* `automations` went with the page. The pair it described is worth keeping
+     on record: ScheduledWorkflow / Run / Message are real Prisma models and
+     ScheduledWorkflowControlService implements create, list, pause, resume,
+     cancel and runNow — none of it reachable from a browser, because there is
+     no HTTP route for scheduled workflows anywhere in src/http and create()
+     refuses any channel that is not desktop or lark. */
   mailRules: { state: 'live', note: 'Reads and creation are real — /api/mail-automations rules, health, deliveries, suggestions and POST /rules. Pausing, editing and deleting a rule are still done by asking Divo.' },
   /**
    * The agent map is deliberately half-and-half, and the two halves are

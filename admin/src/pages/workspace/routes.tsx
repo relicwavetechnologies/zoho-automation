@@ -22,11 +22,17 @@ const PATHS: Record<string, string> = {
   home: '/me',
   chat: '/chat',
   'mail-rules': '/me/mail',
-  approvals: '/me/approvals',
-  artifacts: '/me/artifacts',
-  automations: '/me/automations',
-  /* Drill-in: a screen passes `automation:<id>`. */
-  automation: '/me/automations',
+  /* Retired. A decision is answered in the thread that asked it, and Home
+     lists what is waiting — see `answerAt` in decisions/decision.ts. */
+  approvals: '/me',
+  /* Retired — the real artifacts are read from the chat panel and Home's
+     "Made" band. Any caller still naming this lands on Home. */
+  artifacts: '/me',
+  /* Retired: no HTTP route reaches scheduled workflows, and the backend
+     refuses to create one from the web channel at all. The drill-in key goes
+     rather than being pointed at Home — it appends an id, so a retired one
+     would resolve to `/me/<id>` instead of falling through to the default. */
+  automations: '/me',
   'team-home': '/team',
   'co-home': '/home',
   'co-aiops': '/ai-ops',
@@ -36,8 +42,11 @@ const PATHS: Record<string, string> = {
   /* Configuration — the Settings takeover. */
   connections: '/settings/connections',
   'connect-flow': '/settings/connections/lark-flow',
-  access: '/settings/access',
-  skills: '/settings/skills',
+  /* Retired screens. The keys stay so any caller still naming one lands on
+     Connected apps rather than falling through to the `/me` default, which is
+     how a button once quietly took a manager to their own home page. */
+  access: '/settings/connections',
+  skills: '/settings/connections',
   memory: '/settings/memory',
   usage: '/settings/usage',
   settings: '/settings/profile',
@@ -51,12 +60,18 @@ const PATHS: Record<string, string> = {
   'team-usage': '/settings/team/usage',
   'co-people': '/settings/company/people',
   'co-departments': '/settings/company/departments',
-  'co-policy': '/settings/company/policy',
-  'co-connections': '/settings/company/connections',
   'co-skills': '/settings/company/skills',
   'co-memory': '/settings/company/memory',
   'co-guardrails': '/settings/company/guardrails',
-  'co-web-search': '/settings/company/connections/web-search',
+  /* The company ceiling and the company connections page are both retired.
+     Their two live parts survived the removal: the shared web-search key moved
+     under Connected apps, which is where the rest of what Divo can reach is
+     read, and the company-held Airtable and AITable tokens are connected from
+     the cards there. */
+  'co-policy': '/settings/company/people',
+  'co-connections': '/settings/connections',
+  'web-search': '/settings/connections/web-search',
+  'co-web-search': '/settings/connections/web-search',
   /* Drill-ins. A screen passes `co-run:<id>`; the id is appended to the base
      path below. Without one it lands on the list, which is a worse answer than
      the detail but never a wrong one. */
@@ -68,7 +83,6 @@ const PATHS: Record<string, string> = {
 
 /** Falls back to the list route when a screen passes no id. */
 const LIST_FALLBACK: Record<string, string> = {
-  automation: '/me/automations',
   'co-run': '/ai-ops',
   'co-person': '/settings/company/people',
   'co-department': '/settings/company/departments',

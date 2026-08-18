@@ -56,6 +56,19 @@ export type Decision = {
   threadId: string | null
 }
 
+/**
+ * Where an open decision can still be answered.
+ *
+ * There is no approvals page any more, so this is the whole answer. A decision
+ * raised in a web thread is answered in that thread — the composer swaps itself
+ * for the same card, which is why one renderer was worth having. A decision
+ * raised from Lark, or from a run nobody was watching, carries no thread at
+ * all; the Lark card it was already sent to is the only surface it has, and
+ * `null` says so rather than offering a button that leads nowhere.
+ */
+export const answerAt = (decision: Decision): string | null =>
+  decision.threadId ? `chat:${decision.threadId}` : null
+
 export const EMPTY: DecisionAnswer = { responses: [] }
 
 export function responseFor(answer: DecisionAnswer, questionId: string): DecisionResponse | undefined {

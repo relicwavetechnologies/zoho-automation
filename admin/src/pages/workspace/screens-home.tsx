@@ -24,7 +24,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  Activity, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight, CircleAlert,
+  Activity, ArrowUpRight, ChevronDown, ChevronLeft, ChevronRight,
   Link2, Plus, X,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -35,7 +35,7 @@ import { stageHandoff } from './chat/handoff'
 import { useChatModelChoice } from './chat/model-choice'
 import '@/styles/beautiful.css'
 import { useDecisions } from './data/use-decisions'
-import { ago, expiryLabel } from './decisions/decision'
+import { ago, answerAt, expiryLabel } from './decisions/decision'
 import {
   useMyRuns, useMyUsage, changePct, durationLabel, runTitle,
   dayLabel, summarizeSpend, USAGE_DAYS, USAGE_WEEKS,
@@ -152,7 +152,7 @@ function useCarousel(count: number) {
  * whose query was slow ignored the timer anyway. Every band now shows its own
  * shape for exactly as long as its own read takes.
  */
-export function WorkspaceHome({ persona, go }: ScreenProps) {
+export function WorkspaceHome({ persona, go, toast }: ScreenProps) {
   const { session, token } = useAdminAuth()
   const { awaitingMe, loading: approvalsLoading } = useDecisions()
   const { usage, loading: usageLoading } = useMyUsage(USAGE_DAYS)
@@ -243,13 +243,22 @@ export function WorkspaceHome({ persona, go }: ScreenProps) {
   const attention = [
     ...awaitingMe.map((decision) => {
       const expiry = expiryLabel(decision.expiresAt)
+      const at = answerAt(decision)
       return {
         tone: 'act' as const,
         title: decision.title,
         body: decision.detail ?? '',
-        meta: [`${decision.source} · ${ago(decision.requestedAt)}`, expiry ? `Expires ${expiry.text}` : 'No deadline'],
-        cta: 'Review',
-        onClick: () => go('approvals'),
+        meta: [
+          `${decision.source} · ${ago(decision.requestedAt)}`,
+          expiry ? `Expires ${expiry.text}` : 'No deadline',
+          // Said on the card rather than behind a button, because for a
+          // decision with no thread there is no button to put it behind.
+          ...(at ? [] : ['Answer this on the Lark card']),
+        ],
+        // No CTA when there is nowhere to go. A "Review" that lands on Home is
+        // worse than none: it reads as a broken feature rather than as a
+        // decision that lives somewhere else.
+        ...(at ? { cta: 'Open the chat', onClick: () => go(at) } : {}),
       }
     }),
     /* An expired request of your own used to get a card here. It cannot any
@@ -363,7 +372,14 @@ export function WorkspaceHome({ persona, go }: ScreenProps) {
            scrolling to something already in front of somebody moves the page
            under them for no reason. */
         onStartTask={(task) => setDraft(taskPrompt(task))}
-        onOpenApproval={() => go('approvals')}
+        /* The thread that asked, when there is one. A decision raised in
+           Lark or by a run nobody was watching carries no thread, so the row
+           says where to answer it instead of moving the reader nowhere. */
+        onOpenApproval={(approval) => {
+          const at = answerAt(approval)
+          if (at) go(at)
+          else toast('This one was asked on Lark — answer it on the card there', 'error')
+        }}
       />
 
       {/* Under what is waiting, above what could be set up: the documents are
@@ -452,7 +468,9 @@ export function WorkspaceHome({ persona, go }: ScreenProps) {
                       <p>{a.body}</p>
                       <div className="ws-attn-meta">{a.meta.map((m) => <span key={m}>{m}</span>)}</div>
                     </div>
-                    <button type="button" className="btn" onClick={a.onClick}>{a.cta}</button>
+                    {a.cta ? (
+                      <button type="button" className="btn" onClick={a.onClick}>{a.cta}</button>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -819,16 +837,16 @@ function ActionTiles({ attention, running, loading, go }: {
   // Nothing at all while the answer is still unknown, rather than tiles that
   // pop in reading zero and then change under the reader.
   if (loading) return null
+  /*
+   * No "Waiting on you" tile.
+   *
+   * It counted the decisions the "Up next" band directly below it already
+   * lists by name, and its "Review" opened the approvals page — which is gone,
+   * because a decision is now answered in the thread that asked it. A tile with
+   * a number and no destination is worse than no tile: the band underneath can
+   * say the same thing and take you somewhere.
+   */
   const tiles = [
-    attention > 0 && {
-      key: 'approvals',
-      icon: <CircleAlert size={15} />,
-      label: 'Waiting on you',
-      value: attention,
-      unit: attention === 1 ? 'decision' : 'decisions',
-      cta: 'Review',
-      onClick: () => go('approvals'),
-    },
     running > 0 && {
       key: 'running',
       icon: <Activity size={15} />,

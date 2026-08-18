@@ -3,10 +3,10 @@
  *
  * A full page rather than a section of the app, which is the whole reason it
  * exists. Divo's configuration is large — connections, per-action policy,
- * departments, the company ceiling, guardrails — and hanging all of it off the
- * app sidebar meant a member's nav was mostly rows a member cannot use. The
- * work surface keeps Home, Approvals and what Divo made; everything you set up
- * lives here behind one door.
+ * departments, skills, guardrails — and hanging all of it off the app
+ * sidebar meant a member's nav was mostly rows a member cannot use. The
+ * work surface keeps the composer, the conversations you have had and Mail;
+ * everything you set up lives here behind one door.
  *
  * The rail's groups are the scopes this session actually holds. A member sees
  * Account and Agent and nothing else — not a greyed-out Company group, which
@@ -15,7 +15,7 @@
  */
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  ArrowLeft, Bot, Brain, Building2, Cpu, Gauge, KeyRound, Library, Link2,
+  ArrowLeft, Bot, Brain, Building2, Gauge, Library, Link2,
   ShieldCheck, SlidersHorizontal, UserSquare, Users, type LucideIcon,
 } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
@@ -36,16 +36,10 @@ export const RAIL: RailGroup[] = [
       { to: '/settings/profile', label: 'Profile', icon: UserSquare },
       { to: '/settings/preferences', label: 'Preferences', icon: SlidersHorizontal },
       { to: '/settings/connections', label: 'Connected apps', icon: Link2 },
-      { to: '/settings/access', label: 'What Divo can do', icon: KeyRound },
       { to: '/settings/usage', label: 'Your usage', icon: Gauge },
-    ],
-  },
-  {
-    label: 'Agent',
-    scope: 'you',
-    items: [
-      { to: '/settings/models', label: 'Models', icon: Cpu },
-      { to: '/settings/skills', label: 'Skills', icon: Library },
+      /* Memory was the last of the 'Agent' group once Access, Skills and
+         Models were retired, and a heading over one row reads as a mistake.
+         It is a thing about you, so it sits with the rest of them. */
       { to: '/settings/memory', label: 'Memory', icon: Brain },
     ],
   },
@@ -70,10 +64,8 @@ export const RAIL: RailGroup[] = [
     items: [
       { to: '/settings/company/people', label: 'Members', icon: Users },
       { to: '/settings/company/departments', label: 'Departments', icon: Building2 },
-      { to: '/settings/company/connections', label: 'Integrations', icon: Link2 },
       { to: '/settings/company/skills', label: 'Skills', icon: Library },
       { to: '/settings/company/memory', label: 'Memory', icon: Brain },
-      { to: '/settings/company/policy', label: 'Company ceiling', icon: KeyRound },
       { to: '/settings/company/guardrails', label: 'Guardrails', icon: Bot },
     ],
   },

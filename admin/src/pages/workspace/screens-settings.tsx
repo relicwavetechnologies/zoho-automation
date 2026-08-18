@@ -9,14 +9,10 @@
  * `screens-profile.tsx`; it still builds its lower half from the primitives
  * here, so a row means the same thing on every screen in the takeover.
  *
- * Nothing new is read here. Same `useMyModelOptions`, same `useTheme` the
- * sidebar toggle uses, and the same honest note about why the model list cannot
- * be changed from this screen.
+ * Nothing new is read here — the same `useTheme` the sidebar toggle uses.
  */
-import { Check } from 'lucide-react'
 import { useTheme } from '@/lib/use-theme'
-import { useMyModelOptions } from './data/use-my-activity'
-import { Empty, Seg, SkelRows } from './ui'
+import { Seg } from './ui'
 
 export const COMPANY_ROLE_LABEL: Record<string, string> = {
   MEMBER: 'Member',
@@ -103,47 +99,6 @@ export function SettingsPreferences() {
           from anywhere — so it was a switch whose only effect was to look like
           it had one. It comes back when there is something to turn on.
           Approvals already reach people in Lark. */}
-    </>
-  )
-}
-
-export function SettingsModels() {
-  const { allowedModels, loading } = useMyModelOptions()
-
-  return (
-    <>
-      <SettingsHead title="Models" description="Which models Divo may use when it works for you." />
-
-      {loading ? <SkelRows n={2} icon={false} /> : allowedModels.length === 0 ? (
-        // Reached both when every model is switched off and when the read
-        // failed, and the hook cannot currently tell them apart — so the
-        // sentence stops short of blaming an admin.
-        <Empty title="No model is listed for you" body="Divo will fall back to its default until this says otherwise." />
-      ) : (
-        <>
-          {/* Only what the proxy will actually accept for this person. Showing a
-              model it refuses would turn a settings screen into a way to break
-              your own next task. */}
-          {allowedModels.map((m) => (
-            <SettingsRow key={m.id} label={m.label} description={`${m.id}${m.vision ? ' · reads images' : ''}`}>
-              <span className="badge b-ok"><span className="dot" />Allowed</span>
-            </SettingsRow>
-          ))}
-        </>
-      )}
-
-      <div className="set-note">
-        <Check size={13} />
-        {/*
-          The list is read-only, and that is not a shortcut. No route stores a
-          member's model preference — the proxy resolves it from the grant on
-          every call. This panel used to render each model as a clickable row
-          that toasted "Switched to Pro", which persisted nothing and left no
-          model marked as current.
-        */}
-        Your admin decides which models you may use, and Divo picks the best one you are allowed for each
-        task — there is nothing to choose here.
-      </div>
     </>
   )
 }

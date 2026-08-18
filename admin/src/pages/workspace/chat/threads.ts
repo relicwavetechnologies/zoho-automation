@@ -200,9 +200,26 @@ async function call<T>(
   return await response.json().catch(() => null) as T | null
 }
 
-export async function listThreads(token: string): Promise<ThreadSummary[]> {
-  const body = await call<{ threads: ThreadSummary[] }>('/threads', token)
-  return body?.threads ?? []
+/** How many chats the rail shows before asking, and how many each ask adds. */
+export const THREAD_PAGE = 25
+
+/**
+ * The newest `limit` chats, and whether older ones exist.
+ *
+ * A window rather than a cursor. The rail is live — a chat renamed, deleted or
+ * answered reorders the list under the reader — and a cursor followed through
+ * a reorder shows one chat twice and skips another. Re-asking for the window
+ * the reader is looking at is one query and cannot drift.
+ */
+export async function listThreads(
+  token: string,
+  limit = THREAD_PAGE,
+): Promise<{ threads: ThreadSummary[]; hasMore: boolean }> {
+  const body = await call<{ threads: ThreadSummary[]; hasMore?: boolean }>(
+    `/threads?limit=${limit}`,
+    token,
+  )
+  return { threads: body?.threads ?? [], hasMore: body?.hasMore ?? false }
 }
 
 /**
