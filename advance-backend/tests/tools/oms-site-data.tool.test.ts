@@ -211,6 +211,7 @@ describe('OMS Site Data tool', () => {
     if (!result.ok) return;
     assert.equal(result.value.status, 'complete');
     assert.equal(result.value.preview?.rows[0]?.website, 'www.example.com');
+    assert.deepEqual(result.value.preview?.coverage, { kind: 'complete', totalRows: 2 });
     assert.match(result.value.message, /Sanitized 1 of 2/i);
     assert.match(result.value.message, /did not call OMS or any vendor API/i);
     assert.doesNotMatch(result.value.message, /100-row cap|Retrieved 2 site rows/i);
@@ -241,6 +242,12 @@ describe('OMS Site Data tool', () => {
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.value.preview?.rows.length, 25);
+    assert.deepEqual(result.value.preview?.coverage, {
+      kind: 'truncated',
+      returnedRows: 25,
+      knownTotal: 30,
+      reason: 'model_preview_limit',
+    });
     assert.match(result.value.message, /Showing the first 25 rows in chat/i);
   });
 

@@ -85,15 +85,17 @@ export const createOmsSiteDataTool = (deps: {
       const data = await deps.service.execute({ companyId: ctx.runContext.companyId, args });
       const preview = createDatasetPreview({
         rows: data.rows,
-        coverage: {
-          kind: 'provider_limited',
-          returnedRows: data.rows.length,
-          reason: args.operation === 'lookup_vendors'
-            ? 'oms_vendor_fetch_per_website_response'
-            : data.status === 'partial'
-            ? 'oms_100_row_cap_without_pagination_or_total'
-            : 'oms_snapshot_without_pagination_or_total',
-        },
+        coverage: args.operation === 'sanitize_website_inputs'
+          ? { kind: 'complete', totalRows: data.rows.length }
+          : {
+              kind: 'provider_limited',
+              returnedRows: data.rows.length,
+              reason: args.operation === 'lookup_vendors'
+                ? 'oms_vendor_fetch_per_website_response'
+                : data.status === 'partial'
+                ? 'oms_100_row_cap_without_pagination_or_total'
+                : 'oms_snapshot_without_pagination_or_total',
+            },
       });
       const result: Res = {
         status: data.status,
