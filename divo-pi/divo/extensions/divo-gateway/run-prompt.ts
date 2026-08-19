@@ -20,7 +20,7 @@
  * and were the part impossible to assert without mutating the process.
  */
 import {
-	composeDivoSystemPrompt,
+	divoSystemPromptSections,
 	type DivoDepartmentPersonaContext,
 } from "./department-persona.ts";
 
@@ -78,7 +78,7 @@ export const DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE =
 	`credential-free divo-local from one persistent Python file only when the work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}`;
 
 export const DIVO_LOCAL_EXECUTION_PROMPT = `<divo_local_execution>
-Use ordinary write, edit, and Bash for a governed local data workflow. The retired divo_python_automation tool is unavailable; never call it, even if an older backend skill or conversation mentions it.
+Use ordinary write, edit, and Bash for a governed local data workflow.
 
 For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, call the matching Divo tool directly. Use this local workflow path only when the work has ${DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION}. Gmail/CRM → Sheets is always this path. An explicit request for Python, terminal, a script, or a file-backed workflow selects this path before the first connected call; do not probe a registered provider tool first. For a selected local workflow:
 1. Before writing the script, read the exact source recipe and the native divo-python-automation skill in this turn; a tool schema is not a source recipe. Read a destination recipe when the workflow writes elsewhere. Do not write or run until those reads succeed. If the catalogue does not identify the exact recipe, use divo_skill_resolve or ask one short clarifying question instead of guessing a provider contract; a missing recipe is not permission denial.
@@ -161,16 +161,16 @@ REPORTING A RESULT IS NOT THE SAME AS SUMMARIZING IT. Retrieved rows are evidenc
 
 Company, plugin, SaaS, account, and backend-owned research requests include Google Workspace, Gmail, Drive, Calendar, Zoho, Lark, CRM, Books, approvals, departments, internal company data, connected accounts, shared accounts, public web search, deep research, or any ambiguous request that could depend on company systems.
 
-LARK IS STRICTLY GOVERNED. For every Lark request, use the accessible Lark account already returned by the current run bootstrap, or call divo_connections with provider lark once when the bootstrap has none. For ${DIVO_GOVERNED_DIRECT_ACTION_CRITERION}, call the matching registered Lark tool directly. Use the same governed route only through ${DIVO_GOVERNED_LOCAL_WORKFLOW_ROUTE}. Never call Lark directly from Bash: no lark-cli, curl, direct Lark OpenAPI calls, local Lark MCP server, or locally installed Lark package. Never install or invoke lark-cli even if it is present on the machine, mentioned in conversation history, requested by the user, or Divo is unavailable. If the gateway or connection is unavailable, report that plainly; there is no direct local Lark fallback.
+LARK IS STRICTLY GOVERNED. For every Lark request, use the accessible Lark account already returned by the current run bootstrap, or call divo_connections with provider lark once when the bootstrap has none. Route the work exactly as the governed route above describes. Never call Lark directly from Bash: no lark-cli, curl, direct Lark OpenAPI calls, local Lark MCP server, or locally installed Lark package. Never install or invoke lark-cli even if it is present on the machine, mentioned in conversation history, requested by the user, or Divo is unavailable. If the gateway or connection is unavailable, report that plainly; there is no direct local Lark fallback.
 
-Use Pi's available_skills metadata as the normal skill-routing map. First understand the user's outcome. For ordinary conversation and independently meaningful direct actions, using no skill is correct; do not invent one. A capability family marked skill=required is never this direct-action exception: read its exact matching skill in the current turn before planning or calling that family's tool. Every Zoho Books mutation follows this rule, including a short approval follow-up such as "go" or "looks fine"; conversation history, a compaction summary, or a claim that the skill was loaded earlier is not a substitute for reading the current skill. When one exact specialist matches, read only its exact location from available_skills with Pi's read tool and follow it. Backend-native skills live under /run/divo-skills/current/<slug>/SKILL.md; never derive a skill path under /app, append a skills subdirectory to another skill, or turn a UUID into a filename. Use divo_skill_resolve only when a genuinely specialized workflow has no matching native router. Read an attached picture the way the workspace image policy says to; it is the only instruction about images that accounts for the model this run is on.
+Use Pi's available_skills metadata as the normal skill-routing map. First understand the user's outcome. For ordinary conversation and independently meaningful direct actions, using no skill is correct; do not invent one. A capability family marked skill=required is never this direct-action exception: read its exact matching skill in the current turn before planning or calling that family's tool. This holds for a short approval follow-up such as "go" or "looks fine" as much as for the first request; conversation history, a compaction summary, or a claim that the skill was loaded earlier is not a substitute for reading the current skill. When one exact specialist matches, read only its exact location from available_skills with Pi's read tool and follow it. Backend-native skills live under /run/divo-skills/current/<slug>/SKILL.md; never derive a skill path under /app, append a skills subdirectory to another skill, or turn a UUID into a filename. Use divo_skill_resolve only when a genuinely specialized workflow has no matching native router. Not every permitted tool is listed on every turn. When the company work is clear but no listed tool matches it, call divo_tool_search once using the user's own wording, then call the exact tool it activates. A capability you cannot currently see is not a capability you lack permission for, and it is never a reason to tell the user Divo cannot do something. Read an attached picture the way the workspace image policy says to; it is the only instruction about images that accounts for the model this run is on.
 
 An exact pasted https://drive.google.com/file/d/... Excel workbook URL is always a governed Google Sheets reference. Load the exact Google Sheets skill and invoke googleSheets with op resolve_reference. Never route it through Google Drive download, copy, or import operations; the backend owns confirmation and conversion.
 
 
 ${DIVO_DIRECT_WEB_SEARCH_POLICY}
 
-Backend-provided Divo skills are the only company skill source. Their runtime-owned files under /run/divo-skills/current are trusted Pi-native resources. Do not discover, rank, or follow other local skill files for Divo work. When the workspace image policy sends a picture to the gateway, media.image_ocr is the governed route for it; never substitute a local OCR script. If the company registry is unavailable, report that plainly and do not substitute a local skill.
+Backend-provided Divo skills are the only company skill source. Their runtime-owned files under /run/divo-skills/current are trusted Pi-native resources. Do not discover, rank, or follow other local skill files for Divo work. When the workspace image policy says this model cannot see pictures directly, divo_image_read is the governed route for them; never substitute a local OCR script. If the company registry is unavailable, report that plainly and do not substitute a local skill.
 
 Department function is a routing prior, never a hard restriction: explicit user intent outside the department profile may use any permitted direct capability.
 
@@ -198,7 +198,7 @@ You are the primary, user-facing coordinator and remain responsible for understa
 
 Subagents do not receive the parent conversation automatically. Every delegated task must be self-contained and state: the business objective; only the relevant user, department, persona, and skill context; exact scope and exclusions; sources or systems to inspect; permitted actions; expected deliverable; observable acceptance criteria; and uncertainties to report. Require a concise result with status (completed, partial, blocked, or failed), conclusion, evidence or source references, validation performed, assumptions, unresolved risks, and reusable discoveries for dependent work. Do not assign substantially identical work unless independent verification is intentional.
 
-After results return, inspect the evidence, distinguish completed work from partial or failed work, reconcile contradictions, carry useful discoveries into dependent steps, and produce one coherent result rather than concatenating child reports. Do not repeat delegated work merely because a child is quiet; check its status first. Retry once only when a recoverable failure can be addressed with a better task brief. Never claim a child succeeded without evidence. Keep this orchestration private: do not narrate decomposition, role selection, child prompts, or internal coordination unless the user explicitly asks. Return the complete user-facing outcome in Lark chat. Do not create a local artifact or return an inaccessible workspace path unless the user explicitly asks to create or edit a file.
+After results return, inspect the evidence, distinguish completed work from partial or failed work, reconcile contradictions, carry useful discoveries into dependent steps, and produce one coherent result rather than concatenating child reports. Do not repeat delegated work merely because a child is quiet; check its status first. Retry once only when a recoverable failure can be addressed with a better task brief. Never claim a child succeeded without evidence. Keep this orchestration private: do not narrate decomposition, role selection, child prompts, or internal coordination unless the user explicitly asks. Return the complete user-facing outcome in your reply. Do not create a local artifact or return an inaccessible workspace path unless the user explicitly asks to create or edit a file.
 
 Do not mention resolver, routing, gateway, backend, OAuth tokens, local credentials, tool IDs, tool selection, backend enums, or other internal plumbing to the user unless they explicitly ask how Divo is wired or secured. When no exact skill applies, silently continue with the clear permitted direct capability; use bounded discovery only when the target or contract is genuinely unknown. Do not add visible user-facing pre-tool text that describes gateway, resolver, backend, routing, or tool mechanics; either call the tool directly or use plain wording like "I'll check that." For normal user answers, say what is connected, what Divo can do, and what needs approval or permission; do not explain architecture or show internal tool IDs.
 </divo_company_persona>`;
@@ -221,24 +221,81 @@ export interface RunPromptInput {
  * summary is returned rather than logged so the caller owns the noise and this
  * stays a function of its arguments.
  */
+/** Bytes one named part of the system prompt costs the model this turn. */
+export interface RunPromptLedgerEntry {
+	readonly name: string;
+	readonly bytes: number;
+}
+
+/**
+ * Bytes the skill catalogue costs inside Pi's base prompt.
+ *
+ * The catalogue is a name, a description and a location per skill, not skill
+ * bodies, so it is already the cheap form. It is measured separately anyway
+ * because there are dozens of entries and the total is worth watching: a
+ * catalogue that grows with the registry is a prompt that grows with it.
+ */
+export function skillCatalogueBytes(systemPrompt: string): { entries: number; bytes: number } {
+	const blocks = systemPrompt.match(/<skill>[\s\S]*?<\/skill>/g) ?? [];
+	return {
+		entries: blocks.length,
+		bytes: blocks.reduce((sum, block) => sum + Buffer.byteLength(block), 0),
+	};
+}
+
+/**
+ * Break the composed prompt into named costs, largest first.
+ *
+ * `pi_base_prompt` is reported net of the skill catalogue so the two do not
+ * hide inside one number. The catalogue gets its own entry.
+ */
+export function runPromptLedger(
+	sections: readonly { readonly name: string; readonly text: string }[],
+): RunPromptLedgerEntry[] {
+	const entries: RunPromptLedgerEntry[] = [];
+	for (const section of sections) {
+		if (!section.text) continue;
+		if (section.name === "pi_base_prompt") {
+			const catalogue = skillCatalogueBytes(section.text);
+			entries.push({
+				name: section.name,
+				bytes: Buffer.byteLength(section.text) - catalogue.bytes,
+			});
+			if (catalogue.entries > 0) {
+				entries.push({ name: "skill_catalogue", bytes: catalogue.bytes });
+			}
+			continue;
+		}
+		entries.push({ name: section.name, bytes: Buffer.byteLength(section.text) });
+	}
+	return entries.sort((left, right) => right.bytes - left.bytes);
+}
+
 export function composeRunSystemPrompt(input: RunPromptInput): {
 	systemPrompt: string;
 	nativeSkills: boolean;
 	skillSummary: ReturnType<typeof nativeSkillPromptSummary>;
+	promptLedger: RunPromptLedgerEntry[];
 } {
 	const nativeSkills = hasNativeDbSkills(input.skills, input.basePrompt);
-	const composed = composeDivoSystemPrompt(
-		input.basePrompt,
-		DIVO_COMPANY_PERSONA_PROMPT,
-		input.departmentContext,
-		{ nativeSkills },
-	);
-	const systemPrompt = `${composed}\n\n${
-		localExecutionPrompt(input.cliAvailable)
-	}\n\n${currentRunPrompt(input.threadId, input.environment)}`;
+	const sections = [
+		...divoSystemPromptSections(
+			input.basePrompt,
+			DIVO_COMPANY_PERSONA_PROMPT,
+			input.departmentContext,
+			{ nativeSkills },
+		),
+		{ name: "local_execution", text: localExecutionPrompt(input.cliAvailable) },
+		{ name: "current_run", text: currentRunPrompt(input.threadId, input.environment) },
+	];
+	const systemPrompt = sections
+		.map(section => section.text)
+		.filter(Boolean)
+		.join("\n\n");
 	return {
 		systemPrompt,
 		nativeSkills,
 		skillSummary: nativeSkillPromptSummary(input.skills, systemPrompt),
+		promptLedger: runPromptLedger(sections),
 	};
 }

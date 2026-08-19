@@ -199,12 +199,25 @@ export async function readDepartmentPersonaContext(
 	}
 }
 
-export function composeDivoSystemPrompt(
+/** One named, separately budgetable piece of the model-visible system prompt. */
+export interface DivoSystemPromptSection {
+	readonly name: string;
+	readonly text: string;
+}
+
+/**
+ * The system prompt as its named parts, in send order.
+ *
+ * The prompt used to be assembled as an anonymous array joined on the spot,
+ * which meant nobody could say what any part of it cost. It is the largest
+ * thing the model reads, so the parts have names now.
+ */
+export function divoSystemPromptSections(
 	systemPrompt: string,
 	companyPersonaPrompt: string,
 	departmentContext: DivoDepartmentPersonaContext | null,
 	options: { nativeSkills?: boolean } = {},
-): string {
+): DivoSystemPromptSection[] {
 	const withoutDivoContext = stripPiAuthoredPresentation(systemPrompt)
 		.replace(departmentPersonaBlock, "")
 		.replace(memberDepartmentsBlock, "")
@@ -214,9 +227,9 @@ export function composeDivoSystemPrompt(
 		.replace(interruptedWorkPolicyBlock, "")
 		.replace(presentationPolicyBlock, "")
 		.trim();
-	const withCompanyPersona = withoutDivoContext.includes(COMPANY_PERSONA_TAG)
-		? withoutDivoContext
-		: [withoutDivoContext, companyPersonaPrompt].filter(Boolean).join("\n\n");
+	// Kept apart so a ledger can price Pi's own prompt separately from Divo's.
+	// They merge only when a previous compose already embedded the persona.
+	const personaAlreadyEmbedded = withoutDivoContext.includes(COMPANY_PERSONA_TAG);
 	const departmentPersona = formatDepartmentPersona(departmentContext);
 	const capabilityBootstrap = formatCapabilityBootstrap(
 		departmentContext?.capabilityBootstrap,
@@ -226,18 +239,38 @@ export function composeDivoSystemPrompt(
 	const personalMemory = formatPersonalMemory(departmentContext);
 
 	return [
-		withCompanyPersona,
-		departmentPersona,
-		capabilityBootstrap,
-		memberDepartments,
-		personalMemory,
-		interruptedWorkPolicy(departmentContext?.interruptedWork),
+		{ name: "pi_base_prompt", text: withoutDivoContext },
+		{ name: "company_persona", text: personaAlreadyEmbedded ? "" : companyPersonaPrompt },
+		{ name: "department_persona", text: departmentPersona ?? "" },
+		{ name: "capability_bootstrap", text: capabilityBootstrap ?? "" },
+		{ name: "member_departments", text: memberDepartments ?? "" },
+		{ name: "personal_memory", text: personalMemory ?? "" },
+		{ name: "interrupted_work", text: interruptedWorkPolicy(departmentContext?.interruptedWork) ?? "" },
 		// Last of the Divo blocks and directly above the language policy: how to
 		// present an answer is the final word on shape, and it must not be
 		// buried under the persona it modifies.
-		departmentContext?.surface ? presentationPolicy(departmentContext.surface) : "",
-		DIVO_ENGLISH_RESPONSE_POLICY,
-	]
+		{
+			name: "presentation_policy",
+			text: departmentContext?.surface ? presentationPolicy(departmentContext.surface) : "",
+		},
+		{ name: "english_response_policy", text: DIVO_ENGLISH_RESPONSE_POLICY },
+	];
+}
+
+/**
+ * The same assembly as a single string.
+ *
+ * Two views of one list, so a caller that wants to measure the prompt and a
+ * caller that wants to send it can never disagree about what it contains.
+ */
+export function composeDivoSystemPrompt(
+	systemPrompt: string,
+	companyPersonaPrompt: string,
+	departmentContext: DivoDepartmentPersonaContext | null,
+	options: { nativeSkills?: boolean } = {},
+): string {
+	return divoSystemPromptSections(systemPrompt, companyPersonaPrompt, departmentContext, options)
+		.map(section => section.text)
 		.filter(Boolean)
 		.join("\n\n");
 }
