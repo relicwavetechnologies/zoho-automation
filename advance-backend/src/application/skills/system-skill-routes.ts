@@ -31,6 +31,10 @@ import {
 import { ZOHO_FINANCE_SYSTEM_SKILLS } from './zoho-finance-system-skills';
 import { bumpSkillRegistryRevision } from './skill-registry-versioning';
 
+export type RoutingSystemSkillDefinition = DivoProductivitySystemSkillDefinition & {
+  readonly targetSlugs?: readonly string[];
+};
+
 export const ROUTING_SYSTEM_SKILLS = [
   {
     slug: 'airtable-router',
@@ -98,6 +102,13 @@ This router is instruction-only: loading it successfully means to load one speci
       'pincode analysis',
     ],
     sortOrder: 3,
+    targetSlugs: [
+      MENHOOD_DATA_SYSTEM_SKILL.slug,
+      DIVO_LOCAL_PYTHON_SKILL_SLUG,
+      ...CONNECTED_PROVIDER_SYSTEM_SKILLS
+        .filter(skill => skill.slug.startsWith('airtable-'))
+        .map(skill => skill.slug),
+    ],
   },
   {
     slug: 'aitable-router',
@@ -115,6 +126,9 @@ AITable and Airtable are different products. Never route an Airtable request her
     tags: ['aitable', 'router', 'fusion', 'datasheets', 'fields'],
     aliases: ['aitable', 'aitable fusion', 'aitable datasheets', 'aitable fields'],
     sortOrder: 4,
+    targetSlugs: CONNECTED_PROVIDER_SYSTEM_SKILLS
+      .filter(skill => skill.slug.startsWith('aitable-'))
+      .map(skill => skill.slug),
   },
   {
     slug: 'shopify-router',
@@ -129,6 +143,9 @@ The Shopify specialist is read-only and routes every request through governed Di
     tags: ['shopify', 'router', 'commerce', 'sales', 'orders', 'attribution'],
     aliases: ['shopify', 'shopify sales', 'store orders', 'shopify attribution', 'shopify customers'],
     sortOrder: 10,
+    targetSlugs: CONNECTED_PROVIDER_SYSTEM_SKILLS
+      .filter(skill => skill.slug.startsWith('shopify-'))
+      .map(skill => skill.slug),
   },
   {
     slug: 'data-router',
@@ -180,6 +197,12 @@ Examples, kept because each one is a boundary the bullets alone decide slowly:
       'read spreadsheet link', 'check row in export',
     ],
     sortOrder: 5,
+    targetSlugs: [
+      DIVO_LOCAL_PYTHON_SKILL_SLUG,
+      'google-drive',
+      'google-sheets',
+      READ_FILES_SKILL_SLUG,
+    ],
   },
   {
     slug: 'files-router',
@@ -211,6 +234,10 @@ job, not this one.`,
       'make a spreadsheet',
     ],
     sortOrder: 6,
+    targetSlugs: [
+      ...FILES_AND_DOCUMENTS_SYSTEM_SKILLS.map(skill => skill.slug),
+      DIVO_PRESENTATIONS_SYSTEM_SKILL.slug,
+    ],
   },
   {
     slug: 'research-router',
@@ -232,6 +259,11 @@ workspace. Route those to \`files-router\`.`,
     tags: ['research', 'router', 'web', 'semrush', 'seo', 'oms', 'site-inventory'],
     aliases: ['research', 'web research', 'semrush', 'seo research', 'oms sites', 'site inventory'],
     sortOrder: 7,
+    targetSlugs: [
+      'web-search',
+      DIVO_SEMRUSH_SYSTEM_SKILL.slug,
+      DIVO_OMS_SITE_DATA_SYSTEM_SKILL.slug,
+    ],
   },
   {
     slug: 'work-automation-router',
@@ -245,6 +277,7 @@ Calendar events belong to the relevant Google or Lark calendar specialist instea
     tags: ['work', 'automation', 'router', 'schedule', 'recurring', 'reminder', 'monitoring'],
     aliases: ['schedule work', 'recurring work', 'reminder', 'monitoring', 'run every'],
     sortOrder: 8,
+    targetSlugs: [SCHEDULE_DIVO_WORK_SKILL_SLUG],
   },
   {
     slug: 'memory-router',
@@ -259,6 +292,7 @@ Do not route transient task state, secrets, unfinished teaching, one-off work, o
     tags: ['knowledge', 'personal', 'memory', 'procedure', 'file', 'router', 'save', 'remember', 'shared', 'review'],
     aliases: ['remember this', 'save memory', 'share memory', 'personal memory', 'teach divo', 'save procedure', 'keep this file'],
     sortOrder: 9,
+    targetSlugs: [KNOWLEDGE_MANAGEMENT_SKILL_SLUG],
   },
   {
     slug: 'web-search',
@@ -275,17 +309,29 @@ Do not use public web search as a substitute for configured Semrush or OMS data,
     aliases: ['web search', 'internet research', 'current public information', 'verify online'],
     sortOrder: 21,
   },
-] as const satisfies readonly DivoProductivitySystemSkillDefinition[];
+] satisfies readonly RoutingSystemSkillDefinition[];
 
 export interface SystemSkillRouteSeed {
   readonly routerSlug: string;
   readonly targetSlugs: readonly string[];
 }
 
+function specialistSlugs(
+  skills: readonly { slug: string; toolIds: readonly string[] }[],
+): readonly string[] {
+  return skills.filter(skill => skill.toolIds.length > 0).map(skill => skill.slug);
+}
+
+/**
+ * Route edges live on the router definition (`targetSlugs`) when the router
+ * is in `ROUTING_SYSTEM_SKILLS`. Family routers (Lark, Google, Zoho) keep
+ * their edges next to the family they point at so a new specialist cannot
+ * ship without a router noticing.
+ */
 export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
   {
     routerSlug: 'lark-router',
-    targetSlugs: LARK_SYSTEM_SKILLS.filter(skill => skill.toolIds.length > 0).map(skill => skill.slug),
+    targetSlugs: specialistSlugs(LARK_SYSTEM_SKILLS),
   },
   {
     routerSlug: 'google-workspace-router',
@@ -297,107 +343,40 @@ export const SYSTEM_SKILL_ROUTE_SEEDS: readonly SystemSkillRouteSeed[] = [
   },
   {
     routerSlug: 'finance-zoho-router',
-    targetSlugs: ZOHO_FINANCE_SYSTEM_SKILLS
-      .filter(skill => skill.toolIds.length > 0)
-      .map(skill => skill.slug),
+    targetSlugs: specialistSlugs(ZOHO_FINANCE_SYSTEM_SKILLS),
   },
-  {
-    routerSlug: 'airtable-router',
-    targetSlugs: [
-      MENHOOD_DATA_SYSTEM_SKILL.slug,
-      DIVO_LOCAL_PYTHON_SKILL_SLUG,
-      ...CONNECTED_PROVIDER_SYSTEM_SKILLS
-        .filter(skill => skill.slug.startsWith('airtable-'))
-        .map(skill => skill.slug),
-    ],
-  },
-  {
-    routerSlug: 'aitable-router',
-    targetSlugs: CONNECTED_PROVIDER_SYSTEM_SKILLS
-      .filter(skill => skill.slug.startsWith('aitable-'))
-      .map(skill => skill.slug),
-  },
-  {
-    routerSlug: 'shopify-router',
-    targetSlugs: CONNECTED_PROVIDER_SYSTEM_SKILLS
-      .filter(skill => skill.slug.startsWith('shopify-'))
-      .map(skill => skill.slug),
-  },
-  {
-    routerSlug: 'data-router',
-    targetSlugs: [
-      DIVO_LOCAL_PYTHON_SKILL_SLUG,
-      'google-drive',
-      'google-sheets',
-      READ_FILES_SKILL_SLUG,
-    ],
-  },
-  {
-    routerSlug: 'files-router',
-    targetSlugs: [
-      ...FILES_AND_DOCUMENTS_SYSTEM_SKILLS.map(skill => skill.slug),
-      /*
-       * Provisioned for every company since it was written, listed in the
-       * registry, and reachable by no router — a deck is a file the member
-       * asked Divo to author, so it belongs behind the same router as every
-       * other authored artifact.
-       */
-      DIVO_PRESENTATIONS_SYSTEM_SKILL.slug,
-    ],
-  },
-  {
-    routerSlug: 'research-router',
-    targetSlugs: [
-      'web-search',
-      DIVO_SEMRUSH_SYSTEM_SKILL.slug,
-      DIVO_OMS_SITE_DATA_SYSTEM_SKILL.slug,
-    ],
-  },
-  {
-    routerSlug: 'work-automation-router',
-    targetSlugs: [SCHEDULE_DIVO_WORK_SKILL_SLUG],
-  },
-  {
-    routerSlug: 'memory-router',
-    targetSlugs: [KNOWLEDGE_MANAGEMENT_SKILL_SLUG],
-  },
-] as const;
+  ...ROUTING_SYSTEM_SKILLS.flatMap(skill =>
+    skill.targetSlugs
+      ? [{ routerSlug: skill.slug, targetSlugs: skill.targetSlugs }]
+      : [],
+  ),
+];
 
 /**
  * Every seeded skill a router could reach, tools or not, as slug plus the exact
- * body that ships to the model.
- *
- * One list, because two lists drift. `unroutedSeededSystemSkillSlugs` reads it,
- * and so does the guard that no skill teaches a removed call surface — which
- * was a separate hand-written array until four families turned out to be
- * missing from it, including the scheduler that kept a dead gateway protocol
- * through an entire sweep. A definition absent from here is exempt from both
- * checks at once, which is the only way it should ever be exempt from either.
+ * body that ships to the model. One concat of family definitions — a skill
+ * absent from here is exempt from route and call-surface guards at once.
  */
-export const SEEDED_SYSTEM_SKILLS: readonly { slug: string; markdown: string }[] = [
+const SEEDED_SYSTEM_SKILL_DEFINITIONS = [
   ...LARK_SYSTEM_SKILLS,
   ...GOOGLE_WORKSPACE_SYSTEM_SKILLS,
   ...CONNECTED_PROVIDER_SYSTEM_SKILLS,
   ...ZOHO_FINANCE_SYSTEM_SKILLS,
   ...MAIL_OPS_SYSTEM_SKILLS,
   ...FILES_AND_DOCUMENTS_SYSTEM_SKILLS,
-  /*
-   * Absent from this list, `unroutedSeededSystemSkillSlugs` returned [] while
-   * `divo-presentations` sat unrouted — the guard was not passing, it could
-   * not see the skill.
-   */
   DIVO_PRESENTATIONS_SYSTEM_SKILL,
   DIVO_SEMRUSH_SYSTEM_SKILL,
   DIVO_OMS_SITE_DATA_SYSTEM_SKILL,
   MENHOOD_DATA_SYSTEM_SKILL,
   ...ROUTING_SYSTEM_SKILLS,
-]
-  .map(skill => ({ slug: skill.slug, markdown: skill.markdown }))
-  .concat(
-    { slug: SCHEDULE_DIVO_WORK_SKILL_SLUG, markdown: SCHEDULE_DIVO_WORK_SKILL_MARKDOWN },
-    { slug: KNOWLEDGE_MANAGEMENT_SKILL_SLUG, markdown: KNOWLEDGE_MANAGEMENT_SKILL_MARKDOWN },
-    { slug: DIVO_LOCAL_PYTHON_SKILL_SLUG, markdown: DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown },
-  );
+] as const;
+
+export const SEEDED_SYSTEM_SKILLS: readonly { slug: string; markdown: string }[] = [
+  ...SEEDED_SYSTEM_SKILL_DEFINITIONS.map(skill => ({ slug: skill.slug, markdown: skill.markdown })),
+  { slug: SCHEDULE_DIVO_WORK_SKILL_SLUG, markdown: SCHEDULE_DIVO_WORK_SKILL_MARKDOWN },
+  { slug: KNOWLEDGE_MANAGEMENT_SKILL_SLUG, markdown: KNOWLEDGE_MANAGEMENT_SKILL_MARKDOWN },
+  { slug: DIVO_LOCAL_PYTHON_SKILL_SLUG, markdown: DIVO_LOCAL_PYTHON_SYSTEM_SKILL.markdown },
+];
 
 export const ROUTABLE_SEEDED_SYSTEM_SKILL_SLUGS = SEEDED_SYSTEM_SKILLS.map(skill => skill.slug);
 

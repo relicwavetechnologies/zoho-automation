@@ -1,6 +1,4 @@
-import { createHash } from 'node:crypto';
 import type { Prisma } from '../../generated/prisma';
-import { recordSkillRegistryMutation } from './skill-registry-versioning';
 import { larkSkillEnglishOnlyError } from './lark-skill-language-policy';
 import {
   GOVERNED_DIRECT_ACTION_CRITERION,
@@ -19,18 +17,15 @@ import {
   larkContactsMarkdown,
   larkMessagingMarkdown,
 } from './lark-system-skills/workspace';
+import type { SystemSkillDefinition } from './system-skill-definition';
+import {
+  buildSystemSkill,
+  ensureSystemSkillFolder,
+  provisionSystemSkill,
+  type SystemSkillStore,
+} from './system-skill-provisioner';
 
-export interface LarkSystemSkillDefinition {
-  readonly slug: string;
-  readonly legacySlugs?: readonly string[];
-  readonly name: string;
-  readonly summary: string;
-  readonly markdown: string;
-  readonly toolIds: readonly string[];
-  readonly tags: readonly string[];
-  readonly aliases?: readonly string[];
-  readonly sortOrder: number;
-}
+export type LarkSystemSkillDefinition = SystemSkillDefinition;
 
 const LARK_GOVERNED_ROUTING = `For ${GOVERNED_DIRECT_ACTION_CRITERION}, use the governed Divo route directly. ${GOVERNED_LOCAL_WORKFLOW_ROUTE} Never call Lark directly from Bash: no lark-cli, curl, local credentials, or direct Lark API calls.`;
 /**
@@ -147,11 +142,9 @@ export const LARK_SYSTEM_SKILLS: readonly LarkSystemSkillDefinition[] = [
 ] as const;
 
 const LARK_FOLDER = {
+  key: 'folder:lark',
   name: 'Lark',
   slug: 'lark',
-  departmentId: null,
-  parentId: null,
-  status: 'active',
   sortOrder: 20,
 } as const;
 const LARK_FAMILY_FOLDERS = [
@@ -165,55 +158,8 @@ const LARK_FAMILY_FOLDERS = [
   { name: 'Approvals', slug: 'approvals', skillSlug: 'lark-approvals', sortOrder: 70 },
 ] as const;
 
-type LarkSkillStore = Pick<
-  Prisma.TransactionClient,
-  'skillFolder' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant' | 'skillAlias'
->;
-
-type ExistingSkill = {
-  id: string;
-  slug: string;
-  companyId: string;
-  departmentId: string | null;
-  folderId: string | null;
-  scope: string;
-  name: string;
-  summary: string;
-  markdown: string;
-  toolIds: string[];
-  tags: string[];
-  status: string;
-  isSystem: boolean;
-  sortOrder: number;
-  revision: number;
-  createdBy: string | null;
-  updatedBy: string | null;
-  aliases?: { alias: string }[];
-};
-
-const EXISTING_SKILL_SELECT = {
-  id: true,
-  slug: true,
-  companyId: true,
-  departmentId: true,
-  folderId: true,
-  scope: true,
-  name: true,
-  summary: true,
-  markdown: true,
-  toolIds: true,
-  tags: true,
-  status: true,
-  isSystem: true,
-  sortOrder: true,
-  revision: true,
-  createdBy: true,
-  updatedBy: true,
-  aliases: { select: { alias: true }, orderBy: { alias: 'asc' as const } },
-} as const;
-
 export async function provisionLarkSystemSkills(
-  db: LarkSkillStore,
+  db: SystemSkillStore,
   companyId: string,
 ): Promise<{ folderId: string; created: number; updated: number; existing: number; skipped: number }> {
   for (const definition of LARK_SYSTEM_SKILLS) {
@@ -229,80 +175,19 @@ export async function provisionLarkSystemSkills(
   }
 
   const { folderId, familyFolderIds } = await ensureLarkFolders(db, companyId);
-  let created = 0;
-  let updated = 0;
-  let existing = 0;
-  let skipped = 0;
-
+  const totals = { folderId, created: 0, updated: 0, existing: 0, skipped: 0 };
   for (const definition of LARK_SYSTEM_SKILLS) {
     const definitionFolderId = familyFolderIds.get(definition.slug) ?? folderId;
-    let current = await db.skill.findFirst({
-      where: { companyId, slug: definition.slug, status: { not: 'archived' } },
-      select: EXISTING_SKILL_SELECT,
-    }) as ExistingSkill | null;
-    if (!current && definition.legacySlugs?.length) {
-      current = await db.skill.findFirst({
-        where: {
-          companyId,
-          slug: { in: [...definition.legacySlugs] },
-          status: { not: 'archived' },
-          isSystem: true,
-        },
-        select: EXISTING_SKILL_SELECT,
-      }) as ExistingSkill | null;
-    }
-
-    if (current && !current.isSystem) {
-      skipped += 1;
-      continue;
-    }
-
-    let skill: ExistingSkill;
-    if (!current) {
-      skill = await db.skill.create({
-        data: buildLarkSystemSkill(companyId, definitionFolderId, definition),
-      }) as ExistingSkill;
-      await recordSkillRegistryMutation(db, skill, 'system');
-      created += 1;
-    } else if (matchesDefinition(current, definitionFolderId, definition)) {
-      skill = current;
-      existing += 1;
-    } else {
-      skill = await db.skill.update({
-        where: { id: current.id },
-        data: {
-          ...definitionFields(definitionFolderId, definition),
-          toolIds: [...definition.toolIds],
-          tags: [...definition.tags],
-          revision: { increment: 1 },
-        },
-      }) as ExistingSkill;
-      await recordSkillRegistryMutation(db, skill, 'system');
-      updated += 1;
-    }
-
-    await db.skillAccessGrant.upsert({
-      where: {
-        skillId_granteeType_granteeId: {
-          skillId: skill.id,
-          granteeType: 'company',
-          granteeId: companyId,
-        },
-      },
-      create: {
-        companyId,
-        skillId: skill.id,
-        granteeType: 'company',
-        granteeId: companyId,
-      },
-      update: {},
+    const result = await provisionSystemSkill(db, companyId, definition, {
+      folderId: definitionFolderId,
+      departmentId: null,
+      scope: 'company',
+      granteeType: 'company',
+      granteeId: companyId,
     });
-    if (definition.aliases) {
-      await syncAliases(db, skill.id, definition.aliases);
-    }
+    totals[result.outcome] += 1;
   }
-
-  return { folderId, created, updated, existing, skipped };
+  return totals;
 }
 
 export function buildLarkSystemSkill(
@@ -310,135 +195,30 @@ export function buildLarkSystemSkill(
   folderId: string,
   definition: LarkSystemSkillDefinition,
 ): Prisma.SkillUncheckedCreateInput & { id: string } {
-  return {
-    id: deterministicId(companyId, `skill:${definition.slug}`),
-    companyId,
-    ...definitionFields(folderId, definition),
-    toolIds: [...definition.toolIds],
-    tags: [...definition.tags],
-  };
+  return buildSystemSkill(companyId, definition, {
+    folderId,
+    departmentId: null,
+    scope: 'company',
+    granteeType: 'company',
+    granteeId: companyId,
+  });
 }
 
 async function ensureLarkFolders(
-  db: LarkSkillStore,
+  db: Pick<SystemSkillStore, 'skillFolder'>,
   companyId: string,
 ): Promise<{ folderId: string; familyFolderIds: ReadonlyMap<string, string> }> {
-  const existing = await db.skillFolder.findFirst({
-    where: {
-      companyId,
-      departmentId: null,
-      parentId: null,
-      slug: LARK_FOLDER.slug,
-      status: 'active',
-    },
-    select: { id: true },
-  });
-  const folderId = existing?.id ?? (await db.skillFolder.upsert({
-    where: { id: deterministicId(companyId, 'folder:lark') },
-    create: {
-      id: deterministicId(companyId, 'folder:lark'),
-      companyId,
-      ...LARK_FOLDER,
-    },
-    update: { ...LARK_FOLDER },
-    select: { id: true },
-  })).id;
-
+  const folderId = await ensureSystemSkillFolder(db, companyId, LARK_FOLDER);
   const familyFolderIds = new Map<string, string>();
   for (const family of LARK_FAMILY_FOLDERS) {
-    const current = await db.skillFolder.findFirst({
-      where: {
-        companyId,
-        departmentId: null,
-        parentId: folderId,
-        slug: family.slug,
-        status: 'active',
-      },
-      select: { id: true },
+    const familyFolderId = await ensureSystemSkillFolder(db, companyId, {
+      key: `folder:lark:${family.slug}`,
+      name: family.name,
+      slug: family.slug,
+      sortOrder: family.sortOrder,
+      parentId: folderId,
     });
-    const familyFolderId = current?.id ?? (await db.skillFolder.upsert({
-      where: { id: deterministicId(companyId, `folder:lark:${family.slug}`) },
-      create: {
-        id: deterministicId(companyId, `folder:lark:${family.slug}`),
-        companyId,
-        departmentId: null,
-        parentId: folderId,
-        name: family.name,
-        slug: family.slug,
-        status: 'active',
-        sortOrder: family.sortOrder,
-      },
-      update: {
-        departmentId: null,
-        parentId: folderId,
-        name: family.name,
-        slug: family.slug,
-        status: 'active',
-        sortOrder: family.sortOrder,
-      },
-      select: { id: true },
-    })).id;
     familyFolderIds.set(family.skillSlug, familyFolderId);
   }
   return { folderId, familyFolderIds };
-}
-
-function definitionFields(folderId: string, definition: LarkSystemSkillDefinition) {
-  return {
-    departmentId: null,
-    folderId,
-    scope: 'company',
-    name: definition.name,
-    slug: definition.slug,
-    summary: definition.summary,
-    markdown: definition.markdown,
-    status: 'active',
-    isSystem: true,
-    sortOrder: definition.sortOrder,
-  } as const;
-}
-
-async function syncAliases(
-  db: LarkSkillStore,
-  skillId: string,
-  aliases: readonly string[],
-): Promise<void> {
-  await db.skillAlias.deleteMany({
-    where: { skillId, alias: { notIn: [...aliases] } },
-  });
-  if (aliases.length === 0) return;
-  await db.skillAlias.createMany({
-    data: aliases.map((alias) => ({ skillId, alias })),
-    skipDuplicates: true,
-  });
-}
-
-function matchesDefinition(
-  current: ExistingSkill,
-  folderId: string,
-  definition: LarkSystemSkillDefinition,
-): boolean {
-  return current.departmentId === null
-    && current.folderId === folderId
-    && current.scope === 'company'
-    && current.slug === definition.slug
-    && current.name === definition.name
-    && current.summary === definition.summary
-    && current.markdown === definition.markdown
-    && current.status === 'active'
-    && current.isSystem
-    && current.sortOrder === definition.sortOrder
-    && arraysEqual(current.toolIds, definition.toolIds)
-    && arraysEqual(current.tags, definition.tags)
-    && (definition.aliases === undefined
-      || arraysEqual((current.aliases ?? []).map((item) => item.alias), [...definition.aliases].sort()));
-}
-
-function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function deterministicId(companyId: string, key: string): string {
-  const hex = createHash('md5').update(`${companyId}:${key}`).digest('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }

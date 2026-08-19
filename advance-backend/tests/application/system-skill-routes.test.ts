@@ -34,6 +34,15 @@ describe('system skill routes', () => {
     assert.deepEqual(unroutedSeededSystemSkillSlugs(), []);
   });
 
+  it('derives routing-family seeds from the router definitions themselves', () => {
+    for (const skill of ROUTING_SYSTEM_SKILLS) {
+      if (!skill.targetSlugs) continue;
+      const seed = SYSTEM_SKILL_ROUTE_SEEDS.find(candidate => candidate.routerSlug === skill.slug);
+      assert.ok(seed, `missing seed for ${skill.slug}`);
+      assert.deepEqual([...seed.targetSlugs], [...skill.targetSlugs]);
+    }
+  });
+
   it('routes Semrush through research without promising unavailable bulk coverage', () => {
     const route = SYSTEM_SKILL_ROUTE_SEEDS.find(seed => seed.routerSlug === 'research-router');
     const router = ROUTING_SYSTEM_SKILLS.find(skill => skill.slug === 'research-router');

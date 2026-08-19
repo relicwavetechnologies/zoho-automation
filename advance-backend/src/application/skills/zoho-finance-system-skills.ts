@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import {
   financeZohoRouterSkill,
@@ -10,24 +9,14 @@ import {
   zohoBooksReadAnalysisSkill,
   zohoCrmReadAnalysisSkill,
 } from './zoho.skill';
-import { recordSkillRegistryMutation } from './skill-registry-versioning';
+import type { DivoProductivitySystemSkillDefinition } from './divo-productivity-system-skills';
+import {
+  buildSystemSkill,
+  provisionSystemSkill,
+  type SystemSkillStore,
+} from './system-skill-provisioner';
 
-export interface ZohoFinanceSystemSkillDefinition {
-  readonly slug: string;
-  readonly name: string;
-  readonly summary: string;
-  readonly markdown: string;
-  readonly toolIds: readonly string[];
-  readonly tags: readonly string[];
-  /**
-   * Phrases a member actually types. Router search scores slug, name and tags at
-   * 5, an alias term at 4, an exact alias phrase at 10, and the summary at 2 —
-   * markdown is never scored. Without these, "create an invoice" matched nothing
-   * in this family and the finance router lost to alphabetical order.
-   */
-  readonly aliases: readonly string[];
-  readonly sortOrder: number;
-}
+export type ZohoFinanceSystemSkillDefinition = DivoProductivitySystemSkillDefinition;
 
 export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefinition[] = [
   {
@@ -154,52 +143,14 @@ export const ZOHO_FINANCE_SYSTEM_SKILLS: readonly ZohoFinanceSystemSkillDefiniti
   },
 ] as const;
 
-type ZohoFinanceSkillStore = Pick<
-  Prisma.TransactionClient,
-  'department' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant' | 'skillAlias'
->;
+/**
+ * Phrases a member actually types. Router search scores slug, name and tags at
+ * 5, an alias term at 4, an exact alias phrase at 10, and the summary at 2 —
+ * markdown is never scored. Without these, "create an invoice" matched nothing
+ * in this family and the finance router lost to alphabetical order.
+ */
 
-type ExistingSkill = {
-  id: string;
-  slug: string;
-  companyId: string;
-  departmentId: string | null;
-  folderId: string | null;
-  scope: string;
-  name: string;
-  summary: string;
-  markdown: string;
-  toolIds: string[];
-  tags: string[];
-  status: string;
-  isSystem: boolean;
-  sortOrder: number;
-  revision: number;
-  createdBy: string | null;
-  updatedBy: string | null;
-  aliases: { alias: string }[];
-};
-
-const EXISTING_SKILL_SELECT = {
-  id: true,
-  slug: true,
-  companyId: true,
-  departmentId: true,
-  folderId: true,
-  scope: true,
-  name: true,
-  summary: true,
-  markdown: true,
-  toolIds: true,
-  tags: true,
-  status: true,
-  isSystem: true,
-  sortOrder: true,
-  revision: true,
-  createdBy: true,
-  updatedBy: true,
-  aliases: { select: { alias: true }, orderBy: { alias: 'asc' as const } },
-} as const;
+type ZohoFinanceSkillStore = Pick<Prisma.TransactionClient, 'department'> & SystemSkillStore;
 
 export async function provisionZohoFinanceSystemSkills(
   db: ZohoFinanceSkillStore,
@@ -229,75 +180,26 @@ export async function provisionZohoFinanceSystemSkills(
     };
   }
 
-  let created = 0;
-  let updated = 0;
-  let existing = 0;
-  let skipped = 0;
+  const placement = {
+    folderId: null,
+    departmentId: department.id,
+    scope: 'department' as const,
+    granteeType: 'department' as const,
+    granteeId: department.id,
+  };
+  const totals = { created: 0, updated: 0, existing: 0, skipped: 0 };
   const skippedSlugs: string[] = [];
-
   for (const definition of ZOHO_FINANCE_SYSTEM_SKILLS) {
-    const current = await db.skill.findFirst({
-      where: { companyId, slug: definition.slug, status: { not: 'archived' } },
-      select: EXISTING_SKILL_SELECT,
-    }) as ExistingSkill | null;
-
-    if (current && !current.isSystem) {
-      skipped += 1;
-      skippedSlugs.push(definition.slug);
-      continue;
-    }
-
-    let skill: ExistingSkill;
-    if (!current) {
-      skill = await db.skill.create({
-        data: buildZohoFinanceSystemSkill(companyId, department.id, definition),
-        select: EXISTING_SKILL_SELECT,
-      }) as ExistingSkill;
-      await syncAliases(db, skill.id, definition.aliases);
-      await recordSkillRegistryMutation(db, skill, 'system');
-      created += 1;
-    } else if (matchesDefinition(current, department.id, definition)) {
-      skill = current;
-      existing += 1;
-    } else {
-      skill = await db.skill.update({
-        where: { id: current.id },
-        data: {
-          ...definitionFields(department.id, definition),
-          toolIds: [...definition.toolIds],
-          tags: [...definition.tags],
-          revision: { increment: 1 },
-        },
-        select: EXISTING_SKILL_SELECT,
-      }) as ExistingSkill;
-      await syncAliases(db, skill.id, definition.aliases);
-      await recordSkillRegistryMutation(db, skill, 'system');
-      updated += 1;
-    }
-
-    await db.skillAccessGrant.upsert({
-      where: {
-        skillId_granteeType_granteeId: {
-          skillId: skill.id,
-          granteeType: 'department',
-          granteeId: department.id,
-        },
-      },
-      create: {
-        companyId,
-        skillId: skill.id,
-        granteeType: 'department',
-        granteeId: department.id,
-      },
-      update: {},
-    });
+    const result = await provisionSystemSkill(db, companyId, definition, placement);
+    totals[result.outcome] += 1;
+    if (result.outcome === 'skipped') skippedSlugs.push(definition.slug);
   }
 
-  return { departmentId: department.id, created, updated, existing, skipped, skippedSlugs };
+  return { departmentId: department.id, ...totals, skippedSlugs };
 }
 
 export async function provisionZohoFinanceSkillsForExistingCompanies(
-  db: Pick<PrismaClient, 'company' | 'department' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant' | 'skillAlias'>,
+  db: Pick<PrismaClient, 'company'> & ZohoFinanceSkillStore,
 ): Promise<{
   companies: number;
   created: number;
@@ -331,74 +233,15 @@ export function buildZohoFinanceSystemSkill(
   departmentId: string,
   definition: ZohoFinanceSystemSkillDefinition,
 ): Prisma.SkillUncheckedCreateInput & { id: string } {
-  return {
-    id: deterministicId(companyId, `skill:${definition.slug}`),
-    companyId,
-    ...definitionFields(departmentId, definition),
-    toolIds: [...definition.toolIds],
-    tags: [...definition.tags],
-  };
-}
-
-function definitionFields(departmentId: string, definition: ZohoFinanceSystemSkillDefinition) {
-  return {
-    departmentId,
+  return buildSystemSkill(companyId, definition, {
     folderId: null,
+    departmentId,
     scope: 'department',
-    name: definition.name,
-    slug: definition.slug,
-    summary: definition.summary,
-    markdown: definition.markdown,
-    status: 'active',
-    isSystem: true,
-    sortOrder: definition.sortOrder,
-  } as const;
-}
-
-function matchesDefinition(
-  current: ExistingSkill,
-  departmentId: string,
-  definition: ZohoFinanceSystemSkillDefinition,
-): boolean {
-  return current.departmentId === departmentId
-    && current.folderId === null
-    && current.scope === 'department'
-    && current.slug === definition.slug
-    && current.name === definition.name
-    && current.summary === definition.summary
-    && current.markdown === definition.markdown
-    && current.status === 'active'
-    && current.isSystem
-    && current.sortOrder === definition.sortOrder
-    && arraysEqual(current.toolIds, definition.toolIds)
-    && arraysEqual(current.tags, definition.tags)
-    // Without this an alias-only change compares equal, takes the untouched
-    // branch, and never writes the alias rows.
-    && arraysEqual(current.aliases.map((item) => item.alias), [...definition.aliases].sort());
-}
-
-async function syncAliases(
-  db: ZohoFinanceSkillStore,
-  skillId: string,
-  aliases: readonly string[],
-): Promise<void> {
-  await db.skillAlias.deleteMany({ where: { skillId, alias: { notIn: [...aliases] } } });
-  if (aliases.length === 0) return;
-  await db.skillAlias.createMany({
-    data: aliases.map((alias) => ({ skillId, alias })),
-    skipDuplicates: true,
+    granteeType: 'department',
+    granteeId: departmentId,
   });
 }
 
 function isFinanceDepartment(name: string, slug: string): boolean {
   return /\b(finance|financial|accounting|accounts|treasury)\b/i.test(`${name} ${slug}`);
-}
-
-function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function deterministicId(companyId: string, key: string): string {
-  const hex = createHash('md5').update(`${companyId}:${key}`).digest('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
