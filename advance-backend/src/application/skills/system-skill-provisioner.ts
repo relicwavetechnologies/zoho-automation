@@ -105,7 +105,13 @@ export async function provisionSystemSkill(
       }) as ExistingSkill;
     } catch (error) {
       if ((error as { code?: string }).code !== 'P2002') throw error;
-      current = await findCurrentSkill(db, companyId, definition);
+      // The live lookup ignores archived rows, but create uses a deterministic
+      // primary key — so a Skills Lab archive is the collision this handler
+      // actually sees. Look up that id with no status filter and revive it.
+      current = await findSkillById(
+        db,
+        deterministicSystemId(companyId, `skill:${definition.slug}`),
+      ) ?? await findCurrentSkill(db, companyId, definition);
       if (!current) throw error;
       if (!current.isSystem) return { id: current.id, outcome: 'skipped' };
     }
@@ -200,6 +206,16 @@ export async function ensureSystemSkillFolder(
     select: { id: true },
   });
   return folder.id;
+}
+
+async function findSkillById(
+  db: Pick<SystemSkillStore, 'skill'>,
+  id: string,
+): Promise<ExistingSkill | null> {
+  return await db.skill.findUnique({
+    where: { id },
+    select: EXISTING_SKILL_SELECT,
+  }) as ExistingSkill | null;
 }
 
 async function findCurrentSkill(

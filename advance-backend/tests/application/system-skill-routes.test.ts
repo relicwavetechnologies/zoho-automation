@@ -36,7 +36,19 @@ describe('system skill routes', () => {
 
   it('derives routing-family seeds from the router definitions themselves', () => {
     for (const skill of ROUTING_SYSTEM_SKILLS) {
-      if (!skill.targetSlugs) continue;
+      const isRouter = skill.tags.includes('router');
+      if (!isRouter) {
+        assert.equal(
+          skill.targetSlugs,
+          undefined,
+          `${skill.slug} is a specialist in ROUTING_SYSTEM_SKILLS and must not declare targetSlugs`,
+        );
+        continue;
+      }
+      assert.ok(
+        skill.targetSlugs && skill.targetSlugs.length > 0,
+        `${skill.slug} is a router and must declare targetSlugs; unroutedSeededSystemSkillSlugs is not this guard`,
+      );
       const seed = SYSTEM_SKILL_ROUTE_SEEDS.find(candidate => candidate.routerSlug === skill.slug);
       assert.ok(seed, `missing seed for ${skill.slug}`);
       assert.deepEqual([...seed.targetSlugs], [...skill.targetSlugs]);

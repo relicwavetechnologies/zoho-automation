@@ -172,10 +172,15 @@ describe('capability catalogue reconciliation', () => {
       aliases: [...definition.aliases].sort().map(alias => ({ alias })),
     };
     let finds = 0;
+    let recoveredId: string | undefined;
     const result = await provisionDivoProductivitySystemSkill({
       skillFolder: { findFirst: async () => ({ id: folderId }) },
       skill: {
         findFirst: async () => (++finds === 1 ? null : winner),
+        findUnique: async ({ where }: { where: { id: string } }) => {
+          recoveredId = where.id;
+          return where.id === winner.id ? winner : null;
+        },
         create: async () => { throw Object.assign(new Error('unique race'), { code: 'P2002' }); },
         update: async () => { throw new Error('unexpected update'); },
       },
@@ -189,7 +194,8 @@ describe('capability catalogue reconciliation', () => {
     } as never, 'company-1', definition);
 
     assert.deepEqual(result, { id: winner.id, outcome: 'existing' });
-    assert.equal(finds, 2);
+    assert.equal(recoveredId, winner.id);
+    assert.equal(finds, 1);
   });
 
   it('preserves a manual router edge when system reconciliation seeds the same pair', async () => {
