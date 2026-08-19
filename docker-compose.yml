@@ -190,7 +190,11 @@ services:
       DIVO_PI_IMAGE: ${DIVO_PI_IMAGE:?DIVO_PI_IMAGE is required}
       DIVO_PI_RESOURCE_PREFIX: divo-pi-main
       DIVO_PI_ADD_HOST_GATEWAY: "false"
-      DIVO_DEEPSEEK_TOOL_SURFACE: ${DIVO_DEEPSEEK_TOOL_SURFACE:-off}
+      # Retrieved tool surface. Production ran the eager fallback for the whole
+      # rollout because this defaulted off and nothing set it: 54 tools and
+      # ~105KB of schemas on every model call, re-sent on every step of an
+      # agent loop. Dev has defaulted on since the surface landed.
+      DIVO_DEEPSEEK_TOOL_SURFACE: ${DIVO_DEEPSEEK_TOOL_SURFACE:-on}
       HOME: /tmp
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
