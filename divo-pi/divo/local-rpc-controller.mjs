@@ -229,11 +229,16 @@ async function runTurn({
 	// Handled so an image failure during a fetch that throws first is not an
 	// unhandled rejection. The real rejection still surfaces at the await below.
 	imageIdReady.catch(() => {});
+	const nativeSkillScope = { companyId, userId, departmentId, channel };
 	const { runtimeContext, nativeSkills: nativeSkillBootstrap } = await phases.measure(
 		"skills",
-		() => effects.fetchRunContext({ backendUrl, token, departmentId }),
+		() => effects.fetchRunContext({
+			backendUrl,
+			token,
+			departmentId,
+			scope: nativeSkillScope,
+		}),
 	);
-	const nativeSkillScope = { companyId, userId, departmentId, channel };
 	const nativeSkillDigest = nativeSkillBootstrapDigest(nativeSkillBootstrap, nativeSkillScope);
 	const piKeepAlive = canReusePiProcess({
 		ephemeral,

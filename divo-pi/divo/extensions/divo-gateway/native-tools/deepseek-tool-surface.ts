@@ -1,6 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { GENERATED_NATIVE_TOOL_SPECS } from "./generated/index.ts";
+import {
+	auditTurnSurface,
+	planTurnSurface,
+	type TurnSurfacePlan,
+} from "./turn-surface.ts";
 
 export const DIVO_DEEPSEEK_TOOL_SURFACE_ENV = "DIVO_DEEPSEEK_TOOL_SURFACE";
 export const DIVO_TOOL_SEARCH_NAME = "divo_tool_search";
@@ -72,20 +77,47 @@ export interface DeepSeekToolSurfaceSelection {
 }
 
 export interface DeepSeekToolSurface {
+	/**
+	 * Decide the turn's surface. Deliberately has no effect on what the model can
+	 * see: a caller may still need to bind provider-native schemas, and any
+	 * registration after the surface is applied re-expands Pi's active tool set.
+	 */
 	prepareTurn(input: {
 		readonly prompt: string;
 		readonly model?: { readonly id?: unknown; readonly api?: unknown };
 		readonly allowedToolIds?: readonly string[];
 	}): DeepSeekToolSurfaceSelection;
+	/** Apply the decision to Pi. Must be the last surface mutation of the turn. */
+	applyTurn(): void;
 	activateToolIds(toolIds: readonly string[]): string[];
 	currentSelection(): DeepSeekToolSurfaceSelection;
 }
 
 export interface DeepSeekProviderPayloadSummary {
 	readonly toolCount: number;
+	/** Names as the provider sees them, so a plan can be audited by membership. */
+	readonly toolNames: readonly string[];
 	readonly toolSchemaBytes: number;
 	readonly systemPromptBytes: number;
 	readonly messagesBytes: number;
+}
+
+/**
+ * Cost a selection as a turn plan.
+ *
+ * The adapter mutates Pi's active set, so the plan cannot be read back from Pi
+ * after the fact without inheriting whatever mutated it. Deriving the plan from
+ * the selection keeps the audit honest about what was *decided*.
+ */
+export function planForSelection(
+	catalog: readonly DeepSeekToolCatalogEntry[],
+	selection: DeepSeekToolSurfaceSelection,
+): TurnSurfacePlan {
+	return planTurnSurface({
+		mode: selection.mode,
+		catalogue: catalog.map(entry => ({ name: entry.name, schemaBytes: entry.schemaBytes })),
+		visibleToolNames: selection.selectedToolNames,
+	});
 }
 
 /** Reuse the same retrieval decision for provider-native schema preloading. */
@@ -98,7 +130,8 @@ export function toolIdsForDeepSeekPreload(
 	return permittedToolIds.filter((toolId) => selected.has(toolId));
 }
 
-function words(value: string): string[] {
+/** One tokenizer for every relevance decision the surface makes. */
+export function words(value: string): string[] {
 	return value
 		.normalize("NFKC")
 		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -137,16 +170,19 @@ function schemaBytes(value: unknown): number {
 /** Count the exact request body at Pi's last seam before DeepSeek. */
 export function summarizeDeepSeekProviderPayload(payload: unknown): DeepSeekProviderPayloadSummary {
 	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-		return { toolCount: 0, toolSchemaBytes: 0, systemPromptBytes: 0, messagesBytes: 0 };
+		return { toolCount: 0, toolNames: [], toolSchemaBytes: 0, systemPromptBytes: 0, messagesBytes: 0 };
 	}
 	const record = payload as Record<string, unknown>;
 	const tools = Array.isArray(record.tools) ? record.tools : [];
 	const messages = Array.isArray(record.messages) ? record.messages : [];
 	let toolSchemaBytes = 0;
+	const toolNames: string[] = [];
 	for (const candidate of tools) {
 		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
 		const fn = (candidate as Record<string, unknown>).function;
 		if (!fn || typeof fn !== "object" || Array.isArray(fn)) continue;
+		const name = (fn as Record<string, unknown>).name;
+		if (typeof name === "string") toolNames.push(name);
 		toolSchemaBytes += schemaBytes((fn as Record<string, unknown>).parameters);
 	}
 	let systemPromptBytes = 0;
@@ -159,6 +195,7 @@ export function summarizeDeepSeekProviderPayload(payload: unknown): DeepSeekProv
 	}
 	return {
 		toolCount: tools.length,
+		toolNames,
 		toolSchemaBytes,
 		systemPromptBytes,
 		messagesBytes: schemaBytes(messages),
@@ -370,12 +407,36 @@ export function registerDeepSeekToolSurface(
 		},
 	});
 
+	// The payload ledger is measurement, not policy. It reports every turn,
+	// including the eager fallback, because an unmeasured surface is exactly
+	// where model-visible bloat has been hiding.
 	pi.on("before_provider_request", (event, ctx) => {
-		if (!applied || !supportsRetrievedSurface(ctx.model)) return undefined;
+		const observed = summarizeDeepSeekProviderPayload(event.payload);
+		const plan = planForSelection(allowedCatalog, applied ? selection : eagerSelection());
+		const drift = auditTurnSurface(plan, observed);
 		console.error(`[divo-deepseek-tools] ${JSON.stringify({
 			phase: "provider_request",
-			...summarizeDeepSeekProviderPayload(event.payload),
+			surface: plan.mode,
+			modelId: typeof ctx.model?.id === "string" ? ctx.model.id : undefined,
+			retrievalSupported: supportsRetrievedSurface(ctx.model),
+			plannedToolSchemaBytes: drift.plannedToolSchemaBytes,
+			toolCount: observed.toolCount,
+			toolSchemaBytes: observed.toolSchemaBytes,
+			systemPromptBytes: observed.systemPromptBytes,
+			messagesBytes: observed.messagesBytes,
 		})}`);
+		// A turn that does not match its own plan is the failure this module
+		// exists to make visible. Report it as a defect, not as a statistic.
+		if (!drift.withinPlan) {
+			console.error(`[divo-surface-drift] ${JSON.stringify({
+				reasons: drift.reasons,
+				unplannedToolNames: drift.unplannedToolNames,
+				missingToolNames: drift.missingToolNames,
+				plannedToolSchemaBytes: drift.plannedToolSchemaBytes,
+				observedToolSchemaBytes: drift.observedToolSchemaBytes,
+				overBudgetBytes: drift.overBudgetBytes,
+			})}`);
+		}
 		return undefined;
 	});
 
@@ -385,8 +446,6 @@ export function registerDeepSeekToolSurface(
 				baselineActiveNames = pi.getActiveTools().filter((name) => name !== DIVO_TOOL_SEARCH_NAME);
 			}
 			if (!enabled(environment) || !supportsRetrievedSurface(input.model)) {
-				const registered = registeredNames();
-				pi.setActiveTools((baselineActiveNames ?? []).filter((name) => registered.has(name)));
 				applied = false;
 				allowedCatalog = fullCatalog;
 				selection = eagerSelection();
@@ -398,7 +457,6 @@ export function registerDeepSeekToolSurface(
 				? fullCatalog.filter((entry) => allowed.has(entry.toolId))
 				: fullCatalog;
 			const matches = searchDeepSeekToolCatalog(allowedCatalog, input.prompt, PRESELECT_LIMIT);
-			activateNames(matches.map((match) => match.name));
 			const selectedSchemaBytes = matches.reduce((sum, match) => sum + match.schemaBytes, 0);
 			const totalSchemaBytes = allowedCatalog.reduce((sum, entry) => sum + entry.schemaBytes, 0);
 			selection = {
@@ -415,6 +473,14 @@ export function registerDeepSeekToolSurface(
 				deferredSchemaBytes: selection.deferredSchemaBytes,
 			})}`);
 			return selection;
+		},
+		applyTurn() {
+			if (!applied) {
+				const registered = registeredNames();
+				pi.setActiveTools((baselineActiveNames ?? []).filter((name) => registered.has(name)));
+				return;
+			}
+			activateNames(selection.selectedToolNames);
 		},
 		activateToolIds(toolIds) {
 			if (!applied) return [];

@@ -137,6 +137,75 @@ describe('SkillCatalogService — grant-based visibility (the live model)', () =
     });
     assert.equal(visible?.id, 'zoho-router');
   });
+
+  it('filters an embedded route graph with fresh grants and permissions without another repository call', async () => {
+    const books = row('sk-books', ['zohoBooks']);
+    const crm = row('sk-crm', ['zohoCrm']);
+    const router = {
+      ...row('zoho-router', []),
+      tags: ['router'],
+      routeTargetIds: [books.id, crm.id],
+    };
+    let fallbackCalls = 0;
+    const repo = makeRepo([router, books, crm]);
+    repo.listRouteTargets = async () => {
+      fallbackCalls += 1;
+      return ok([]);
+    };
+    const service = new SkillCatalogService({ repo, logger: noopLogger });
+    const visible = await service.listVisible({
+      companyId: 'co',
+      departmentId: 'dep',
+      permission,
+      grantedSkillIds: new Set(['zoho-router', 'sk-books', 'sk-crm']),
+      complete: true,
+    });
+
+    assert.equal(fallbackCalls, 0);
+    assert.equal(visible.some(skill => skill.id === 'zoho-router'), true);
+    assert.equal(visible.some(skill => skill.id === 'sk-crm'), false);
+  });
+
+  it('falls back for a bounded catalogue whose routed target was not loaded', async () => {
+    const books = row('sk-books', ['zohoBooks']);
+    const router = {
+      ...row('zoho-router', []),
+      tags: ['router'],
+      routeTargetIds: [books.id],
+    };
+    let fallbackCalls = 0;
+    const repo = makeRepo([router]);
+    repo.listRouteTargets = async () => {
+      fallbackCalls += 1;
+      return ok([books]);
+    };
+    const service = new SkillCatalogService({ repo, logger: noopLogger });
+
+    const visible = await service.listVisible({
+      companyId: 'co',
+      departmentId: 'dep',
+      permission,
+      grantedSkillIds: new Set(['zoho-router', 'sk-books']),
+      limit: 1,
+    });
+
+    assert.equal(fallbackCalls, 1);
+    assert.deepEqual(visible.map(skill => skill.id), ['zoho-router']);
+  });
+});
+
+describe('SkillCatalogService — registry revision failure policy', () => {
+  it('keeps the legacy fallback for advisory callers and fails closed for native bindings', async () => {
+    const repo = makeRepo([]);
+    repo.registryRevision = async () => ({ ok: false, error: new Error('revision unavailable') as any });
+    const service = new SkillCatalogService({ repo, logger: noopLogger });
+
+    assert.equal(await service.registryRevision('co'), 1);
+    await assert.rejects(
+      service.registryRevision('co', undefined, { failClosed: true }),
+      /revision unavailable/,
+    );
+  });
 });
 
 describe('SkillCatalogService — Lark language safety', () => {

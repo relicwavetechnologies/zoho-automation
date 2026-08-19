@@ -16,7 +16,10 @@ import {
   type ToolFamily,
 } from '../../domain/tools/tool-id';
 import { withWorkDiscoveryPermissions } from './work-resolution.service';
-import type { WorkContractBootstrapPort } from './work-contract-bootstrap.port';
+import type {
+  WorkContractBootstrapMode,
+  WorkContractBootstrapPort,
+} from './work-contract-bootstrap.port';
 
 // zod-to-json-schema's recursive generic overflows when the registry erases a
 // concrete tool to Tool<unknown, unknown>. Keep that type mismatch at this
@@ -80,6 +83,7 @@ export class WorkBootstrapService {
     readonly permission: PermissionResult;
     readonly registryRevision: number;
     readonly query?: string;
+    readonly contractMode?: WorkContractBootstrapMode;
     readonly toolIds: readonly string[];
     readonly providerFamilies?: readonly ToolFamily[];
     readonly abortSignal?: AbortSignal;
@@ -151,12 +155,18 @@ export class WorkBootstrapService {
     }
 
     let nativeContracts: Array<Record<string, unknown>> = [];
-    if (input.query && this.deps.workContractBootstrap && tools.length > 0) {
+    const contractMode = input.contractMode ?? 'suggested';
+    const workContractBootstrap = this.deps.workContractBootstrap;
+    const shouldLoadNativeContracts =
+      tools.length > 0
+      && (Boolean(input.query) || contractMode === 'complete');
+    if (workContractBootstrap && shouldLoadNativeContracts) {
       let loaded;
       try {
-        loaded = await this.deps.workContractBootstrap.load({
+        loaded = await workContractBootstrap.load({
           member: { companyId: input.companyId, userId: input.userId },
-          query: input.query,
+          query: input.query ?? '',
+          contractMode,
           toolIds: tools.map(tool => String(tool.id)),
           connections,
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
@@ -184,7 +194,9 @@ export class WorkBootstrapService {
         advisories.push({
           code: 'native_contracts_loaded',
           level: 'required',
-          instruction: 'Likely native operation contracts for this workflow are already loaded below. Use their exact field names and do not call describe again for these operations during this run.',
+          instruction: contractMode === 'complete'
+            ? 'Provider-native operation contracts for the requested tools are already loaded below. Use their exact field names and do not call describe again for these operations during this run.'
+            : 'Likely native operation contracts for this workflow are already loaded below. Use their exact field names and do not call describe again for these operations during this run.',
         });
       }
       if (loaded.unavailableNativeTools.length > 0) {

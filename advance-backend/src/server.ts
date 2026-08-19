@@ -843,10 +843,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       mailBriefOnboarding:    c.mailBriefOnboarding,
       invalidateLarkIdentityCache: (larkOpenId: string) =>
         c.channelIdentityRepo.invalidateIdentityCache(larkOpenId),
-      permissions:            c.permissions,
-      skillCatalog:           c.skillCatalog,
-      skillAccessEnforcement: c.skillAccessEnforcement,
-      managerPersonaRuntime:  c.managerPersonaRuntimeService,
+      runtimeContextLifecycle: c.runtimeContextLifecycle,
       logger:                 c.logger,
       env:                    c.env,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,

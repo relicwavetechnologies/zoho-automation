@@ -11,6 +11,7 @@ import {
   RunLatencyRecorder,
   type RunLatencySpanStore,
 } from '../../src/application/observability/run-latency-recorder.ts';
+import { RuntimeContextLifecycle } from '../../src/application/runtime/runtime-context-lifecycle.ts';
 
 const noopLogger = {
   info:  () => {},
@@ -42,9 +43,13 @@ function signTestState(payload: Record<string, unknown>): string {
 }
 
 function makeDeps(overrides: Record<string, unknown> = {}) {
-  const { prisma: overridePrismaValue, ...rest } = overrides;
+  const {
+    prisma: overridePrismaValue,
+    runtimeContextLifecycle: overrideRuntimeContextLifecycle,
+    ...rest
+  } = overrides;
   const overridePrisma = (overridePrismaValue ?? {}) as Record<string, unknown>;
-  return {
+  const deps = {
     prisma: {
       knowledgeResource: { findMany: async () => [] },
       ...overridePrisma,
@@ -86,6 +91,18 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     appBaseUrl: 'https://app.example.com',
     sessionTtlMinutes: 480,
     ...rest,
+  };
+  return {
+    ...deps,
+    runtimeContextLifecycle: overrideRuntimeContextLifecycle ?? new RuntimeContextLifecycle({
+      prisma: deps.prisma,
+      permissions: deps.permissions,
+      skillCatalog: deps.skillCatalog,
+      skillAccessEnforcement: deps.skillAccessEnforcement,
+      managerPersonaRuntime: deps.managerPersonaRuntime,
+      connectionRegistry: deps.connectionRepo,
+      logger: deps.logger,
+    }),
   };
 }
 
@@ -1901,6 +1918,170 @@ describe('desktop auth routes', () => {
     // three of these twice — the two permission queries differing only in a
     // `channel` the resolver never reads.
     assert.deepEqual(calls.sort(), ['listGrantedSkillIds', 'permissions.resolve', 'registryRevision']);
+  });
+
+  it('loads the native catalogue once and omits duplicate skill guidance from the Cloud capability projection', async () => {
+    const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
+    const started: string[] = [];
+    const releases: Array<() => void> = [];
+    const skill = {
+      id: 'skill-finance',
+      slug: 'finance-ops-core',
+      name: 'Finance Ops Core',
+      description: 'Route broad finance questions.',
+      instructions: '# Finance Ops',
+      toolIds: ['zohoBooks'],
+      aliases: [],
+      tags: ['router'],
+      revision: 3,
+    };
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        departmentMembership: {
+          findFirst: async () => ({
+            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
+          }),
+        },
+      },
+      permissions: {
+        resolve: async () => ({
+          ok: true,
+          value: {
+            allowedToolIds: new Set(['zohoBooks']),
+            allowedActionsByTool: new Map([['zohoBooks', new Set(['read'])]]),
+            decisions: [],
+            department: { roleSlug: 'MEMBER' },
+          },
+        }),
+      },
+      skillCatalog: {
+        listVisible: async (input: { complete?: boolean }) => {
+          started.push(input.complete ? 'native' : 'capability');
+          await new Promise<void>(resolve => releases.push(resolve));
+          return [skill];
+        },
+        registryRevision: async () => 9,
+      },
+      skillAccessEnforcement: {
+        listGrantedSkillIds: async () => new Set(['skill-finance']),
+      },
+    }));
+
+    const response = callRoute(router, 'GET', '/runtime-context', {
+      query: { departmentId, capabilityVersion: '3', nativeSkills: '1' },
+      locals: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MEMBER',
+        isPiRuntimeLease: true,
+        runtimeDepartmentId: departmentId,
+      },
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    assert.deepEqual(started, ['native']);
+    releases.splice(0).forEach(release => release());
+    const result = await response;
+    assert.equal(result.status, 200);
+    assert.equal(result.body.data.nativeSkillBootstrap.skills[0].slug, 'finance-ops-core');
+    assert.deepEqual(result.body.data.capabilityBootstrap.availableSkills, []);
+    assert.deepEqual(result.body.data.capabilityBootstrap.families[0].skills, []);
+    assert.deepEqual(result.body.data.capabilityBootstrap.preferredSkills, []);
+    assert.deepEqual(result.body.data.capabilityBootstrap.routingHints, []);
+    assert.deepEqual(result.body.data.capabilityBootstrap.availableTools, [{
+      toolId: 'zohoBooks',
+      actions: ['read'],
+    }]);
+  });
+
+  it('rechecks authority but skips an unchanged native catalogue binding', async () => {
+    const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
+    let catalogueReads = 0;
+    let permissionReads = 0;
+    let grantReads = 0;
+    let grantedSkillIds = new Set(['skill-finance']);
+    const router = createDesktopAuthRoutes(makeDeps({
+      prisma: {
+        departmentMembership: {
+          findFirst: async () => ({
+            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
+          }),
+        },
+      },
+      permissions: {
+        resolve: async () => {
+          permissionReads += 1;
+          return {
+            ok: true,
+            value: {
+              allowedToolIds: new Set(['zohoBooks']),
+              allowedActionsByTool: new Map([['zohoBooks', new Set(['read'])]]),
+              decisions: [],
+            },
+          };
+        },
+      },
+      skillCatalog: {
+        listVisible: async () => {
+          catalogueReads += 1;
+          return [{
+            id: 'skill-finance',
+            slug: 'finance-ops-core',
+            name: 'Finance Ops Core',
+            description: 'Route broad finance questions.',
+            instructions: '# Finance Ops',
+            toolIds: ['zohoBooks'],
+            aliases: [],
+            tags: [],
+            revision: 3,
+          }];
+        },
+        registryRevision: async () => 9,
+      },
+      skillAccessEnforcement: {
+        listGrantedSkillIds: async () => {
+          grantReads += 1;
+          return grantedSkillIds;
+        },
+      },
+    }));
+    const request = {
+      query: { departmentId, capabilityVersion: '3', nativeSkills: '1' },
+      locals: {
+        userId: 'user-1',
+        companyId: 'company-1',
+        aiRole: 'MEMBER',
+        channel: 'lark',
+        isPiRuntimeLease: true,
+        runtimeDepartmentId: departmentId,
+      },
+    };
+
+    const first = await callRoute(router, 'GET', '/runtime-context', request);
+    const binding = first.body.data.nativeSkillBinding;
+    assert.match(binding, /^[a-f0-9]{64}$/);
+    assert.ok(first.body.data.nativeSkillBootstrap);
+
+    const warm = await callRoute(router, 'GET', '/runtime-context', {
+      ...request,
+      headers: { 'x-divo-native-skill-binding': binding },
+    });
+    assert.equal(warm.status, 200);
+    assert.equal(warm.body.data.nativeSkillsUnchanged, true);
+    assert.equal(warm.body.data.nativeSkillBootstrap, undefined);
+    assert.equal(catalogueReads, 1);
+    assert.equal(permissionReads, 2);
+    assert.equal(grantReads, 2);
+
+    grantedSkillIds = new Set();
+    const revoked = await callRoute(router, 'GET', '/runtime-context', {
+      ...request,
+      headers: { 'x-divo-native-skill-binding': binding },
+    });
+    assert.equal(revoked.status, 200);
+    assert.notEqual(revoked.body.data.nativeSkillBinding, binding);
+    assert.ok(revoked.body.data.nativeSkillBootstrap);
+    assert.equal(catalogueReads, 2);
   });
 
   it('breaks the controller skills phase into its actual backend reads', async () => {

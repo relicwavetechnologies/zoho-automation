@@ -15,6 +15,62 @@ follow [`advance-backend/docs/cloud-pi-testing/07-local-runtime-harness-framewor
 It defines the executable Development path, inspection-only Main boundary,
 prompt disclosure, evidence, rerun, and Divo-only cleanup rules.
 
+## Start the local stack
+
+Use separate terminals so failures stay attributable. Docker Desktop must be
+running. Read `AGENTS.local.md` first; do not put secrets in this file.
+
+```bash
+# Terminal 1 — Development tunnel + Redis (exits when infra is up)
+cd advance-backend
+pnpm dev:e2e
+bash scripts/db-tunnel.sh status
+
+# Terminal 2 — Pi controller (long-running)
+# Rebuild only after a divo-pi runtime, extension, skill, or Dockerfile change:
+#   cd divo-pi && docker build -t divo-pi-local:phase0 .
+cd divo-pi
+MAX_ACTIVE_RUNS=2 node divo/local-rpc-server.mjs
+
+# Terminal 3 — backend + Google Workspace MCP sidecar (long-running)
+cd advance-backend
+pnpm dev
+
+# Terminal 4 — admin UI (long-running)
+cd admin
+pnpm dev
+```
+
+Expected services:
+
+```txt
+backend HTTP:                  http://127.0.0.1:8000
+admin UI:                      http://localhost:5173
+Pi local RPC controller:       http://127.0.0.1:4317
+Google Workspace MCP sidecar:  http://127.0.0.1:18000/mcp
+Development Postgres tunnel:   127.0.0.1:15432
+Redis queue / cache:           127.0.0.1:6380 / 127.0.0.1:6381
+```
+
+`pnpm dev:e2e` is a no-op for Redis or the tunnel when they are already up. The
+Cloud-Pi container is idle-stopped and starts on an admitted run; do not treat
+a stopped `divo-pi-local:*` container as a failed stack.
+
+Preflight:
+
+```bash
+curl -fsS http://127.0.0.1:8000/health
+curl -fsS http://127.0.0.1:4317/health
+curl -fsS -o /dev/null -w "%{http_code}\n" http://localhost:5173/
+```
+
+Require backend `status: ok` and controller `activeRuns: 0`. Native-skills
+tests must show a `native_skills.ready` controller event before Pi starts.
+
+Stop foreground backend, controller, and admin with Ctrl+C, then
+`cd advance-backend && pnpm stop` for Redis and the Development tunnel. That
+does not delete Divo containers, images, networks, or workspace volumes.
+
 ## Prime Directive
 
 Code quality is the priority. Do not rush wiring that creates dead code, unclear ownership, duplicated flows, conflicting comments, or hidden security gaps. Reason from the existing code structure before editing.
@@ -22,6 +78,7 @@ Code quality is the priority. Do not rush wiring that creates dead code, unclear
 This workspace contains several structured codebases:
 
 - `advance-backend/` — Divo backend and company capability gateway candidate.
+- `admin/` — admin control dashboard (`pnpm dev` on port 5173).
 - `jan/` — current desktop app target.
 - `pi/` — vendored Pi agent harness source.
 - `pi-bridge/` — local experiment; do not treat it as the target architecture unless explicitly asked.

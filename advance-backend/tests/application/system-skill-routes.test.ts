@@ -25,12 +25,34 @@ import {
   ROUTING_SYSTEM_SKILLS,
   SEEDED_SYSTEM_SKILLS,
   SYSTEM_SKILL_ROUTE_SEEDS,
+  syncSystemSkillRoutes,
   unroutedSeededSystemSkillSlugs,
 } from '../../src/application/skills/system-skill-routes.ts';
 
 describe('system skill routes', () => {
   it('routes every seeded executable system skill through at least one router', () => {
     assert.deepEqual(unroutedSeededSystemSkillSlugs(), []);
+  });
+
+  it('derives routing-family seeds from the router definitions themselves', () => {
+    for (const skill of ROUTING_SYSTEM_SKILLS) {
+      const isRouter = skill.tags.includes('router');
+      if (!isRouter) {
+        assert.equal(
+          skill.targetSlugs,
+          undefined,
+          `${skill.slug} is a specialist in ROUTING_SYSTEM_SKILLS and must not declare targetSlugs`,
+        );
+        continue;
+      }
+      assert.ok(
+        skill.targetSlugs && skill.targetSlugs.length > 0,
+        `${skill.slug} is a router and must declare targetSlugs; unroutedSeededSystemSkillSlugs is not this guard`,
+      );
+      const seed = SYSTEM_SKILL_ROUTE_SEEDS.find(candidate => candidate.routerSlug === skill.slug);
+      assert.ok(seed, `missing seed for ${skill.slug}`);
+      assert.deepEqual([...seed.targetSlugs], [...skill.targetSlugs]);
+    }
   });
 
   it('routes Semrush through research without promising unavailable bulk coverage', () => {
@@ -254,5 +276,28 @@ describe('system skill routes', () => {
       assert.equal(new Set(seed.targetSlugs).size, seed.targetSlugs.length);
       assert.equal(seed.targetSlugs.includes(seed.routerSlug), false);
     }
+  });
+
+  it('bumps the registry revision when route synchronization writes the graph', async () => {
+    const slugs = [...new Set(SYSTEM_SKILL_ROUTE_SEEDS.flatMap(
+      seed => [seed.routerSlug, ...seed.targetSlugs],
+    ))];
+    let revisionBumps = 0;
+    const result = await syncSystemSkillRoutes({
+      skill: {
+        findMany: async () => slugs.map(slug => ({ id: `id-${slug}`, slug })),
+      },
+      skillRoute: {
+        deleteMany: async () => ({ count: 0 }),
+        updateMany: async () => ({ count: 1 }),
+        createMany: async () => ({ count: 0 }),
+      },
+      skillRegistryRevision: {
+        upsert: async () => { revisionBumps += 1; return {}; },
+      },
+    } as any, 'company-1');
+
+    assert.equal(result.missingTargets.length, 0);
+    assert.equal(revisionBumps, 1);
   });
 });

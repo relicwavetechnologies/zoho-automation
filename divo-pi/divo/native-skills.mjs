@@ -17,6 +17,45 @@ const RESERVED_NATIVE_SKILL_SLUGS = new Set(
 	).trustedSkills ?? [],
 );
 const stagedNativeSkillDigests = new Map();
+const nativeSkillBootstrapBindings = new Map();
+const MAX_NATIVE_SKILL_BINDINGS = 64;
+
+function nativeSkillScopeKey(backendUrl, scope) {
+	if (!scope) return undefined;
+	return JSON.stringify({
+		backendUrl: normalizeBackendUrl(backendUrl),
+		companyId: scope.companyId,
+		userId: scope.userId,
+		departmentId: scope.departmentId,
+		channel: scope.channel,
+	});
+}
+
+function cachedNativeSkillBootstrap(key) {
+	if (!key) return undefined;
+	const entry = nativeSkillBootstrapBindings.get(key);
+	if (!entry) return undefined;
+	// Map insertion order is the LRU order. Touching a hit keeps active member
+	// scopes while bounding controller memory across many local profiles.
+	nativeSkillBootstrapBindings.delete(key);
+	nativeSkillBootstrapBindings.set(key, entry);
+	return entry;
+}
+
+function rememberNativeSkillBootstrap(key, entry) {
+	if (!key) return;
+	nativeSkillBootstrapBindings.delete(key);
+	nativeSkillBootstrapBindings.set(key, entry);
+	while (nativeSkillBootstrapBindings.size > MAX_NATIVE_SKILL_BINDINGS) {
+		const oldest = nativeSkillBootstrapBindings.keys().next().value;
+		if (oldest === undefined) break;
+		nativeSkillBootstrapBindings.delete(oldest);
+	}
+}
+
+function forgetNativeSkillBootstrap(key) {
+	if (key) nativeSkillBootstrapBindings.delete(key);
+}
 
 export function validateNativeSkillBootstrap(value) {
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -112,13 +151,27 @@ export function nativeSkillBootstrapDigest(bootstrap, scope) {
 
 const BUNDLED_SKILLS_ONLY = { registryRevision: 0, skills: [] };
 
-async function requestRuntimeContext({ backendUrl, token, departmentId, nativeSkills, fetchImpl }) {
+async function requestRuntimeContext({
+	backendUrl,
+	token,
+	departmentId,
+	nativeSkills,
+	nativeSkillBinding,
+	fetchImpl,
+}) {
 	const query = new URLSearchParams({ capabilityVersion: "3" });
 	if (departmentId) query.set("departmentId", departmentId);
 	if (nativeSkills) query.set("nativeSkills", "1");
 	const response = await fetchImpl(
 		`${normalizeBackendUrl(backendUrl)}/api/desktop/auth/runtime-context?${query}`,
-		{ headers: { Authorization: `Bearer ${token}` } },
+		{
+			headers: {
+				Authorization: `Bearer ${token}`,
+				...(nativeSkillBinding
+					? { "x-divo-native-skill-binding": nativeSkillBinding }
+					: {}),
+			},
+		},
 	);
 	const body = await response.json().catch(() => undefined);
 	if (!response.ok || body?.success !== true || !body.data) {
@@ -152,22 +205,53 @@ export async function fetchRunContext({
 	backendUrl,
 	token,
 	departmentId,
+	scope,
 	fetchImpl = fetch,
 }) {
 	// No department means no native skills to ask for — the backend refuses the
 	// combination — so this is one plain request, not a failed one and a retry.
 	if (departmentId) {
+		const scopeKey = nativeSkillScopeKey(backendUrl, scope);
+		const cached = cachedNativeSkillBootstrap(scopeKey);
 		try {
 			const data = await requestRuntimeContext({
-				backendUrl, token, departmentId, nativeSkills: true, fetchImpl,
+				backendUrl,
+				token,
+				departmentId,
+				nativeSkills: true,
+				...(cached ? { nativeSkillBinding: cached.binding } : {}),
+				fetchImpl,
 			});
+			let nativeSkills;
+			if (data.nativeSkillsUnchanged === true) {
+				if (!cached || data.nativeSkillBinding !== cached.binding) {
+					throw new Error("Backend returned an unchanged native skill binding without a matching cached bundle");
+				}
+				nativeSkills = cached.bootstrap;
+			} else {
+				nativeSkills = data.nativeSkillBootstrap
+					? validateNativeSkillBootstrap(data.nativeSkillBootstrap)
+					: BUNDLED_SKILLS_ONLY;
+				if (
+					scopeKey
+					&& data.nativeSkillBootstrap
+					&& typeof data.nativeSkillBinding === "string"
+					&& /^[a-f0-9]{64}$/.test(data.nativeSkillBinding)
+				) {
+					rememberNativeSkillBootstrap(scopeKey, {
+						binding: data.nativeSkillBinding,
+						bootstrap: nativeSkills,
+					});
+				} else {
+					forgetNativeSkillBootstrap(scopeKey);
+				}
+			}
 			return {
 				runtimeContext: data,
-				nativeSkills: data.nativeSkillBootstrap
-					? validateNativeSkillBootstrap(data.nativeSkillBootstrap)
-					: BUNDLED_SKILLS_ONLY,
+				nativeSkills,
 			};
 		} catch (error) {
+			forgetNativeSkillBootstrap(scopeKey);
 			// A refusal is an answer: the member may not use this department, or
 			// the lease does not match it. Asking a weaker question would paper
 			// over that and run the turn with capabilities they were denied.

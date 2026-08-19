@@ -12,6 +12,8 @@ export interface WorkContractBootstrapResult {
   readonly unavailableNativeTools: readonly string[];
 }
 
+export type WorkContractBootstrapMode = 'suggested' | 'complete';
+
 /**
  * Loads provider operation contracts selected for a resolved workflow.
  *
@@ -26,6 +28,12 @@ export interface WorkContractBootstrapPort {
      * channels have no gateway session to hand over.
      */
     readonly member: { readonly companyId: string; readonly userId: string };
+    /**
+     * `suggested` keeps the legacy prompt-relevant subset. `complete` asks a
+     * provider delegate for every provider-owned operation under the requested
+     * backend tools so a runtime can cache that contract surface once.
+     */
+    readonly contractMode?: WorkContractBootstrapMode;
     readonly query: string;
     readonly toolIds: readonly string[];
     readonly connections: readonly AccessibleConnection[];

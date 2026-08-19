@@ -1248,6 +1248,57 @@ test("Lark runs stream progress and one final result as NDJSON", async (context)
 	]);
 });
 
+test("Lark run headers arrive before silent runtime work produces a frame", async (context) => {
+	const finish = deferred();
+	const admission = createAdmissionController({
+		resolveLease: async ({ backendUrl, lease }) => ({
+			profile: "cloud-derived",
+			thread: "lark-derived",
+			backendUrl,
+			token: lease,
+			userId: "user-1",
+			companyId: "company-1",
+			instanceId: "pi-local-1",
+		}),
+		executeRuntime: async () => {
+			await finish.promise;
+			return { text: "Finished" };
+		},
+	});
+	const { server } = createControllerServer({ admission, streamHeartbeatMs: 60_000 });
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	context.after(() => server.close());
+	const { port } = server.address();
+	const timedOut = Symbol("headers timed out");
+	const request = fetch(`http://127.0.0.1:${port}/v1/lark-runs`, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			accept: "application/x-ndjson",
+		},
+		body: JSON.stringify({
+			backendUrl: "https://backend.example",
+			runtimeLease: "signed-lease",
+			message: "work",
+		}),
+	});
+	const response = await Promise.race([
+		request,
+		new Promise((resolve) => setTimeout(() => resolve(timedOut), 100)),
+	]);
+
+	assert.notEqual(response, timedOut, "stream headers waited for the first body frame");
+	assert.match(response.headers.get("content-type"), /application\/x-ndjson/);
+	finish.resolve();
+	assert.deepEqual(JSON.parse((await response.text()).trim()), {
+		type: "result",
+		text: "Finished",
+	});
+});
+
 test("protected provenance crosses the NDJSON boundary only after cleanup", async (context) => {
 	let cleaned = false;
 	const { server } = createControllerServer({
@@ -1324,6 +1375,10 @@ test("Lark run streams stay alive while the runtime is silent", async (context) 
 		}),
 	});
 
+	// Headers now arrive before the first body frame. Leave the runtime silent
+	// long enough for the heartbeat to become that first frame before completing
+	// the run; resolving immediately would correctly make the result arrive first.
+	await new Promise((resolve) => setTimeout(resolve, 20));
 	finish.resolve();
 	const events = (await response.text())
 		.trim()

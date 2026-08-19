@@ -40,6 +40,7 @@ describe('Share Memory provisioning', () => {
       company: { findMany: async () => [{ id: 'company-1' }, { id: 'company-2' }] },
       skill: {
         updateMany: async () => ({ count: 2 }),
+        findMany: async () => [{ companyId: 'company-1' }, { companyId: 'company-2' }],
         findFirst: async ({ where }: { where: { companyId: string } }) =>
           where.companyId === 'company-2' ? { id: 'existing-skill', isSystem: false } : null,
         upsert: async ({ create }: { create: Record<string, unknown> }) => {

@@ -80,10 +80,13 @@ export function buildDesktopCapabilityBootstrap(input: {
   readonly companyRole: string;
   readonly permission: PermissionResult;
   readonly visibleSkills: readonly CatalogSkill[];
+  /** Native Pi loads skill guidance from its mounted catalogue, so do not duplicate it here. */
+  readonly includeSkillGuidance?: boolean;
   readonly registryRevision: number;
   readonly zohoConnections?: readonly DesktopCapabilityConnection[];
 }): DesktopCapabilityBootstrap {
   const finance = isFinanceDepartment(input.departmentName, input.departmentSlug);
+  const visibleSkills = input.includeSkillGuidance === false ? [] : input.visibleSkills;
 
   const availableTools = [...input.permission.allowedToolIds]
     .map(toolId => ({
@@ -95,7 +98,7 @@ export function buildDesktopCapabilityBootstrap(input: {
     .filter(tool => tool.actions.length > 0)
     .sort((left, right) => left.toolId.localeCompare(right.toolId));
 
-  const availableSkills = input.visibleSkills
+  const availableSkills = visibleSkills
     .slice()
     .sort((left, right) => left.name.localeCompare(right.name))
     .slice(0, 50)
@@ -121,7 +124,7 @@ export function buildDesktopCapabilityBootstrap(input: {
 
     const familyToolIds = new Set(tools.map(tool => tool.toolId));
     const definition = TOOL_FAMILY_DEFINITIONS[familyId];
-    const skills = input.visibleSkills
+    const skills = visibleSkills
       .filter(skill => skill.toolIds.some(toolId => familyToolIds.has(toolId)))
       .sort((left, right) => left.name.localeCompare(right.name))
       .slice(0, 8)
@@ -161,7 +164,7 @@ export function buildDesktopCapabilityBootstrap(input: {
   const skillPriority = new Map<string, number>(
     FINANCE_SKILL_PRIORITY.map((slug, index) => [slug, index]),
   );
-  const preferredSkills = finance ? input.visibleSkills
+  const preferredSkills = finance ? visibleSkills
     .filter(skill => {
       if (!skill.toolIds.some(toolId => preferredToolIds.has(toolId))) return false;
       if (skill.slug === 'zoho-books-bill') return booksActions.has('create');
@@ -182,7 +185,7 @@ export function buildDesktopCapabilityBootstrap(input: {
       name: skill.name,
       description: skill.description,
     })) : [];
-  const localWorkflowSkill = input.visibleSkills.find(skill => skill.slug === 'divo-python-automation');
+  const localWorkflowSkill = visibleSkills.find(skill => skill.slug === 'divo-python-automation');
   if (localWorkflowSkill && !preferredSkills.some(skill => skill.id === localWorkflowSkill.id)) {
     preferredSkills.push({
       id: localWorkflowSkill.id,
@@ -194,7 +197,7 @@ export function buildDesktopCapabilityBootstrap(input: {
 
   /** Finds the advisory specialist that explains a governed tool's workflow. */
   const skillForTool = (toolId: string) =>
-    input.visibleSkills.find(skill => skill.toolIds.includes(toolId));
+    visibleSkills.find(skill => skill.toolIds.includes(toolId));
 
   /** Recommends the native specialist before mechanics; authorization remains backend-owned. */
   const viaSkill = (toolId: string, route: string, mechanics: string): string | null => {

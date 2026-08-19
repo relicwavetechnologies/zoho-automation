@@ -139,6 +139,7 @@ import { SkillRepository } from './infrastructure/persistence/skill.repository';
 import { SkillAccessRepository } from './infrastructure/persistence/skill-access.repository';
 import { SkillCatalogService } from './application/skills/skill-catalog.service';
 import { SkillRegistryAdminService } from './application/skills/skill-registry-admin.service';
+import { RuntimeContextLifecycle } from './application/runtime/runtime-context-lifecycle';
 
 // Application
 import { PermissionServiceImpl } from './application/permissions/permission.service';
@@ -378,6 +379,7 @@ export interface Container {
   skillCatalog: SkillCatalogService;
   skillAccessEnforcement: SkillAccessRepository;
   skillRegistryAdminService: SkillRegistryAdminService;
+  runtimeContextLifecycle: RuntimeContextLifecycle;
   // Agent admin CRUD
   departmentAdminService: DepartmentAdminService;
   desktopDepartmentManagementService: DesktopDepartmentManagementService;
@@ -1629,6 +1631,15 @@ export async function buildContainer(
     prisma,
     logger: logger.child({ service: 'skill-registry-admin' }),
   });
+  const runtimeContextLifecycle = new RuntimeContextLifecycle({
+    prisma,
+    permissions,
+    skillCatalog,
+    skillAccessEnforcement,
+    managerPersonaRuntime: managerPersonaRuntimeService,
+    connectionRegistry: integrationConnectionRepo,
+    logger,
+  });
 
   // Adapter: company-owned Serper pool → gateway web-search tool.
   const webSearchClientAdapter = {
@@ -2875,6 +2886,7 @@ export async function buildContainer(
     skillCatalog,
     skillAccessEnforcement,
     skillRegistryAdminService,
+    runtimeContextLifecycle,
     // Agent admin CRUD
     departmentAdminService,
     desktopDepartmentManagementService,

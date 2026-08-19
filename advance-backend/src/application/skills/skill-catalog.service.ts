@@ -84,6 +84,7 @@ export class SkillCatalogService {
       ...(input.grantedSkillIds ? { grantedSkillIds: input.grantedSkillIds } : {}),
       ...(input.includeGrantedDepartments ? { includeGrantedDepartments: input.includeGrantedDepartments } : {}),
       rows: result.value,
+      complete: input.complete === true,
     });
     return visibleRows.map(toCatalogSkill);
   }
@@ -327,7 +328,11 @@ export class SkillCatalogService {
     return toCatalogSkill(result.value);
   }
 
-  async registryRevision(companyId: string, abortSignal?: AbortSignal): Promise<number> {
+  async registryRevision(
+    companyId: string,
+    abortSignal?: AbortSignal,
+    options: { failClosed?: boolean } = {},
+  ): Promise<number> {
     abortSignal?.throwIfAborted();
     const result = await this.deps.repo.registryRevision(companyId, abortSignal);
     abortSignal?.throwIfAborted();
@@ -336,6 +341,7 @@ export class SkillCatalogService {
         companyId,
         error: result.error.message,
       });
+      if (options.failClosed) throw result.error;
       return 1;
     }
     return result.value;
@@ -370,13 +376,15 @@ export class SkillCatalogService {
     grantedSkillIds?: ReadonlySet<string>;
     includeGrantedDepartments?: boolean;
     rows: readonly SkillRow[];
+    complete?: boolean;
     abortSignal?: AbortSignal;
   }): Promise<SkillRow[]> {
+    const rowsById = new Map(input.rows.map((row) => [row.id, row] as const));
     const visibleRows = input.rows.filter((row) =>
       this.isVisible(row, input.permission, input.grantedSkillIds));
     const checked = await Promise.all(visibleRows.map(async (row) => ({
       row,
-      visible: await this.hasVisibleRouteTarget({ ...input, row }),
+      visible: await this.hasVisibleRouteTarget({ ...input, rowsById, row }),
     })));
     input.abortSignal?.throwIfAborted();
     return checked.filter(({ visible }) => visible).map(({ row }) => row);
@@ -389,9 +397,31 @@ export class SkillCatalogService {
     grantedSkillIds?: ReadonlySet<string>;
     includeGrantedDepartments?: boolean;
     row: SkillRow;
+    rowsById?: ReadonlyMap<string, SkillRow>;
+    complete?: boolean;
     abortSignal?: AbortSignal;
   }): Promise<boolean> {
     if (!input.row.tags.includes('router')) return true;
+
+    // Catalogue list reads carry a lean route graph in the same repository
+    // query. Join ids against the already-loaded skill rows so router edges do
+    // not repeat target markdown and aliases in the database payload.
+    if (input.row.routeTargetIds !== undefined) {
+      const loadedTargets = input.row.routeTargetIds.flatMap((skillId) => {
+        const row = input.rowsById?.get(skillId);
+        return row ? [row] : [];
+      });
+      if (loadedTargets.some((row) =>
+        this.isVisible(row, input.permission, input.grantedSkillIds))) {
+        return true;
+      }
+      // A complete native catalogue contains every in-scope active target, so
+      // no missing row can become visible through a second query. Bounded
+      // catalogue callers retain the exact repository fallback below.
+      if (input.complete || loadedTargets.length === input.row.routeTargetIds.length) {
+        return false;
+      }
+    }
 
     const result = await this.deps.repo.listRouteTargets({
       companyId: input.companyId,

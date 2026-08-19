@@ -1,11 +1,18 @@
 /*
   The palette. One file, both themes, every colour in the admin.
 
-  The values are Beautiful UI's own, taken verbatim from the shipped stylesheet
-  at beautifului.dev — not sampled from a screenshot and not "converted". A hex
-  here is the reference's hex. That is the whole point of the file: when the
-  question is "what grey is this", there is one place to look and it does not
-  interpret anything.
+  The values started as Beautiful UI's own, taken verbatim from the shipped
+  stylesheet at beautifului.dev — not sampled from a screenshot and not
+  "converted". Most still are. The point of the file has not changed: when the
+  question is "what grey is this", there is one place to look.
+
+  Where light departs from the reference now, it is because the reference is a
+  component gallery and this is an application. A gallery shows one card on one
+  plane; an admin stacks a rail, a content column, a card, a row hover and a
+  field, and light did not have the room for five planes in the band the
+  reference's greys occupy. Dark always did. That asymmetry — not any single
+  wrong hex — is what made light the theme that looked cheap, and every
+  departure below is annotated with the measurement that forced it.
 
   This inverts the arrangement that came before it. `cursor.css` used to hold
   the values and `beautiful.css` aliased onto it, so the chat surface inherited
@@ -40,36 +47,85 @@
   --bui-canvas: #f1f2f3;
   --bui-surface: #ffffff;
   --bui-inset: #f7f8f9;
-  --bui-hover: #f4f5f6;
-  --bui-hover-2: #e7e9eb;
-  --bui-field: #f2f2f3;
+  /*
+    Hover, field and the strong fill all moved DOWN, below the canvas.
+
+    They used to sit between the canvas and white, in a band 1.13x tall, and
+    three planes cannot be told apart inside it. The measurements: a field was
+    #f2f2f3 on a #f1f2f3 canvas — 1.001, an input you could not see except by
+    its border, and the border was at 1.045. A hovered row got *lighter* than
+    the canvas it sat on, which is backwards on a light plane and the one thing
+    the comment in `cursor.css` says must never happen.
+
+    Dark never had this problem because its planes span 3.5x. Light has to
+    borrow its room from the other side of the canvas instead of the same side.
+  */
+  --bui-hover: #ebeced;
+  --bui-hover-2: #dfe0e1;
+  --bui-field: #ebeced;
 
   /* ── Ink, three weights ──────────────────────────────
      Three, not four. The set this replaced had a fourth step that existed only
-     to soften a hover border, which is a line's job. */
+     to soften a hover border, which is a line's job.
+
+     The weights are the same three in both themes now: about 14:1, 7:1 and
+     4.6:1 against the plane each is read on. They were not. `ink-3` is the one
+     that mattered — it was #9a9da3, which is 2.4:1 on the content canvas, and
+     it is the colour of every micro-label, timestamp, table heading and empty
+     state in the app: a hundred and thirty-seven call sites, all of them
+     legally invisible. Dark's equivalent was 3.4:1, which is why light was the
+     theme that looked broken and dark was the theme that looked fine. */
   --bui-ink: #1f2124;
-  --bui-ink-2: #62656b;
-  --bui-ink-3: #9a9da3;
+  --bui-ink-2: #4f5257;
+  --bui-ink-3: #6b6d72;
 
   /* ── Hairlines ───────────────────────────────────────
      Two, not three. `line` draws card rings and row separators alike — the
      reference does not distinguish them, and the third weight we used to carry
-     was the difference between #e5e5e3 and #eeeeec, which nobody could see. */
-  --bui-line: #ecedef;
-  --bui-line-strong: #e0e2e5;
+     was the difference between #e5e5e3 and #eeeeec, which nobody could see.
+
+     Both went darker. A hairline is the app's only means of saying "this is a
+     separate thing", and at #ecedef it drew at 1.045 against the content
+     canvas — a card's ring, and every row separator inside it, dissolved into
+     the plane. Dark's line has always drawn at 1.28 there. These are the values
+     that give light the same 1.22 / 1.46 it already had in dark, so structure
+     survives in both. */
+  --bui-line: #e7e9ea;
+  --bui-line-strong: #d4d6d7;
+  /* The line under a pointer. Its own name because it used to be `ink-3`, and
+     when ink-3 moved to a weight you can read, ten hover borders would have
+     come with it and gone almost to black. A border is not text and does not
+     want a text weight; these are exactly the values that were drawing these
+     borders before, so nothing about the hover changed except what it is
+     called. */
+  --bui-line-hover: #9a9da3;
 
   /* ── Chromatics ──────────────────────────────────────
      Blue is the accent: links, focus, the active rail, anything that has to
      look actionable before it is read. `-ink` is the readable weight of it on a
-     light plane; `-tint` is the wash behind it. */
+     light plane; `-tint` is the wash behind it.
+
+     Every hue now carries the `-ink` weight, not just blue. The idea was always
+     right and was only ever implemented once, so blue had a readable form and
+     green, orange and red did not — they were used as text at 3.3, 2.7 and 3.6
+     against the canvas while their dark counterparts sat at 5.1 to 7.2. Orange
+     was the worst of them and is the colour the app warns you in.
+
+     Split by job, which is what stops this drifting again: the vivid value
+     fills a bar, a dot or a badge's ground and is never a letterform; the
+     `-ink` value is the one that spells words. In dark the two are the same
+     colour, because a dark plane never needed the distinction. */
   --bui-accent: #0285ff;
-  --bui-accent-ink: #0170dd;
+  --bui-accent-ink: #026cd0;
   --bui-accent-tint: #e9f3ff;
   --bui-green: #189a4d;
+  --bui-green-ink: #147e3f;
   --bui-green-tint: #e8f5ed;
   --bui-orange: #ef720c;
+  --bui-orange-ink: #af5309;
   --bui-orange-tint: #fdf1e5;
   --bui-red: #e3474c;
+  --bui-red-ink: #c33d41;
   --bui-red-tint: #fcecec;
 
   /*
@@ -100,6 +156,7 @@
 
   /* Divo's, not the reference's. See the note at the top. */
   --bui-brand: #f54e00;
+  --bui-brand-ink: #c53f00;
   --bui-brand-active: #d04200;
   --bui-on-brand: #ffffff;
 
@@ -165,10 +222,15 @@
 
   --bui-ink: #f2f3f4;
   --bui-ink-2: #a5a8ad;
-  --bui-ink-3: #6c6f75;
+  /* Lifted from #6c6f75, which was 3.4:1 on the content plane. Dark was never
+     the broken theme, but it was under the floor too, and leaving it there
+     would have made light the stricter of the two — the same drift in the
+     opposite direction. */
+  --bui-ink-3: #898c91;
 
   --bui-line: #2e3033;
   --bui-line-strong: #3a3c40;
+  --bui-line-hover: #6c6f75;
 
   --bui-accent: #3d9aff;
   --bui-accent-ink: #7ec0ff;
@@ -180,7 +242,19 @@
   --bui-red: #ee5c61;
   --bui-red-tint: #ee5c6124;
 
+  /*
+    Here the readable weight IS the vivid one — all four already clear the floor
+    on a dark plane by a wide margin, which is the asymmetry that let light rot
+    unnoticed. They are restated rather than left to inherit because a token
+    that resolves to a light-mode hex in dark is the exact bug this file exists
+    to prevent.
+  */
+  --bui-green-ink: #3dbb72;
+  --bui-orange-ink: #f68f3c;
+  --bui-red-ink: #ee5c61;
+
   --bui-brand: #fb5613;
+  --bui-brand-ink: #fb5613;
   --bui-brand-active: #d8460a;
 
   --bui-tooltip-bg: #111214;

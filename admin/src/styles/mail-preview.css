@@ -134,9 +134,9 @@
   background: var(--cur-surface-strong); color: var(--cur-body); border: 1px solid transparent;
 }
 .cur .mp-pill svg { stroke-width: 1.8; }
-.cur .mp-pill[data-tone="ok"] { color: var(--cur-success); background: var(--bui-green-tint); }
-.cur .mp-pill[data-tone="held"] { color: var(--ws-warning); background: var(--bui-orange-tint); }
-.cur .mp-pill[data-tone="fail"] { color: var(--cur-error); background: var(--bui-red-tint); }
+.cur .mp-pill[data-tone="ok"] { color: var(--cur-success-ink); background: var(--bui-green-tint); }
+.cur .mp-pill[data-tone="held"] { color: var(--ws-warning-ink); background: var(--bui-orange-tint); }
+.cur .mp-pill[data-tone="fail"] { color: var(--cur-error-ink); background: var(--bui-red-tint); }
 .cur .mp-pill[data-tone="blocked"] { color: var(--cur-muted); background: var(--cur-surface-strong); }
 .cur .mp-pill[data-tone="ai"] { color: var(--mp-ai); background: var(--mp-ai-soft); border-color: var(--mp-ai-ring); }
 
@@ -169,9 +169,9 @@
 .cur .mp-banner > div { flex: 1; min-width: 0; }
 .cur .mp-banner .btn { flex-shrink: 0; }
 .cur .mp-banner[data-tone="err"] { border-color: color-mix(in oklab, var(--bui-red) 34%, transparent); background: var(--bui-red-tint); }
-.cur .mp-banner[data-tone="err"] > svg { color: var(--cur-error); }
+.cur .mp-banner[data-tone="err"] > svg { color: var(--cur-error-ink); }
 .cur .mp-banner[data-tone="warn"] { border-color: var(--mp-note-ring); background: var(--mp-note-soft); }
-.cur .mp-banner[data-tone="warn"] > svg { color: var(--ws-warning); }
+.cur .mp-banner[data-tone="warn"] > svg { color: var(--ws-warning-ink); }
 .cur .mp-banner[data-tone="info"] > svg { color: var(--cur-muted); }
 
 .cur .mp-mailbar {
@@ -370,7 +370,7 @@
   width: 24px; height: 24px; border-radius: 6px; border: 0; background: none; cursor: pointer;
   color: var(--cur-muted); display: grid; place-items: center;
 }
-.cur .mp-node-x:hover { background: var(--cur-surface-strong); color: var(--cur-error); }
+.cur .mp-node-x:hover { background: var(--cur-surface-strong); color: var(--cur-error-ink); }
 .cur .mp-node-b { padding: 15px; display: flex; flex-direction: column; gap: 14px; }
 .cur .mp-node-p { font-size: 12px; line-height: 1.55; color: var(--cur-muted); margin: 0; max-width: 76ch; }
 .cur .mp-mailbox { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--cur-body); }
@@ -456,7 +456,7 @@
 .cur .mp-locked b, .cur .mp-warn b { display: block; font-size: 12px; font-weight: 500; }
 .cur .mp-locked p, .cur .mp-warn p { font-size: 11px; line-height: 1.55; color: var(--cur-muted); margin: 3px 0 0; max-width: 72ch; }
 .cur .mp-warn { border-color: color-mix(in oklab, var(--bui-red) 34%, transparent); background: var(--bui-red-tint); }
-.cur .mp-warn > svg { color: var(--cur-error); }
+.cur .mp-warn > svg { color: var(--cur-error-ink); }
 
 /* ── AI sidebar ──────────────────────────────────────── */
 .cur .mp-ai {
@@ -545,7 +545,7 @@
   width: 48px; height: 48px; border-radius: 12px; display: inline-grid; place-items: center;
   background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); margin-bottom: 14px;
 }
-.cur .mp-connect-ic[data-ok="true"] { color: var(--cur-success); }
+.cur .mp-connect-ic[data-ok="true"] { color: var(--cur-success-ink); }
 .cur .mp-connect b { display: block; font-size: 15px; font-weight: 500; }
 .cur .mp-connect p { font-size: 12px; color: var(--cur-muted); margin: 7px auto 18px; max-width: 44ch; line-height: 1.55; }
 .cur .mp-connect .btn { display: inline-flex; align-items: center; gap: 7px; }
@@ -553,7 +553,7 @@
 .cur .mp-scopes { list-style: none; margin: 0 0 14px; padding: 0; }
 .cur .mp-scopes li { display: flex; gap: 10px; padding: 10px 0; border-top: 1px solid var(--cur-hairline); }
 .cur .mp-scopes li:first-child { border-top: 0; }
-.cur .mp-scopes svg { color: var(--cur-success); flex-shrink: 0; margin-top: 2px; }
+.cur .mp-scopes svg { color: var(--cur-success-ink); flex-shrink: 0; margin-top: 2px; }
 .cur .mp-scopes b { display: block; font-size: 12px; font-weight: 500; }
 .cur .mp-scopes span { display: block; font-size: 11px; color: var(--cur-muted); margin-top: 2px; }
 .cur .mp-deny {

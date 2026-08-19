@@ -1,4 +1,4 @@
-import type { PrismaClient } from '../../generated/prisma';
+import type { Prisma, PrismaClient } from '../../generated/prisma';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
@@ -17,6 +17,8 @@ export interface SkillRow {
   readonly companyId: string;
   readonly departmentId: string | null;
   readonly revision: number;
+  /** Present when the repository loaded the router graph with the catalogue row. */
+  readonly routeTargetIds?: readonly string[];
 }
 
 export interface SkillRepoPort {
@@ -75,11 +77,35 @@ const SELECT = {
   aliases:      { select: { alias: true } },
 } as const;
 
+function listSelect(
+  companyId: string,
+  departmentId?: string,
+  additionalDepartmentSkillIds: readonly string[] = [],
+): Prisma.SkillSelect {
+  return {
+    ...SELECT,
+    outgoingRoutes: {
+      where: {
+        targetSkill: {
+          companyId,
+          status: 'active',
+          AND: [visibilityWhere(departmentId, additionalDepartmentSkillIds)],
+        },
+      },
+      // The complete catalogue already contains each target body. Repeating
+      // markdown and aliases once per route roughly doubles the native query
+      // payload; ids are enough for the application layer to join the graph.
+      select: { targetSkillId: true },
+      orderBy: [{ sortOrder: 'asc' }, { targetSkill: { sortOrder: 'asc' } }],
+    },
+  };
+}
+
 function visibilityWhere(
   departmentId?: string,
   additionalDepartmentSkillIds: readonly string[] = [],
-) {
-  const visibleScopes = [
+): Prisma.SkillWhereInput {
+  const visibleScopes: Prisma.SkillWhereInput[] = [
     { scope: 'company', departmentId: null as string | null },
     ...(departmentId ? [{ scope: 'department', departmentId }] : []),
     ...(additionalDepartmentSkillIds.length > 0
@@ -108,7 +134,7 @@ export class SkillRepository implements SkillRepoPort {
           AND: [visibilityWhere(departmentId, additionalDepartmentSkillIds)],
           ...(tag ? { tags: { has: tag } } : {}),
         },
-        select:  SELECT,
+        select:  listSelect(companyId, departmentId, additionalDepartmentSkillIds),
         orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
         ...(limit === undefined ? {} : { take: limit }),
       });
@@ -240,10 +266,18 @@ export class SkillRepository implements SkillRepoPort {
 }
 
 function toSkillRow(row: Record<string, any>): SkillRow {
+  const { aliases, outgoingRoutes, ...fields } = row;
+  const routeTargetIds = Array.isArray(outgoingRoutes)
+    ? outgoingRoutes.flatMap((route: unknown) => {
+        if (!route || typeof route !== 'object') return [];
+        const targetSkillId = (route as { targetSkillId?: unknown }).targetSkillId;
+        return typeof targetSkillId === 'string' ? [targetSkillId] : [];
+      })
+    : undefined;
   return {
-    ...row,
-    aliases: Array.isArray(row.aliases)
-      ? row.aliases.flatMap((item: unknown) => {
+    ...fields,
+    aliases: Array.isArray(aliases)
+      ? aliases.flatMap((item: unknown) => {
           if (typeof item === 'string') return [item];
           if (item && typeof item === 'object' && typeof (item as { alias?: unknown }).alias === 'string') {
             return [(item as { alias: string }).alias];
@@ -251,7 +285,8 @@ function toSkillRow(row: Record<string, any>): SkillRow {
           return [];
         })
       : [],
-  } as SkillRow;
+    ...(routeTargetIds !== undefined ? { routeTargetIds } : {}),
+  } as unknown as SkillRow;
 }
 
 const SEARCH_STOP_WORDS = new Set([

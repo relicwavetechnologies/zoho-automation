@@ -3,6 +3,7 @@ import {
   KNOWLEDGE_MANAGEMENT_SKILL_SLUG,
   provisionKnowledgeManagementSystemSkill,
 } from './knowledge-system-skill';
+import { bumpSkillRegistryRevision } from './skill-registry-versioning';
 
 export const KNOWLEDGE_REGISTERED_TOOL = {
   toolId: 'knowledge',
@@ -61,14 +62,23 @@ export async function provisionKnowledgeForExistingCompanies(
   skillsExisting: number;
 }> {
   const retired = await db.$transaction(async tx => {
+    const legacyWhere = {
+      status: { not: 'archived' },
+      toolIds: { hasSome: [...RETIRED_KNOWLEDGE_TOOL_IDS] },
+      NOT: { isSystem: true, slug: KNOWLEDGE_MANAGEMENT_SKILL_SLUG },
+    } satisfies Prisma.SkillWhereInput;
+    const affectedCompanies = await tx.skill.findMany({
+      where: legacyWhere,
+      select: { companyId: true },
+      distinct: ['companyId'],
+    });
     const legacySkills = await tx.skill.updateMany({
-      where: {
-        status: { not: 'archived' },
-        toolIds: { hasSome: [...RETIRED_KNOWLEDGE_TOOL_IDS] },
-        NOT: { isSystem: true, slug: KNOWLEDGE_MANAGEMENT_SKILL_SLUG },
-      },
+      where: legacyWhere,
       data: { status: 'archived' },
     });
+    for (const { companyId } of affectedCompanies) {
+      await bumpSkillRegistryRevision(tx, companyId);
+    }
     await tx.skillCapability.deleteMany({ where: { toolId: { in: [...RETIRED_KNOWLEDGE_TOOL_IDS] } } });
     await tx.departmentUserToolOverride.deleteMany({ where: { toolId: { in: [...RETIRED_KNOWLEDGE_TOOL_IDS] } } });
     await tx.departmentToolPermission.deleteMany({ where: { toolId: { in: [...RETIRED_KNOWLEDGE_TOOL_IDS] } } });

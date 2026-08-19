@@ -21,6 +21,11 @@
      It was two hand-picked ambers — #b7791f light, #d9a441 dark — which is one
      colour more than the palette has and neither of them was it. */
   --ws-warning: var(--bui-orange);
+  /* The same colour at the weight you can actually read it in. Warning orange
+     was the worst offender in the whole light theme — 2.65 against the content
+     canvas, used for fifteen pieces of text whose entire job is to be noticed.
+     The fill keeps the vivid value; only the letterforms moved. */
+  --ws-warning-ink: var(--bui-orange-ink);
   /*
     What a chart is drawn in.
 
@@ -95,7 +100,7 @@
   text-align: left; color: var(--cur-ink);
 }
 .cur .ws-scope-opt:hover { background: var(--cur-canvas-soft); }
-.cur .ws-scope-opt .ck { margin-left: auto; color: var(--cur-accent); }
+.cur .ws-scope-opt .ck { margin-left: auto; color: var(--cur-accent-ink); }
 
 /* ── Sidebar additions ───────────────────────────────── */
 /* Sizes to its own rows and no further. It used to be `flex: 1`, which handed
@@ -115,7 +120,7 @@
 /* ── Topbar additions ────────────────────────────────── */
 .cur .ws-crumb { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--cur-muted); flex: 1; min-width: 0; }
 .cur .ws-crumb button { border: 0; background: none; padding: 0; font-size: 13px; color: var(--cur-body); cursor: pointer; }
-.cur .ws-crumb button:hover { color: var(--cur-accent); }
+.cur .ws-crumb button:hover { color: var(--cur-accent-ink); }
 .cur .ws-crumb b { color: var(--cur-ink); font-weight: 500; }
 .cur .ws-kbd {
   font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 11px;
@@ -172,9 +177,9 @@
   width: 32px; height: 32px; border-radius: var(--cur-r-cta); flex-shrink: 0; display: grid; place-items: center;
   background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); color: var(--cur-body);
 }
-.cur .ws-ic[data-tone="ok"] { color: var(--cur-success); }
-.cur .ws-ic[data-tone="warn"] { color: var(--ws-warning); }
-.cur .ws-ic[data-tone="err"] { color: var(--cur-error); }
+.cur .ws-ic[data-tone="ok"] { color: var(--cur-success-ink); }
+.cur .ws-ic[data-tone="warn"] { color: var(--ws-warning-ink); }
+.cur .ws-ic[data-tone="err"] { color: var(--cur-error-ink); }
 
 /* ── Attention list — replaces the KPI carousel ───────
    The old mock opened every screen with four equal-weight counts. This opens
@@ -207,7 +212,7 @@
   font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none;
   background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); color: var(--cur-muted);
 }
-.cur .ws-prov[data-src="department_user_override"] { color: var(--cur-accent); border-color: color-mix(in srgb, var(--cur-accent) 34%, transparent); background: color-mix(in srgb, var(--cur-accent) 9%, transparent); }
+.cur .ws-prov[data-src="department_user_override"] { color: var(--cur-accent-ink); border-color: color-mix(in srgb, var(--cur-accent) 34%, transparent); background: color-mix(in srgb, var(--cur-accent) 9%, transparent); }
 .cur .ws-prov[data-src="derived"] { font-style: italic; }
 
 /* ── Change preview — never apply a permission edit blind ── */
@@ -217,9 +222,9 @@
 .cur .ws-diff-i { display: flex; align-items: center; gap: 10px; padding: 10px 16px; font-size: 13px; border-top: 1px solid var(--cur-hairline-soft); }
 .cur .ws-diff-l > .ws-diff-i:first-child { border-top: 0; }
 .cur .ws-diff-i .sg { width: 15px; text-align: center; font-weight: 600; font-size: 13px; flex-shrink: 0; }
-.cur .ws-diff-i[data-k="add"] .sg { color: var(--cur-success); }
-.cur .ws-diff-i[data-k="remove"] .sg { color: var(--cur-error); }
-.cur .ws-diff-i[data-k="blocked"] .sg { color: var(--ws-warning); }
+.cur .ws-diff-i[data-k="add"] .sg { color: var(--cur-success-ink); }
+.cur .ws-diff-i[data-k="remove"] .sg { color: var(--cur-error-ink); }
+.cur .ws-diff-i[data-k="blocked"] .sg { color: var(--ws-warning-ink); }
 .cur .ws-diff-i small { color: var(--cur-muted); font-size: 12px; }
 .cur .ws-diff-f { padding: 12px 16px; border-top: 1px solid var(--cur-hairline); display: flex; gap: 8px; justify-content: flex-end; background: var(--cur-surface); }
 
@@ -230,7 +235,7 @@
   border: 1px solid color-mix(in srgb, var(--ws-warning) 28%, transparent);
   font-size: 12px; color: var(--cur-body); line-height: 1.5;
 }
-.cur .ws-ceiling svg { color: var(--ws-warning); flex-shrink: 0; margin-top: 1px; }
+.cur .ws-ceiling svg { color: var(--ws-warning-ink); flex-shrink: 0; margin-top: 1px; }
 .cur .ws-ceiling b { color: var(--cur-ink); font-weight: 500; }
 
 /* The remedy sits under the sentence that explains it, not beside it: what is
@@ -265,7 +270,7 @@
   background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); font-size: 12px;
   color: var(--cur-body); line-height: 1.5;
 }
-.cur .ws-private svg { color: var(--cur-success); flex-shrink: 0; margin-top: 1px; }
+.cur .ws-private svg { color: var(--cur-success-ink); flex-shrink: 0; margin-top: 1px; }
 
 /* ── Matrix ──────────────────────────────────────────── */
 .cur .ws-matrix { width: 100%; border-collapse: collapse; }
@@ -282,7 +287,7 @@
   background: var(--cur-surface); cursor: pointer; display: inline-grid; place-items: center;
   color: var(--cur-muted-soft); padding: 0;
 }
-.cur .ws-cell:hover { border-color: var(--cur-muted-soft); }
+.cur .ws-cell:hover { border-color: var(--cur-hairline-hover); }
 .cur .ws-cell[data-on="true"] { background: var(--cur-ink); border-color: var(--cur-ink); color: var(--cur-canvas); }
 .cur .ws-cell[data-on="true"][data-src="department_user_override"] { background: var(--cur-accent); border-color: var(--cur-accent); color: var(--cur-on-accent); }
 .cur .ws-cell[data-locked="true"] { cursor: not-allowed; opacity: 0.45; background: var(--cur-canvas-soft); }
@@ -327,7 +332,7 @@
   font-size: 11px; font-weight: 500; letter-spacing: 0; white-space: nowrap;
   border: 1px dashed var(--cur-hairline-strong); color: var(--cur-muted); background: var(--cur-canvas-soft);
 }
-.cur .ws-note[data-kind="new"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 40%, transparent); }
+.cur .ws-note[data-kind="new"] { color: var(--ws-warning-ink); border-color: color-mix(in srgb, var(--ws-warning) 40%, transparent); }
 /* Fixtures rendered at a real path. Solid, not dashed — this one is a claim
    about the numbers on screen, not a note about the roadmap.
 
@@ -336,7 +341,7 @@
    two meanings told apart by nothing either. Caution is orange here; Divo is
    orange nowhere but its own mark. */
 .cur .ws-note[data-kind="sample"] {
-  border-style: solid; color: var(--ws-warning);
+  border-style: solid; color: var(--ws-warning-ink);
   border-color: color-mix(in srgb, var(--ws-warning) 38%, transparent);
   background: color-mix(in srgb, var(--ws-warning) 8%, transparent);
 }
@@ -344,7 +349,7 @@
    `DataNote` still renders nothing for a live source — this is for a section
    heading that has to distinguish itself from the unbuilt section below it. */
 .cur .ws-note[data-kind="live"] {
-  border-style: solid; color: var(--cur-success);
+  border-style: solid; color: var(--cur-success-ink);
   border-color: color-mix(in srgb, var(--cur-success) 34%, transparent);
   background: color-mix(in srgb, var(--cur-success) 8%, transparent);
 }
@@ -460,7 +465,7 @@
 }
 /* A tag that is reporting something that did not go well. Amber, not red: an
    audit row saying "denied" is a record, not an incident. */
-.cur .ws-tag[data-tone="warn"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 34%, transparent); }
+.cur .ws-tag[data-tone="warn"] { color: var(--ws-warning-ink); border-color: color-mix(in srgb, var(--ws-warning) 34%, transparent); }
 .cur .ws-num { font-size: 30px; letter-spacing: -0.03em; font-weight: 400; }
 .cur .ws-num-sm { font-size: 20px; letter-spacing: -0.02em; font-weight: 400; }
 .cur .ws-lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cur-muted); }
@@ -650,10 +655,10 @@
 }
 .cur .ws-land-ic {
   width: 46px; height: 46px; border-radius: 50%; margin: 0 auto 18px; display: grid; place-items: center;
-  background: color-mix(in srgb, var(--cur-success) 13%, transparent); color: var(--cur-success);
+  background: color-mix(in srgb, var(--cur-success) 13%, transparent); color: var(--cur-success-ink);
 }
-.cur .ws-land-ic[data-tone="err"] { background: color-mix(in srgb, var(--cur-error) 13%, transparent); color: var(--cur-error); }
-.cur .ws-land-ic[data-tone="warn"] { background: color-mix(in srgb, var(--ws-warning) 14%, transparent); color: var(--ws-warning); }
+.cur .ws-land-ic[data-tone="err"] { background: color-mix(in srgb, var(--cur-error) 13%, transparent); color: var(--cur-error-ink); }
+.cur .ws-land-ic[data-tone="warn"] { background: color-mix(in srgb, var(--ws-warning) 14%, transparent); color: var(--ws-warning-ink); }
 .cur .ws-land h2 { font-size: 20px; font-weight: 400; letter-spacing: -0.02em; }
 .cur .ws-land > p { font-size: 13px; color: var(--cur-body); margin-top: 9px; line-height: 1.55; max-width: 420px; margin-left: auto; margin-right: auto; }
 .cur .ws-land-resume {
@@ -697,8 +702,8 @@
   font-size: 11px; font-weight: 500; background: var(--cur-canvas-soft);
   border: 1px solid var(--cur-hairline); color: var(--cur-muted);
 }
-.cur .ws-delta[data-tone="warn"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 32%, transparent); background: color-mix(in srgb, var(--ws-warning) 8%, transparent); }
-.cur .ws-delta[data-tone="good"] { color: var(--cur-success); border-color: color-mix(in srgb, var(--cur-success) 32%, transparent); background: color-mix(in srgb, var(--cur-success) 8%, transparent); }
+.cur .ws-delta[data-tone="warn"] { color: var(--ws-warning-ink); border-color: color-mix(in srgb, var(--ws-warning) 32%, transparent); background: color-mix(in srgb, var(--ws-warning) 8%, transparent); }
+.cur .ws-delta[data-tone="good"] { color: var(--cur-success-ink); border-color: color-mix(in srgb, var(--cur-success) 32%, transparent); background: color-mix(in srgb, var(--cur-success) 8%, transparent); }
 
 /* ── Day chart ────────────────────────────────────────
    Hover gives the exact figure. A chart nobody can read a value off is
@@ -728,7 +733,7 @@
 }
 .cur .ws-why svg { color: var(--cur-muted); flex-shrink: 0; margin-top: 1px; }
 .cur .ws-why b { color: var(--cur-ink); font-weight: 500; }
-.cur .ws-why button { border: 0; background: none; padding: 0; font: inherit; color: var(--cur-accent); cursor: pointer; }
+.cur .ws-why button { border: 0; background: none; padding: 0; font: inherit; color: var(--cur-accent-ink); cursor: pointer; }
 
 /* ── Filter chips ─────────────────────────────────────
    Counts live on the chip. Filtering to an empty set is a dead end you should
@@ -738,7 +743,7 @@
   background: var(--cur-surface); font-size: 12px; color: var(--cur-body); cursor: pointer;
   display: inline-flex; align-items: center; gap: 7px; font-family: inherit;
 }
-.cur .ws-chip:hover { border-color: var(--cur-muted-soft); }
+.cur .ws-chip:hover { border-color: var(--cur-hairline-hover); }
 .cur .ws-chip[data-on="true"] { background: var(--cur-ink); border-color: var(--cur-ink); color: var(--cur-canvas); }
 .cur .ws-chip[data-empty="true"] { opacity: 0.5; }
 .cur .ws-chip .n { font-size: 11px; color: var(--cur-muted); }
@@ -835,13 +840,13 @@
 
 .cur .ws-auth-err {
   display: flex; gap: 9px; padding: 11px 13px; border-radius: var(--cur-r-cta); font-size: 12px; line-height: 1.5;
-  color: var(--cur-error); background: color-mix(in srgb, var(--cur-error) 9%, transparent);
+  color: var(--cur-error-ink); background: color-mix(in srgb, var(--cur-error) 9%, transparent);
   border: 1px solid color-mix(in srgb, var(--cur-error) 30%, transparent);
 }
 .cur .ws-auth-err svg { flex-shrink: 0; margin-top: 1px; }
 .cur .ws-auth-ok {
   display: flex; gap: 9px; padding: 11px 13px; border-radius: var(--cur-r-cta); font-size: 12px; line-height: 1.5;
-  color: var(--cur-success); background: color-mix(in srgb, var(--cur-success) 10%, transparent);
+  color: var(--cur-success-ink); background: color-mix(in srgb, var(--cur-success) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--cur-success) 30%, transparent);
 }
 .cur .ws-auth-ok svg { flex-shrink: 0; margin-top: 1px; }
@@ -857,7 +862,7 @@
   padding-top: 16px; border-top: 1px solid var(--cur-hairline); font-size: 12px;
 }
 .cur .ws-auth-alt a { color: var(--cur-muted); }
-.cur .ws-auth-alt a:hover { color: var(--cur-accent); }
+.cur .ws-auth-alt a:hover { color: var(--cur-accent-ink); }
 
 /* Separator between the two ways in. A rule through the middle rather than a
    heading, because neither side is a section — they are one choice. */
@@ -890,12 +895,12 @@
 .cur .ws-auth-done, .cur .ws-auth-warn {
   display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 1.45;
 }
-.cur .ws-auth-done { color: var(--cur-success); }
-.cur .ws-auth-warn { color: var(--ws-warning); }
+.cur .ws-auth-done { color: var(--cur-success-ink); }
+.cur .ws-auth-warn { color: var(--ws-warning-ink); }
 
 /* ── Disclosure row ──────────────────────────────────── */
 .cur .ws-more {
-  border: 0; background: none; padding: 0; font-size: 12px; color: var(--cur-accent);
+  border: 0; background: none; padding: 0; font-size: 12px; color: var(--cur-accent-ink);
   cursor: pointer; display: inline-flex; align-items: center; gap: 5px; font-family: inherit;
 }
 .cur .ws-more svg { transition: transform .14s ease; }
@@ -928,7 +933,7 @@
 .cur .ws-node-ic[data-skill="true"] { color: var(--cur-body); }
 /* A skill nobody can run. Amber rather than red: it is a gap in setup, not a
    fault — the skill is fine, it has simply never been shared with anyone. */
-.cur .ws-node-dead { color: var(--ws-warning); flex-shrink: 0; }
+.cur .ws-node-dead { color: var(--ws-warning-ink); flex-shrink: 0; }
 
 /* ── Library lenses ───────────────────────────────────
    The faults in the library, each one the way in to itself. A count you cannot
@@ -945,7 +950,7 @@
 }
 .cur .ws-lens-b:hover { color: var(--cur-ink); }
 .cur .ws-lens-b span { color: var(--cur-muted-soft); font-variant-numeric: tabular-nums; }
-.cur .ws-lens-b[data-tone="warn"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 30%, transparent); }
+.cur .ws-lens-b[data-tone="warn"] { color: var(--ws-warning-ink); border-color: color-mix(in srgb, var(--ws-warning) 30%, transparent); }
 .cur .ws-lens-b[data-tone="warn"] span { color: color-mix(in srgb, var(--ws-warning) 70%, transparent); }
 /* Selected reads as pressed, not merely hovered — the tree beneath it is
    filtered, and that has to be obviously a state you are in. */
@@ -1022,7 +1027,7 @@
 .cur .ws-roster-top { display: flex; gap: 8px; align-items: center; margin-bottom: 9px; }
 .cur .ws-roster-top .search {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px;
-  padding: 6px 10px; border-radius: var(--cur-r-ctl);
+  padding: 6px 10px; border-radius: var(--cur-r-cta);
   background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
   color: var(--cur-muted-soft);
 }
@@ -1041,7 +1046,7 @@
    into a mail client. */
 .cur .ws-roster-manual {
   width: 100%; margin-bottom: 9px; padding: 9px 11px; resize: vertical;
-  border-radius: var(--cur-r-ctl); border: 1px solid var(--cur-accent);
+  border-radius: var(--cur-r-cta); border: 1px solid var(--cur-accent);
   background: var(--cur-canvas-soft); color: var(--cur-body);
   font-family: var(--cur-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 11.5px; line-height: 1.6; outline: none;
@@ -1132,7 +1137,7 @@
 }
 /* A write is the one thing on this row worth a second look, so it is the only
    thing that gets a colour. Reads are the overwhelming majority and stay grey. */
-.cur .ws-step-a[data-a="write"] { color: var(--ws-warning); }
+.cur .ws-step-a[data-a="write"] { color: var(--ws-warning-ink); }
 .cur .ws-step-h .badge { margin-left: auto; flex-shrink: 0; }
 .cur .ws-step-b { padding: 2px 0 14px 22px; }
 .cur .ws-step-summary {
@@ -1156,7 +1161,7 @@
   border-radius: 6px; background: color-mix(in srgb, var(--cur-error) 8%, transparent);
 }
 .cur .ws-step-brief[data-tone="error"] span,
-.cur .ws-step-brief[data-tone="error"] p { color: var(--cur-error); }
+.cur .ws-step-brief[data-tone="error"] p { color: var(--cur-error-ink); }
 .cur .ws-run-briefs {
   list-style: none; margin: 0; padding: 0; display: grid; gap: 8px;
 }
@@ -1175,7 +1180,7 @@
   color: var(--cur-muted-soft); font-size: 11.5px; white-space: nowrap;
 }
 .cur .ws-run-brief[data-tone="error"] p,
-.cur .ws-run-brief[data-tone="error"] small { color: var(--cur-error); }
+.cur .ws-run-brief[data-tone="error"] small { color: var(--cur-error-ink); }
 .cur .ws-run-brief[data-tone="error"] > span { color: color-mix(in srgb, var(--cur-error) 68%, var(--cur-muted)); }
 @media (max-width: 760px) {
   .cur .ws-run-brief { grid-template-columns: 1fr; gap: 4px; }
@@ -1196,7 +1201,7 @@
   border: 0; background: none; padding: 0; cursor: pointer;
   font-family: inherit; font-size: 12.5px; color: var(--cur-body);
 }
-.cur .ws-linkish:hover { color: var(--cur-accent); }
+.cur .ws-linkish:hover { color: var(--cur-accent-ink); }
 .cur .ws-linkish:disabled { color: var(--cur-muted-soft); cursor: default; }
 
 /* ── Granted scopes ───────────────────────────────────
@@ -1468,7 +1473,7 @@
   display: flex; width: 100%; justify-content: center;
   margin-top: 8px; font-size: 12px; color: var(--cur-muted);
 }
-.cur .ws-appcard-alt:hover { color: var(--cur-accent); }
+.cur .ws-appcard-alt:hover { color: var(--cur-accent-ink); }
 
 /* The accounts under an app. Compact rows, because the card is about the app
    and these are what it currently holds. */
@@ -1496,7 +1501,7 @@
 .cur .ws-appcard-accs svg {
   grid-column: 2; grid-row: 1; color: var(--cur-muted-soft); flex-shrink: 0;
 }
-.cur .ws-appcard-accs li[data-dead="true"] .ws-appcard-acc-s { color: var(--cur-error); }
+.cur .ws-appcard-accs li[data-dead="true"] .ws-appcard-acc-s { color: var(--cur-error-ink); }
 
 /* ── App icons ────────────────────────────────────────
    The tile every provider mark sits in, so a drawn logo, a PNG and a lettered
@@ -1538,7 +1543,7 @@
   border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface);
   color: var(--cur-body); cursor: pointer;
 }
-.cur .ws-band-nav:hover:not(:disabled) { border-color: var(--cur-muted-soft); color: var(--cur-ink); }
+.cur .ws-band-nav:hover:not(:disabled) { border-color: var(--cur-hairline-hover); color: var(--cur-ink); }
 .cur .ws-band-nav:disabled { opacity: 0.4; cursor: default; }
 
 /* ── Get started carousel ─────────────────────────────
@@ -1681,8 +1686,8 @@
   font-family: inherit; font-size: 12.5px; text-align: left; color: var(--cur-body);
 }
 .cur .ws-recent-menu button:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
-.cur .ws-recent-menu button[data-danger] { color: var(--cur-error); }
-.cur .ws-recent-menu button[data-danger]:hover { color: var(--cur-error); }
+.cur .ws-recent-menu button[data-danger] { color: var(--cur-error-ink); }
+.cur .ws-recent-menu button[data-danger]:hover { color: var(--cur-error-ink); }
 
 /* Renaming happens in place. A dialog for one short string would take the
    reader off the list they are naming something in. */
@@ -1716,7 +1721,7 @@
 .cur .ws-onb-li { display: flex; align-items: center; gap: 9px; padding: 4px 0; font-size: 12.5px; color: var(--cur-muted); }
 .cur .ws-onb-li[data-done="true"] { color: var(--cur-ink); }
 .cur .ws-onb-li svg { flex-shrink: 0; color: var(--cur-muted-soft); }
-.cur .ws-onb-li[data-done="true"] svg { color: var(--cur-accent); }
+.cur .ws-onb-li[data-done="true"] svg { color: var(--cur-accent-ink); }
 /* An incomplete step is the one thing here you can act on, so it is a button —
    but it must not look like a link in a list of plain labels. */
 .cur .ws-onb-go {
@@ -2187,7 +2192,7 @@
    wearing a colour. A palette where everything is emphasised emphasises
    nothing — and the colour is the accent, because the figure is the answer to
    the question the page asks, not a piece of Divo's identity. */
-.cur .ws-tile-num[data-accent="true"] { color: var(--cur-accent); }
+.cur .ws-tile-num[data-accent="true"] { color: var(--cur-accent-ink); }
 .cur .ws-tile-foot { margin-top: 6px; }
 
 /* The sentence under the chart. Sits close to it because it describes the peak
@@ -2343,7 +2348,7 @@
 .cur .set-col .page { padding: 0; max-width: none; }
 
 /* `b-ok` and `b-err` existed; a "not linked yet" state is neither. */
-.cur .b-warn { color: var(--ws-warning); background: color-mix(in srgb, var(--ws-warning) 14%, transparent); }
+.cur .b-warn { color: var(--ws-warning-ink); background: color-mix(in srgb, var(--ws-warning) 14%, transparent); }
 
 /*
   One header inside the takeover.
@@ -2462,7 +2467,7 @@
    changes what a person can do, so it is the one that gets a shape. */
 .cur .prof-tag {
   padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
-  letter-spacing: 0.02em; color: var(--cur-accent);
+  letter-spacing: 0.02em; color: var(--cur-accent-ink);
   background: color-mix(in srgb, var(--cur-accent) 14%, transparent);
   border: 1px solid color-mix(in srgb, var(--cur-accent) 28%, transparent);
 }
@@ -2693,8 +2698,8 @@
 }
 .cur .dt-run-hd:hover { background: var(--cur-canvas-soft); }
 .cur .dt-run-ic { flex-shrink: 0; color: var(--cur-muted); margin-top: 1px; }
-.cur .dt-run[data-tone="ok"] .dt-run-ic { color: var(--cur-success); }
-.cur .dt-run[data-tone="err"] .dt-run-ic { color: var(--cur-error); }
+.cur .dt-run[data-tone="ok"] .dt-run-ic { color: var(--cur-success-ink); }
+.cur .dt-run[data-tone="err"] .dt-run-ic { color: var(--cur-error-ink); }
 .cur .dt-run-t { min-width: 0; }
 .cur .dt-run-t b { display: block; font-size: 12.5px; font-weight: 400; color: var(--cur-ink); line-height: 1.4; }
 .cur .dt-run-t span { display: block; font-size: 11.5px; color: var(--cur-muted); margin-top: 2px; }
@@ -2750,12 +2755,12 @@
   margin: 3px 0 0; font-size: 12px; color: var(--cur-muted);
 }
 .cur .ws-mbx-state { display: inline-flex; align-items: center; gap: 5px; color: var(--cur-body); }
-.cur .ws-mbx-state > svg { color: var(--cur-error); flex-shrink: 0; }
+.cur .ws-mbx-state > svg { color: var(--cur-error-ink); flex-shrink: 0; }
 .cur .ws-mbx-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--cur-muted-soft); }
 .cur .ws-mbx-card[data-tone="ok"] .ws-mbx-dot { background: var(--cur-success); }
 .cur .ws-mbx-card[data-tone="err"] .ws-mbx-dot { background: var(--cur-error); }
 .cur .ws-mbx-card[data-tone="warn"] .ws-mbx-dot { background: var(--ws-warning, #b4451f); }
-.cur .ws-mbx-card[data-tone="err"] .ws-mbx-state { color: var(--cur-error); }
+.cur .ws-mbx-card[data-tone="err"] .ws-mbx-state { color: var(--cur-error-ink); }
 .cur .ws-mbx-sep { color: var(--cur-muted-soft); }
 
 /* The evidence, as numbers rather than as a sentence in a box. Right-aligned
@@ -2767,7 +2772,7 @@
   letter-spacing: -0.01em; color: var(--cur-ink); font-variant-numeric: tabular-nums;
 }
 .cur .ws-mbx-stats dd { margin: 3px 0 0; font-size: 11px; color: var(--cur-muted-soft); white-space: nowrap; }
-.cur .ws-mbx-stats > div[data-tone="err"] dt { color: var(--cur-error); }
+.cur .ws-mbx-stats > div[data-tone="err"] dt { color: var(--cur-error-ink); }
 .cur .ws-mbx-since { padding-left: 4px; border-left: 1px solid var(--cur-hairline); }
 .cur .ws-mbx-since dd { margin: 0; padding-left: 12px; }
 .cur .ws-mbx-quiet { margin: 0; font-size: 11.5px; color: var(--cur-muted-soft); flex-shrink: 0; }
@@ -2856,8 +2861,8 @@
 }
 .cur .ws-menu button:hover { background: var(--cur-canvas-soft); color: var(--cur-ink); }
 .cur .ws-menu button svg { color: var(--cur-muted); flex-shrink: 0; }
-.cur .ws-menu button[data-danger="true"]:hover { color: var(--cur-error); }
-.cur .ws-menu button[data-danger="true"]:hover svg { color: var(--cur-error); }
+.cur .ws-menu button[data-danger="true"]:hover { color: var(--cur-error-ink); }
+.cur .ws-menu button[data-danger="true"]:hover svg { color: var(--cur-error-ink); }
 
 /* The rule's conditions. A list rather than a paragraph because every line is
    a separate thing that has to hold, and prose hides that. */
@@ -2895,7 +2900,7 @@
   border: 1px dashed var(--cur-hairline-strong); border-radius: 999px; background: none;
   font: inherit; font-size: 12.5px; color: var(--cur-muted); cursor: pointer;
 }
-.cur .ws-mk-chip:hover { color: var(--cur-ink); border-color: var(--cur-muted-soft); }
+.cur .ws-mk-chip:hover { color: var(--cur-ink); border-color: var(--cur-hairline-hover); }
 .cur .ws-mk-chip[data-neg="true"] { border-color: var(--cur-featured-ring); }
 
 /* ── The routing table ────────────────────────────────
@@ -2931,7 +2936,7 @@
   border-radius: 999px; background: none;
   font: inherit; font-size: 12.5px; color: var(--cur-muted); cursor: pointer;
 }
-.cur .ws-add:hover:not(:disabled) { color: var(--cur-ink); border-color: var(--cur-muted-soft); }
+.cur .ws-add:hover:not(:disabled) { color: var(--cur-ink); border-color: var(--cur-hairline-hover); }
 .cur .ws-add:disabled { opacity: 0.4; cursor: default; }
 
 /* What happens to everything else, separated by a rule from the branches
@@ -3003,7 +3008,7 @@
   background: var(--cur-canvas-soft); transition: border-color 0.12s ease, background 0.12s ease;
 }
 .cur .ws-pick:hover { border-color: var(--cur-hairline-strong); }
-.cur .ws-pick[data-on="true"] { border-color: var(--cur-muted-soft); background: var(--cur-surface-strong); }
+.cur .ws-pick[data-on="true"] { border-color: var(--cur-hairline-hover); background: var(--cur-surface-strong); }
 .cur .ws-pick-i {
   display: grid; place-items: center; width: 26px; height: 26px; margin-bottom: 9px;
   border-radius: 7px; background: var(--cur-surface); color: var(--cur-body);
@@ -3018,11 +3023,11 @@
   border: 1px solid var(--cur-hairline); border-radius: 10px;
   background: var(--cur-canvas-soft); font-size: 12.5px; line-height: 1.55;
 }
-.cur .ws-note-row > svg { color: var(--cur-success); flex-shrink: 0; }
+.cur .ws-note-row > svg { color: var(--cur-success-ink); flex-shrink: 0; }
 .cur .ws-note-row > img { flex-shrink: 0; }
 .cur .ws-note-row > div { flex: 1; min-width: 0; }
 .cur .ws-note-row[data-warn="true"] { border-color: color-mix(in srgb, var(--ws-warning) 30%, var(--cur-hairline)); }
-.cur .ws-note-row[data-warn="true"] > svg { color: var(--ws-warning); }
+.cur .ws-note-row[data-warn="true"] > svg { color: var(--ws-warning-ink); }
 
 /* The properties rail. Everything here is true *about* the rule rather than
    part of it, which is why it is not in the sentence on the left. */
@@ -3137,7 +3142,7 @@
   display: flex; align-items: flex-start; gap: 6px;
   color: color-mix(in srgb, var(--ws-warning) 60%, var(--cur-body));
 }
-.cur .ws-proof-warn svg { flex-shrink: 0; margin-top: 2px; color: var(--ws-warning); }
+.cur .ws-proof-warn svg { flex-shrink: 0; margin-top: 2px; color: var(--ws-warning-ink); }
 
 /* One line per matched message. These were full rows with a bordered icon
    square, which made three hits look like the content of the step rather than
@@ -3216,8 +3221,8 @@
 }
 .cur .ws-caught-o svg { flex-shrink: 0; }
 .cur .ws-caught-o em { font-style: normal; color: var(--cur-muted-soft); }
-.cur .ws-caught[data-tone="ok"] .ws-caught-o svg { color: var(--cur-success); }
-.cur .ws-caught[data-tone="fail"] .ws-caught-o svg { color: var(--cur-error); }
+.cur .ws-caught[data-tone="ok"] .ws-caught-o svg { color: var(--cur-success-ink); }
+.cur .ws-caught[data-tone="fail"] .ws-caught-o svg { color: var(--cur-error-ink); }
 
 .cur .ws-caught-more {
   display: flex; align-items: center; gap: 7px; margin-top: 22px;
@@ -3248,7 +3253,7 @@
 }
 .cur .ws-opt:hover { border-color: var(--cur-hairline-strong); }
 .cur .ws-opt[data-on="true"] {
-  border-color: var(--cur-muted-soft); background: var(--cur-surface-strong);
+  border-color: var(--cur-hairline-hover); background: var(--cur-surface-strong);
 }
 .cur .ws-opt > input {
   margin: 2px 0 0; accent-color: var(--cur-ink); cursor: pointer;
@@ -3446,13 +3451,13 @@
   border: 1px solid var(--cur-hairline); color: var(--cur-muted); background: var(--cur-surface);
 }
 .cur .agm-chip[data-state="on"] {
-  color: var(--cur-success); background: color-mix(in srgb, var(--cur-success) 9%, transparent);
+  color: var(--cur-success-ink); background: color-mix(in srgb, var(--cur-success) 9%, transparent);
   border-color: color-mix(in srgb, var(--cur-success) 30%, transparent);
 }
 /* Granted for this person, held down by a company rule. The one state a
    manager has to be able to tell apart from "never granted". */
 .cur .agm-chip[data-state="blocked"] {
-  color: var(--ws-warning); background: color-mix(in srgb, var(--ws-warning) 9%, transparent);
+  color: var(--ws-warning-ink); background: color-mix(in srgb, var(--ws-warning) 9%, transparent);
   border-color: color-mix(in srgb, var(--ws-warning) 32%, transparent);
   text-decoration: line-through;
 }

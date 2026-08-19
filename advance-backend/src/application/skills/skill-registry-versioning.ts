@@ -26,6 +26,17 @@ export type SkillRegistryVersioningStore = Pick<
   'skillVersion' | 'skillRegistryRevision'
 >;
 
+export async function bumpSkillRegistryRevision(
+  store: Pick<Prisma.TransactionClient, 'skillRegistryRevision'>,
+  companyId: string,
+): Promise<void> {
+  await store.skillRegistryRevision.upsert({
+    where: { companyId },
+    create: { companyId, revision: 2 },
+    update: { revision: { increment: 1 } },
+  });
+}
+
 export async function recordSkillRegistryMutation(
   store: SkillRegistryVersioningStore,
   skill: VersionedSkillRecord,
@@ -52,9 +63,5 @@ export async function recordSkillRegistryMutation(
     update: {},
   });
 
-  await store.skillRegistryRevision.upsert({
-    where: { companyId: skill.companyId },
-    create: { companyId: skill.companyId, revision: 2 },
-    update: { revision: { increment: 1 } },
-  });
+  await bumpSkillRegistryRevision(store, skill.companyId);
 }

@@ -38,14 +38,20 @@ import { registerTypedPlatformTools } from "./typed-platform-tools.ts";
 import { registerDivoLlmProviders } from "../divo-llm/index.ts";
 import { registerLocalDivoBroker, localCliAvailable } from "./local-broker.ts";
 import {
-	enrichGeneratedNativeToolCatalogue,
+	bindNativeContractsToCatalogue,
+	cacheNativeContracts,
+	markCompleteNativeContractCoverage,
+	missingCompleteNativeContractToolIds,
 	providerNativeContractToolIds,
 	registerGeneratedNativeToolCatalogue,
 	type NativeContractCache,
+	type NativeContractCoverage,
 } from "./native-tools/catalogue.ts";
+import { tierNativeContracts } from "./native-tools/contract-tiering.ts";
 import {
 	registerDeepSeekToolSurface,
 	toolIdsForDeepSeekPreload,
+	type DeepSeekToolSurfaceSelection,
 } from "./native-tools/deepseek-tool-surface.ts";
 import { registerNativeSemrushTool } from "./native-tools/semrush.ts";
 import {
@@ -100,7 +106,6 @@ const DIVO_SKILL_RESOLVE_PARAMS = Type.Object({
 
 
 const typedToolInvoker = createGatewayTypedToolInvoker();
-const nativeContractCache: NativeContractCache = new Map();
 
 function reportInactiveNativeTools(pi: ExtensionAPI, registered: readonly string[]): void {
 	const activeNames = new Set(pi.getActiveTools());
@@ -111,6 +116,8 @@ function reportInactiveNativeTools(pi: ExtensionAPI, registered: readonly string
 }
 
 export default function divoGatewayExtension(pi: ExtensionAPI) {
+	const nativeContractCache: NativeContractCache = new Map();
+	const completeNativeContractCoverage: NativeContractCoverage = new Set();
 	registerApprovalGate(pi);
 	registerLocalDivoBroker(pi);
 	registerMemoryRecallTool(pi);
@@ -161,11 +168,13 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			// Outer tools are permanent Pi source. A work resolution may add exact
 			// provider-native input schemas to Google/Airtable wrapper branches.
 			if (result.bootstrap) {
-				const refreshed = enrichGeneratedNativeToolCatalogue(
+				cacheNativeContracts(result.bootstrap.nativeContracts, nativeContractCache);
+				// A resolution already asked the backend for this workflow's operations,
+				// so its contracts are the turn's selection rather than a whole family.
+				const refreshed = bindNativeContractsToCatalogue(
 					pi,
 					typedToolInvoker,
 					result.bootstrap.nativeContracts,
-					nativeContractCache,
 				);
 				if (refreshed.length > 0) {
 					console.error(`[divo-native-tools] enriched ${refreshed.join(",")}`);
@@ -189,6 +198,80 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	});
 
 	const preparationTrace = registerTraceCapture(pi);
+
+	/**
+	 * Load provider-native contracts the turn's selection can actually reach.
+	 *
+	 * Binding registers Pi tools, and registration re-expands Pi's active tool
+	 * set — so this runs while the surface is still being decided, never after it
+	 * is applied. A complete bundle is fetched once per backend tool and reused;
+	 * failure is recoverable, leaving the safe describe-then-call contract.
+	 */
+	async function preloadNativeContracts(
+		prompt: string,
+		permittedToolIds: readonly string[],
+		selection: DeepSeekToolSurfaceSelection,
+	): Promise<void> {
+		const reachableToolIds = providerNativeContractToolIds(
+			toolIdsForDeepSeekPreload(permittedToolIds, selection),
+		);
+		const missingContractToolIds = missingCompleteNativeContractToolIds(
+			reachableToolIds,
+			completeNativeContractCoverage,
+		);
+		if (reachableToolIds.length > 0 && missingContractToolIds.length === 0) {
+			console.error(`[divo-native-tools] complete contract preload already cached for ${reachableToolIds.length} tools`);
+		}
+		if (missingContractToolIds.length === 0) return;
+		try {
+			const { covered, fetched, refreshed, tiered } = await preparationTrace.measure(
+				"pi.prepare.contracts",
+				"gateway",
+				async () => {
+					const fetched = await fetchNativeContractBootstrap(
+						missingContractToolIds,
+						"native-inputs-eager",
+						prompt,
+						{ contractMode: "complete" },
+					);
+					if (fetched.bootstrap) {
+						cacheNativeContracts(fetched.bootstrap.nativeContracts, nativeContractCache);
+					}
+					const tiered = tierNativeContracts({
+						cache: nativeContractCache,
+						visibleToolIds: reachableToolIds,
+						query: prompt,
+					});
+					const refreshed = bindNativeContractsToCatalogue(
+						pi,
+						typedToolInvoker,
+						tiered.bound,
+					);
+					const hasUnavailableContract = fetched.bootstrap?.advisories
+						.some(advisory => advisory.code === "native_contracts_unavailable") ?? false;
+					const covered = fetched.bootstrap && !hasUnavailableContract
+						? markCompleteNativeContractCoverage(
+							fetched.bootstrap.nativeContracts,
+							completeNativeContractCoverage,
+						)
+						: [];
+					return { covered, fetched, refreshed, tiered };
+				},
+			);
+			console.error(`[divo-native-tools] ${JSON.stringify({
+				refreshed: refreshed.length,
+				failed: fetched.failed,
+				covered,
+				boundContracts: tiered.bound.length,
+				boundContractBytes: tiered.boundBytes,
+				deferredContracts: tiered.deferred.length,
+				deferredContractBytes: tiered.deferredBytes,
+				completeCoverage: [...completeNativeContractCoverage],
+			})}`);
+		} catch (error) {
+			console.error(`[divo-native-tools] contract preload failed: ${String(error)}`);
+		}
+	}
 	let preparedDepartmentContext: Awaited<ReturnType<typeof readDepartmentPersonaContext>> | undefined;
 	pi.on("input", async (event, ctx) => {
 		// A queued steer/follow-up belongs to the currently running agent loop.
@@ -199,13 +282,17 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		return preparationTrace.measure("pi.prepare.input", "persistence", async () => {
 			preparedDepartmentContext = await readDepartmentPersonaContext();
 			const availableTools = preparedDepartmentContext?.capabilityBootstrap?.availableTools;
-			deepseekToolSurface.prepareTurn({
+			const permittedToolIds = availableTools?.map((tool) => tool.toolId) ?? [];
+			const selection = deepseekToolSurface.prepareTurn({
 				prompt: event.text,
 				model: ctx.model,
-				...(availableTools
-					? { allowedToolIds: availableTools.map((tool) => tool.toolId) }
-					: {}),
+				...(availableTools ? { allowedToolIds: permittedToolIds } : {}),
 			});
+			// Decide, then bind, then apply. Binding registers tools and registration
+			// re-expands Pi's active set, so applying first would silently discard the
+			// narrower surface this turn just chose.
+			await preloadNativeContracts(event.text, permittedToolIds, selection);
+			deepseekToolSurface.applyTurn();
 			return { action: "continue" as const };
 		});
 	});
@@ -222,55 +309,13 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			}
 			return value;
 		});
-		// The complete outer catalogue is already live. Fetch only to preload
-		// prompt-relevant provider-native input schemas for reachable Google and
-		// Airtable tools; failure leaves their safe describe-then-call contract.
 		const departmentContext = await preparationTrace.measure(
 			"pi.prepare.context",
 			"persistence",
 			() => preparedDepartmentContext ?? readDepartmentPersonaContext(),
 		);
 		preparedDepartmentContext = undefined;
-		const permittedToolIds = departmentContext?.capabilityBootstrap?.availableTools
-			?.map((tool) => tool.toolId) ?? [];
-		const preloadCandidates = toolIdsForDeepSeekPreload(
-			permittedToolIds,
-			toolSurfaceSelection,
-		);
-		const reachableToolIds = providerNativeContractToolIds(preloadCandidates);
-		if (reachableToolIds.length > 0) {
-			try {
-				const { fetched, refreshed } = await preparationTrace.measure(
-					"pi.prepare.contracts",
-					"gateway",
-					async () => {
-						const fetched = await fetchNativeContractBootstrap(
-							reachableToolIds,
-							"native-inputs-eager",
-							event.prompt,
-						);
-						const refreshed = fetched.bootstrap
-							? enrichGeneratedNativeToolCatalogue(
-								pi,
-								typedToolInvoker,
-								fetched.bootstrap.nativeContracts,
-								nativeContractCache,
-							)
-							: [];
-						return { fetched, refreshed };
-					},
-				);
-				console.error(`[divo-native-tools] ${JSON.stringify({
-					refreshed: refreshed.length,
-					failed: fetched.failed,
-				})}`);
-			} catch (error) {
-				// An absent nested preload is recoverable: describe remains available
-				// and the backend still validates the native input before execution.
-				console.error(`[divo-native-tools] input enrichment failed: ${String(error)}`);
-			}
-		}
-		const { systemPrompt, skillSummary } = await preparationTrace.measure("pi.prepare.prompt", "runtime", () => composeRunSystemPrompt({
+		const { systemPrompt, skillSummary, promptLedger } = await preparationTrace.measure("pi.prepare.prompt", "runtime", () => composeRunSystemPrompt({
 			// Input-time tool retrieval happens before this base-prompt snapshot,
 			// so it contains guidance only for the exact active DeepSeek surface.
 			basePrompt: event.systemPrompt,
@@ -290,6 +335,10 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		if (skillSummary.native > 0) {
 			console.error(`[divo-skills] ${JSON.stringify(skillSummary)}`);
 		}
+		console.error(`[divo-prompt-ledger] ${JSON.stringify({
+			totalBytes: Buffer.byteLength(systemPrompt),
+			sections: promptLedger,
+		})}`);
 		if (systemPrompt === event.systemPrompt) {
 			return undefined;
 		}
