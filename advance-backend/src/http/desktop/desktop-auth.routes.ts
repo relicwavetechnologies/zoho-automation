@@ -25,17 +25,8 @@ import type { TypedEnv } from '../../config/env';
 import type { InfraError } from '../../shared/errors';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
 import { parseCallbackOriginAllowlist, requestHost, resolveCallbackOrigin } from './callback-origin';
-import type { PermissionService } from '../../application/permissions/permission.service';
-import type { SkillCatalogService } from '../../application/skills/skill-catalog.service';
-import type { SkillAccessEnforcementPort } from '../../application/skills/skill-access.port';
-import type { ManagerPersonaRuntimeService } from '../../application/persona-learning/manager-persona-runtime.service';
-import { getCanonicalPersonalMemorySnapshot } from '../../application/knowledge/knowledge-resource-query.service';
-import { buildDesktopCapabilityBootstrap, isFinanceDepartment } from '../../application/desktop/desktop-capability-bootstrap';
-import { zohoServicesForScopes } from '../../domain/zoho/zoho-scope';
-import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
-import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
+import type { RuntimeContextLifecycle } from '../../application/runtime/runtime-context-lifecycle';
 import { asChannelKey, isRuntimeChannel } from '../../domain/channel/runtime-channel';
-import { surfaceCapabilities } from '../../domain/channel/surface-capabilities';
 import { DEFAULT_ALLOWED_MODELS, PROXY_MODEL_SPECS, RUNTIME_MODEL_PREFERENCE } from '../../application/observability/pricing';
 import { CONNECTION_PROVIDER_IDS } from '../../domain/connections/connection-provider';
 import { googleScopesToRequestForToolIds } from '../../application/google/google-scope-request';
@@ -52,10 +43,7 @@ import {
   type MailBriefOnboardingResult,
 } from '../../application/mail-ops/mail-brief-onboarding';
 import type { Result } from '../../shared/result';
-import {
-  measureRunLatency,
-  type RunLatencyRecorder,
-} from '../../application/observability/run-latency-recorder';
+import type { RunLatencyRecorder } from '../../application/observability/run-latency-recorder';
 
 export interface DesktopAuthRoutesDeps {
   prisma:                 PrismaClient;
@@ -74,10 +62,7 @@ export interface DesktopAuthRoutesDeps {
   mailBriefOnboarding?: (
     input: MailBriefOnboardingInput,
   ) => Promise<Result<MailBriefOnboardingResult, InfraError>>;
-  permissions:            PermissionService;
-  skillCatalog:           SkillCatalogService;
-  skillAccessEnforcement: SkillAccessEnforcementPort;
-  managerPersonaRuntime:  ManagerPersonaRuntimeService;
+  runtimeContextLifecycle: RuntimeContextLifecycle;
   logger:                 Logger;
   env:                    TypedEnv;
   memberJwtSecret:        string;
@@ -275,10 +260,6 @@ const runtimeContextQuerySchema = z.object({
   capabilityVersion: z.literal('3').optional(),
   nativeSkills: z.literal('1').optional(),
 });
-const NATIVE_SKILL_LIMIT = 100;
-const NATIVE_SKILL_DESCRIPTION_BYTES = 1_024;
-const NATIVE_SKILL_INSTRUCTIONS_BYTES = 100_000;
-const NATIVE_SKILL_TOTAL_BYTES = 2_000_000;
 
 const connectionManagerGovernanceUpdateSchema = z.object({
   managerPolicy: connectionGovernancePolicySchema,
@@ -1871,9 +1852,10 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
   });
 
   /**
-   * Desktop boot context. This intentionally stays outside gateway discovery:
-   * it is fetched at session lifecycle boundaries and cached locally by Jan,
-   * rather than fetched by Pi for each agent run.
+   * Authenticated Runtime Context transport adapter. Desktop reads it at its
+   * session lifecycle points; Cloud Pi reads it per turn so mutable authority
+   * and per-turn context stay fresh while the lifecycle module conditionally
+   * reuses session-scoped native skill content.
    */
   router.get('/runtime-context', memberAuth, async (req: Request, res: Response) => {
     const parsed = runtimeContextQuerySchema.safeParse({
@@ -1896,6 +1878,11 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
     const companyId = res.locals['companyId'] as string;
     const departmentId = parsed.data.departmentId;
     const nativeSkillsRequested = parsed.data.nativeSkills === '1';
+    const nativeSkillBindingHeader = req.headers['x-divo-native-skill-binding'];
+    const requestedNativeSkillBinding = nativeSkillsRequested
+      && typeof nativeSkillBindingHeader === 'string'
+      ? nativeSkillBindingHeader.trim()
+      : undefined;
     const runtimeRunId = res.locals['runtimeRunId'] as string | undefined;
     const latencyTrace = runtimeRunId && deps.runLatencyRecorder
       ? deps.runLatencyRecorder.trace({
@@ -1921,273 +1908,26 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         return;
       }
     }
-    const personalMemoryLoad = measureRunLatency(latencyTrace, {
-      name: 'runtime.context.personal-memory',
-      category: 'memory',
-    }, () => getCanonicalPersonalMemorySnapshot(
-      deps.prisma,
-      {
-        userId,
-        companyId,
-        limit: 12,
-        maxFactChars: 500,
-        maxTotalChars: 2_200,
-      },
-    )).catch((error: unknown) => {
-      log.warn('runtime_context.personal_memory_failed', {
-        error: String(error),
-        userId,
-        companyId,
-      });
-      return [];
-    });
-
-    if (!departmentId) {
-      res.json({
-        success: true,
-        data: {
-          departmentId: null,
-          departmentName: null,
-          personaPrompt: '',
-          version: null,
-          personalMemory: await personalMemoryLoad,
-          surface: surfaceCapabilities(asChannelKey(res.locals['channel'])),
-        },
-      });
-      return;
-    }
-
     try {
-      const [personalMemory, membership] = await Promise.all([
-        personalMemoryLoad,
-        measureRunLatency(latencyTrace, {
-          name: 'runtime.context.membership',
-          category: 'persistence',
-        }, () => deps.prisma.departmentMembership.findFirst({
-          where: {
-            userId,
-            departmentId,
-            status: 'active',
-            department: { companyId, status: 'active' },
-          },
-          select: {
-            department: {
-              select: {
-                id: true,
-                name: true,
-                slug: true,
-                agentConfig: {
-                  select: {
-                    desktopPersonaPrompt: true,
-                    isActive: true,
-                    updatedAt: true,
-                  },
-                },
-              },
-            },
-          },
-        })),
-      ]);
-
-      if (!membership) {
-        res.status(403).json({ success: false, message: 'Department access denied' });
+      const result = await deps.runtimeContextLifecycle.load({
+        userId,
+        companyId,
+        companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
+        channel: asChannelKey(res.locals['channel']),
+        capabilityVersion: parsed.data.capabilityVersion === '3' ? 3 : 2,
+        ...(departmentId ? { departmentId } : {}),
+        ...(nativeSkillsRequested ? {
+          nativeSkills: requestedNativeSkillBinding
+            ? { requestedBinding: requestedNativeSkillBinding }
+            : {},
+        } : {}),
+        ...(latencyTrace ? { trace: latencyTrace } : {}),
+      });
+      if (result.kind === 'denied') {
+        res.status(403).json({ success: false, message: result.message });
         return;
       }
-
-      const config = membership.department.agentConfig;
-      const active = config?.isActive === true;
-      const companyRole = String(res.locals['aiRole'] ?? 'MEMBER');
-
-      /**
-       * What this member may do here, resolved once for the whole request.
-       *
-       * Two bootstraps are built below and both need the same three answers.
-       * They used to ask for them separately, so a runtime request — the one on
-       * a turn's critical path — resolved permissions twice, listed the granted
-       * skill ids twice and read the registry revision twice, for six calls
-       * where three would do.
-       *
-       * The two permission queries differed only in `channel`, and that is not
-       * a difference: `PermissionService.resolve` does not read the field, and
-       * it is not part of the cache key either, so both calls were computing
-       * the same answer from the same inputs. The test below pins the count, so
-       * if `channel` ever starts deciding something this stops being silent.
-       */
-      let resolutionOnce: Promise<[
-        Awaited<ReturnType<typeof deps.permissions.resolve>>,
-        Awaited<ReturnType<typeof deps.skillAccessEnforcement.listGrantedSkillIds>>,
-        Awaited<ReturnType<typeof deps.skillCatalog.registryRevision>>,
-      ]> | undefined;
-      const resolveMemberScope = () => (resolutionOnce ??= Promise.all([
-        measureRunLatency(latencyTrace, {
-          name: 'runtime.context.permission',
-          category: 'authorization',
-        }, () => deps.permissions.resolve({
-          companyId: asCompanyId(companyId),
-          userId: asUserId(userId),
-          companyRole: asCompanyRoleSlug(companyRole),
-          departmentId: asDepartmentId(membership.department.id),
-          channel: 'lark',
-        })),
-        measureRunLatency(latencyTrace, {
-          name: 'runtime.context.skill-grants',
-          category: 'authorization',
-        }, () => deps.skillAccessEnforcement.listGrantedSkillIds(companyId, userId)),
-        measureRunLatency(latencyTrace, {
-          name: 'runtime.context.registry-revision',
-          category: 'persistence',
-        }, () => deps.skillCatalog.registryRevision(companyId)),
-      ]));
-
-      let nativeSkillBootstrap;
-      if (nativeSkillsRequested) {
-        const [permissionResult, grantedSkillIds, registryRevision] = await resolveMemberScope();
-        if (!permissionResult.ok) {
-          res.status(403).json({ success: false, message: 'Runtime skill access denied' });
-          return;
-        }
-        const visibleSkills = await measureRunLatency(latencyTrace, {
-          name: 'runtime.context.native-skills',
-          category: 'persistence',
-        }, () => deps.skillCatalog.listVisible({
-          companyId,
-          departmentId: membership.department.id,
-          permission: permissionResult.value,
-          grantedSkillIds,
-          complete: true,
-          failClosed: true,
-        }));
-        const boundedSkills = [];
-        const omittedSlugs: string[] = [];
-        let totalBytes = 0;
-        for (const skill of visibleSkills) {
-          const descriptionBytes = Buffer.byteLength(skill.description, 'utf8');
-          const instructionBytes = Buffer.byteLength(skill.instructions, 'utf8');
-          if (
-            boundedSkills.length >= NATIVE_SKILL_LIMIT
-            || descriptionBytes > NATIVE_SKILL_DESCRIPTION_BYTES
-            || instructionBytes > NATIVE_SKILL_INSTRUCTIONS_BYTES
-            || totalBytes + descriptionBytes + instructionBytes > NATIVE_SKILL_TOTAL_BYTES
-          ) {
-            omittedSlugs.push(skill.slug);
-            continue;
-          }
-          totalBytes += descriptionBytes + instructionBytes;
-          boundedSkills.push(skill);
-        }
-        if (omittedSlugs.length > 0) {
-          log.warn('runtime.native_skills.bounded', {
-            visibleCount: visibleSkills.length,
-            loadedCount: boundedSkills.length,
-            omittedCount: omittedSlugs.length,
-            omittedSlugs: omittedSlugs.slice(0, 20),
-          });
-        }
-        nativeSkillBootstrap = {
-          registryRevision,
-          skills: boundedSkills.map(skill => ({
-            id: skill.id,
-            slug: skill.slug,
-            name: skill.name,
-            description: skill.description,
-            instructions: skill.instructions,
-            revision: skill.revision,
-          })),
-        };
-      }
-      let managerPersonaPrompt = '';
-      let managerPersonaVersion: string | null = null;
-      try {
-        const brief = await measureRunLatency(latencyTrace, {
-          name: 'runtime.context.manager-persona',
-          category: 'persistence',
-        }, () => deps.managerPersonaRuntime.getDepartmentBrief({
-          companyId,
-          departmentId: membership.department.id,
-        }));
-        managerPersonaPrompt = brief?.prompt ?? '';
-        managerPersonaVersion = brief?.version ?? null;
-      } catch (error) {
-        // Runtime delivery is advisory. A read failure must not break desktop
-        // login, membership checks, or the normal department persona.
-        log.warn('runtime_context.manager_persona_failed', {
-          error: String(error), userId, companyId, departmentId,
-        });
-      }
-      let capabilityBootstrap;
-      try {
-        const finance = isFinanceDepartment(membership.department.name, membership.department.slug);
-        const [[permissionResult, grantedSkillIds, registryRevision], zohoConnectionsResult] = await Promise.all([
-          resolveMemberScope(),
-          finance
-            ? measureRunLatency(latencyTrace, {
-                name: 'runtime.context.connections',
-                category: 'persistence',
-              }, () => deps.connectionRepo.listAccessibleZohoConnections({ userId, companyId }))
-            : Promise.resolve(null),
-        ]);
-        if (permissionResult.ok) {
-          const visibleSkills = await measureRunLatency(latencyTrace, {
-            name: 'runtime.context.capabilities',
-            category: 'persistence',
-          }, () => deps.skillCatalog.listVisible({
-            companyId,
-            departmentId: membership.department.id,
-            permission: permissionResult.value,
-            grantedSkillIds,
-            limit: 50,
-          }));
-          const builtBootstrap = buildDesktopCapabilityBootstrap({
-            departmentName: membership.department.name,
-            departmentSlug: membership.department.slug,
-            companyRole,
-            permission: permissionResult.value,
-            visibleSkills,
-            registryRevision,
-            ...(zohoConnectionsResult?.ok ? {
-              zohoConnections: zohoConnectionsResult.value.map(connection => ({
-                connectionId: connection.connectionId,
-                label: connection.label,
-                access: connection.access,
-                services: zohoServicesForScopes(connection.scopes),
-              })),
-            } : {}),
-          });
-          if (parsed.data.capabilityVersion === '3') {
-            capabilityBootstrap = builtBootstrap;
-          } else {
-            const { families, ...legacyBootstrap } = builtBootstrap;
-            void families;
-            capabilityBootstrap = { ...legacyBootstrap, version: 2 };
-          }
-        }
-      } catch (error) {
-        log.warn('runtime_context.capability_bootstrap_failed', {
-          error: String(error), userId, companyId, departmentId,
-        });
-      }
-      res.json({
-        success: true,
-        data: {
-          departmentId: membership.department.id,
-          departmentName: membership.department.name,
-          personaPrompt: [
-            active ? config.desktopPersonaPrompt : '',
-            managerPersonaPrompt,
-          ].filter(Boolean).join('\n\n'),
-          version: [
-            active ? config.updatedAt.toISOString() : null,
-            managerPersonaVersion,
-          ].filter((value): value is string => Boolean(value)).join('|') || null,
-          personalMemory,
-          // What the surface this run answers on can carry. The container turns
-          // it into one prompt block; nothing else in the system is allowed to
-          // decide how a channel changes what Divo says.
-          surface: surfaceCapabilities(asChannelKey(res.locals['channel'])),
-          ...(capabilityBootstrap ? { capabilityBootstrap } : {}),
-          ...(nativeSkillBootstrap ? { nativeSkillBootstrap } : {}),
-        },
-      });
+      res.json({ success: true, data: result.snapshot });
     } catch (e) {
       log.error('runtime_context.read_failed', { error: String(e), userId, companyId, departmentId });
       res.status(500).json({ success: false, message: 'Could not load desktop runtime context' });

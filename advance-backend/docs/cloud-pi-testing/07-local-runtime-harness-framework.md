@@ -85,7 +85,13 @@ MAX_ACTIVE_RUNS=2 node divo/local-rpc-server.mjs
 # Terminal 3 — backend + Google Workspace MCP sidecar
 cd advance-backend
 pnpm dev
+
+# Terminal 4 — admin UI
+cd admin
+pnpm dev
 ```
+
+The same recipe, with ports and stop rules, lives in root [`AGENTS.md`](../../../AGENTS.md#start-the-local-stack).
 
 Native backend skills are permanent. A native-skills test must show a
 `native_skills.ready` controller event before Pi starts; a missing bootstrap is

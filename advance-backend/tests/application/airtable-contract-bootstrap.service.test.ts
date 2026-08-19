@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { AirtableMcpToolDescription } from '../../src/application/tools/families/airtable-mcp.tool.ts';
 import {
+  airtableNativeToolsForMode,
   AirtableContractBootstrapService,
   suggestedAirtableNativeTools,
 } from '../../src/application/gateway/airtable-contract-bootstrap.service.ts';
@@ -15,7 +17,6 @@ const connection = {
   label: 'MENHOOD Airtable',
   accountEmail: 'ops@example.com',
   ownerType: 'company' as const,
-  ownerUserId: null,
   access: 'read_write' as const,
   scopes: [],
   connectedAt: new Date('2026-07-01T00:00:00.000Z'),
@@ -29,7 +30,7 @@ const LIST_RECORDS_SCHEMA = {
   },
 } as const;
 
-function resolverReturning(describeTool: (name: string) => Promise<unknown>) {
+function resolverReturning(describeTool: (name: string) => Promise<AirtableMcpToolDescription | null>) {
   return async () => ({
     status: 'resolved' as const,
     connection: { connectionId: connection.connectionId, client: { describeTool, callTool: async () => null } },
@@ -66,6 +67,17 @@ describe('Airtable work-contract bootstrap', () => {
     assert.deepEqual(suggestedAirtableNativeTools('count the July orders', ['googleSheets']), []);
   });
 
+  it('can select the complete provider-owned Airtable surface for one-time runtime preload', () => {
+    const selected = airtableNativeToolsForMode('', ['airtableRecords'], 'complete');
+    const nativeTools = selected.map(item => item.nativeTool);
+
+    assert.ok(nativeTools.includes('search_bases'));
+    assert.ok(nativeTools.includes('list_records_for_table'));
+    assert.ok(nativeTools.includes('create_records_for_table'));
+    assert.ok(nativeTools.includes('delete_records_for_table'));
+    assert.equal(nativeTools.includes('list_fields_for_table'), false);
+  });
+
   it('returns the described schemas for a resolved connection', async () => {
     const service = new AirtableContractBootstrapService(resolverReturning(async (name) =>
       name === 'list_records_for_table'
@@ -94,6 +106,30 @@ describe('Airtable work-contract bootstrap', () => {
       },
     });
     assert.equal(LIST_RECORDS_SCHEMA.properties.pageSize.maximum, 8_000, 'provider schema is not mutated');
+  });
+
+  it('loads every selected product schema in complete mode without prompt wording', async () => {
+    const described: string[] = [];
+    const service = new AirtableContractBootstrapService(resolverReturning(async (name) => {
+      described.push(name);
+      return { name, inputSchema: { type: 'object' } };
+    }));
+
+    const result = await service.load({
+      member,
+      query: '',
+      contractMode: 'complete',
+      toolIds: ['airtableRecords'],
+      connections: [connection],
+    });
+
+    assert.ok(described.includes('search_bases'));
+    assert.ok(described.includes('list_records_for_table'));
+    assert.ok(described.includes('create_records_for_table'));
+    assert.ok(described.includes('delete_records_for_table'));
+    assert.equal(described.includes('list_fields_for_table'), false);
+    assert.equal(result.unavailableNativeTools.length, 0);
+    assert.equal(result.contracts.length, described.length);
   });
 
   it('reports operations as unavailable rather than inventing a schema', async () => {

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   GoogleWorkspaceContractBootstrapService,
+  googleWorkspaceNativeToolsForMode,
   suggestedGoogleWorkspaceNativeTools,
 } from '../../src/application/gateway/google-workspace-contract-bootstrap.service.ts';
 
@@ -138,6 +139,15 @@ describe('Google Workspace work-contract bootstrap', () => {
     );
   });
 
+  it('can select the complete provider-owned contract surface for one-time runtime preload', () => {
+    const selected = googleWorkspaceNativeToolsForMode('', ['googleSheets'], 'complete');
+
+    assert.ok(selected.some(item => item.nativeTool === 'create_spreadsheet'));
+    assert.ok(selected.some(item => item.nativeTool === 'read_sheet_values'));
+    assert.ok(selected.some(item => item.nativeTool === 'manage_sheet_data_validation'));
+    assert.equal(selected.some(item => item.toolId === 'googleGmail'), false);
+  });
+
   it('loads schemas through one accessible connection without selecting it for execution', async () => {
     const resolutions: Array<Record<string, unknown>> = [];
     const described: string[] = [];
@@ -180,6 +190,39 @@ describe('Google Workspace work-contract bootstrap', () => {
     assert.ok(described.includes('create_spreadsheet'));
     assert.ok(described.includes('modify_sheet_values'));
     assert.ok(described.includes('read_sheet_values'));
+    assert.equal(result.unavailableNativeTools.length, 0);
+    assert.equal(result.contracts.length, described.length);
+  });
+
+  it('loads every selected product schema in complete mode without prompt wording', async () => {
+    const described: string[] = [];
+    const service = new GoogleWorkspaceContractBootstrapService(async () => ({
+      status: 'resolved' as const,
+      connection: {
+        client: {
+          describeTool: async (name: string) => {
+            described.push(name);
+            return { name, inputSchema: { type: 'object' } };
+          },
+          callTool: async () => {
+            throw new Error('contract bootstrap must not execute provider operations');
+          },
+        },
+      },
+    }));
+
+    const result = await service.load({
+      member,
+      query: '',
+      contractMode: 'complete',
+      toolIds: ['googleSheets'],
+      connections: [connection],
+    });
+
+    assert.ok(described.includes('create_spreadsheet'));
+    assert.ok(described.includes('list_spreadsheets'));
+    assert.ok(described.includes('manage_sheet_data_validation'));
+    assert.equal(described.includes('search_gmail_messages'), false);
     assert.equal(result.unavailableNativeTools.length, 0);
     assert.equal(result.contracts.length, described.length);
   });

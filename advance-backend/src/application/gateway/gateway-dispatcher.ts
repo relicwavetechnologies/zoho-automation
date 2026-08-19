@@ -323,6 +323,7 @@ export class GatewayDispatcher {
         permission: perm,
         registryRevision: await this.skillRegistryRevision(member.companyId),
         ...(parsed.data.query ? { query: parsed.data.query } : {}),
+        ...(parsed.data.contractMode ? { contractMode: parsed.data.contractMode } : {}),
         toolIds: parsed.data.toolIds,
       });
       return gatewaySuccess({ bootstrap });
@@ -700,6 +701,7 @@ export class GatewayDispatcher {
     permission: PermissionResult;
     registryRevision: number;
     query?: string;
+    contractMode?: 'suggested' | 'complete';
     toolIds: readonly string[];
   }): Promise<WorkBootstrap> {
     return this.workBootstrap.build({
@@ -708,6 +710,7 @@ export class GatewayDispatcher {
       permission: input.permission,
       registryRevision: input.registryRevision,
       ...(input.query ? { query: input.query } : {}),
+      ...(input.contractMode ? { contractMode: input.contractMode } : {}),
       toolIds: input.toolIds,
     });
   }

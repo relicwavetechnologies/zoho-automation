@@ -29,6 +29,7 @@ import {
   KNOWLEDGE_MANAGEMENT_SKILL_SLUG,
 } from './knowledge-system-skill';
 import { ZOHO_FINANCE_SYSTEM_SKILLS } from './zoho-finance-system-skills';
+import { bumpSkillRegistryRevision } from './skill-registry-versioning';
 
 export const ROUTING_SYSTEM_SKILLS = [
   {
@@ -423,7 +424,7 @@ export async function provisionSystemSkillRoutes(
 }
 
 export async function syncSystemSkillRoutes(
-  db: Pick<SystemSkillRouteStore, 'skill' | 'skillRoute'>,
+  db: Pick<SystemSkillRouteStore, 'skill' | 'skillRoute' | 'skillRegistryRevision'>,
   companyId: string,
 ): Promise<{ createdOrUpdated: number; missingTargets: string[] }> {
   const allSlugs = [...new Set(SYSTEM_SKILL_ROUTE_SEEDS.flatMap(
@@ -440,6 +441,7 @@ export async function syncSystemSkillRoutes(
   const bySlug = new Map(skills.map(skill => [skill.slug, skill.id]));
   const missingTargets = new Set<string>();
   let createdOrUpdated = 0;
+  let routeGraphChanged = false;
 
   for (const seed of SYSTEM_SKILL_ROUTE_SEEDS) {
     const routerSkillId = bySlug.get(seed.routerSlug);
@@ -453,7 +455,7 @@ export async function syncSystemSkillRoutes(
       return [{ targetSkillId, sortOrder }];
     });
 
-    await db.skillRoute.deleteMany({
+    const deleted = await db.skillRoute.deleteMany({
       where: {
         routerSkillId,
         source: 'system',
@@ -462,6 +464,7 @@ export async function syncSystemSkillRoutes(
           : {}),
       },
     });
+    routeGraphChanged ||= deleted.count > 0;
     for (const target of targets) {
       const updated = await db.skillRoute.updateMany({
         where: {
@@ -473,6 +476,10 @@ export async function syncSystemSkillRoutes(
       });
       if (updated.count > 0) {
         createdOrUpdated += updated.count;
+        // Prisma updates updatedAt even when sortOrder already matched. Treat
+        // that write as a registry mutation so another process never accepts
+        // a conditional bundle across route synchronization.
+        routeGraphChanged = true;
         continue;
       }
       const created = await db.skillRoute.createMany({
@@ -485,8 +492,11 @@ export async function syncSystemSkillRoutes(
         skipDuplicates: true,
       });
       createdOrUpdated += created.count;
+      routeGraphChanged ||= created.count > 0;
     }
   }
+
+  if (routeGraphChanged) await bumpSkillRegistryRevision(db, companyId);
 
   return { createdOrUpdated, missingTargets: [...missingTargets].sort() };
 }

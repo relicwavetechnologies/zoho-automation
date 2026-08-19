@@ -239,12 +239,16 @@ export const toolsListPayloadSchema = z.object({
   toolIds: z.array(z.string().min(1)).min(1).max(100).optional(),
   family: z.enum(TOOL_FAMILY_IDS).optional(),
   query: z.string().trim().min(3).max(2_000).optional(),
+  contractMode: z.enum(['suggested', 'complete']).optional(),
 }).strict().refine(
   value => [value.toolId, value.toolIds, value.family].filter(Boolean).length <= 1,
   { message: 'Use one selector: toolId, toolIds, or family.' },
 ).refine(
   value => !value.query || Boolean(value.toolIds),
   { message: 'query is supported only with toolIds.' },
+).refine(
+  value => !value.contractMode || Boolean(value.toolIds),
+  { message: 'contractMode is supported only with toolIds.' },
 );
 
 export interface GatewayErrorBody {
