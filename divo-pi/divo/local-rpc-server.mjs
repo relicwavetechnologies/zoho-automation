@@ -593,6 +593,12 @@ export function createControllerServer(options = {}) {
 					"cache-control": "no-store",
 					connection: "keep-alive",
 				});
+				// `fetch()` resolves when response headers arrive. Without an explicit
+				// flush, Node holds these until the first progress/body frame, so the
+				// caller's "connect" phase silently includes bootstrap and cold-start
+				// work. Send the established streaming contract immediately; the first
+				// NDJSON frame still carries the first runtime progress event.
+				response.flushHeaders();
 				const stream = createNdjsonStreamWriter(response);
 				ndjsonStream = stream;
 				const heartbeat = setInterval(

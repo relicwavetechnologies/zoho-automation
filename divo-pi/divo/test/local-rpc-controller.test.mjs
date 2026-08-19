@@ -679,6 +679,72 @@ test("a run's context and its skills arrive together, in one authenticated reque
 	assert.deepEqual(requests[0].options.headers, { Authorization: "Bearer member-token" });
 });
 
+test("a warm run reuses only a matching scope-bound native skill bundle", async () => {
+	const binding = "a".repeat(64);
+	const bootstrap = {
+		registryRevision: 4,
+		skills: [{
+			id: "skill-binding-1",
+			slug: "binding-safe-skill",
+			name: "Binding safe skill",
+			description: "Safe description",
+			instructions: "Use governed tools.",
+			revision: 1,
+		}],
+	};
+	const scope = {
+		companyId: "company-binding",
+		userId: "user-binding",
+		departmentId: "department-binding",
+		channel: "lark",
+	};
+	const headers = [];
+	const fetchImpl = async (_url, options) => {
+		headers.push(options.headers);
+		const unchanged = options.headers["x-divo-native-skill-binding"] === binding;
+		return {
+			ok: true,
+			status: 200,
+			json: async () => ({ success: true, data: {
+				departmentId: scope.departmentId,
+				nativeSkillBinding: binding,
+				...(unchanged
+					? { nativeSkillsUnchanged: true }
+					: { nativeSkillBootstrap: bootstrap }),
+			} }),
+		};
+	};
+
+	const first = await fetchRunContext({
+		backendUrl: "https://binding.divo.example.com",
+		token: "member-token",
+		departmentId: scope.departmentId,
+		scope,
+		fetchImpl,
+	});
+	const warm = await fetchRunContext({
+		backendUrl: "https://binding.divo.example.com",
+		token: "rotated-member-token",
+		departmentId: scope.departmentId,
+		scope,
+		fetchImpl,
+	});
+
+	assert.deepEqual(first.nativeSkills, bootstrap);
+	assert.deepEqual(warm.nativeSkills, bootstrap);
+	assert.equal(headers[0]["x-divo-native-skill-binding"], undefined);
+	assert.equal(headers[1]["x-divo-native-skill-binding"], binding);
+
+	await fetchRunContext({
+		backendUrl: "https://binding.divo.example.com",
+		token: "member-token",
+		departmentId: scope.departmentId,
+		scope: { ...scope, userId: "other-user" },
+		fetchImpl,
+	});
+	assert.equal(headers[2]["x-divo-native-skill-binding"], undefined);
+});
+
 test("a catalogue that will not answer costs the skills, not the turn", async () => {
 	const originalError = console.error;
 	console.error = () => {};
