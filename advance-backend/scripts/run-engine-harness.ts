@@ -639,7 +639,9 @@ async function main() {
     selectedOpenId: userOpenId,
     memberOpenIds: liveChatMembers,
   });
-  const activeModelId = await piRuntime.modelFor(identity.userId);
+  // modelFor resolves a full selection (model + reasoning effort); the pin
+  // comparison is about the model identity only.
+  const activeModelId = (await piRuntime.modelFor(identity.userId)).model;
   const expectedModelId = options.model ? HARNESS_MODEL_IDS[options.model] : undefined;
   if (expectedModelId && activeModelId !== expectedModelId) {
     throw new Error(
