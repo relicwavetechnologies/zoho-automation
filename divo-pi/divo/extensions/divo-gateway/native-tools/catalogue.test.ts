@@ -7,7 +7,10 @@ import type {
 	TypedToolResult,
 } from "../typed-tool-runtime.ts";
 import {
-	enrichGeneratedNativeToolCatalogue,
+	bindNativeContractsToCatalogue,
+	cacheNativeContracts,
+	markCompleteNativeContractCoverage,
+	missingCompleteNativeContractToolIds,
 	providerNativeContractToolIds,
 	registerGeneratedNativeToolCatalogue,
 } from "./catalogue.ts";
@@ -102,13 +105,38 @@ describe("complete Pi-native Divo tool catalogue", () => {
 		]), ["googleSheets", "airtableRecords"]);
 	});
 
+	it("tracks complete provider-contract coverage by backend tool ID", () => {
+		const coverage = new Set<string>();
+		assert.deepEqual(missingCompleteNativeContractToolIds([
+			"googleSheets",
+			"airtableRecords",
+			"zohoCrm",
+		], coverage), ["googleSheets", "airtableRecords"]);
+
+		assert.deepEqual(markCompleteNativeContractCoverage([{
+			toolId: "googleSheets",
+			nativeTool: "read_sheet_values",
+			inputSchema: { type: "object" },
+		}], coverage), ["googleSheets"]);
+		assert.deepEqual(markCompleteNativeContractCoverage([{
+			toolId: "googleSheets",
+			nativeTool: "modify_sheet_values",
+			inputSchema: { type: "object" },
+		}], coverage), []);
+		assert.deepEqual(missingCompleteNativeContractToolIds([
+			"googleSheets",
+			"airtableRecords",
+		], coverage), ["airtableRecords"]);
+	});
+
 	it("enriches a permanent provider wrapper without letting bootstrap redefine its identity or handler", () => {
 		const tools: Registered[] = [];
 		const host: TypedToolHost = { registerTool: definition => void tools.push(definition) };
 		const invoke = async (): Promise<TypedToolResult> => ({ content: [], details: {} });
 		registerGeneratedNativeToolCatalogue(host, invoke);
 		const baseCount = tools.length;
-		const refreshed = enrichGeneratedNativeToolCatalogue(host, invoke, [{
+		const cache = new Map();
+		const contracts = [{
 			toolId: "googleSheets",
 			nativeTool: "create_spreadsheet",
 			description: "Create a spreadsheet.",
@@ -118,7 +146,9 @@ describe("complete Pi-native Divo tool catalogue", () => {
 				required: ["title"],
 				additionalProperties: false,
 			},
-		}], new Map());
+		}];
+		assert.deepEqual(cacheNativeContracts(contracts, cache), ["googleSheets"]);
+		const refreshed = bindNativeContractsToCatalogue(host, invoke, contracts);
 
 		assert.deepEqual(refreshed, ["divo_google_sheets"]);
 		assert.equal(tools.length, baseCount + 1);
