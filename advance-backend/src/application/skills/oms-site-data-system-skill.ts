@@ -28,6 +28,9 @@ Use this skill only for company-approved OMS website cleanup, vendor lookup, and
    - Use the returned \`website\` column for exact OMS lookup work.
    - Tell the user which inputs were invalid instead of silently dropping them.
    - Do not claim vendor existence from sanitizer output. Vendor existence requires \`lookup_vendors\`.
+   - When the user only asks to clean, sanitize, or normalize website inputs, call only \`sanitize_website_inputs\`; do not call vendor lookup, OMS inventory search, public web search, or any external API.
+   - Pass each user-supplied item as its own \`inputs\` entry, including Markdown links like \`[Example.com](http://Example.com)\`, so invalid items remain visible instead of being swallowed inside surrounding prompt text.
+   - Return cleaned websites as plain copyable text: one \`website\` per line in a fenced code block, preserving the user's order and duplicates unless they ask for unique values. Put rejected inputs and reasons in a separate plain block. Do not format cleaned websites as Markdown links or tables when the user asks for copyable URLs.
 4. For vendor lookup results:
    - Treat returned vendor rows as the only proof of a vendor match.
    - Treat a validated empty vendor response as “no vendor found” for that website.

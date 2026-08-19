@@ -366,10 +366,14 @@ function sanitizeOneWebsiteInput(input: string): OmsSanitizedWebsiteRow {
 }
 
 function websiteCandidates(input: string): string[] {
-  return input
+  return expandMarkdownLinks(input)
     .split(/[\s,;]+/)
     .map(stripWrapper)
     .filter((candidate) => candidate && /@|:\/\/|\.|^www\./i.test(candidate));
+}
+
+function expandMarkdownLinks(input: string): string {
+  return input.replace(/\[[^\]\r\n]{1,500}\]\(([^)\s]{1,2000})\)/g, ' $1 ');
 }
 
 function stripWrapper(value: string): string {
