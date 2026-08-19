@@ -25,9 +25,13 @@ import {
   type ManageCandidates,
 } from './data/use-connections'
 import {
-  useShopifyCompanyStatus, useShopifyConnect, type ShopifyCompanyConnection, type ShopifyCompanyStatus,
+  useShopifyCompanyStatus, useShopifyConnect, useTokenConnect,
+  type AirtableAccessMode, type ShopifyCompanyConnection, type ShopifyCompanyStatus,
 } from './data/use-company-connections'
-import { ago, expiryLabel, useApprovals } from './data/use-approvals'
+import { useDecisions } from './data/use-decisions'
+import type { DecisionAnswer } from './decisions/decision'
+import { ago, answerAt, expiryLabel } from './decisions/decision'
+import { DecisionCard } from './decisions/decision.view'
 import { useMySkills } from './data/use-my-skills'
 import {
   useZohoSelfClientConnect,
@@ -35,15 +39,16 @@ import {
   type ZohoSelfClientAccess,
 } from './data/use-zoho-self-client'
 import {
-  changePct, durationLabel, runTitle, useMyModelOptions, useMyRuns, useMyTools, useMyUsage,
-  type MyRun,
+  changePct, dayLabel, durationLabel, runTitle, useMyModelOptions, useMyRuns, useMyTools,
+  useMyUsage, type MyRun, type UsagePoint,
 } from './data/use-my-activity'
 import {
-  AppMark, Avatar, Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
-  Heatmap, Prompt, ProviderMark, Seg, Skel, SkelRows, Spark, Switch, compact, listPhrase, money,
-  providerName, useStaged,
+  Avatar, Bar, ClickRow, Confirm, DataNote, Drawer, Empty, Fade, PageHeader, Panel,
+  Heatmap, Prompt, ProviderMark, Seg, Skel, SkelRows, Switch, TrendChart, compact, listPhrase,
+  money, providerName, useStaged,
 } from './ui'
 import type { Toast } from './ui'
+import { BrandMark } from '@/components/admin/brand-mark'
 
 const COMPANY_ROLE_LABEL: Record<string, string> = {
   SUPER_ADMIN: 'Super admin', COMPANY_ADMIN: 'Company admin', MEMBER: 'Member',
@@ -89,7 +94,7 @@ function zohoPresetFromConnection(connection: LiveConnection): ZohoConnectPreset
 export function YouHome({ persona, replay, toast, go }: ScreenProps) {
   const [r1, r2, r3] = useStaged([260, 520, 800], replay)
   const { session } = useAdminAuth()
-  const { awaitingMe, requestedByMe, loading: approvalsLoading } = useApprovals()
+  const { awaitingMe, loading: approvalsLoading } = useDecisions()
   const { usage, loading: usageLoading } = useMyUsage(30)
   const { runs, loading: runsLoading } = useMyRuns(4)
   const { byProvider, loading: connectionsLoading } = useConnections()
@@ -101,32 +106,35 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
     .map((provider) => ({ provider, status: byProvider.get(provider) }))
     .filter((entry) => entry.status?.connected)
   const attention = [
-    ...awaitingMe.map((a) => {
-      const expiry = expiryLabel(a.expiresAt)
+    ...awaitingMe.map((decision) => {
+      const expiry = expiryLabel(decision.expiresAt)
+      const at = answerAt(decision)
       return {
         tone: 'act' as const,
-        title: a.description?.summary ?? `${a.toolId} · ${a.action}`,
-        body: a.description?.detail ?? '',
-        meta: [`${a.requestedByName} · ${ago(a.requestedAt)}`, expiry ? `Expires ${expiry.text}` : 'No deadline'],
-        cta: 'Review',
-        onClick: () => go('approvals'),
+        title: decision.title,
+        body: decision.detail ?? '',
+        meta: [
+          `${decision.source} · ${ago(decision.requestedAt)}`,
+          expiry ? `Expires ${expiry.text}` : 'No deadline',
+          // Said on the card rather than behind a button, because for a
+          // decision with no thread there is no button to put it behind.
+          ...(at ? [] : ['Answer this on the Lark card']),
+        ],
+        // No CTA when there is nowhere to go. A "Review" that lands on Home is
+        // worse than none: it reads as a broken feature rather than as a
+        // decision that lives somewhere else.
+        ...(at ? { cta: 'Open the chat', onClick: () => go(at) } : {}),
       }
     }),
     // A "this skill cannot run for you" card belongs here, but it was built from
     // fixtures — it asserted a fact about the reader's own permissions that
     // nothing had read. A wrong claim about your own access is worse than none.
-    ...requestedByMe
-      .filter((a) => expiryLabel(a.expiresAt)?.expired && a.status === 'pending')
-      .map((a) => ({
-        tone: 'warn' as const,
-        title: 'One of your requests expired unanswered',
-        body: `${a.description?.summary ?? a.toolId} was never approved, so Divo stopped and did nothing.`,
-        meta: [ago(a.requestedAt)],
-        cta: 'Ask again',
-        // Nothing happened when they pressed this, so it must not arrive as a
-        // green tick — the button's whole answer is that it cannot help.
-        onClick: () => toast('Ask in Lark or raise it with your manager — Divo cannot re-open an expired request.', 'error'),
-      })),
+    //
+    // An expired request of your own used to get a card here too. It cannot any
+    // more, and deliberately: the decision module drops anything past its
+    // deadline before this surface sees it, so the branch could only ever
+    // produce an empty list — which would read as "nothing of yours has ever
+    // lapsed". A card that cannot appear is worse than no card.
   ]
 
   return (
@@ -153,7 +161,9 @@ export function YouHome({ persona, replay, toast, go }: ScreenProps) {
                       <p>{a.body}</p>
                       <div className="ws-attn-meta">{a.meta.map((m) => <span key={m}>{m}</span>)}</div>
                     </div>
-                    <button type="button" className="btn" onClick={a.onClick}>{a.cta}</button>
+                    {a.cta ? (
+                      <button type="button" className="btn" onClick={a.onClick}>{a.cta}</button>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -296,6 +306,17 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
   const [naming, setNaming] = useState<Provider | null>(null)
   const [shopifyOpen, setShopifyOpen] = useState(false)
   const [zohoOpen, setZohoOpen] = useState<ZohoConnectPreset | null>(null)
+  /*
+   * The two providers a key connects rather than a sign-in.
+   *
+   * These lived on a company Connections page that has been retired. Both
+   * routes admit company admins only and both make a connection the company
+   * holds rather than one person — but that was never a reason for a second
+   * page. "What Divo can reach" is one question, and this is where it is asked.
+   */
+  const [tokenFor, setTokenFor] = useState<'airtable' | 'aitable' | null>(null)
+  const [airtableMode, setAirtableMode] = useState<AirtableAccessMode>('read_write')
+  const tokenConnect = useTokenConnect()
   const { byProvider, loading, unreachable, connecting, connect, disconnect, refresh } = useConnections()
   const shopifyStatus = useShopifyCompanyStatus()
   const { session } = useAdminAuth()
@@ -316,6 +337,9 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
     // Zoho takes a detour: it can be connected two different ways, and which
     // one you want is not something the button can infer.
     if (provider === 'zoho') setZohoOpen({ intent: 'connect' })
+    // AITable has no sign-in flow at all — a key is the only way in, so the
+    // button opens the key rather than a window that would never load.
+    else if (provider === 'aitable') setTokenFor('aitable')
     else if (LABELLED.includes(provider) && existing > 0) setNaming(provider)
     else void connect(provider)
   }
@@ -387,6 +411,9 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
         canAdd,
         busy: connecting === def.provider,
         onAdd: () => startConnect(def.provider, accounts.length),
+        ...(def.provider === 'airtable' && isCompanyAdmin
+          ? { alt: { label: 'Use a company token instead', onSelect: () => setTokenFor('airtable') } }
+          : {}),
         ...(dead > 0 ? { tone: 'warn' as const } : {}),
       }
     })
@@ -399,7 +426,7 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
     built.push({
       key: 'shopify',
       name: 'Shopify',
-      mark: <AppMark short="S" asset="/brand/shopify.png" fill tint="#008060" ink="#FFFFFF" size={30} />,
+      mark: <BrandMark brand="shopify" size={30} placement="tile" />,
       blurb: shopifyStatus.loading
         ? 'Loading Shopify stores…'
         : shopifyStatus.failed
@@ -467,16 +494,23 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
         </ul>
       ) : undefined}
       action={card.canAdd ? (
-        <button
-          type="button"
-          className="btn wide"
-          disabled={connecting !== null || card.busy}
-          onClick={card.onAdd}
-        >
-          {card.busy
-            ? 'Waiting…'
-            : card.accounts.length === 0 ? 'Connect' : <><Plus size={13} />Add account</>}
-        </button>
+        <>
+          <button
+            type="button"
+            className="btn wide"
+            disabled={connecting !== null || card.busy}
+            onClick={card.onAdd}
+          >
+            {card.busy
+              ? 'Waiting…'
+              : card.accounts.length === 0 ? 'Connect' : <><Plus size={13} />Add account</>}
+          </button>
+          {card.alt ? (
+            <button type="button" className="ws-linkish ws-appcard-alt" onClick={card.alt.onSelect}>
+              {card.alt.label}
+            </button>
+          ) : null}
+        </>
       ) : (
         /* Shown whether or not accounts already exist. It used to appear only on
            an empty provider, so somebody looking at one that already had
@@ -573,6 +607,27 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
 
         <Panel>
           <div className="ws-rows">
+            {/*
+              Web search is company-held and is not a provider, so it has no
+              card in the grid above — one shared key with its own credit
+              budget rather than an account per person. It had a row on the
+              company Connections page; that page is gone and the row is here,
+              because this is where somebody asks what Divo can reach.
+            */}
+            {isCompanyAdmin ? (
+              <ClickRow onOpen={() => go('web-search')}>
+                <span className="ws-ic"><Search size={14} /></span>
+                <div className="ws-row-main">
+                  <b>Web search</b>
+                  <p>
+                    A company-wide search key with its own credit budget — shared by everyone, connected once,
+                    and the only company connection that is not an app above.
+                  </p>
+                </div>
+                <button type="button" className="btn">Manage</button>
+              </ClickRow>
+            ) : null}
+
             <ClickRow onOpen={() => go('connect-flow')}>
               <span className="ws-ic"><MessageSquare size={14} /></span>
               <div className="ws-row-main">
@@ -641,6 +696,68 @@ export function YouConnections({ replay, toast, go }: ScreenProps) {
           onConnected={refresh}
         />
       ) : null}
+
+      {/* The value is typed here, posted, and never held: neither route returns
+          the token it was given, and nothing on this page reads one back. */}
+      {tokenFor === 'airtable' ? (
+        <Prompt
+          title="Connect Airtable with a token"
+          description="Make a personal access token in Airtable with access to the bases Divo should work in. It goes straight to the backend and is never shown again. This one belongs to the company, not to you."
+          label="Personal access token"
+          placeholder="pat…"
+          confirm="Connect"
+          secret
+          extra={
+            <>
+              <div className="ws-lbl">What Divo may do with it</div>
+              <div style={{ marginTop: 8 }}>
+                <Seg
+                  value={airtableMode}
+                  onChange={setAirtableMode}
+                  options={[
+                    { value: 'read_write', label: 'Read and write' },
+                    { value: 'read_only', label: 'Read only' },
+                  ]}
+                />
+              </div>
+              <p className="ws-sentence-note">
+                This caps what Divo will attempt. The token's own scopes still apply on top — the narrower of the two wins.
+              </p>
+            </>
+          }
+          onClose={() => setTokenFor(null)}
+          onConfirm={async (value) => {
+            try {
+              await tokenConnect.connectAirtable(value, { accessMode: airtableMode })
+              await refresh()
+              toast('Airtable connected for the company')
+            } catch (e) {
+              toast(e instanceof Error ? e.message : 'Could not connect Airtable', 'error')
+            }
+          }}
+        />
+      ) : null}
+
+      {tokenFor === 'aitable' ? (
+        <Prompt
+          title="Connect AITable with a key"
+          description="Divo checks the key against AITable and stores which spaces it can reach. It goes straight to the backend and is never shown again."
+          label="API key"
+          placeholder="usk…"
+          confirm="Connect"
+          secret
+          onClose={() => setTokenFor(null)}
+          onConfirm={async (value) => {
+            try {
+              await tokenConnect.connectAitable(value)
+              await refresh()
+              toast('AITable connected for the company')
+            } catch (e) {
+              toast(e instanceof Error ? e.message : 'Could not connect AITable', 'error')
+            }
+          }}
+        />
+      ) : null}
     </>
   )
 }
@@ -670,6 +787,15 @@ type AppCardModel = {
   canAdd: boolean
   busy: boolean
   onAdd: () => void
+  /**
+   * A second way to connect, for a provider that genuinely has one.
+   *
+   * Airtable takes either a sign-in or a company token, and only an admin may
+   * post the token. Two buttons of equal weight would ask everybody to make a
+   * choice most people do not have; a quiet line under the button offers it to
+   * the one person it is for.
+   */
+  alt?: { label: string; onSelect: () => void }
   tone?: 'warn'
 }
 
@@ -1531,364 +1657,6 @@ function ConnectionDrawer({ provider, connection, onClose, onConnect, onReconnec
   )
 }
 
-/* ══ Access ════════════════════════════════════════════
-   The member's read-only view of their own permissions — with the one thing
-   every RBAC UI omits: why. And a request path, because "I can't do X" is
-   the reason most people open this page at all. */
-/**
- * What Divo may do for the signed-in person.
- *
- * Read from the tool inventory, which reports per tool the actions this person
- * can *actually* use, and where each grant came from — global (their company
- * role) or a named department. That provenance is the answer to "why can I do
- * this", which is the only question this screen exists to settle.
- */
-export function YouAccess({ replay }: ScreenProps) {
-  const { session } = useAdminAuth()
-  const [r1, r2] = useStaged([280, 560], replay)
-  const { inventory, loading, failed, refresh } = useMyTools()
-
-  const usable = inventory.filter((entry) => entry.allowedActions.length > 0)
-  const can = usable.flatMap((entry) =>
-    entry.allowedActions.map((a) => entry.actionLabels[a] ?? `${a} ${entry.tool.name}`))
-  // Worth naming: a tool this person holds no action on at all, which is the
-  // shape of "why did Divo say it could not do that".
-  const withheld = inventory.filter((entry) => entry.allowedActions.length === 0 && entry.configurable)
-  const needsConnection = inventory.filter((entry) => entry.readiness === 'connection_required')
-
-  const departmentGrants = usable.filter((e) => e.origins.some((o) => o.kind === 'department'))
-  const departmentNames = Array.from(new Set(
-    departmentGrants.flatMap((e) => e.origins.filter((o) => o.kind === 'department').map((o) => o.departmentName!)),
-  ))
-
-  return (
-    <>
-      <PageHeader
-        eyebrow="Your workspace"
-        title="What Divo can do for you"
-        description="Your access comes from your company role and from the departments you are in. Where something is missing, ask whoever leads that team."
-      />
-      <div className="ws-stack">
-        <Panel source="permissions">
-          <div className="ws-panel-body">
-            {!r1 || loading ? (
-              <>
-                <Skel w="92%" h={15} /><div style={{ height: 12 }} />
-                <Skel w="78%" h={15} /><div style={{ height: 12 }} />
-                <Skel w="46%" h={15} />
-              </>
-            ) : failed ? (
-              // Every sentence below is derived from the inventory, so with no
-              // inventory they would all say the same wrong thing: that this
-              // person holds nothing and belongs to no department. The route
-              // answers every signed-in member, so this is never a permission
-              // problem — it is something to retry.
-              <Empty
-                icon={TriangleAlert}
-                title="Could not read your access"
-                body="This is a broken request, not a restriction — nothing about what you can do has changed."
-                action={<button type="button" className="btn" onClick={refresh}>Try again</button>}
-              />
-            ) : (
-              <Fade>
-                {can.length ? (
-                  <p className="ws-sentence">Divo can <b>{listPhrase(can, 6)}</b> on your behalf.</p>
-                ) : (
-                  <p className="ws-sentence">Divo cannot do anything on your behalf yet.</p>
-                )}
-                {withheld.length ? (
-                  <p className="ws-sentence" style={{ marginTop: 12 }}>
-                    <span className="neg">
-                      It cannot use {listPhrase(withheld.map((e) => e.tool.name), 4)}.
-                    </span>
-                  </p>
-                ) : null}
-                <p className="ws-sentence-note">
-                  {departmentNames.length
-                    ? <>Most of this comes from your role in <b>{listPhrase(departmentNames, 3)}</b>, so it changes if your role does.</>
-                    : <>You are in no department, so everything here comes from your company role alone.</>}
-                  {session?.role === 'MEMBER' ? '' : ' Being an admin does not by itself grant tools — those still come from a department.'}
-                </p>
-              </Fade>
-            )}
-          </div>
-        </Panel>
-
-        {needsConnection.length ? (
-          <Panel title="Waiting on a connection" description="Granted to you, but Divo has nothing to act through">
-            {!r2 ? <SkelRows n={2} icon={false} /> : (
-              <Fade>
-                <div className="ws-rows">
-                  {needsConnection.map((entry) => (
-                    <div className="ws-row" key={entry.tool.toolId}>
-                      <span className="ws-ic" data-tone="warn"><Ban size={14} /></span>
-                      <div className="ws-row-main">
-                        <b>{entry.tool.name}</b>
-                        <p>
-                          You have permission, but no account is connected — so every step that needs it stops.
-                          Connect it from <b>Connected apps</b>.
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </Fade>
-            )}
-          </Panel>
-        ) : null}
-
-        <Panel
-          title="Full detail"
-          description="Every tool and action, and where each one came from"
-          source="permissions"
-        >
-          <div className="ws-panel-body">
-            {!r2 || loading ? <SkelRows n={5} icon={false} /> : failed ? (
-              <Empty
-                icon={TriangleAlert}
-                title="Could not read your tools"
-                body="The list is unavailable right now. This says nothing about what you hold."
-                action={<button type="button" className="btn" onClick={refresh}>Try again</button>}
-              />
-            ) : inventory.length === 0 ? (
-              <Empty title="Nothing is configured for you" body="Divo has no tools it may use on your behalf." />
-            ) : (
-              <Fade>
-                <div className="ws-rows">
-                  {inventory.map((entry) => (
-                    <div className="ws-row" key={entry.tool.toolId} style={{ alignItems: 'flex-start' }}>
-                      <div className="ws-row-main">
-                        <b>
-                          {entry.tool.name}
-                          {entry.readiness === 'connection_required'
-                            ? <span className="ws-prov" data-src="department_user_override">Needs a connection</span>
-                            : null}
-                        </b>
-                        <p>
-                          {entry.allowedActions.length
-                            ? entry.allowedActions.map((a) => entry.actionLabels[a] ?? a).join(' · ')
-                            : 'Nothing — no role you hold grants this'}
-                        </p>
-                        {entry.origins.length ? (
-                          <div className="ws-attn-meta" style={{ marginTop: 7 }}>
-                            {entry.origins.map((o, i) => (
-                              <span key={i}>
-                                {o.kind === 'department' ? `via ${o.departmentName}` : o.kind === 'global' ? 'via your company role' : o.kind}
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </Fade>
-            )}
-          </div>
-          <div className="ws-panel-foot">
-            A tool with no actions is not hidden — knowing Divo *could* do something if you were granted it is
-            usually why someone asks.
-          </div>
-        </Panel>
-      </div>
-    </>
-  )
-}
-
-/* ══ Approvals ═════════════════════════════════════════ */
-export function YouApprovals({ replay, toast }: ScreenProps) {
-  const [r1] = useStaged([240], replay)
-  const [tab, setTab] = useState<'awaiting' | 'mine'>('awaiting')
-  const { awaitingMe, requestedByMe, loading, deciding, decide } = useApprovals()
-  const list = tab === 'awaiting' ? awaitingMe : requestedByMe
-  const ready = r1 && !loading
-
-  const answer = async (id: string, decision: 'approved' | 'rejected') => {
-    const outcome = await decide(id, decision)
-    // The same row can be resolved from a Lark card, so losing the race is a
-    // normal outcome and says so — not a generic failure.
-    toast(outcome.ok
-      ? decision === 'approved' ? 'Approved — Divo is continuing' : 'Rejected'
-      : outcome.message)
-  }
-
-  return (
-    <>
-      <PageHeader
-        eyebrow="Decisions"
-        title="Approvals"
-        description="Divo pauses before anything that leaves your company or changes a record, and waits for a person."
-      />
-      <div className="filters">
-        <Seg
-          value={tab}
-          onChange={setTab}
-          options={[
-            { value: 'awaiting', label: `Waiting on you (${awaitingMe.length})` },
-            { value: 'mine', label: `Your requests (${requestedByMe.length})` },
-          ]}
-        />
-      </div>
-      <Panel source="approvals">
-        {!ready ? <SkelRows n={2} icon={false} /> : list.length === 0 ? (
-          <Empty icon={Check} title="Nothing here" body="Approvals appear when Divo needs a person to say yes." />
-        ) : (
-          <Fade>
-            <div className="ws-attn">
-              {list.map((a) => {
-                const expiry = expiryLabel(a.expiresAt)
-                const expired = expiry?.expired ?? false
-                const pending = a.status === 'pending'
-                return (
-                  <div className="ws-attn-item" data-tone={expired ? 'warn' : 'act'} key={a.id}>
-                    <span className="ws-attn-bar" />
-                    <div className="ws-attn-main">
-                      <b>{a.description?.summary ?? `${a.toolId} · ${a.action}`}</b>
-                      {a.description?.detail ? <p>{a.description.detail}</p> : null}
-                      <div className="ws-attn-meta">
-                        <span>{toolById(a.toolId)?.name ?? a.toolId} · {a.action}</span>
-                        <span>{a.requestedByName} · {ago(a.requestedAt)}</span>
-                        {expiry ? (
-                          <span style={expired ? { color: 'var(--cur-error)' } : undefined}>
-                            <Clock size={11} style={{ marginRight: 4 }} />
-                            {expired ? 'Expired' : `Expires ${expiry.text}`}
-                          </span>
-                        ) : null}
-                      </div>
-                    </div>
-                    {tab === 'awaiting' && pending && !expired ? (
-                      <div className="ws-row-act">
-                        <button
-                          type="button"
-                          className="btn"
-                          disabled={deciding === a.id}
-                          onClick={() => void answer(a.id, 'rejected')}
-                        >
-                          <X size={14} />No
-                        </button>
-                        <button
-                          type="button"
-                          className="btn primary"
-                          disabled={deciding === a.id}
-                          onClick={() => void answer(a.id, 'approved')}
-                        >
-                          <Check size={14} />Approve
-                        </button>
-                      </div>
-                    ) : (
-                      <span className={`badge ${expired || a.status === 'rejected' ? 'b-err' : 'b-ok'}`}>
-                        <span className="dot" />{expired ? 'Expired' : a.status}
-                      </span>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </Fade>
-        )}
-      </Panel>
-    </>
-  )
-}
-
-/* ══ Skills ════════════════════════════════════════════ */
-/**
- * What Divo can already do for you, and what is waiting on a tool you lack.
- *
- * This listed a fixture until the endpoint behind it existed: invented names,
- * invented scopes, invented run counts. It is the real registry now, resolved
- * per person by the same services a run asks, so a skill shown here is a skill
- * that would actually load.
- *
- * There is no "Private" filter any more, because there is no such thing — a
- * skill reaches you company-wide or through a team, and both are named. The
- * split that matters is whether you can run it.
- */
-export function YouSkills({ replay }: ScreenProps) {
-  const [r1] = useStaged([300], replay)
-  const [scope, setScope] = useState<'all' | 'ready' | 'blocked'>('all')
-  const { skills, loading, error } = useMySkills()
-
-  const blockedCount = useMemo(() => skills.filter((s) => s.missingTools.length > 0).length, [skills])
-  const list = useMemo(() => skills.filter((s) =>
-    scope === 'all'
-    || (scope === 'ready' ? s.missingTools.length === 0 : s.missingTools.length > 0)), [skills, scope])
-
-  const ready = r1 && !loading
-
-  return (
-    <>
-      <PageHeader
-        eyebrow="Your workspace"
-        title="Skills"
-        description="Ways of working Divo already knows here. Each one is shared with you by your company or your team, and runs only if you can use every tool it needs."
-        actions={ready && skills.length > 0
-          ? <span className="ws-tag">{skills.length} shared with you</span>
-          : undefined}
-      />
-      {/* Only when there is a division to make. Two filters that both mean
-          "everything" is a control that does nothing. */}
-      {ready && blockedCount > 0 ? (
-        <div className="filters">
-          <Seg
-            value={scope}
-            onChange={setScope}
-            options={[
-              { value: 'all', label: `All ${skills.length}` },
-              { value: 'ready', label: `Ready ${skills.length - blockedCount}` },
-              { value: 'blocked', label: `Needs a tool ${blockedCount}` },
-            ]}
-          />
-        </div>
-      ) : null}
-      <Panel source="skills">
-        {!ready ? <SkelRows n={5} /> : error ? (
-          <Empty icon={Ban} title="Could not load your skills" body={error} />
-        ) : skills.length === 0 ? (
-          <Empty
-            icon={Sparkles}
-            title="Nothing shared with you yet"
-            body="Skills are written once and shared with a team or the whole company. When one reaches you it appears here."
-          />
-        ) : (
-          <Fade>
-            <div className="ws-rows">
-              {list.map((s) => (
-                <div className="ws-row" key={s.id}>
-                  <span className="ws-ic" data-tone={s.missingTools.length ? 'warn' : undefined}>
-                    {s.missingTools.length ? <Ban size={14} /> : <Sparkles size={14} />}
-                  </span>
-                  <div className="ws-row-main">
-                    <b>
-                      {s.name}
-                      {/* Where it came from, which is also who to ask about it. */}
-                      <span className="ws-tag">{s.departmentName ?? 'Company-wide'}</span>
-                    </b>
-                    <p>
-                      {s.description}
-                      {s.missingTools.length ? (
-                        <span style={{ color: 'var(--ws-warning)' }}>
-                          {' · Needs '}
-                          {listPhrase(s.missingTools.map((t) => toolById(t)?.name ?? t))}
-                        </span>
-                      ) : null}
-                    </p>
-                  </div>
-                  <div className="ws-row-act">
-                    <span className="ws-sub">
-                      {s.toolIds.length} {s.toolIds.length === 1 ? 'tool' : 'tools'}
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Fade>
-        )}
-      </Panel>
-    </>
-  )
-}
-
 /* ══ Usage ═════════════════════════════════════════════ */
 export function YouUsage({ replay }: ScreenProps) {
   const [r1, r2] = useStaged([300, 620], replay)
@@ -1897,6 +1665,14 @@ export function YouUsage({ replay }: ScreenProps) {
   const ready = r1 && !loading
   const runsReady = r2 && !runsLoading
   const runChange = changePct(usage.runs, usage.previousRuns)
+  const tokens = usage.tokensIn + usage.tokensOut
+  /* The busiest day in the window, named. A thirty-day total answers "how
+     much"; it never answers "was that one afternoon or the whole month", which
+     is the question anybody looking at a bill actually has. */
+  const peak = usage.series.reduce<UsagePoint | null>(
+    (best, point) => (best === null || point.spendUsd > best.spendUsd ? point : best),
+    null,
+  )
 
   return (
     <>
@@ -1908,33 +1684,63 @@ export function YouUsage({ replay }: ScreenProps) {
         description="What Divo has done for you and what it cost. Cost is priced from real token counts, not estimated."
       />
       <div className="ws-stack">
-        <Panel title="Last 30 days" source="myUsage">
+        {/*
+          Three figures as their own cards rather than three columns inside one.
+          They are read one at a time — "what did this cost", "am I using it
+          more" — and a shared surface invites the eye to compare numbers that
+          are in different units and mean unrelated things.
+        */}
+        <div className="ws-tiles">
+          <Tile
+            ready={ready}
+            label="Cost"
+            value={money(usage.spendUsd)}
+            accent
+            foot={`${money(usage.spendTodayUsd)} today`}
+          />
+          <Tile
+            ready={ready}
+            label="Tasks"
+            value={String(usage.runs)}
+            /* Tone is not inferred from the sign. More runs is not bad news,
+               and guessing gets it backwards half the time. */
+            foot={`${runChange >= 0 ? '+' : '−'}${Math.abs(runChange)}% on the 30 days before`}
+          />
+          <Tile
+            ready={ready}
+            label="Tokens"
+            value={compact(tokens)}
+            foot={`${usage.cacheSavingsPct}% served from cache`}
+          />
+        </div>
+
+        <Panel title="Cost per day" description="Last 30 days" source="myUsage">
           <div className="ws-panel-body">
-            {!ready ? (<><Skel w={140} h={30} /><div style={{ height: 22 }} /><Skel w="100%" h={46} /></>) : (
+            {!ready ? <Skel w="100%" h={190} block /> : usage.series.length === 0 ? (
+              <Empty
+                icon={Activity}
+                title="Nothing to chart yet"
+                body="A day appears here once Divo has done something that cost anything."
+              />
+            ) : (
               <Fade>
-                <div style={{ display: 'flex', gap: 44, flexWrap: 'wrap' }}>
-                  <div>
-                    <div className="ws-lbl">Cost</div>
-                    <div className="ws-num" style={{ marginTop: 8, color: 'var(--cur-primary)' }}>{money(usage.spendUsd)}</div>
-                    <div className="ws-sub" style={{ marginTop: 5 }}>{money(usage.spendTodayUsd)} today</div>
-                  </div>
-                  <div>
-                    <div className="ws-lbl">Tasks</div>
-                    <div className="ws-num" style={{ marginTop: 8 }}>{usage.runs}</div>
-                    {/* Tone is not inferred from the sign. More runs is not bad
-                        news, and guessing gets it backwards half the time. */}
-                    <div className="ws-sub" style={{ marginTop: 5 }}>
-                      {runChange >= 0 ? '+' : '−'}{Math.abs(runChange)}% on the 30 days before
-                    </div>
-                  </div>
-                  <div>
-                    <div className="ws-lbl">Tokens</div>
-                    <div className="ws-num" style={{ marginTop: 8 }}>{compact(usage.tokensIn + usage.tokensOut)}</div>
-                    <div className="ws-sub" style={{ marginTop: 5 }}>{usage.cacheSavingsPct}% served from cache</div>
-                  </div>
-                </div>
-                <div style={{ marginTop: 24 }}><Spark data={usage.series.map((p) => p.spendUsd)} /></div>
-                <div className="ws-sub" style={{ marginTop: 8 }}>Daily cost, last 30 days</div>
+                {/*
+                  The same chart the profile draws, and deliberately so — it is
+                  scrubbable, so a spike is a day with a date and an amount
+                  rather than a bump you point at. This panel used to hold
+                  `Spark`: thirty bars with no axis, no dates and no values, able
+                  to show that something happened without saying when or how much.
+                */}
+                <TrendChart
+                  data={usage.series.map((point) => ({ date: point.date, value: point.spendUsd }))}
+                  height={190}
+                />
+                {peak && peak.spendUsd > 0 ? (
+                  <p className="ws-sub ws-usage-read">
+                    Busiest day was <b>{dayLabel(peak.date)}</b> at {money(peak.spendUsd)}
+                    {peak.runs > 0 ? ` across ${peak.runs} ${peak.runs === 1 ? 'task' : 'tasks'}` : ''}.
+                  </p>
+                ) : null}
               </Fade>
             )}
           </div>
@@ -1946,18 +1752,24 @@ export function YouUsage({ replay }: ScreenProps) {
               <div className="ws-sub">Nothing recorded in this window yet.</div>
             ) : (
               <Fade>
-                {usage.byModel.map((m) => (
-                  <div key={m.modelId} style={{ marginBottom: 16 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <span style={{ fontSize: 13, fontWeight: 500 }}>{m.modelId}</span>
-                      <span className="ws-sub">{m.calls} calls · {money(m.costUsd)}</span>
+                {usage.byModel.map((m) => {
+                  const share = usage.spendUsd > 0 ? (m.costUsd / usage.spendUsd) * 100 : 0
+                  return (
+                    <div className="ws-model" key={m.modelId}>
+                      <div className="ws-model-head">
+                        <span className="ws-model-id">{m.modelId}</span>
+                        {/* The share is the point of the row and used to be the
+                            one number missing from it — a bar you had to eyeball
+                            against its neighbours to read. */}
+                        <span className="ws-model-share">{Math.round(share)}%</span>
+                      </div>
+                      <Bar pct={share} tone={m.modelId.includes('pro') ? 'mark' : undefined} />
+                      <div className="ws-model-foot">
+                        {m.calls} {m.calls === 1 ? 'call' : 'calls'} · {money(m.costUsd)}
+                      </div>
                     </div>
-                    <Bar
-                      pct={usage.spendUsd > 0 ? (m.costUsd / usage.spendUsd) * 100 : 0}
-                      tone={m.modelId.includes('pro') ? 'brand' : undefined}
-                    />
-                  </div>
-                ))}
+                  )
+                })}
               </Fade>
             )}
           </div>
@@ -1976,6 +1788,37 @@ export function YouUsage({ replay }: ScreenProps) {
     </>
   )
 }
+
+/**
+ * One figure, on its own surface.
+ *
+ * Local to this screen rather than in `ui.tsx`: it is three lines of markup and
+ * a skeleton, and the moment a second screen wants "a number in a box" it will
+ * want a different one — a delta arrow, an icon, a sparkline. Promoting it now
+ * would mean guessing which.
+ */
+function Tile({ ready, label, value, foot, accent }: {
+  ready: boolean
+  label: string
+  value: string
+  foot: string
+  accent?: boolean
+}) {
+  return (
+    <div className="ws-tile">
+      <div className="ws-lbl">{label}</div>
+      {!ready ? (
+        <><div style={{ height: 10 }} /><Skel w={96} h={30} /><div style={{ height: 10 }} /><Skel w="70%" h={12} /></>
+      ) : (
+        <Fade>
+          <div className="ws-num ws-tile-num" data-accent={accent ? 'true' : undefined}>{value}</div>
+          <div className="ws-sub ws-tile-foot">{foot}</div>
+        </Fade>
+      )}
+    </div>
+  )
+}
+
 
 /* ══ Memory ════════════════════════════════════════════ */
 export function YouMemory({ replay, toast }: ScreenProps) {

@@ -26,6 +26,7 @@ export function createTurnPhases(now = Date.now) {
 	const byPhase = new Map();
 	const running = new Set();
 	const startedAt = now();
+	const samples = [];
 	return {
 		/**
 		 * Wall-clock time since the turn began.
@@ -47,7 +48,8 @@ export function createTurnPhases(now = Date.now) {
 		 * failure retries the model — and the turn spent the sum, not the last one.
 		 */
 		async measure(name, work) {
-			const startedAt = now();
+			const phaseStartedAt = now();
+			let status = "ok";
 			// Claimed on entry rather than on completion, so the record reads in the
 			// order phases *began*. Recording on completion alone would reorder the
 			// concurrent pair at the start of a turn depending on which of a Docker
@@ -56,8 +58,20 @@ export function createTurnPhases(now = Date.now) {
 			running.add(name);
 			try {
 				return await work();
+			} catch (error) {
+				status = "error";
+				throw error;
 			} finally {
-				byPhase.set(name, byPhase.get(name) + (now() - startedAt));
+				const endedAt = now();
+				const durationMs = Math.max(0, endedAt - phaseStartedAt);
+				byPhase.set(name, byPhase.get(name) + durationMs);
+				samples.push({
+					name,
+					startedAt: phaseStartedAt,
+					endedAt,
+					durationMs,
+					status,
+				});
 				running.delete(name);
 			}
 		},
@@ -80,6 +94,12 @@ export function createTurnPhases(now = Date.now) {
 			return Object.fromEntries(
 				[...byPhase].map(([name, ms]) => [name, running.has(name) ? null : ms]),
 			);
+		},
+		/** Bounded source-clock samples for the backend's causal trace ledger. */
+		samples() {
+			return samples
+				.map((sample) => ({ ...sample }))
+				.sort((left, right) => left.startedAt - right.startedAt || left.endedAt - right.endedAt);
 		},
 	};
 }

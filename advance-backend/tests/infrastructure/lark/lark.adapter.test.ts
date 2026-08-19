@@ -765,7 +765,7 @@ describe('LarkChannelAdapter delivery timing', () => {
     const status = await adapter.sendStatus(makeConversation(), {
       kind: 'status',
       terminal: false,
-      timeline: { phase: 'Working' },
+      timeline: { state: 'working' },
     });
     const final = await adapter.sendFinalReply(makeConversation(), makeReply('# Done'));
 

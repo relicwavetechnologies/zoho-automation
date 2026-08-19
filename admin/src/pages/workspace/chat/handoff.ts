@@ -21,9 +21,15 @@
  * with its attachments quietly missing, and sends it that way.
  */
 
+import type { ModelSelection } from './model-choice'
+
 const KEY = 'divo.chat.pendingPrompt'
 
-export type Handoff = { prompt: string; files: readonly File[] }
+export type Handoff = {
+  prompt: string
+  files: readonly File[]
+  modelSelection?: ModelSelection
+}
 
 const EMPTY: Handoff = { prompt: '', files: [] }
 
@@ -31,14 +37,18 @@ const EMPTY: Handoff = { prompt: '', files: [] }
 let carried: Handoff | null = null
 
 /** Hand a message to the thread screen. */
-export function stageHandoff(prompt: string, files: readonly File[] = []): void {
+export function stageHandoff(
+  prompt: string,
+  files: readonly File[] = [],
+  modelSelection?: ModelSelection,
+): void {
   clearHandoff()
   if (files.length > 0) {
-    carried = { prompt, files }
+    carried = { prompt, files, ...(modelSelection ? { modelSelection } : {}) }
     return
   }
   try {
-    window.sessionStorage.setItem(KEY, prompt)
+    window.sessionStorage.setItem(KEY, JSON.stringify({ prompt, modelSelection }))
   } catch { /* private mode — the prompt does not survive, and nothing else breaks */ }
 }
 
@@ -54,8 +64,20 @@ export function stageHandoff(prompt: string, files: readonly File[] = []): void 
 export function peekHandoff(): Handoff {
   if (carried) return carried
   try {
-    const prompt = window.sessionStorage.getItem(KEY) ?? ''
-    return prompt ? { prompt, files: [] } : EMPTY
+    const raw = window.sessionStorage.getItem(KEY) ?? ''
+    if (!raw) return EMPTY
+    try {
+      const stored = JSON.parse(raw) as Partial<Handoff>
+      if (typeof stored.prompt !== 'string' || !stored.prompt) return EMPTY
+      return {
+        prompt: stored.prompt,
+        files: [],
+        ...(stored.modelSelection ? { modelSelection: stored.modelSelection } : {}),
+      }
+    } catch {
+      // A prompt staged by the previous release was the raw string itself.
+      return { prompt: raw, files: [] }
+    }
   } catch {
     return EMPTY
   }

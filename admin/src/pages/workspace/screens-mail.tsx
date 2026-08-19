@@ -46,7 +46,7 @@ import {
   type MailboxHealth, type MailboxResolution,
 } from './data/use-mail-automations'
 import { useConnections } from './data/use-connections'
-import { ago } from './data/use-approvals'
+import { ago } from './decisions/decision'
 import { GmailMark, LarkMark } from './brand'
 import { DetailPage, RailChip, RailEmpty, RailRoute, RailRow, RailSection } from './detail'
 import { Confirm, DataNote, Empty, Fade, PageHeader, Panel, RowMenu, Seg, SkelRows, useStaged } from './ui'

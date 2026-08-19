@@ -14,18 +14,35 @@
  * a cursor over it — which is why none of them needed touching.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Beat } from './transcripts'
+import type { Beat } from './beats'
+import { traceSteps, type TraceStep } from './lifecycle'
+import { agentRunOf, isAgentRow } from './agents'
+import { planOf, type Plan } from './plan'
 import { toolMarkFor } from './tool-identity'
 import {
   ask, stop, watch,
   type LedgerRow, type RunEvent, type Timeline,
 } from './stream'
+import { uploadVideo } from './stream'
+import { isVideo, sentFrom, videoMimeFor, type SentFile } from './attach'
 import { getThread, threadSettled, type ThreadRunRecord, type ThreadTurn } from './threads'
+import { showArtifact } from '../artifacts/open'
 import type { RunState } from './player'
+import type { ModelSelection } from './model-choice'
+
+/** "Watching workflow.mov · reading screens 62%" */
+function watchingLabel(watching: { fileName: string; percent: number; step: string }): string {
+  if (watching.step === 'uploading') return `sending ${watching.fileName}`
+  const step = watching.step === 'transcribing'
+    ? 'listening to'
+    : watching.step === 'reading_screens' ? 'reading screens in' : 'watching'
+  return `${step} ${watching.fileName} · ${Math.round(watching.percent)}%`
+}
 
 function stepBeat(row: LedgerRow): Beat {
   return {
     t: 'step',
+    ...(row.id ? { id: row.id } : {}),
     tool: toolMarkFor(row),
     title: row.count > 1 ? `${row.label} ×${row.count}` : row.label,
     ...(row.outcome ? { chip: row.outcome } : {}),
@@ -34,92 +51,94 @@ function stepBeat(row: LedgerRow): Beat {
     // the row happens to sit in the list is what lets a step keep shimmering
     // while the model narrates over the top of it.
     ...(row.status === 'running' ? { running: true } : {}),
-    // The stream decides when a step ends, so its duration is never guessed.
-    ms: 0,
-    lines: (row.children ?? []).map(child => ({
-      text: child.label,
-      ...(child.outcome ? { detail: child.outcome } : {}),
-    })) as Beat extends { t: 'step'; lines: infer L } ? L : never,
     done: row.outcome ?? (row.status === 'failed' ? 'Failed' : 'Done'),
   }
 }
 
 /**
- * The answer, as one beat.
+ * The work log — everything the run did on the way, and nothing it landed on.
  *
- * It used to be split on blank lines so the screen could reveal a paragraph at
- * a time. That was fine while the answer was prose and wrong the moment it was
- * markdown: a blank line is how markdown separates a heading from its list and
- * a sentence from its table, so splitting there handed the renderer a pile of
- * fragments and asked each to make sense alone. The document is the unit.
+ * The ledger's `say` rows are the model's prose in sentence-sized pieces, and
+ * some of them are the reply: the run says "Three invoices are overdue" and
+ * that same sentence arrives again, complete, on the answer stream. Printing
+ * both is how "hi" came back as "Hi! How can I help you today?" twice, one line
+ * apart.
  *
- * Nothing is lost from the live feel — while the run is going, the prose is
- * arriving as `say` rows in the ledger, which still land one at a time.
+ * Which is which is not this module's judgement to make, and it used to make it
+ * anyway — dropping trailing `say` rows whenever the answer stream happened to
+ * be non-empty. That is a fact about the wire, and the backend clears the answer
+ * stream on every tool call, so the flag flipped several times a turn and the
+ * same sentence moved between the log and the answer and back. The run knows
+ * which sentences it went on working after; it now says so, and this reads it.
  */
-function sayBeats(text: string): Beat[] {
-  const answer = text.trim()
-  return answer ? [{ t: 'say', text: answer }] : []
-}
-
-/**
- * The work log, minus the answer being written into it.
- *
- * The ledger's `say` rows are the model's prose arriving live — and the last
- * run of them *is* the answer, streaming in a sentence at a time. The final
- * event then carries that same answer, complete. Printing both is how "hi" came
- * back as "Hi! How can I help you today?" twice, one line apart.
- *
- * Only the trailing ones are dropped. A `say` before a tool call is narration
- * the answer does not repeat — "let me check the invoices first" — and losing it
- * would make the run look like it worked in silence. What survives is marked as
- * narration, which is how the thread knows to file it with the work rather than
- * beside the answer. On Lark the question never arises: the log is a card and
- * the answer is a separate message, so the two never sit in one column.
- */
-function ledgerBeats(ledger: readonly LedgerRow[], answered: boolean): Beat[] {
-  const rows = [...ledger]
-  if (answered) {
-    while (rows.length > 0 && rows[rows.length - 1]!.kind === 'say') rows.pop()
-  }
-  return rows.map((row, index) => {
-    if (row.kind === 'say') return { t: 'say', text: row.label, narration: true }
-    /* Unlike a tool call, a thought has no end event — the model stops thinking
-       by doing something else. So it counts as still going while it is the
-       newest thing in the ledger, which is what earns it the scrolling window
-       rather than the folded line. The caller still has to agree the run itself
-       is open; the last row of a finished run is not thinking. */
-    if (row.kind === 'thought') {
-      return { t: 'think', text: row.label, running: index === rows.length - 1 }
+function ledgerBeats(ledger: readonly LedgerRow[]): Beat[] {
+  return ledger.flatMap((row, index): Beat[] => {
+    const id = row.id ?? `row:${index}`
+    // Prose the run landed on is the reply, and the reply is drawn under this
+    // log rather than inside it.
+    if (row.kind === 'say') {
+      return row.aside ? [{ t: 'say', id, text: row.label, narration: true }] : []
     }
-    return stepBeat(row)
+    /* A thought has no end event — the model stops thinking by doing something
+       else — so the run marks the row settled at the moment it does. This used
+       to be guessed from the row being last in the list, which made a thought
+       flicker between its live window and its folded line every time the list
+       was reshaped for an unrelated reason. The caller still has to agree the
+       run itself is open: a record kept mid-thought is not still thinking. */
+    if (row.kind === 'thought') {
+      return [{ t: 'think', id, text: row.label, running: row.status === 'running' }]
+    }
+    // The one row whose content is underneath it rather than in its label.
+    if (isAgentRow(row)) return [{ t: 'agents', id, run: agentRunOf(row) }]
+    return [stepBeat(row)]
   })
 }
 
 /**
- * The run so far, as beats.
+ * The work log so far.
  *
  * The backend sends a snapshot of the whole timeline each tick, not a delta, so
- * each snapshot simply replaces the beats — no reconciliation, no keys to get
- * wrong, and a dropped frame costs a redraw rather than a corrupted log.
+ * each snapshot simply replaces the log. Rows carry their own identity, so a
+ * dropped frame costs a redraw rather than a corrupted log, and a row that did
+ * not change is not redrawn at all.
+ *
+ * Deliberately knows nothing about the answer. The two used to be concatenated
+ * into one array here and pulled apart again by the renderer, which meant the
+ * whole log was rebuilt on every token of the reply — see `traceFrom`'s memo in
+ * `useThread`, which is the point of keeping them separate.
  */
-export function beatsFrom(
-  timeline: Timeline | null,
-  final: { text: string } | null,
-  liveAnswer = '',
-): Beat[] {
-  const answer = final?.text?.trim() ?? liveAnswer
-  const beats = ledgerBeats(timeline?.ledger ?? [], answer.length > 0)
-
-  beats.push(...sayBeats(answer))
-  return beats
+export function traceFrom(timeline: Timeline | null): TraceStep[] {
+  return traceSteps(ledgerBeats(timeline?.ledger ?? []))
 }
 
-/** The same beats, rebuilt from what a finished run wrote down. */
-function beatsFromRecord(text: string, run: ThreadRunRecord | undefined): Beat[] {
-  const answer = text.trim()
-  const beats = ledgerBeats(run?.ledger ?? [], answer.length > 0)
-  beats.push(...sayBeats(answer))
-  return beats
+/**
+ * A stored ledger, read back the best way it can be.
+ *
+ * Runs recorded before the reducer marked asides cannot say which sentences
+ * were ones — so for those, and only those, the old reading applies: everything
+ * but the last unbroken run of talking was said on the way. It was a poor rule
+ * live, because the thing it keyed off changed several times a turn; on a
+ * finished run nothing moves, and it recovers narration that would otherwise
+ * disappear from every conversation older than this change.
+ *
+ * Scoped to the record seam on purpose. The live path has the run's own answer
+ * and must never fall back to guessing at it. This deletes itself once no
+ * stored run predates the mark.
+ */
+function asRecorded(rows: readonly LedgerRow[]): LedgerRow[] {
+  if (rows.some(row => row.aside)) return [...rows]
+  const lastSpoken = rows.reduce(
+    (found, row, index) => (row.kind === 'tool' ? index : found),
+    -1,
+  )
+  return rows.map((row, index) => (
+    row.kind === 'say' && index < lastSpoken ? { ...row, aside: true as const } : row
+  ))
+}
+
+/** The same log, rebuilt from what a finished run wrote down. */
+function traceFromRecord(run: ThreadRunRecord | undefined): TraceStep[] {
+  return traceSteps(ledgerBeats(asRecorded(run?.ledger ?? [])))
 }
 
 /**
@@ -132,10 +151,23 @@ function beatsFromRecord(text: string, run: ThreadRunRecord | undefined): Beat[]
 export type Exchange = {
   id: string
   prompt: string
-  beats: Beat[]
+  /**
+   * What the run did on the way. Changes about once a second.
+   *
+   * Held apart from the answer rather than interleaved with it, because they
+   * move at rates two orders of magnitude apart and are never drawn mixed
+   * together. One array meant the slower value inherited the faster one's
+   * identity, so every token of the reply rebuilt every row of the log — and
+   * with it every vendor mark, roughly thirty times a second.
+   */
+  trace: TraceStep[]
+  /** What the run landed on. Changes with every token while it streams. */
+  answer: string
   state: RunState
   /** Set when the run ended without an answer. */
   error?: string
+  /** Files that went with the ask. Drawn under it, the way the composer showed them. */
+  attachments?: SentFile[]
 }
 
 /**
@@ -152,11 +184,8 @@ export function runExchangeId(startedAtMs: number): string {
   return `run:${startedAtMs}`
 }
 
-function settledState(beats: Beat[], elapsed: number): RunState {
+function settledState(elapsed: number): RunState {
   return {
-    played: beats.map((_, index) => index),
-    gate: null,
-    declined: null,
     finished: true,
     startedAt: null,
     elapsed,
@@ -178,27 +207,31 @@ export function exchangesFrom(turns: readonly ThreadTurn[]): Exchange[] {
       exchanges.push({
         id: turn.id,
         prompt: turn.text,
-        beats: [],
-        state: settledState([], 0),
+        trace: [],
+        answer: '',
+        state: settledState(0),
+        ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
       })
       continue
     }
-    const beats = beatsFromRecord(turn.text, turn.run)
+    const trace = traceFromRecord(turn.run)
     const elapsed = (turn.run?.elapsedMs ?? 0) / 1000
     const open = exchanges[exchanges.length - 1]
-    if (open && open.beats.length === 0 && !open.error) {
+    if (open && open.trace.length === 0 && !open.answer && !open.error) {
       exchanges[exchanges.length - 1] = {
         ...open,
-        beats,
-        state: settledState(beats, elapsed),
+        trace,
+        answer: turn.text,
+        state: settledState(elapsed),
         ...(turn.run?.failure ? { error: turn.run.failure.message } : {}),
       }
     } else {
       exchanges.push({
         id: turn.id,
         prompt: '',
-        beats,
-        state: settledState(beats, elapsed),
+        trace,
+        answer: turn.text,
+        state: settledState(elapsed),
         ...(turn.run?.failure ? { error: turn.run.failure.message } : {}),
       })
     }
@@ -217,8 +250,20 @@ export type ThreadRun = {
    * something that is not there.
    */
   title: string | null
-  /** True until the thread's history has been read back. */
+  /** True until the thread's newest page has been read back. */
   loading: boolean
+  /**
+   * There is older conversation above the first exchange on screen.
+   *
+   * A thread arrives one page at a time — it used to arrive whole, every
+   * message it had ever held, each answer carrying its full work log. This is
+   * the server's own answer to "is there more?", not a guess from a full page.
+   */
+  hasEarlier: boolean
+  /** True while an earlier page is being fetched. */
+  loadingEarlier: boolean
+  /** Fetch the page above the oldest exchange on screen. */
+  loadEarlier: () => Promise<void>
   /**
    * What the run says it is doing right now.
    *
@@ -230,6 +275,19 @@ export type ThreadRun = {
   liveLabel: string | null
   /** True while a run is open — the composer turns its send control into stop. */
   running: boolean
+  /**
+   * The checklist the model committed to, while a run is open.
+   *
+   * Null the rest of the time, and that is the tool's own design rather than a
+   * limitation here: a `divo_todos` list grants nothing, stores nothing, and
+   * dies with the run — `ThreadRunRecord` carries a ledger and no plan. It
+   * describes work happening now, so it exists only while work is happening.
+   *
+   * Kept off `Exchange` for the same reason. An exchange is a thing the
+   * conversation keeps; this is not one, and hanging it there would put a field
+   * on every settled exchange that could only ever be null.
+   */
+  plan: Plan | null
   /** Ask the run to stop. The reply still arrives on the open stream. */
   stopRun: () => void
   /**
@@ -240,7 +298,7 @@ export type ThreadRun = {
    * newest exchange to the top of the window on send, and a pin armed by a
    * declined send fires later, against whatever exchange appears next.
    */
-  send: (text: string, files?: readonly File[]) => boolean
+  send: (text: string, files: readonly File[] | undefined, modelSelection: ModelSelection) => boolean
   error: string | null
 }
 
@@ -248,12 +306,39 @@ export function useThreadRun(input: {
   threadId: string
   token: string | null
 }): ThreadRun {
-  const [settled, setSettled] = useState<Exchange[]>([])
+  /*
+   * The conversation as the server sent it, and the exchanges this session
+   * added on top.
+   *
+   * Turns rather than exchanges, because a page boundary does not respect the
+   * pairing: an earlier page can end on a question whose answer is on the newer
+   * one. Pairing each page as it arrives would draw those two as separate
+   * exchanges — a question with no answer, above an answer with no question —
+   * so pairing happens once, over everything held.
+   */
+  const [turns, setTurns] = useState<ThreadTurn[]>([])
+  const [appended, setAppended] = useState<Exchange[]>([])
+  const [hasEarlier, setHasEarlier] = useState(false)
+  const [loadingEarlier, setLoadingEarlier] = useState(false)
   const [title, setTitle] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [prompt, setPrompt] = useState<string | null>(null)
+  /* Described rather than held. The chips outlive the run and the `File`
+     objects do not need to: keeping the handles alive would pin every uploaded
+     buffer in memory for as long as the thread is open, to draw a name and a
+     size that were copied out of them on the way past. */
+  const [sent, setSent] = useState<SentFile[]>([])
   const [timeline, setTimeline] = useState<Timeline | null>(null)
   const [liveAnswer, setLiveAnswer] = useState('')
+  /* What Divo is taking in before the run proper starts. Null once it is done —
+     a finished reading is not something the thread should keep reporting. */
+  const [watching, setWatching] = useState<
+    { fileName: string; percent: number; step: string } | null
+  >(null)
+  /* Whether the ask is still waiting on an upload, so Stop knows whether the
+     server has anything to cancel yet. A ref because Stop reads it from a
+     callback that must not be rebuilt on every progress tick. */
+  const uploading = useRef(false)
   const [final, setFinal] = useState<{ text: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
@@ -264,6 +349,11 @@ export function useThreadRun(input: {
      another one's name. */
   const currentThread = useRef(input.threadId)
   currentThread.current = input.threadId
+  /* Read inside `consume`, which is deliberately built once — a token in its
+     dependency list would rebuild the consumer, and a rebuilt consumer mid-run
+     is a second reader of one stream. */
+  const currentToken = useRef(input.token)
+  currentToken.current = input.token
 
   /**
    * Consume a run's events, however it was reached.
@@ -280,10 +370,21 @@ export function useThreadRun(input: {
     try {
       for await (const event of events) {
         if (controller.signal.aborted) return answered
+        if (event.type === 'watching') {
+          setWatching(event.step === 'ready'
+            ? null
+            : { fileName: event.fileName, percent: event.percent, step: event.step })
+        }
         if (event.type === 'timeline') setTimeline(event.timeline)
         if (event.type === 'answer') setLiveAnswer(event.text)
         if (event.type === 'answer_delta') setLiveAnswer(current => current + event.delta)
         if (event.type === 'answer_reset') setLiveAnswer('')
+        // Opened on the announcement, filled a fetch later. Waiting for the body
+        // first would leave a gap between the sentence naming the document and
+        // the document appearing, which reads as the panel having missed it.
+        if (event.type === 'artifact') {
+          void showArtifact(event, currentThread.current, currentToken.current)
+        }
         if (event.type === 'error') { setError(event.message); answered = true }
         if (event.type === 'final') {
           answered = true
@@ -313,39 +414,54 @@ export function useThreadRun(input: {
     const controller = new AbortController()
     abort.current?.abort()
     abort.current = controller
-    setSettled([])
+    setTurns([])
+    setAppended([])
+    setHasEarlier(false)
     setTitle(null)
     setPrompt(null)
     setTimeline(null)
+    setWatching(null)
     setLiveAnswer('')
     setFinal(null)
     setError(null)
     setRunning(false)
     setLoading(true)
 
-    const load = async (): Promise<{ prompt: string; startedAt: number } | null> => {
-      const found = await getThread(threadId, input.token!)
+    const load = async (): Promise<
+      { prompt: string; attachments: SentFile[]; startedAt: number } | null
+    > => {
+      const found = await getThread(threadId, input.token!, controller.signal)
       if (controller.signal.aborted || currentThread.current !== threadId) return null
-      const history = exchangesFrom(found?.thread.turns ?? [])
+      const page = found?.thread.turns ?? []
       const live = found?.running
 
-      // A live run's own ask is already the last user turn in history — the
-      // runtime wrote it down when the run started. Lifting it out of the
-      // settled list stops the same question appearing twice, once above its
-      // answer and once beside it.
-      const last = history[history.length - 1]
-      if (live && last && last.beats.length === 0) history.pop()
+      // A live run's own ask is already the last turn the server holds — the
+      // runtime wrote it down when the run started. Lifting it out stops the
+      // same question appearing twice, once above its answer and once beside it.
+      const lastTurn = page[page.length - 1]
+      const trailingAsk = live !== undefined && lastTurn?.role === 'user'
 
-      setSettled(history)
+      setTurns(trailingAsk ? page.slice(0, -1) : page)
+      setHasEarlier(found?.thread.hasEarlier ?? false)
       setTitle(found?.thread.title?.trim() || null)
       setLoading(false)
-      return live ? { prompt: live.prompt || last?.prompt || '', startedAt: live.startedAt } : null
+      /* The ask is redrawn whole, files included. Read from the run rather than
+         from the turn it wrote: on a reload mid-run that turn is the one being
+         lifted out just above, so its chips would go with it. */
+      return live
+        ? {
+          prompt: live.prompt || (trailingAsk ? lastTurn!.text : ''),
+          attachments: live.attachments ?? lastTurn?.attachments ?? [],
+          startedAt: live.startedAt,
+        }
+        : null
     }
 
     void (async () => {
       const live = await load()
       if (!live) return
       setPrompt(live.prompt)
+      setSent(live.attachments)
       startedAt.current = live.startedAt
       setRunning(true)
       const answered = await consume(
@@ -377,18 +493,21 @@ export function useThreadRun(input: {
   useEffect(() => {
     if (running || prompt === null) return
     if (!final && !error) return
-    const beats = beatsFrom(timeline, final)
-    setSettled(previous => [...previous, {
+    setAppended(previous => [...previous, {
       id: runExchangeId(startedAt.current),
       prompt,
-      beats,
+      trace: traceFrom(timeline),
+      answer: final?.text?.trim() ?? '',
       /* Read once, here, from the same clock the header was ticking off. The
          duration is only news when the run is over. */
-      state: settledState(beats, (Date.now() - startedAt.current) / 1000),
+      state: settledState((Date.now() - startedAt.current) / 1000),
       ...(error ? { error } : {}),
+      ...(sent.length ? { attachments: sent } : {}),
     }])
     setPrompt(null)
+    setSent([])
     setTimeline(null)
+    setWatching(null)
     setLiveAnswer('')
     setFinal(null)
     setError(null)
@@ -403,72 +522,192 @@ export function useThreadRun(input: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running, final, error])
 
-  const send = useCallback((text: string, files?: readonly File[]): boolean => {
+  const send = useCallback((
+    text: string,
+    files: readonly File[] | undefined,
+    modelSelection: ModelSelection,
+  ): boolean => {
     if (!input.token || running) return false
     const controller = new AbortController()
     abort.current?.abort()
     abort.current = controller
     startedAt.current = Date.now()
     setPrompt(text)
+    setSent((files ?? []).map(sentFrom))
     setTimeline(null)
+    setWatching(null)
     setLiveAnswer('')
     setFinal(null)
     setError(null)
     setRunning(true)
 
-    void consume(ask({
-      threadId: input.threadId,
-      text,
-      ...(files?.length ? { files } : {}),
-      token: input.token,
-      signal: controller.signal,
-    }), controller)
+    /* Recordings go first, on their own endpoint, and only their ids travel
+       with the ask. Doing it here rather than inside `ask` keeps the upload
+       visible: it is the slowest part of sending and the composer has already
+       locked, so the thread has to say what is happening. */
+    const recordings = (files ?? []).filter(isVideo)
+    const ordinary = (files ?? []).filter(file => !isVideo(file))
+
+    uploading.current = recordings.length > 0
+    void (async () => {
+      const videoIds: string[] = []
+      for (const recording of recordings) {
+        setWatching({ fileName: recording.name, percent: 0, step: 'uploading' })
+        try {
+          videoIds.push(await uploadVideo({
+            threadId: input.threadId,
+            file: recording,
+            mimeType: videoMimeFor(recording),
+            token: input.token!,
+            signal: controller.signal,
+          }))
+        } catch (error) {
+          uploading.current = false
+          if (controller.signal.aborted) return
+          setWatching(null)
+          setRunning(false)
+          setError(error instanceof Error ? error.message : 'That recording could not be sent.')
+          return
+        }
+      }
+      uploading.current = false
+      if (controller.signal.aborted) return
+      await consume(ask({
+        threadId: input.threadId,
+        text,
+        modelSelection,
+        ...(ordinary.length ? { files: ordinary } : {}),
+        ...(videoIds.length ? { videoIds } : {}),
+        token: input.token!,
+        signal: controller.signal,
+      }), controller)
+    })()
     return true
   }, [input.threadId, input.token, running, consume])
 
   const stopRun = useCallback(() => {
     if (!input.token || !running) return
+    /* Only the upload is cancelled locally.
+       While a recording is still going up there is no run on the server yet, so
+       `stop` has nothing to cancel — without this the upload finished and then
+       started the very turn the member had just withdrawn. Aborting
+       unconditionally is worse than not aborting at all: for an ordinary run it
+       closes this view's own stream, so the runtime's "Stopped" reply never
+       arrives, nothing clears `running`, and the composer is wedged until the
+       thread changes. */
+    if (uploading.current) {
+      uploading.current = false
+      abort.current?.abort()
+      setWatching(null)
+      setRunning(false)
+      /* Said out loud, not left blank. Without an error the append effect skips
+         this exchange entirely, so the message sits in the thread looking as
+         though Divo answered with nothing — and vanishes on reload. The server
+         path says "Stopped…" for the same reason; this is its equivalent for a
+         stop that happened before the server had anything to stop. */
+      setError('Stopped before the recording finished sending.')
+    }
     void stop(input.threadId, input.token)
   }, [input.threadId, input.token, running])
 
-  /* Rebuilt only when the wire says something new.
-     Every value below it is derived, and a derived value with a fresh identity
-     is a re-render of everything downstream — so a render caused by anything
-     else at all (a scroll flag, a title arriving) used to rebuild every beat in
-     the run and hand each exchange a new object to redraw from. */
-  const liveBeats = useMemo(
-    () => (prompt === null ? [] : beatsFrom(timeline, final, liveAnswer)),
-    [prompt, timeline, final, liveAnswer],
+  /* The work log, on the wire's own clock.
+     Rebuilt only when the timeline says something new — about once a second —
+     and pointedly not when the answer grows. It used to be memoised on the
+     answer too, because the two shared an array: the reply arrives in deltas
+     every few milliseconds, so every row of the log, every vendor mark and
+     every agent list was rebuilt roughly thirty times a second to draw exactly
+     what was already on screen. That is the flicker. */
+  const liveTrace = useMemo(
+    () => (prompt === null ? [] : traceFrom(timeline)),
+    [prompt, timeline],
   )
 
-  /* The timeline is a snapshot of work already reported, so every received
-     beat is visible. Web writes no longer create a client-side approval gate;
-     configured company governance remains a backend concern. */
+  /* The answer, on the model's clock. A new string thirty times a second is
+     what a stream is; it reaches one text node and nothing else. */
+  const liveAnswerText = useMemo(
+    () => (prompt === null ? '' : final?.text?.trim() ?? liveAnswer),
+    [prompt, final, liveAnswer],
+  )
+
+  /* No longer keyed on the beats. It used to enumerate them — one index per
+     beat, to say which had been played — so every answer delta handed the
+     thread a fresh state object and redrew the whole exchange to report that a
+     list it already had was still fully visible. */
   const liveState = useMemo<RunState>(() => ({
-    played: liveBeats.map((_, index) => index),
-    gate: null,
-    declined: null,
     finished: !running,
     startedAt: startedAt.current,
     elapsed: 0,
-  }), [liveBeats, running])
+  }), [running])
+
+  /* Read straight off the timeline rather than folded into the beats, because
+     it is not one: a beat is a thing that happened at a point in the run, and
+     the plan is the run's declared shape — replaced whole each time the model
+     restates it, drawn in one place beside the thread rather than in sequence
+     with everything else.
+
+     Memoised on the timeline alone. The answer stream arrives in deltas every
+     few milliseconds, and a plan rebuilt on each of them would hand the panel a
+     new list of steps thirty times a second to draw the same five rows. */
+  const plan = useMemo(() => planOf(timeline, running), [timeline, running])
+
+  /* One pairing over everything held, then whatever this session finished on
+     top. The server's turns and the exchanges completed here are kept apart
+     precisely so this can be re-derived when an earlier page is prepended. */
+  const settled = useMemo(
+    () => [...exchangesFrom(turns), ...appended],
+    [turns, appended],
+  )
+
+  /**
+   * Fetch the page above the oldest turn on screen.
+   *
+   * Keyed off the oldest *turn's* sequence rather than a page number, so turns
+   * arriving or being deleted underneath a reader cannot make a page repeat or
+   * skip. Guarded against overlapping reads: pressing the control twice used to
+   * be the ordinary way to get a page prepended to itself.
+   */
+  const loadEarlier = useCallback(async () => {
+    const oldest = turns[0]?.sequence
+    if (!input.token || oldest === undefined || loadingEarlier || !hasEarlier) return
+    setLoadingEarlier(true)
+    try {
+      const found = await getThread(input.threadId, input.token, undefined, oldest)
+      if (currentThread.current !== input.threadId) return
+      setTurns(previous => [...(found?.thread.turns ?? []), ...previous])
+      setHasEarlier(found?.thread.hasEarlier ?? false)
+    } finally {
+      setLoadingEarlier(false)
+    }
+  }, [input.threadId, input.token, turns, loadingEarlier, hasEarlier])
 
   const exchanges = useMemo(() => (prompt === null
     ? settled
     : [...settled, {
       id: runExchangeId(startedAt.current),
       prompt,
-      beats: liveBeats,
+      trace: liveTrace,
+      answer: liveAnswerText,
       state: liveState,
       ...(error ? { error } : {}),
-    }]), [prompt, settled, liveBeats, liveState, error])
+      ...(sent.length ? { attachments: sent } : {}),
+    }]), [prompt, settled, liveTrace, liveAnswerText, liveState, error, sent])
 
   return {
     exchanges,
     title,
     loading,
-    liveLabel: running ? timeline?.liveLabel ?? null : null,
+    /** There is older conversation above the first exchange on screen. */
+    hasEarlier,
+    loadingEarlier,
+    loadEarlier,
+    /* The reading takes over the live label while it runs: there is no timeline
+       yet, and "Divo is watching workflow.mov (40%)" is the only true thing the
+       thread can say during a wait that lasts minutes. */
+    liveLabel: running
+      ? (watching ? watchingLabel(watching) : timeline?.liveLabel ?? null)
+      : null,
     running,
+    plan,
     stopRun,
     send,
     error,

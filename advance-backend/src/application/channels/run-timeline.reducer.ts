@@ -63,7 +63,6 @@ export interface RunTimelineReducerInput {
 
 export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTimelineReducer {
   const ledger = new Map<string, ChannelLedgerRow>();
-  let phase = 'Thinking';
   let state: ChannelRunState = 'thinking';
   let liveLabel = 'Thinking…';
   let actionCount = 0;
@@ -71,6 +70,46 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
   /** Bumped per tool call so each stretch of talking gets its own ledger keys. */
   let sayTurn = 0;
   let protectedDataUsed = false;
+
+  const put = (id: string, row: Omit<ChannelLedgerRow, 'id'>): void => {
+    ledger.set(id, { ...row, id });
+  };
+
+  /**
+   * The model stopped thinking, because it did something else.
+   *
+   * A thought has no end event of its own — it ends by being followed. That is
+   * observable exactly here, where the following event arrives, and nowhere
+   * else: a renderer handed the finished list can only guess from position, and
+   * position is not the same fact. It used to guess, and got it wrong whenever
+   * the list was reshaped for an unrelated reason.
+   */
+  const settleThoughts = (): void => {
+    for (const [id, row] of ledger) {
+      if (row.kind === 'thought' && row.status === 'running') {
+        ledger.set(id, { ...row, status: 'done' });
+      }
+    }
+  };
+
+  /**
+   * The model carried on working, so everything it had said becomes an aside.
+   *
+   * Returns whether anything was actually reclassified. It matters to the
+   * caller: a sentence that has just changed meaning is a state change a reader
+   * is looking straight at, and holding it for the next throttled frame leaves
+   * the surface showing the old reading for up to a second.
+   */
+  const closeSayTurn = (): boolean => {
+    let closed = false;
+    for (const [id, row] of ledger) {
+      if (row.kind === 'say' && !row.aside) {
+        ledger.set(id, { ...row, aside: true });
+        closed = true;
+      }
+    }
+    return closed;
+  };
 
   /**
    * A tool that reported work underneath itself: subagents become children of
@@ -93,9 +132,9 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
           ...current,
           children: detail.children.map(child => ({
             label: child.label,
-            count: 1,
             status: child.status,
             ...(child.detail ? { outcome: child.detail } : {}),
+            ...(child.elapsed ? { elapsed: child.elapsed } : {}),
           })),
         });
       }
@@ -119,6 +158,17 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
     // sentence-sized `say` projection below remains the readable work-log and
     // Lark-card representation of the same model output.
     if (event.type === 'answer_delta' || event.type === 'answer_reset') return 'throttled';
+    /*
+     * A finished document is not a line of the work log.
+     *
+     * Returned before anything below can touch the timeline, because the
+     * fall-through at the end of this chain treats an unrecognised frame as the
+     * run beginning to write — which would flip the card to "Preparing your
+     * response…" in the middle of the work every time a document was saved.
+     * The badge tool's own `tool_end` still draws its row; this frame carries
+     * only the address of the result, for a surface that can show one.
+     */
+    if (event.type === 'artifact') return 'throttled';
     const beginsProtectedRead = event.type === 'tool_start'
       && !!event.toolId
       && isProtectedShopifyToolId(event.toolId);
@@ -132,70 +182,73 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
       // Tool arguments, progress details, model narration, and declared plans
       // may all contain customer/order data. Keep only a generic live state
       // once a protected read starts; the final reply is transient.
-      phase = 'Working';
       state = 'working';
       liveLabel = 'Working…';
       return 'immediate';
     }
 
     if (event.type === 'starting') {
-      phase = 'Starting';
       state = 'queued';
       // The container says which stage it is in and names it. Discarding that
       // and printing "Thinking…" was the worst moment in the run to be vague:
       // a cold container can take tens of seconds to come up, and a reader
       // watching an unchanging label has no way to tell booting from hung.
       liveLabel = event.label.trim() || 'Starting…';
-    } else if (event.type === 'working') {
-      phase = 'Thinking';
-      state = 'thinking';
-      liveLabel = 'Thinking…';
-    } else if (event.type === 'ready' || event.type === 'thinking') {
-      phase = 'Thinking';
+    // The wire distinguishes three ways of saying the model is between jobs.
+    // Nothing downstream ever has: they arrived here as three branches with one
+    // body, and they leave as one.
+    } else if (event.type === 'working' || event.type === 'ready' || event.type === 'thinking') {
       state = 'thinking';
       liveLabel = 'Thinking…';
     } else if (event.type === 'say') {
-      phase = 'Writing';
       state = 'writing';
       liveLabel = 'Preparing your response…';
+      // Talking is doing something other than thinking, so it ends the thought
+      // that led to it.
+      settleThoughts();
       // Keyed by turn as well as block, because a block index restarts at zero
       // in each new assistant message — without the turn, the second thing the
       // model says would overwrite the first instead of following it.
-      ledger.set(`say:${sayTurn}:${event.index}`, {
+      put(`say:${sayTurn}:${event.index}`, {
         kind: 'say',
         label: event.text,
         count: 1,
         status: 'done',
       });
     } else if (event.type === 'thought') {
-      phase = 'Thinking';
       state = 'thinking';
       liveLabel = 'Thinking…';
+      // A new block of reasoning ends the one before it: they are separate rows,
+      // and only the newest is still being written.
+      settleThoughts();
       // Keyed the same way a `say` is, and in the same turn space, so a run that
       // thinks and then talks keeps them in the order it produced them. The two
       // must not share a key prefix: a thought and a sentence can carry the same
       // block index within one message, and one would silently replace the
       // other.
-      ledger.set(`thought:${sayTurn}:${event.index}`, {
+      put(`thought:${sayTurn}:${event.index}`, {
         kind: 'thought',
         label: event.text,
         count: 1,
-        status: 'done',
+        status: 'running',
       });
     } else if (event.type === 'tool_start') {
       const tool = toolRowLabels(event.toolName, event.toolId);
-      phase = 'Working';
       state = 'working';
       liveLabel = tool.liveLabel;
       actionCount += 1;
+      settleThoughts();
       // A tool call closes whatever the model was saying; what it says next
-      // belongs after this row, not merged into the sentence before it.
+      // belongs after this row, not merged into the sentence before it. It also
+      // settles what those sentences *were*: the model went on working, so they
+      // were asides and not the reply.
       sayTurn += 1;
+      const reclassified = closeSayTurn();
       // The outcome starts as what the call is *about* — the command, the file,
       // the capability — because "what it produced" is not known yet and a bare
       // "In progress" beside a ● is the restatement the card is built to avoid.
       const about = callSubject(event.toolName, event.toolId, event.detail);
-      ledger.set(event.callId, {
+      put(event.callId, {
         kind: 'tool',
         label: tool.label,
         count: 1,
@@ -207,9 +260,13 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
         toolName: event.toolName,
         ...(event.toolId ? { toolId: event.toolId } : {}),
       });
+      // A sentence that has just stopped being the reply is the one thing on
+      // screen a reader is actively looking at. Waiting for the next throttled
+      // frame would leave it drawn as the reply for up to a second after it
+      // stopped being one.
+      if (reclassified) return 'immediate';
     } else if (event.type === 'tool_progress') {
       applyProgressDetail(event.callId, event);
-      phase = 'Working';
       state = 'working';
     } else if (event.type === 'tool_end') {
       applyProgressDetail(event.callId, event);
@@ -220,11 +277,9 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
           status: event.isError ? 'failed' : 'done',
         });
       }
-      phase = 'Working';
       state = 'working';
       liveLabel = event.isError ? 'A step failed; checking what can continue…' : 'Continuing…';
     } else {
-      phase = 'Writing';
       state = 'writing';
       liveLabel = 'Preparing your response…';
     }
@@ -236,19 +291,20 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
   };
 
   const finishing = (): void => {
-    phase = 'Writing';
     state = 'writing';
     liveLabel = 'Preparing your response…';
+    // Nothing is still being reasoned about once the run is writing its reply,
+    // and a record kept with a thought left open would replay as one.
+    settleThoughts();
   };
 
   const timeline = (): ChannelTimeline => ({
-    phase,
     state,
     liveLabel,
     actionCount,
     startedAtMs: input.startedAtMs,
     ...(ledger.size > 0 ? { ledger: [...ledger.values()] } : {}),
-    ...(declared ? { declared, ...fractionOf(declared) } : {}),
+    ...(declared ? { declared } : {}),
   });
 
   return {
@@ -257,27 +313,6 @@ export function createRunTimelineReducer(input: RunTimelineReducerInput): RunTim
     finishing,
     timeline,
     get protectedDataUsed() { return protectedDataUsed; },
-  };
-}
-
-/**
- * The only honest denominator a run has.
- *
- * Derived from the declared checklist and nothing else: a fraction counted from
- * "tool calls so far" has no total, because the total is unknowable until the
- * run ends. Absent a checklist these stay unset, and a renderer that wants a
- * progress bar simply does not draw one.
- */
-function fractionOf(declared: ChannelDeclaredPlan): Pick<
-  ChannelTimeline,
-  'completedSteps' | 'totalSteps' | 'progressPct'
-> {
-  if (declared.total <= 0) return {};
-  const done = Math.min(declared.done, declared.total);
-  return {
-    completedSteps: done,
-    totalSteps: declared.total,
-    progressPct: Math.round((done / declared.total) * 100),
   };
 }
 

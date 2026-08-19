@@ -1,19 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { notifyForStatus } from "@/lib/notify";
+import { API_BASE_URL } from "@/lib/api-base";
 
-/*
- * `import.meta.env` is Vite's, and only Vite's.
- *
- * Read bare, this threw for anything that imported the module outside a Vite
- * build — which is every `node --test` run, and therefore every module in the
- * data layer that reaches `api` through an import chain. The whole permission
- * derivation behind the agent map was untestable because of this one property
- * access. Optional chaining costs nothing in the browser, where the object is
- * always there.
- */
-const API_BASE_URL =
-  (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE_URL
-  ?? "http://localhost:8000";
 
 type ApiResponse<T> = {
   success: boolean;
@@ -52,6 +40,12 @@ const extractErrorMessage = (raw: string, status: number): string => {
       meta?: { message?: string };
       error?: string | { message?: string };
     };
+    /* `message` first. Both halves are usually present — `{ error: 'expired',
+       message: 'This request expired. Ask for it again.' }` — and `error` is
+       the machine's word for what happened while `message` is the sentence
+       written for the person. Reading the code first meant every carefully
+       worded refusal in the product surfaced as `already_resolved`. */
+    if (typeof parsed.message === "string" && parsed.message) return parsed.message;
     if (typeof parsed.error === "string") return parsed.error;
     if (parsed.error && typeof parsed.error === "object" && typeof parsed.error.message === "string") {
       return parsed.error.message;

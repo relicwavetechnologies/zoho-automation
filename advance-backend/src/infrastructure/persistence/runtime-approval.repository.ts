@@ -24,6 +24,8 @@ export interface RuntimeApprovalRow {
   rejectedAt:          Date | null;
   expiresAt:           Date | null;
   executionResultJson: unknown;
+  /** What the person said, when the request asked more than yes/no. */
+  responseJson:        unknown;
   idempotencyKey:      string | null;
   decisionMessageId:   string | null;
   resolutionReason:    string | null;
@@ -486,6 +488,50 @@ export class RuntimeApprovalRepository {
       return ok((rows[0] ?? null) as unknown as RuntimeApprovalRow | null);
     } catch (e) {
       return err(wrapInfra('prisma', 'runtime-approval.atomicResolve', e));
+    }
+  }
+
+  /**
+   * Store what the person said, once the decision is already settled.
+   *
+   * Separate from `atomicResolve` because the verdict is the part that has to
+   * be atomic — it is what stops a card and a browser both closing the same
+   * request — and the transcript is not. Writing them together would put a
+   * whole answer inside the lock that exists to serialize one status change.
+   */
+  async persistAnswer(id: string, responseJson: unknown): Promise<Result<void, Error>> {
+    try {
+      await this.prisma.runtimeApproval.update({
+        where: { id },
+        data:  { responseJson: responseJson as any },
+      });
+      return ok(undefined);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.persistAnswer', e));
+    }
+  }
+
+  /**
+   * Store a part-finished answer, and only while the request is still open.
+   *
+   * The guard is the whole difference from `persistAnswer` above, which runs
+   * after the verdict is already durable and must therefore write to a resolved
+   * row. This one runs before any verdict exists, and two surfaces can be
+   * holding the same request: a card press that loaded a moment before a
+   * browser settled it would otherwise land its half-answer on top of a
+   * finished decision, leaving a transcript that contradicts the verdict beside
+   * it. Answers false when the row has moved on, which the caller reports as
+   * "answered somewhere else".
+   */
+  async persistPartialAnswer(id: string, responseJson: unknown): Promise<Result<boolean, Error>> {
+    try {
+      const changed = await this.prisma.runtimeApproval.updateMany({
+        where: { id, status: { in: ['dispatching', 'pending'] } },
+        data:  { responseJson: responseJson as any },
+      });
+      return ok(changed.count === 1);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.persistPartialAnswer', e));
     }
   }
 

@@ -1,4 +1,9 @@
 import { readFile } from "node:fs/promises";
+import {
+	captureMemberCredentials,
+	clearCapturedMemberCredentials,
+	resolveMemberCredentials,
+} from "../../runtime-member-credentials.mjs";
 import { createHash } from "node:crypto";
 import { basename, extname } from "node:path";
 
@@ -93,11 +98,6 @@ type CachedGatewayResponse = {
 
 const skillResponseCache = new Map<string, CachedGatewayResponse>();
 let activeBootstrapRunKey: string | undefined;
-const CAPTURED_GATEWAY_CONFIG = Symbol.for("divo.gateway.config");
-
-function capturedConfig(): DivoGatewayConfig | undefined {
-	return (globalThis as Record<symbol, unknown>)[CAPTURED_GATEWAY_CONFIG] as DivoGatewayConfig | undefined;
-}
 
 export function clearDivoGatewaySkillCache(): void {
 	skillResponseCache.clear();
@@ -114,55 +114,30 @@ function clearRunBootstrapCache(): void {
 }
 
 /**
- * Capture desktop-provided gateway credentials inside the Pi process before
- * local shell tools are allowed to inherit the environment. Divo extensions
- * share this module instance, while spawned Bash/Python processes do not.
+ * Capture the member's credentials inside the Pi process before local shell
+ * tools are allowed to inherit the environment.
+ *
+ * The credentials themselves live at the runtime root, because the gateway is
+ * no longer the only thing that calls the backend — see
+ * `runtime-member-credentials.mjs`. These three functions stay as the gateway's
+ * own names for them, so nothing that already reads a `DivoGatewayConfig`
+ * changes.
  */
 export function captureDivoGatewayConfig(
 	env?: NodeJS.ProcessEnv,
 ): DivoGatewayConfig | { error: string } {
-	if (!env && capturedConfig()) return capturedConfig()!;
-	const resolved = readDivoGatewayConfig(env ?? process.env);
-	if ("error" in resolved) return resolved;
-	(globalThis as Record<symbol, unknown>)[CAPTURED_GATEWAY_CONFIG] = resolved;
-	return resolved;
+	return captureMemberCredentials(env) as DivoGatewayConfig | { error: string };
 }
 
 /** Test/lifecycle helper. Never use this to rotate a live Divo session. */
 export function clearCapturedDivoGatewayConfig(): void {
-	delete (globalThis as Record<symbol, unknown>)[CAPTURED_GATEWAY_CONFIG];
+	clearCapturedMemberCredentials();
 }
 
 export function resolveDivoGatewayConfig(
 	env?: NodeJS.ProcessEnv,
 ): DivoGatewayConfig | { error: string } {
-	if (env) return readDivoGatewayConfig(env);
-	const captured = capturedConfig();
-	if (captured) return captured;
-	return readDivoGatewayConfig(process.env);
-}
-
-function readDivoGatewayConfig(
-	env: NodeJS.ProcessEnv,
-): DivoGatewayConfig | { error: string } {
-	const backendUrl = env.DIVO_BACKEND_URL?.trim().replace(/\/$/, "");
-	const memberToken = env.DIVO_MEMBER_TOKEN?.trim();
-	const defaultDepartmentId = env.DIVO_DEPARTMENT_ID?.trim() || undefined;
-
-	if (!backendUrl) {
-		return {
-			error:
-				"Divo gateway is not configured: DIVO_BACKEND_URL is missing. Sign in through Divo first.",
-		};
-	}
-	if (!memberToken) {
-		return {
-			error:
-				"Divo gateway is not configured: DIVO_MEMBER_TOKEN is missing. Sign in through Divo first.",
-		};
-	}
-
-	return { backendUrl, memberToken, defaultDepartmentId };
+	return resolveMemberCredentials(env) as DivoGatewayConfig | { error: string };
 }
 
 export function formatGatewayResponse(body: GatewayResponseBody): {

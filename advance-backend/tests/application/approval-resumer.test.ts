@@ -87,6 +87,7 @@ function makeExecutableResumer(
 
   const completions: unknown[] = [];
   const failures: unknown[] = [];
+  const webTurns: any[] = [];
   const finalTexts: string[] = [];
   const finalConversations: unknown[] = [];
   const statusSends: unknown[] = [];
@@ -139,12 +140,19 @@ function makeExecutableResumer(
         department: { id: 'dept-1', zohoReadScope: 'all' },
       }),
     } as any,
+    webTranscript: {
+      appendTurn: async (chatId: string, turn: any, scope: any, metadata: any) => {
+        webTurns.push({ chatId, text: turn.content, role: turn.role, scope, metadata });
+        return undefined;
+      },
+    },
     logger: noopLogger,
   });
 
   return {
     service,
     executed,
+    webTurns,
     completions,
     failures,
     finalTexts,
@@ -436,5 +444,83 @@ describe('what an approved action reports back', () => {
 
     const text = harness.dmDeliveries[0]?.text ?? harness.finalTexts[0] ?? '';
     assert.match(text, /documentUrl/);
+  });
+
+  it('writes a web-raised approval\'s outcome into the thread that asked', async () => {
+    /* Every non-Lark source used to resolve to no destination at all, so an
+       approval raised in a browser executed correctly and reported into the
+       void: the request vanished from the list and no answer ever arrived.
+       The thread id is on the execution context, which is the only place a web
+       run records it — the stored chat id is a namespacing key. */
+    const harness = makeExecutableResumer(approvedRow('approved', {
+      approvalOrigin: 'gateway',
+      sourceChannel: 'web',
+      requesterLarkOpenId: null,
+      tenantKey: null,
+      statusMessageId: null,
+      execution: { version: 1, threadId: 'web_abcd1234', runId: 'run-1', actionId: 'act-1' },
+    }), {
+      resolveByUserId: async () => ok({
+        userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER', channel: 'web',
+        larkOpenId: null, activeDepartmentId: 'dept-1',
+      }),
+    });
+
+    await harness.service.resume('approval-1', 'approved');
+
+    assert.equal(harness.webTurns.length, 1);
+    assert.equal(harness.webTurns[0].chatId, 'web_abcd1234');
+    assert.equal(harness.webTurns[0].role, 'assistant');
+    assert.match(harness.webTurns[0].text, /Approved action completed/);
+    // Keyed on the approval, so a card and a browser racing leave one message.
+    assert.equal(harness.webTurns[0].metadata.dedupeKey, 'approval:approval-1:outcome');
+    // And nothing was posted into Lark for a run that never lived there.
+    assert.deepEqual(harness.finalTexts, []);
+  });
+
+  it('tells a web thread when its approval was refused', async () => {
+    const harness = makeExecutableResumer(approvedRow('rejected', {
+      approvalOrigin: 'gateway',
+      sourceChannel: 'web',
+      requesterLarkOpenId: null,
+      tenantKey: null,
+      statusMessageId: null,
+      execution: { version: 1, threadId: 'web_abcd1234', runId: 'run-1', actionId: 'act-1' },
+    }), {
+      resolveByUserId: async () => ok({
+        userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER', channel: 'web',
+        larkOpenId: null, activeDepartmentId: 'dept-1',
+      }),
+    });
+
+    await harness.service.resume('approval-1', 'rejected');
+
+    assert.equal(harness.webTurns.length, 1);
+    assert.match(harness.webTurns[0].text, /not approved/);
+    assert.deepEqual(harness.executed, []);
+  });
+
+  it('stays silent for a web approval with no thread to answer into', async () => {
+    /* A gateway approval with no execution context has no conversation this
+       could land in. Silence is right; inventing a thread id would put an
+       answer in front of the wrong reader. */
+    const harness = makeExecutableResumer(approvedRow('approved', {
+      approvalOrigin: 'gateway',
+      sourceChannel: 'web',
+      requesterLarkOpenId: null,
+      tenantKey: null,
+      statusMessageId: null,
+      execution: null,
+    }), {
+      resolveByUserId: async () => ok({
+        userId: 'user-1', companyId: 'company-1', aiRole: 'MEMBER', channel: 'web',
+        larkOpenId: null, activeDepartmentId: 'dept-1',
+      }),
+    });
+
+    await harness.service.resume('approval-1', 'approved');
+
+    assert.deepEqual(harness.webTurns, []);
+    assert.deepEqual(harness.finalTexts, []);
   });
 });

@@ -1,17 +1,18 @@
 import {
   buildOmsProviderRequest,
   type OmsFetchedData,
+  type OmsProviderSiteDataToolArgs,
   type OmsProviderRequest,
-  type OmsSiteDataToolArgs,
   OmsSiteDataServiceError,
 } from '../../application/oms/oms-site-data.types';
 
 export const OMS_SITE_DATA_READ_URL = 'https://agents.outreachdeal.com/webhook/site_data_read_only';
+export const OMS_VENDOR_FETCH_URL = 'https://agents.outreachdeal.com/webhook/vendor_fetch';
 const PROVIDER_ROW_CAP = 100;
 
 /** Fixed-host client for the reviewed OMS Site Data webhook. */
 export class OmsSiteDataClient {
-  constructor(private readonly deps: { timeoutMs: number; fetchImpl?: typeof fetch; endpoint?: string }) {}
+  constructor(private readonly deps: { timeoutMs: number; fetchImpl?: typeof fetch; endpoint?: string; vendorEndpoint?: string }) {}
 
   async verifyKey(apiKey: string): Promise<void> {
     const response = await this.request(apiKey, { columns: ['website'] });
@@ -19,7 +20,7 @@ export class OmsSiteDataClient {
     await parseRows(response);
   }
 
-  async fetch(apiKey: string, args: OmsSiteDataToolArgs): Promise<OmsFetchedData> {
+  async fetch(apiKey: string, args: OmsProviderSiteDataToolArgs): Promise<OmsFetchedData> {
     const response = await this.request(apiKey, buildOmsProviderRequest(args));
     let rows = await parseRows(response);
     if (args.operation === 'list_catalog_values') {
@@ -33,6 +34,39 @@ export class OmsSiteDataClient {
         providerRowCap: PROVIDER_ROW_CAP,
         returnedRows: rows.length,
         ...(rows.length === PROVIDER_ROW_CAP ? { possiblyTruncated: true } : {}),
+      },
+      rows,
+    };
+  }
+
+  async fetchVendors(apiKey: string, websites: readonly string[]): Promise<OmsFetchedData> {
+    const results = await Promise.all(websites.map(async (website) => ({
+      website,
+      rows: await this.requestVendorRows(apiKey, website),
+    })));
+    let foundWebsites = 0;
+    let vendorRows = 0;
+    const rows: Array<Record<string, unknown>> = [];
+    for (const result of results) {
+      if (result.rows.length === 0) {
+        rows.push({ website: result.website, status: 'not_found' });
+        continue;
+      }
+      foundWebsites += 1;
+      vendorRows += result.rows.length;
+      for (const row of result.rows) {
+        rows.push(vendorResultRow(result.website, row));
+      }
+    }
+    return {
+      operation: 'lookup_vendors',
+      status: foundWebsites === 0 ? 'empty' : 'complete',
+      coverage: {
+        source: 'OMS Vendor Fetch API',
+        inputCount: websites.length,
+        foundWebsites,
+        notFoundWebsites: websites.length - foundWebsites,
+        vendorRows,
       },
       rows,
     };
@@ -63,6 +97,38 @@ export class OmsSiteDataClient {
         throw new OmsSiteDataServiceError('timeout', 'OMS Site Data request timed out; no retry was attempted.');
       }
       throw new OmsSiteDataServiceError('provider_failure', 'OMS Site Data request could not be completed.');
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async requestVendorRows(apiKey: string, website: string): Promise<Array<Record<string, unknown>>> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.deps.timeoutMs);
+    try {
+      const url = new URL(this.deps.vendorEndpoint ?? OMS_VENDOR_FETCH_URL);
+      url.searchParams.set('website', website);
+      const response = await (this.deps.fetchImpl ?? fetch)(url, {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'X-API-Key': apiKey,
+        },
+        signal: controller.signal,
+      });
+      if (response.status === 401 || response.status === 403) {
+        throw new OmsSiteDataServiceError('provider_auth_failed', 'OMS rejected the configured API key.');
+      }
+      if (!response.ok) {
+        throw new OmsSiteDataServiceError('provider_failure', `OMS Vendor Fetch request failed with HTTP ${response.status}.`);
+      }
+      return parseVendorRows(response);
+    } catch (error) {
+      if (error instanceof OmsSiteDataServiceError) throw error;
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new OmsSiteDataServiceError('timeout', 'OMS Vendor Fetch request timed out; no retry was attempted.');
+      }
+      throw new OmsSiteDataServiceError('provider_failure', 'OMS Vendor Fetch request could not be completed.');
     } finally {
       clearTimeout(timer);
     }
@@ -110,4 +176,39 @@ async function parseRows(response: Response): Promise<Array<Record<string, unkno
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+async function parseVendorRows(response: Response): Promise<Array<Record<string, unknown>>> {
+  const text = await response.text();
+  // Unlike the site-data read webhook, vendor_fetch uses an empty 200 body for
+  // a validated lookup with no vendor match.
+  if (!text.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new OmsSiteDataServiceError('provider_failure', 'OMS Vendor Fetch returned malformed JSON.');
+  }
+  if (isRecord(parsed) && parsed.success === false) {
+    const reason = typeof parsed.error === 'string' ? parsed.error : '';
+    if (/unauthor|forbidden/i.test(reason)) {
+      throw new OmsSiteDataServiceError('provider_auth_failed', 'OMS rejected the configured API key.');
+    }
+    throw new OmsSiteDataServiceError('provider_failure', `OMS rejected the vendor lookup${reason ? `: ${reason}` : '.'}`);
+  }
+  if (!Array.isArray(parsed) || !parsed.every(isRecord)) {
+    throw new OmsSiteDataServiceError('provider_failure', 'OMS Vendor Fetch returned a response outside its documented JSON-array contract.');
+  }
+  return parsed;
+}
+
+function vendorResultRow(inputWebsite: string, row: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    website: typeof row.website === 'string' && row.website ? row.website : inputWebsite,
+    status: 'found',
+  };
+  for (const key of ['name', 'email', 'pitchedFrom']) {
+    if (typeof row[key] === 'string' && row[key]) result[key] = row[key];
+  }
+  return result;
 }

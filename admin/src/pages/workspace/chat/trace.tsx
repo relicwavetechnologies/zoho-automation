@@ -14,12 +14,14 @@
  * reading one tool call meant opening two disclosures — that is the shape this
  * file exists to not have.
  */
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Waypoints } from 'lucide-react'
 import { ToolMark } from './tools'
+import { AgentRunView } from './agents.view'
 import { burstMarks, summarizeBurst } from './burst'
 import { DivoMark, DotsLoader, PixelGrid, Shimmer } from './loader'
-import { Markdown, Step } from './parts'
+import { Markdown } from './answer/answer.view'
+import { Step } from './step'
 import { coalesceSegments, type TraceSegment, type TraceStep } from './lifecycle'
 import { elapsedLabel } from './player'
 
@@ -120,8 +122,8 @@ function CommandGroup({
      exactly the row still doing the work. */
   const running = streaming && steps.some(({ beat }) => beat.running === true)
 
-  const rows = steps.map(({ beat, index }) => (
-    <Step key={index} beat={beat} live={streaming && beat.running === true} />
+  const rows = steps.map(({ beat, key }) => (
+    <Step key={key} beat={beat} live={streaming && beat.running === true} />
   ))
 
   if (steps.length === 0) return null
@@ -213,7 +215,21 @@ function Elapsed({ startedAt, seconds }: { startedAt: number | null; seconds: nu
   return <>{elapsedLabel(startedAt === null ? seconds : (now - startedAt) / 1000)}</>
 }
 
-export function PiTraceTimeline({
+/**
+ * The run's work log.
+ *
+ * Memoised, and it is the half of the fix that makes the other half worth
+ * anything. The log is now built on the timeline's clock rather than the
+ * answer's, so its `steps` array keeps its identity between tokens — but the
+ * exchange around it still re-renders on every one of them, because the answer
+ * genuinely changed. Without this, the parent's redraw walks straight through
+ * and rebuilds every burst, every vendor mark and every agent list anyway, at
+ * the answer's rate, to draw exactly what is already on screen.
+ *
+ * `elapsed` and `startedAt` are stable while a run is going; the clock ticking
+ * inside `Elapsed` is its own state and does not reach this list.
+ */
+export const PiTraceTimeline = memo(function PiTraceTimeline({
   steps, streaming, startedAt, elapsed, liveLabel,
 }: {
   steps: TraceStep[]
@@ -229,7 +245,9 @@ export function PiTraceTimeline({
   const [pinned, setPinned] = useState<boolean | null>(null)
   const open = pinned ?? streaming
   const segments = coalesceSegments(steps)
-  const tools = steps.filter((step) => step.kind === 'tool').length
+  // A call that spawned agents is still a call the run made, and leaving it out
+  // made the count disagree with the log directly under it.
+  const tools = steps.filter((step) => step.kind === 'tool' || step.kind === 'agents').length
   const working = streaming
 
   // A turn that answered without doing anything has no log and no header —
@@ -295,7 +313,7 @@ export function PiTraceTimeline({
       </div>
     </div>
   )
-}
+})
 
 function TimelineBody({
   segments, streaming,
@@ -311,18 +329,23 @@ function TimelineBody({
            do not carry a reliable status; ours do, and a run with two calls in
            flight has two live segments however they are ordered. */
         if (segment.kind === 'tools') {
+          /* Named by the call it opens with rather than by where the burst
+             sits, so a burst that gains a row above it is the same burst. */
           return (
             <CommandGroup
-              key={`tools:${segment.steps[0]!.index}`}
+              key={`tools:${segment.steps[0]!.key}`}
               steps={segment.steps}
               streaming={streaming}
             />
           )
         }
+        if (segment.kind === 'agents') {
+          return <AgentRunView key={`agents:${segment.step.key}`} run={segment.step.beat.run} />
+        }
         if (segment.step.kind === 'thought') {
           return (
             <ThoughtStep
-              key={`thought:${segment.step.index}`}
+              key={`thought:${segment.step.key}`}
               text={segment.step.text}
               live={streaming && segment.step.live}
             />
@@ -335,7 +358,7 @@ function TimelineBody({
         // the brightest thing in the turn.
         return (
           <div
-            key={`talk:${segment.step.index}`}
+            key={`talk:${segment.step.key}`}
             className="py-1 text-[13px] leading-[1.65] text-ink-2"
             /* Each sentence resolves out of blur as it lands. These genuinely
                arrive one at a time — unlike the answer, which is complete when

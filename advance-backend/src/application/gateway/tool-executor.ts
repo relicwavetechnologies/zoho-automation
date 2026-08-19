@@ -53,6 +53,10 @@ import {
 import { zohoCrmActionFor } from '../tools/families/zoho-crm.tool';
 import { zohoBooksActionFor, zohoBooksScopeModuleFor } from '../tools/families/zoho-books.tool';
 import { hasZohoScope } from '../../domain/zoho/zoho-scope';
+import {
+  measureRunLatency,
+  type RunLatencyTrace,
+} from '../observability/run-latency-recorder';
 
 export interface ToolExecutorInput {
   readonly member: GatewayMemberContext;
@@ -68,6 +72,8 @@ export interface ToolExecutorInput {
   readonly resumeOnApproval?: boolean;
   /** Requester-confirmed business action that owns any subsequent governance decision. */
   readonly parentBusinessActionId?: string;
+  /** Request-local timing only; it carries no identity or policy authority. */
+  readonly latencyTrace?: RunLatencyTrace;
 }
 
 export interface ToolExecutorDeps {
@@ -123,6 +129,7 @@ export interface RuntimeToolExecutionInput {
   readonly approvalGate?: ApprovalGateService;
   readonly chatId?: string;
   readonly onProgress?: (message: string) => void;
+  readonly latencyTrace?: RunLatencyTrace;
   readonly expectedAction?: ToolActionGroup;
   readonly abortSignal?: AbortSignal;
 }
@@ -232,6 +239,7 @@ interface GovernedInvocationInput {
   readonly resultAudience?: ToolExecutionContext['resultAudience'];
   readonly abortSignal?: AbortSignal;
   readonly onProgress?: (message: string) => void;
+  readonly latencyTrace?: RunLatencyTrace;
 }
 
 export class ToolExecutor {
@@ -314,6 +322,7 @@ export class ToolExecutor {
       } : {}),
       correlationId: input.requestId ?? input.execution?.actionId ?? randomUUID(),
       ...(member.resultAudience ? { resultAudience: member.resultAudience } : {}),
+      ...(input.latencyTrace ? { latencyTrace: input.latencyTrace } : {}),
     });
     return gatewayOutcome(tool, action, member, outcome);
   }
@@ -396,6 +405,7 @@ export class ToolExecutor {
       correlationId: runContext.traceId ?? runContext.requestId ?? runContext.chatId ?? randomUUID(),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       ...(input.onProgress ? { onProgress: input.onProgress } : {}),
+      ...(input.latencyTrace ? { latencyTrace: input.latencyTrace } : {}),
     });
     return runtimeOutcome(toolId, action, outcome);
   }
@@ -549,7 +559,15 @@ export class ToolExecutor {
         );
       }
 
-      const result = await tool.execute(args, context);
+      const result = await measureRunLatency(
+        input.latencyTrace,
+        {
+          name: 'gateway.tool.execute',
+          category: 'tool',
+          attributes: { toolId, action },
+        },
+        () => tool.execute(args, context),
+      );
       if (!result.ok) {
         const checkpointFailure = await this.failExecutionGrant(
           input.approval?.gate,
@@ -749,12 +767,20 @@ export class ToolExecutor {
       return { ok: false, response: gatewayFailure('unknown_tool', `Unknown toolId "${toolId}"`) };
     }
 
-    const connectionArgs = await this.resolveConnectionArgs({
-      companyId: member.companyId,
-      userId: member.userId,
-      toolId,
-      args,
-    });
+    const connectionArgs = await measureRunLatency(
+      input.latencyTrace,
+      {
+        name: 'gateway.connection.resolve',
+        category: 'persistence',
+        attributes: { toolId },
+      },
+      () => this.resolveConnectionArgs({
+        companyId: member.companyId,
+        userId: member.userId,
+        toolId,
+        args,
+      }),
+    );
     if (!connectionArgs.ok) {
       return { ok: false, response: gatewayFailure(connectionArgs.status, connectionArgs.message) };
     }
@@ -781,10 +807,18 @@ export class ToolExecutor {
       channel: member.channel ?? 'desktop',
     } as const;
 
-    const permResult = await this.deps.permissions.resolve({
-      ...basePermissionQuery,
-      ...(effectiveDepartmentId ? { departmentId: asDepartmentId(effectiveDepartmentId) } : {}),
-    });
+    const permResult = await measureRunLatency(
+      input.latencyTrace,
+      {
+        name: 'gateway.permission.revalidate',
+        category: 'authorization',
+        attributes: { toolId },
+      },
+      () => this.deps.permissions.resolve({
+        ...basePermissionQuery,
+        ...(effectiveDepartmentId ? { departmentId: asDepartmentId(effectiveDepartmentId) } : {}),
+      }),
+    );
 
     if (!permResult.ok) {
       return { ok: false, response: gatewayFailure('permission_denied', permResult.error.message) };

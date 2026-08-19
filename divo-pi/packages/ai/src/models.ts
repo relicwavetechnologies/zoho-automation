@@ -394,7 +394,18 @@ export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage
 	return usage.cost;
 }
 
-const EXTENDED_THINKING_LEVELS: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const EXTENDED_THINKING_LEVELS: ModelThinkingLevel[] = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+];
+
+/** Rungs above `high`, which a model reaches only by naming them explicitly. */
+const OPT_IN_THINKING_LEVELS: ReadonlySet<ModelThinkingLevel> = new Set(["xhigh", "max"]);
 
 export function getSupportedThinkingLevels<TApi extends Api>(model: Model<TApi>): ModelThinkingLevel[] {
 	if (!model.reasoning) return ["off"];
@@ -402,7 +413,11 @@ export function getSupportedThinkingLevels<TApi extends Api>(model: Model<TApi>)
 	return EXTENDED_THINKING_LEVELS.filter((level) => {
 		const mapped = model.thinkingLevelMap?.[level];
 		if (mapped === null) return false;
-		if (level === "xhigh") return mapped !== undefined;
+		// The default for an unmentioned level is "supported, send it as-is",
+		// which is right for the rungs every reasoning model has and wrong for
+		// the two above them — inferring those would hand every model a ceiling
+		// its provider does not implement.
+		if (OPT_IN_THINKING_LEVELS.has(level)) return mapped !== undefined;
 		return true;
 	});
 }

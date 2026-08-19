@@ -16,7 +16,7 @@ import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { createMemberAuthMiddleware } from '../middleware/member-auth.middleware';
 import {
-  costByDay, fillSeries, priceSum, startOfToday, windowStart,
+  fillSeries, priceSum, startOfToday, totalsByDay, windowStart,
   type DailyModelRow,
 } from '../../application/observability/token-cost';
 
@@ -27,18 +27,20 @@ export interface DesktopActivityRoutesDeps {
 }
 
 /*
- * Sixteen weeks, because that is what a calendar of days is drawn over.
+ * A year, because that is the longest thing anybody asks this route for.
  *
- * Ninety was an arbitrary round number and it silently clamped the one caller
- * that asks for a full window — the Home usage card, whose heatmap is sixteen
- * columns of seven. Clamped to 90 it drew thirteen columns and a ragged
- * thirteenth, which reads as missing data rather than as a shorter window.
+ * It was ninety — an arbitrary round number — and then a hundred and twelve, to
+ * fit the Home card's sixteen-column calendar. Profile asks for the year: its
+ * lifetime figures, its longest streak and its month-by-month chart are all
+ * read off one series, and a window that stopped in April would have reported a
+ * streak record that only ran back as far as the clamp.
  *
- * The cost of the extra 22 days is one wider `WHERE createdAt >= …` on an
- * indexed column, plus the same again for the preceding window this route
- * already reads to report a change.
+ * The cost is one wider `WHERE createdAt >= …` on an indexed column. The rows
+ * are already grouped by day in Postgres, so a longer window returns more rows
+ * only on days something actually happened — for the heaviest user in the
+ * company that is seventy of them.
  */
-const MAX_DAYS = 112;
+const MAX_DAYS = 365;
 const MAX_RUNS = 50;
 
 const readDays = (req: Request, fallback: number): number => {
@@ -80,7 +82,10 @@ export function createDesktopActivityRoutes(deps: DesktopActivityRoutesDeps): Ro
       const today = startOfToday();
       const previousFrom = new Date(from.getTime() - days * 86_400_000);
 
-      const [byModel, todayByModel, dailyRows, runs, previousRuns, windowAgg] = await Promise.all([
+      const [
+        byModel, todayByModel, dailyRows, runsByDayRows,
+        runs, previousRuns, windowAgg, lifetimeAgg, longestRow,
+      ] = await Promise.all([
         deps.prisma.aiTokenUsage.groupBy({
           by: ['modelId'],
           where: { companyId, userId, createdAt: { gte: from } },
@@ -102,6 +107,20 @@ export function createDesktopActivityRoutes(deps: DesktopActivityRoutesDeps): Ro
           FROM "AiTokenUsage"
           WHERE "companyId" = ${companyId} AND "userId" = ${userId} AND "createdAt" >= ${from}
           GROUP BY day, model ORDER BY day ASC`),
+        /*
+         * Tasks per day, which tokens cannot answer.
+         *
+         * A run that was refused, failed before its first model call, or was
+         * answered from cache alone writes no `AiTokenUsage` row — so a
+         * calendar drawn from spend shows those days as empty. They are not:
+         * the person asked Divo for something. Counted from the runs table so a
+         * quiet-but-used day looks used.
+         */
+        deps.prisma.$queryRaw<Array<{ day: Date; runs: bigint }>>(Prisma.sql`
+          SELECT date_trunc('day', "startedAt") AS day, COUNT(*) AS runs
+          FROM "ExecutionRun"
+          WHERE "companyId" = ${companyId} AND "userId" = ${userId} AND "startedAt" >= ${from}
+          GROUP BY day ORDER BY day ASC`),
         deps.prisma.executionRun.count({ where: { companyId, userId, startedAt: { gte: from } } }),
         // The equivalent window immediately before this one, so the UI can show
         // a change rather than a bare number nobody can interpret.
@@ -112,12 +131,34 @@ export function createDesktopActivityRoutes(deps: DesktopActivityRoutesDeps): Ro
           where: { companyId, userId, createdAt: { gte: from } },
           _sum: { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
         }),
+        /*
+         * Everything, with no window at all.
+         *
+         * "Lifetime" is the one figure on the profile that must not move when
+         * somebody changes the range they are looking at — that is what makes
+         * it a lifetime figure rather than a longer window.
+         */
+        deps.prisma.aiTokenUsage.aggregate({
+          where: { companyId, userId },
+          _sum: { actualInputTokens: true, cacheReadInputTokens: true, actualOutputTokens: true },
+        }),
+        // Only finished runs can have a length. A run still going has no end to
+        // measure to, and one that was abandoned would otherwise report the age
+        // of the record as the length of the work.
+        deps.prisma.$queryRaw<Array<{ ms: number | null }>>(Prisma.sql`
+          SELECT MAX(EXTRACT(EPOCH FROM ("finishedAt" - "startedAt")) * 1000)::float AS ms
+          FROM "ExecutionRun"
+          WHERE "companyId" = ${companyId} AND "userId" = ${userId}
+            AND "finishedAt" IS NOT NULL AND "status" = 'completed'`),
       ]);
 
       const spend = byModel.reduce((sum, m) => sum + priceSum(m.modelId, m._sum), 0);
       const spendToday = todayByModel.reduce((sum, m) => sum + priceSum(m.modelId, m._sum), 0);
       const miss = windowAgg._sum.actualInputTokens ?? 0;
       const hit = windowAgg._sum.cacheReadInputTokens ?? 0;
+      const runsByDay = new Map(
+        runsByDayRows.map(r => [new Date(r.day).toISOString().slice(0, 10), Number(r.runs)]),
+      );
 
       res.json({
         success: true,
@@ -129,10 +170,16 @@ export function createDesktopActivityRoutes(deps: DesktopActivityRoutesDeps): Ro
           previousRuns,
           tokensIn: miss + hit,
           tokensOut: windowAgg._sum.actualOutputTokens ?? 0,
+          // Never windowed — see the query above.
+          lifetimeTokens:
+            (lifetimeAgg._sum.actualInputTokens ?? 0)
+            + (lifetimeAgg._sum.cacheReadInputTokens ?? 0)
+            + (lifetimeAgg._sum.actualOutputTokens ?? 0),
+          longestRunMs: Math.round(longestRow[0]?.ms ?? 0),
           // How much of the input was served from cache. Presented as a saving
           // because that is what it is — the same prompt priced far cheaper.
           cacheSavingsPct: miss + hit > 0 ? Math.round((hit / (miss + hit)) * 100) : 0,
-          series: fillSeries(costByDay(dailyRows), days),
+          series: fillSeries(totalsByDay(dailyRows), days, runsByDay),
           byModel: byModel.map(m => ({
             modelId: m.modelId,
             calls: m._count.id,
@@ -371,7 +418,7 @@ export function createDesktopTeamActivityRoutes(deps: DesktopActivityRoutesDeps)
           activePeople: people.filter(p => p.runs > 0).length,
           // Every day in the window, zeroes included, so a quiet stretch is
           // drawn as quiet rather than compressed out of the axis.
-          series: fillSeries(costByDay(dailyRows), days),
+          series: fillSeries(totalsByDay(dailyRows), days),
           people,
         },
       });

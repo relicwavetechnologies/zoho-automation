@@ -19,7 +19,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Request, Response } from 'express';
 import { createExecutionRoutes } from '../../src/http/executions/execution.routes.ts';
-import type { ExecutionQueryService, RunSummaryDto, RunDetailDto, EventDto } from '../../src/application/observability/execution-query.service.ts';
+import type {
+  ExecutionQueryService,
+  RunSummaryDto,
+  RunDetailDto,
+  EventDto,
+  LatencySummaryDto,
+} from '../../src/application/observability/execution-query.service.ts';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -126,7 +132,19 @@ const fakeEvent: EventDto = {
   actorType: 'planner', actorKey: null, title: 'Plan created',
   summary: 'Two steps', status: 'success',
   payload: { steps: 2 },
+  sourceTimestamp: null,
   createdAt: '2025-01-01T10:00:00.000Z',
+};
+
+const fakeLatency: LatencySummaryDto = {
+  executionId: 'run-1',
+  observedWallMs: 1_000,
+  instrumentedMs: 900,
+  unattributedMs: 100,
+  spanCount: 2,
+  modules: [],
+  criticalPath: [],
+  slowestSpans: [],
 };
 
 function makeService(overrides: Partial<ExecutionQueryService> = {}): ExecutionQueryService {
@@ -134,9 +152,28 @@ function makeService(overrides: Partial<ExecutionQueryService> = {}): ExecutionQ
     listRuns:  async () => [fakeRun],
     getRun:    async () => fakeRunDetail,
     getEvents: async () => [fakeEvent],
+    getLatencySummary: async () => fakeLatency,
     ...overrides,
   } as unknown as ExecutionQueryService;
 }
+
+describe('GET /executions/:id/latency', () => {
+  it('returns the critical-path latency summary', async () => {
+    const router = createExecutionRoutes({ executionQueryService: makeService(), logger: noopLogger });
+    const { status, body } = await callRoute(router, 'GET', '/run-1/latency');
+    assert.equal(status, 200);
+    assert.deepEqual((body as any).data, fakeLatency);
+  });
+
+  it('returns 404 when the run is outside the company scope', async () => {
+    const router = createExecutionRoutes({
+      executionQueryService: makeService({ getLatencySummary: async () => null }),
+      logger: noopLogger,
+    });
+    const { status } = await callRoute(router, 'GET', '/missing/latency');
+    assert.equal(status, 404);
+  });
+});
 
 // ─── GET / ────────────────────────────────────────────────────────────────────
 

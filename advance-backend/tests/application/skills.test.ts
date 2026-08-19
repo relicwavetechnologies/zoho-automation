@@ -57,6 +57,23 @@ describe('SkillRepository', () => {
       assert.deepEqual(captured.where.AND, [
         { OR: [{ scope: 'company', departmentId: null }, { scope: 'department', departmentId: 'dept-1' }] },
       ]);
+      assert.equal(captured.select.outgoingRoutes.where.targetSkill.companyId, 'co-1');
+      assert.equal(captured.select.outgoingRoutes.where.targetSkill.status, 'active');
+    });
+
+    it('returns router targets from the same catalogue query', async () => {
+      const target = fakeRow({ id: 'target-1', slug: 'target-1' });
+      const router = {
+        ...fakeRow({ id: 'router-1', slug: 'router-1', tags: ['router'] }),
+        outgoingRoutes: [{ targetSkillId: target.id }],
+      };
+      const prisma = {
+        skill: { findMany: async () => [router] },
+      } as any;
+      const result = await new SkillRepository(prisma).list({ companyId: 'co-1', limit: 10 });
+
+      assert.equal(result.ok, true);
+      assert.deepEqual((result as any).value[0].routeTargetIds, ['target-1']);
     });
   });
 

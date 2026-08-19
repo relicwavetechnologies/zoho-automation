@@ -134,15 +134,45 @@ export function isBareLink(text: string, href: string): boolean {
 const MAX_SOURCES = 12
 
 /**
+ * Code, blanked out — so a URL inside it is not read as a citation.
+ *
+ * The strip is built by scanning the markdown, while the answer itself is drawn
+ * from a parsed tree. Two readings of one string, and they disagreed in exactly
+ * one place: a link inside a fenced block or a code span is text to the
+ * renderer and was a citation to the scanner. An answer showing a reader a
+ * `curl https://api.stripe.com/v1/charges` grew a Stripe chip claiming the
+ * answer had consulted Stripe. It had not; it had printed a command.
+ *
+ * Replaced with spaces rather than removed, so every offset in the string is
+ * still where it was and nothing either side of a block can fuse into a token
+ * that was never written.
+ */
+function withoutCode(markdown: string): string {
+  const blank = (match: string) => match.replace(/[^\n]/g, ' ')
+  return markdown
+    // Fenced first: a fence may contain unbalanced backticks that would
+    // otherwise be read as spans and swallow half the answer with them.
+    .replace(/^[ \t]*(`{3,}|~{3,})[\s\S]*?^[ \t]*\1[ \t]*$/gm, blank)
+    // An unclosed fence runs to the end of the answer, which is what a
+    // half-streamed code block is for most of its life.
+    .replace(/^[ \t]*(?:`{3,}|~{3,})[\s\S]*$/m, blank)
+    .replace(/(`+)(?:[^`]|(?!\1)`)*\1/g, blank)
+}
+
+/**
  * Every site an answer drew on, once each, in the order they were cited.
  *
  * Read off the markdown rather than the rendered tree, because the strip sits
  * outside the answer and is built before any of it is drawn. One entry per
  * domain: an answer citing six pages of the same filing has one source, and a
  * strip that said "6 sources" would be flattering itself.
+ *
+ * It does not get to disagree with the renderer about what counts as prose —
+ * see `withoutCode`.
  */
 export function sourcesIn(markdown: string): Source[] {
   const found = new Map<string, Source>()
+  const prose = withoutCode(markdown)
 
   const remember = (href: string) => {
     const domain = domainOf(href)
@@ -150,10 +180,10 @@ export function sourcesIn(markdown: string): Source[] {
     found.set(domain, { href: href.trim(), domain })
   }
 
-  for (const [, href] of markdown.matchAll(/\[[^\]]*\]\(\s*(<?[^)\s]+)>?\s*(?:"[^"]*")?\)/g)) {
+  for (const [, href] of prose.matchAll(/\[[^\]]*\]\(\s*(<?[^)\s]+)>?\s*(?:"[^"]*")?\)/g)) {
     remember(href!.replace(/^</, ''))
   }
-  for (const [href] of markdown.matchAll(/https?:\/\/[^\s<>()[\]"']+/g)) {
+  for (const [href] of prose.matchAll(/https?:\/\/[^\s<>()[\]"']+/g)) {
     remember(href)
   }
 

@@ -1,0 +1,271 @@
+/*
+  The palette. One file, both themes, every colour in the admin.
+
+  The values started as Beautiful UI's own, taken verbatim from the shipped
+  stylesheet at beautifului.dev — not sampled from a screenshot and not
+  "converted". Most still are. The point of the file has not changed: when the
+  question is "what grey is this", there is one place to look.
+
+  Where light departs from the reference now, it is because the reference is a
+  component gallery and this is an application. A gallery shows one card on one
+  plane; an admin stacks a rail, a content column, a card, a row hover and a
+  field, and light did not have the room for five planes in the band the
+  reference's greys occupy. Dark always did. That asymmetry — not any single
+  wrong hex — is what made light the theme that looked cheap, and every
+  departure below is annotated with the measurement that forced it.
+
+  This inverts the arrangement that came before it. `cursor.css` used to hold
+  the values and `beautiful.css` aliased onto it, so the chat surface inherited
+  the workspace's colours. Now the palette holds the values and BOTH of those
+  files alias onto it, which is what lets one edit here re-skin the sidebar, the
+  pages, the shadcn primitives and the chat at the same time — the thing the old
+  direction could not do, because the workspace's greys were the thing being
+  replaced.
+
+  Two deliberate omissions from the reference:
+
+  `--stripe` / `--stripe-bg` are its diagonal hatch, painted on `body` behind a
+  one-page component gallery. An admin is a surface you work on for an hour at a
+  time and a fixed 45° hatch under every table is noise, so the page keeps a
+  flat plane.
+
+  `--bui-brand` is ours and has no counterpart there. Beautiful UI's orange is a
+  semantic warning; Divo's orange is an identity. Sharing one token would have
+  meant either recolouring the logo or colouring warnings with the brand.
+
+  Unprefixed at `:root` rather than scoped, because the login and OAuth screens
+  render outside `.cur` and were the one place the old tokens could not reach.
+*/
+
+:root {
+  /* ── Planes, page → surface ──────────────────────────
+     `page` is the extreme in both themes (lightest in light, darkest in dark)
+     and `surface` is the plane a card sits on. `canvas` is the distinct
+     secondary plane — recessed in light, raised in dark — which is what the
+     content column and the sidebar use to separate from each other. */
+  --bui-page: #fafafb;
+  --bui-canvas: #f1f2f3;
+  --bui-surface: #ffffff;
+  --bui-inset: #f7f8f9;
+  /*
+    Hover, field and the strong fill all moved DOWN, below the canvas.
+
+    They used to sit between the canvas and white, in a band 1.13x tall, and
+    three planes cannot be told apart inside it. The measurements: a field was
+    #f2f2f3 on a #f1f2f3 canvas — 1.001, an input you could not see except by
+    its border, and the border was at 1.045. A hovered row got *lighter* than
+    the canvas it sat on, which is backwards on a light plane and the one thing
+    the comment in `cursor.css` says must never happen.
+
+    Dark never had this problem because its planes span 3.5x. Light has to
+    borrow its room from the other side of the canvas instead of the same side.
+  */
+  --bui-hover: #ebeced;
+  --bui-hover-2: #dfe0e1;
+  --bui-field: #ebeced;
+
+  /* ── Ink, three weights ──────────────────────────────
+     Three, not four. The set this replaced had a fourth step that existed only
+     to soften a hover border, which is a line's job.
+
+     The weights are the same three in both themes now: about 14:1, 7:1 and
+     4.6:1 against the plane each is read on. They were not. `ink-3` is the one
+     that mattered — it was #9a9da3, which is 2.4:1 on the content canvas, and
+     it is the colour of every micro-label, timestamp, table heading and empty
+     state in the app: a hundred and thirty-seven call sites, all of them
+     legally invisible. Dark's equivalent was 3.4:1, which is why light was the
+     theme that looked broken and dark was the theme that looked fine. */
+  --bui-ink: #1f2124;
+  --bui-ink-2: #4f5257;
+  --bui-ink-3: #6b6d72;
+
+  /* ── Hairlines ───────────────────────────────────────
+     Two, not three. `line` draws card rings and row separators alike — the
+     reference does not distinguish them, and the third weight we used to carry
+     was the difference between #e5e5e3 and #eeeeec, which nobody could see.
+
+     Both went darker. A hairline is the app's only means of saying "this is a
+     separate thing", and at #ecedef it drew at 1.045 against the content
+     canvas — a card's ring, and every row separator inside it, dissolved into
+     the plane. Dark's line has always drawn at 1.28 there. These are the values
+     that give light the same 1.22 / 1.46 it already had in dark, so structure
+     survives in both. */
+  --bui-line: #e7e9ea;
+  --bui-line-strong: #d4d6d7;
+  /* The line under a pointer. Its own name because it used to be `ink-3`, and
+     when ink-3 moved to a weight you can read, ten hover borders would have
+     come with it and gone almost to black. A border is not text and does not
+     want a text weight; these are exactly the values that were drawing these
+     borders before, so nothing about the hover changed except what it is
+     called. */
+  --bui-line-hover: #9a9da3;
+
+  /* ── Chromatics ──────────────────────────────────────
+     Blue is the accent: links, focus, the active rail, anything that has to
+     look actionable before it is read. `-ink` is the readable weight of it on a
+     light plane; `-tint` is the wash behind it.
+
+     Every hue now carries the `-ink` weight, not just blue. The idea was always
+     right and was only ever implemented once, so blue had a readable form and
+     green, orange and red did not — they were used as text at 3.3, 2.7 and 3.6
+     against the canvas while their dark counterparts sat at 5.1 to 7.2. Orange
+     was the worst of them and is the colour the app warns you in.
+
+     Split by job, which is what stops this drifting again: the vivid value
+     fills a bar, a dot or a badge's ground and is never a letterform; the
+     `-ink` value is the one that spells words. In dark the two are the same
+     colour, because a dark plane never needed the distinction. */
+  --bui-accent: #0285ff;
+  --bui-accent-ink: #026cd0;
+  --bui-accent-tint: #e9f3ff;
+  --bui-green: #189a4d;
+  --bui-green-ink: #147e3f;
+  --bui-green-tint: #e8f5ed;
+  --bui-orange: #ef720c;
+  --bui-orange-ink: #af5309;
+  --bui-orange-tint: #fdf1e5;
+  --bui-red: #e3474c;
+  --bui-red-ink: #c33d41;
+  --bui-red-tint: #fcecec;
+
+  /*
+    A link is the accent at its readable weight — darker than the accent in
+    light, lighter in dark, which is the whole reason the reference carries an
+    `-ink` variant of it at all.
+
+    The resting underline is a token rather than an opacity modifier on the
+    class: Tailwind cannot compute alpha over a CSS variable, so `.../35`
+    compiled to nothing at all and the underline quietly stayed at full
+    strength.
+  */
+  --bui-link: var(--bui-accent-ink);
+  --bui-link-soft: color-mix(in oklab, var(--bui-accent-ink) 42%, transparent);
+
+  /*
+    The content plane, most of the way opaque — what a sticky header floats on,
+    with a blur behind it.
+
+    A token for the same reason `--bui-link-soft` is one. The chat header asked
+    for this as `bg-page/70` and got nothing at all: Tailwind cannot compute
+    alpha over a CSS variable, so the utility compiled to no rule and the header
+    had been blurring with no plane behind it, letting the thread scroll
+    visibly through the title. Written once here, it is a colour rather than an
+    arithmetic Tailwind is not able to do.
+  */
+  --bui-veil: color-mix(in oklab, var(--bui-canvas) 72%, transparent);
+
+  /* Divo's, not the reference's. See the note at the top. */
+  --bui-brand: #f54e00;
+  --bui-brand-ink: #c53f00;
+  --bui-brand-active: #d04200;
+  --bui-on-brand: #ffffff;
+
+  /* ── Tooltips ────────────────────────────────────────
+     Inverted in light and deepened in dark, so a tip is never the same plane as
+     what it is explaining. */
+  --bui-tooltip-bg: #25272b;
+  --bui-tooltip-fg: #f6f7f8;
+  --bui-tooltip-muted: #a5a8ad;
+  --bui-tooltip-border: #3a3c40;
+
+  /* ── Depth ───────────────────────────────────────────
+     Ring first, lift second. Every one of these opens with a 1px ring, so a
+     card is legible with the shadow doing nothing at all — which is what
+     happens on a low-quality display and what happened in dark mode before,
+     where depth was carried entirely by value.
+
+     Restated under `.dark` rather than inherited: the ring colour follows
+     `--bui-line` on its own, but the alphas do not — a shadow tuned for white
+     is invisible on near-black. */
+  /* The lift on its own, for the many surfaces here that draw their own 1px
+     border and only want the shadow under it. `--bui-shadow-card` opens with a
+     ring, and composing it onto a bordered card draws that ring twice. */
+  --bui-lift: 0 1px 2px #1018280a, 0 2px 6px #10182808;
+  --bui-shadow-hairline: 0 0 0 1px var(--bui-line);
+  --bui-shadow-btn: 0 0 0 1px var(--bui-line-strong), 0 1px 2px #1018280d;
+  --bui-shadow-card: 0 0 0 1px var(--bui-line), 0 1px 2px #1018280a, 0 2px 6px #10182808;
+  --bui-shadow-raised: 0 0 0 1px var(--bui-line), 0 2px 10px #0000000b;
+  --bui-shadow-overlay: 0 0 0 1px var(--bui-line), 0 8px 28px #0001;
+  --bui-shadow-inset-field: inset 0 1px 2px #0000001f;
+
+  /* ── Geometry and motion ─────────────────────────────
+     chip → control → card, the reference's three radii. These already matched
+     what Tailwind derives from `--radius`, so the two agree by arithmetic
+     rather than by coincidence being maintained. */
+  --bui-r-chip: 6px;
+  --bui-r-control: 8px;
+  --bui-r-card: 10px;
+  --bui-ease-out-strong: cubic-bezier(0.23, 1, 0.32, 1);
+  --bui-ease-link: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/*
+  Dark.
+
+  Note what does NOT flip: the accent stays blue, green stays green, the radii
+  and easings are untouched. Dark mode here is the same design at a different
+  luminance, not a second design — which is why the file is a list of eighteen
+  values rather than a second stylesheet.
+
+  The tints invert their construction: in light they are pale washes mixed
+  toward white, in dark they are the hue itself at low alpha, so they sit on
+  whatever plane they land on instead of punching a light hole in it.
+*/
+.dark {
+  --bui-page: #17181a;
+  --bui-canvas: #1c1d1f;
+  --bui-surface: #232427;
+  --bui-inset: #1f2022;
+  --bui-hover: #2a2b2e;
+  --bui-hover-2: #313236;
+  --bui-field: #2b2c2f;
+
+  --bui-ink: #f2f3f4;
+  --bui-ink-2: #a5a8ad;
+  /* Lifted from #6c6f75, which was 3.4:1 on the content plane. Dark was never
+     the broken theme, but it was under the floor too, and leaving it there
+     would have made light the stricter of the two — the same drift in the
+     opposite direction. */
+  --bui-ink-3: #898c91;
+
+  --bui-line: #2e3033;
+  --bui-line-strong: #3a3c40;
+  --bui-line-hover: #6c6f75;
+
+  --bui-accent: #3d9aff;
+  --bui-accent-ink: #7ec0ff;
+  --bui-accent-tint: #3d9aff29;
+  --bui-green: #3dbb72;
+  --bui-green-tint: #3dbb7224;
+  --bui-orange: #f68f3c;
+  --bui-orange-tint: #f68f3c24;
+  --bui-red: #ee5c61;
+  --bui-red-tint: #ee5c6124;
+
+  /*
+    Here the readable weight IS the vivid one — all four already clear the floor
+    on a dark plane by a wide margin, which is the asymmetry that let light rot
+    unnoticed. They are restated rather than left to inherit because a token
+    that resolves to a light-mode hex in dark is the exact bug this file exists
+    to prevent.
+  */
+  --bui-green-ink: #3dbb72;
+  --bui-orange-ink: #f68f3c;
+  --bui-red-ink: #ee5c61;
+
+  --bui-brand: #fb5613;
+  --bui-brand-ink: #fb5613;
+  --bui-brand-active: #d8460a;
+
+  --bui-tooltip-bg: #111214;
+  --bui-tooltip-fg: #f2f3f4;
+  --bui-tooltip-muted: #a5a8ad;
+  --bui-tooltip-border: #2e3033;
+
+  --bui-lift: 0 1px 2px #0003, 0 2px 6px #0003;
+  --bui-shadow-btn: 0 0 0 1px var(--bui-line-strong), 0 1px 2px #0000004d;
+  --bui-shadow-card: 0 0 0 1px var(--bui-line), 0 1px 2px #0003, 0 2px 6px #0003;
+  --bui-shadow-raised: 0 0 0 1px var(--bui-line), 0 2px 10px #00000038;
+  --bui-shadow-overlay: 0 0 0 1px var(--bui-line-strong), 0 8px 28px #00000057;
+  --bui-shadow-inset-field: inset 0 1px 2px #0006;
+}

@@ -41,6 +41,13 @@ export const DIVO_LUNA_MODEL = {
 	name: "GPT-5.6 Luna",
 	api: "openai-responses" as const,
 	reasoning: true,
+	// One rung per value the model actually implements, named the same on both
+	// sides so a `--thinking xhigh` in a log means `effort: xhigh` on the wire.
+	// Both top rungs are opt-in in Pi, so they exist because this names them.
+	// 5.6 dropped `minimal`, hence the null: asking for it clamps to `low`
+	// rather than 400ing at the provider. `off` stays unmapped, which this API
+	// already sends as `none`.
+	thinkingLevelMap: { minimal: null, xhigh: "xhigh", max: "max" } as const,
 	input: ["text", "image"] as ("text" | "image")[],
 	cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0 },
 	contextWindow: 1_050_000,

@@ -69,8 +69,10 @@ describe('reasoning in the run log', () => {
     run.apply({ type: 'say', index: 0, text: 'Let me check the invoices.' });
 
     assert.deepEqual(run.timeline().ledger, [
-      { kind: 'thought', label: 'Unpaid means status is overdue.', count: 1, status: 'done' },
-      { kind: 'say', label: 'Let me check the invoices.', count: 1, status: 'done' },
+      // The thought is settled, not open: the model stopped reasoning by
+      // starting to talk, and the row it left behind says so.
+      { id: 'thought:0:0', kind: 'thought', label: 'Unpaid means status is overdue.', count: 1, status: 'done' },
+      { id: 'say:0:0', kind: 'say', label: 'Let me check the invoices.', count: 1, status: 'done' },
     ]);
   });
 

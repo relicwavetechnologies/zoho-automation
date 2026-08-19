@@ -37,6 +37,21 @@ export interface AppendEventInput {
   summary?:    string;
   status?:     string;
   payload?:    Record<string, unknown>;
+  sourceTimestamp?: Date;
+}
+
+export interface UpsertExecutionSpanInput {
+  executionId:  string;
+  spanId:       string;
+  parentSpanId?: string;
+  name:         string;
+  category:     string;
+  source:       string;
+  startedAt:    Date;
+  endedAt:      Date;
+  durationMs:   number;
+  status:       string;
+  attributes?:  Record<string, string | number | boolean | null>;
 }
 
 export interface AppendStepResultInput {
@@ -85,7 +100,25 @@ export interface ExecutionEventView {
   summary:     string | null;
   status:      string | null;
   payload:     unknown;
+  sourceTimestamp: Date | null;
   createdAt:   Date;
+}
+
+export interface ExecutionSpanView {
+  id:           string;
+  executionId:  string;
+  spanId:       string;
+  parentSpanId: string | null;
+  name:         string;
+  category:     string;
+  source:       string;
+  startedAt:    Date;
+  endedAt:      Date;
+  durationMs:   number;
+  status:       string;
+  attributes:   unknown;
+  createdAt:    Date;
+  updatedAt:    Date;
 }
 
 /** Per-run rollup: turn count + per-model cache-split tokens for pricing. */
@@ -209,12 +242,54 @@ export class ExecutionRepository {
       ...(input.summary  ? { summary:  input.summary }  : {}),
       ...(input.status   ? { status:   input.status }   : {}),
       ...(input.payload  ? { payload:  input.payload as object } : {}),
+      ...(input.sourceTimestamp ? { sourceTimestamp: input.sourceTimestamp } : {}),
     };
     await this.prisma.executionEvent.upsert({
       where:  { executionId_sequence: { executionId: input.executionId, sequence: input.sequence } },
       create: data,
       update: data,
     });
+  }
+
+  /** Persist one idempotent causal span without consuming event sequence IDs. */
+  async upsertSpan(input: UpsertExecutionSpanInput): Promise<void> {
+    await this.insertSpans([input]);
+  }
+
+  /** Persist completed immutable spans in one DB statement. */
+  async insertSpans(inputs: readonly UpsertExecutionSpanInput[]): Promise<void> {
+    if (inputs.length === 0) return;
+    const data = inputs.map(input => ({
+      executionId:  input.executionId,
+      spanId:       input.spanId,
+      name:         input.name,
+      category:     input.category,
+      source:       input.source,
+      startedAt:    input.startedAt,
+      endedAt:      input.endedAt,
+      durationMs:   Math.max(0, Math.round(input.durationMs)),
+      status:       input.status,
+      ...(input.parentSpanId ? { parentSpanId: input.parentSpanId } : {}),
+      ...(input.attributes ? { attributes: input.attributes as object } : {}),
+    }));
+    await this.prisma.executionSpan.createMany({ data, skipDuplicates: true });
+  }
+
+  /** Resolve a run only when the authenticated owner still matches it. */
+  async findOwnedIdByRequestId(input: {
+    requestId: string;
+    companyId: string;
+    userId: string;
+  }): Promise<string | null> {
+    const run = await this.prisma.executionRun.findFirst({
+      where: {
+        requestId: input.requestId,
+        companyId: input.companyId,
+        userId: input.userId,
+      },
+      select: { id: true },
+    });
+    return run?.id ?? null;
   }
 
   /** Append a tool-level step result for a run. */
@@ -240,16 +315,18 @@ export class ExecutionRepository {
 
   /**
    * Retention (Track A): delete detailed trace payloads older than `cutoff`.
-   * Removes ExecutionEvent + StepResult rows; leaves ExecutionRun headers (a
-   * cheap long-lived index) and AiTokenUsage (cost/spend history) untouched.
+   * Removes ExecutionEvent + StepResult + ExecutionSpan rows; leaves
+   * ExecutionRun headers (a cheap long-lived index) and AiTokenUsage
+   * (cost/spend history) untouched.
    * Returns how many rows were removed from each table.
    */
-  async pruneExpiredDetail(cutoff: Date): Promise<{ events: number; steps: number }> {
-    const [events, steps] = await this.prisma.$transaction([
+  async pruneExpiredDetail(cutoff: Date): Promise<{ events: number; steps: number; spans: number }> {
+    const [events, steps, spans] = await this.prisma.$transaction([
       this.prisma.executionEvent.deleteMany({ where: { createdAt: { lt: cutoff } } }),
       this.prisma.stepResult.deleteMany({ where: { createdAt: { lt: cutoff } } }),
+      this.prisma.executionSpan.deleteMany({ where: { createdAt: { lt: cutoff } } }),
     ]);
-    return { events: events.count, steps: steps.count };
+    return { events: events.count, steps: steps.count, spans: spans.count };
   }
 
   /** Mark a run as completed successfully. */
@@ -264,6 +341,19 @@ export class ExecutionRepository {
     });
   }
 
+  /** Complete only while no other runtime adapter has terminalized the run. */
+  async completeIfRunning(executionId: string, latestSummary?: string): Promise<boolean> {
+    const result = await this.prisma.executionRun.updateMany({
+      where: { id: executionId, status: 'running' },
+      data: {
+        status: 'completed',
+        finishedAt: new Date(),
+        ...(latestSummary ? { latestSummary } : {}),
+      },
+    });
+    return result.count === 1;
+  }
+
   /** Mark a run as failed with an error code + message. */
   async fail(executionId: string, errorCode: string, errorMessage: string): Promise<void> {
     await this.prisma.executionRun.update({
@@ -275,6 +365,24 @@ export class ExecutionRepository {
         errorMessage: errorMessage.slice(0, 2000),
       },
     });
+  }
+
+  /** Fail only while no other runtime adapter has terminalized the run. */
+  async failIfRunning(
+    executionId: string,
+    errorCode: string,
+    errorMessage: string,
+  ): Promise<boolean> {
+    const result = await this.prisma.executionRun.updateMany({
+      where: { id: executionId, status: 'running' },
+      data: {
+        status: 'failed',
+        finishedAt: new Date(),
+        errorCode,
+        errorMessage: errorMessage.slice(0, 2000),
+      },
+    });
+    return result.count === 1;
   }
 
   // ─── Query surface (used by REST layer) ─────────────────────────────────
@@ -410,6 +518,25 @@ export class ExecutionRepository {
       },
       orderBy: { sequence: 'asc' },
       take:    input.limit ?? 500,
+    });
+  }
+
+  /** Fetch causal spans for one company-owned run in source-time order. */
+  async listSpans(input: {
+    executionId: string;
+    companyId:   string;
+    limit?:      number;
+  }): Promise<ExecutionSpanView[]> {
+    const run = await this.prisma.executionRun.findFirst({
+      where: { id: input.executionId, companyId: input.companyId },
+      select: { id: true },
+    });
+    if (!run) return [];
+
+    return this.prisma.executionSpan.findMany({
+      where: { executionId: input.executionId },
+      orderBy: [{ startedAt: 'asc' }, { durationMs: 'desc' }],
+      take: input.limit ?? 5_000,
     });
   }
 }

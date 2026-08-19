@@ -19,7 +19,7 @@ import { z } from 'zod';
 import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import {
-  costByDay, fillSeries, priceSum, sparklineHeights, startOfToday,
+  fillSeries, priceSum, sparklineHeights, startOfToday, totalsByDay,
   type DailyModelRow, type TokenSum,
 } from '../../application/observability/token-cost';
 
@@ -117,7 +117,7 @@ export function createSpendRoutes(deps: SpendRoutesDeps): Router {
 
     success(res, {
       today: { spendUsd: spendToday, runs: runsToday },
-      series: fillSeries(costByDay(dailyRows), days),
+      series: fillSeries(totalsByDay(dailyRows), days),
       cacheSavingsPct,
     });
   }));
@@ -286,7 +286,7 @@ export function createSpendRoutes(deps: SpendRoutesDeps): Router {
     const spendMtd = mtdByModel.reduce((s, m) => s + priceSum(m.modelId, m._sum), 0);
     const limit = policy?.monthlyTokenLimit ?? 2_000_000;
 
-    const sparkline = sparklineHeights(fillSeries(costByDay(sparkRows), 14).map(s => s.spendUsd));
+    const sparkline = sparklineHeights(fillSeries(totalsByDay(sparkRows), 14).map(s => s.spendUsd));
 
     success(res, {
       userId,

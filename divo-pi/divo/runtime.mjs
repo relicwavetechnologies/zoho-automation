@@ -29,6 +29,13 @@ export function buildAgentConfiguration({ provider, model, thinkingLevel }) {
 	const deepseekOverride = {
 		contextWindow: DIVO_CONTEXT_WINDOW,
 		maxTokens: DIVO_MAX_OUTPUT_TOKENS,
+		// DeepSeek's top effort is the string `max`, and the vendored table
+		// reaches it through the `xhigh` rung — upstream's shorthand for "the
+		// ceiling, whatever it is called". Divo names rungs after the value
+		// sent, because the alternative is a picker whose top entry has to read
+		// "XHigh" on one model and mean `max`, while on another it reads the
+		// same and means `xhigh`.
+		thinkingLevelMap: { xhigh: null, max: "max" },
 	};
 	return {
 		settings: {
@@ -124,26 +131,57 @@ const DIRECT_MESSAGE_ONLY_TOOLS = [
 const DIRECT_MESSAGE_ONLY_MODULES = ["divo-chat-history"];
 
 /**
+ * Tools that only exist where something can render what they produce.
+ *
+ * The badge tool files a document for a reader with a panel beside their
+ * conversation. A Lark card has no panel and no filesystem, so on Lark the
+ * honest state is not "the tool exists but please don't use it" — it is that the
+ * tool is not there. The surface descriptor tells the model the same thing in
+ * words (`artifacts: 'none'`), and this is what makes those words true: a model
+ * cannot be tempted by, or hallucinate the results of, a tool it was never given.
+ *
+ * Keyed by the channel that may have it, not by the channels that may not, so a
+ * third surface arrives without the tool until someone decides otherwise.
+ */
+const CHANNEL_ONLY_MODULES = { "divo-artifact": ["web"] };
+const CHANNEL_ONLY_TOOLS = { divo_artifact: ["web"] };
+
+/** @param {Record<string, string[]>} table @param {string} name @param {string|undefined} channel */
+function allowedOnChannel(table, name, channel) {
+	const channels = table[name];
+	if (!channels) return true;
+	return channel !== undefined && channels.includes(channel);
+}
+
+/**
  * The manifest as this run may use it.
  *
  * Withheld at the three places that decide what Pi can call — the extension that
  * registers the tools, the skill that teaches them, and the allowlist that
- * admits them. The controller separately puts shared runs in a fresh disposable
- * container and volume; this runtime filtering remains defence in depth.
+ * admits them. Two separate questions are asked here and both filter the same
+ * three lists: is this run scoped to a shared chat, and which surface is it
+ * answering on.
+ *
+ * The controller separately puts shared runs in a fresh disposable container and
+ * volume; this runtime filtering remains defence in depth.
+ *
+ * @param {boolean} isRunScoped
+ * @param {string} [channel] The surface the backend drives this run for, if any.
  */
-export function scopedManifest(isRunScoped) {
-	if (!isRunScoped) return manifest;
+export function scopedManifest(isRunScoped, channel) {
+	const keepModule = (name) => (
+		(!isRunScoped || !DIRECT_MESSAGE_ONLY_MODULES.includes(name))
+		&& allowedOnChannel(CHANNEL_ONLY_MODULES, name, channel)
+	);
+	const keepTool = (name) => (
+		(!isRunScoped || !DIRECT_MESSAGE_ONLY_TOOLS.includes(name))
+		&& allowedOnChannel(CHANNEL_ONLY_TOOLS, name, channel)
+	);
 	return {
 		...manifest,
-		extensions: manifest.extensions.filter(
-			(name) => !DIRECT_MESSAGE_ONLY_MODULES.includes(name),
-		),
-		trustedSkills: manifest.trustedSkills.filter(
-			(name) => !DIRECT_MESSAGE_ONLY_MODULES.includes(name),
-		),
-		toolAllowlist: manifest.toolAllowlist.filter(
-			(name) => !DIRECT_MESSAGE_ONLY_TOOLS.includes(name),
-		),
+		extensions: manifest.extensions.filter(keepModule),
+		trustedSkills: manifest.trustedSkills.filter(keepModule),
+		toolAllowlist: manifest.toolAllowlist.filter(keepTool),
 	};
 }
 
@@ -493,7 +531,7 @@ export function buildChildEnvironment(baseEnvironment, values) {
 		...(values.departmentId ? { DIVO_DEPARTMENT_ID: values.departmentId } : {}),
 		DIVO_RUNTIME_CONTEXT_PATH: values.runtimeContextPath,
 		DIVO_RUN_CONTEXT_PATH: values.runContextPath,
-		DIVO_SKILL_DIRS: scopedManifest(values.isRunScoped)
+		DIVO_SKILL_DIRS: scopedManifest(values.isRunScoped, values.channel)
 			.trustedSkills.map((name) => path.join(divoDir, "skills", name))
 			.join(path.delimiter),
 		DIVO_BUNDLED_SKILLS_DIR: path.join(divoDir, "skills"),
@@ -528,6 +566,7 @@ export const RUNTIME_ENVIRONMENT_PATCH_KEYS = [
 	"DIVO_BACKEND_URL",
 	"DIVO_MEMBER_TOKEN",
 	"DIVO_DEPARTMENT_ID",
+	"DIVO_DEEPSEEK_TOOL_SURFACE",
 	"DIVO_RUNTIME_CONTEXT_PATH",
 	"DIVO_RUN_CONTEXT_PATH",
 	"DIVO_SKILL_DIRS",
@@ -545,8 +584,8 @@ export const RUNTIME_ENVIRONMENT_PATCH_KEYS = [
 	"DIVO_HOME",
 ];
 
-export function buildRuntimeEnvironmentPatch(values) {
-	const environment = buildChildEnvironment({}, values);
+export function buildRuntimeEnvironmentPatch(values, baseEnvironment = {}) {
+	const environment = buildChildEnvironment(baseEnvironment, values);
 	const patch = {};
 	for (const key of RUNTIME_ENVIRONMENT_PATCH_KEYS) {
 		patch[key] = Object.hasOwn(environment, key) ? environment[key] : null;
@@ -644,7 +683,9 @@ export function buildPiArgumentsWithResources(
 	values,
 	{ nativeSkillsRoot = "/run/divo-skills/current" } = {},
 ) {
-	const allowed = scopedManifest(values.isRunScoped);
+	const selectedModel = values.model ?? manifest.model;
+	const selectedProvider = values.provider ?? manifest.provider;
+	const allowed = scopedManifest(values.isRunScoped, values.channel);
 	const extensionArguments = allowed.extensions.flatMap((name) => [
 		"--extension",
 		path.join(divoDir, "extensions", name, "index.ts"),
@@ -662,15 +703,15 @@ export function buildPiArgumentsWithResources(
 		"--session-dir",
 		values.sessionDir,
 		"--provider",
-		values.provider,
+		selectedProvider,
 		"--model",
-		values.model,
+		selectedModel,
 		"--thinking",
-		thinkingLevelForModel(values.model, manifest.thinkingLevel),
+		thinkingLevelForModel(selectedModel, values.thinkingLevel),
 		"--append-system-prompt",
 		renderWorkspacePrompt({
 			workspace: values.workspace,
-			image_policy: imagePolicyFor(values.model),
+			image_policy: imagePolicyFor(selectedModel),
 			thread_id: values.thread,
 			run_dir: values.runDir,
 			thread_work_dir: values.isRunScoped
@@ -732,6 +773,7 @@ export function prepareDivoPiRun({
 	// terminal launch and every run before per-member selection existed use.
 	model = manifest.model,
 	provider = manifest.provider,
+	thinkingLevel,
 	print = false,
 	prompt,
 }) {
@@ -744,6 +786,7 @@ export function prepareDivoPiRun({
 	if (providerForModel(model) !== provider) {
 		throw new Error(`Model ${model} is served by ${providerForModel(model)}, not ${provider}`);
 	}
+	const selectedThinkingLevel = thinkingLevelForModel(model, thinkingLevel);
 	if (!/^[A-Za-z0-9._-]+$/.test(thread)) {
 		throw new Error("Thread must contain only letters, numbers, dot, underscore, or dash");
 	}
@@ -816,7 +859,7 @@ export function prepareDivoPiRun({
 	const agentConfiguration = buildAgentConfiguration({
 		provider,
 		model,
-		thinkingLevel: thinkingLevelForModel(model, manifest.thinkingLevel),
+		thinkingLevel: selectedThinkingLevel,
 	});
 	fs.writeFileSync(
 		path.join(agentDir, "settings.json"),
@@ -881,6 +924,7 @@ export function prepareDivoPiRun({
 		sessionPath,
 		thread,
 		threadWorkDir,
+		thinkingLevel: selectedThinkingLevel,
 		token,
 		workspace: path.resolve(workspace),
 	};

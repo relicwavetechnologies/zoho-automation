@@ -4,8 +4,10 @@
  */
 
 import { LARK_CARD_LIMITS } from '../../../domain/channel/surface-capabilities';
+import { PROGRESS_BOUNDS } from '../../../application/runtime/progress-limits';
 import type {
   ChannelBranding,
+  ChannelLedgerChild,
   ChannelLedgerRow,
   ChannelPlanStepStatus,
   ChannelRunState,
@@ -142,9 +144,22 @@ function hrElement(margin = '4px 0 0 0'): Record<string, unknown> {
  * interleaved rows is barely two steps of context.
  */
 const ACTIVITY_VISIBLE_ROWS = 9;
-const ACTIVITY_DETAIL_MAX   = 64;
-const ACTIVITY_SAY_MAX      = 200;
 const TODO_VISIBLE_ROWS     = 8;
+
+/*
+ * How long a row's text may be is a property of the text, not of this card, so
+ * it is read from the one table both ends of the wire read. These were a third
+ * copy of the same numbers — 64 for a detail, 200 for a sentence — sitting a
+ * step downstream of two that already disagreed with each other.
+ *
+ * How many *rows* fit is genuinely this card's own business: Lark gives an
+ * element a hard character budget, and nine activity rows and eight plan rows
+ * are what fits inside it. Those stay here.
+ */
+const ACTIVITY_LABEL_MAX  = PROGRESS_BOUNDS.label.max;
+const ACTIVITY_DETAIL_MAX = PROGRESS_BOUNDS.detail.max;
+const ACTIVITY_SAY_MAX    = PROGRESS_BOUNDS.say.max;
+const ELAPSED_MAX         = PROGRESS_BOUNDS.elapsed.max;
 
 const RUN_STATE_WORD: Record<ChannelRunState, string> = {
   queued:   'Queued',
@@ -198,16 +213,13 @@ export function statusCounterText(timeline: ChannelTimeline, now = Date.now()): 
 }
 
 /**
- * Header title: what the user asked for. The state is a chip beside it and the
- * bot's name is printed above every card by the client, so neither belongs here
- * — the title is the one line that makes a chat full of Divo cards scannable.
+ * Header title: the run's state, and the bot's name is printed above every card
+ * by the client so it does not belong here.
+ *
+ * This used to prefer a `subject` — a short restatement of the request — and
+ * fall back to the state. Nothing ever set one, in any channel, so the fallback
+ * was the whole function.
  */
-function statusHeaderTitle(timeline?: ChannelTimeline): string {
-  const subject = timeline?.subject?.trim();
-  if (subject) return subject;
-  return statusStateTitle(timeline);
-}
-
 function statusStateTitle(timeline?: ChannelTimeline): string {
   const state = timeline?.state;
   if (!state) return CARD_TITLE;
@@ -215,6 +227,25 @@ function statusStateTitle(timeline?: ChannelTimeline): string {
   if (state === 'done')    return 'Done';
   return `${RUN_STATE_WORD[state]}…`;
 }
+
+/**
+ * Text that has crossed the escape and may sit inside the card's markup.
+ *
+ * A nominal type with no runtime cost, and the point of it is that
+ * `sanitizeRunText` is the only thing that produces one. Every line of this
+ * card is assembled from `CardText` and from string literals written in this
+ * file, so a value off the wire cannot reach the markup without being escaped
+ * on the way — not because each author remembered, but because the alternative
+ * does not compile.
+ *
+ * It used to be each author's job, and three fields were missed: a ledger row's
+ * label, a child agent's label, and a declared step's title. Those three are
+ * precisely the ones whose text originates outside the trust seam — a tool
+ * name, an agent's role, and a checklist item the *model* wrote — and neither
+ * bound applied on the way in strips these characters, because bounding text
+ * and escaping markup are different jobs.
+ */
+export type CardText = string & { readonly __cardEscaped: unique symbol };
 
 /**
  * Text from a run, made safe to sit inside the card's own markup.
@@ -227,7 +258,7 @@ function statusStateTitle(timeline?: ChannelTimeline): string {
  * characters are left alone — stripping them would rewrite `my_file.txt`, and
  * the worst they do is italicise part of a line.
  */
-export function sanitizeRunText(value: string, maxLength: number): string {
+export function sanitizeRunText(value: string, maxLength: number): CardText {
   const flat = value
     .replace(/[<>`]/g, '')
     .replace(/\s+/g, ' ')
@@ -237,10 +268,25 @@ export function sanitizeRunText(value: string, maxLength: number): string {
     // rest of the card looks like its caption.
     .replace(/^\s*(?:#{1,6}|>|\*\*)\s*/, '')
     .trim();
-  return flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat;
+  return (flat.length > maxLength ? `${flat.slice(0, maxLength - 1)}…` : flat) as CardText;
 }
 
-function truncateOutcome(value: string): string {
+/**
+ * The card's own furniture, wrapped around text that has already been escaped.
+ *
+ * These take `CardText` rather than `string` on purpose. The markup they add is
+ * written here as a literal and never passed in, so the only way to get an
+ * emphasised or greyed span is to hand one of them a value that crossed the
+ * escape — which is what makes "every field is escaped" a fact about the types
+ * rather than a habit.
+ */
+const bold = (text: CardText): CardText => `**${text}**` as CardText;
+const grey = (text: CardText): CardText => `<font color='grey'>${text}</font>` as CardText;
+
+/** Static text this file wrote itself, which needs no escaping. */
+const own = (literal: string): CardText => literal as CardText;
+
+function truncateOutcome(value: string): CardText {
   return sanitizeRunText(value, ACTIVITY_DETAIL_MAX);
 }
 
@@ -265,11 +311,31 @@ function activityLine(row: ChannelLedgerRow, indent: string): string {
     return `${indent}${sanitizeRunText(row.label, ACTIVITY_SAY_MAX)}`;
   }
   const marker = STEP_MARKERS[row.status];
-  const calls  = row.count > 1 ? ` <font color='grey'>×${row.count}</font>` : '';
-  const detail = row.outcome?.trim()
-    ? `  <font color='grey'>${truncateOutcome(row.outcome)}</font>`
-    : '';
-  return `${indent}${marker} **${row.label}**${calls}${detail}`;
+  // A tool's own name, which reaches this card from the container. It was the
+  // one field on this line nothing escaped.
+  const label  = bold(sanitizeRunText(row.label, ACTIVITY_LABEL_MAX));
+  const calls  = row.count > 1 ? ` ${grey(own(`×${row.count}`))}` : '';
+  const detail = row.outcome?.trim() ? `  ${grey(truncateOutcome(row.outcome))}` : '';
+  return `${indent}${marker} ${label}${calls}${detail}`;
+}
+
+/**
+ * `　└ ◐ **scout**  read the pipeline export · 1m 30s` — one agent under the
+ * step that farmed the work out.
+ *
+ * The clock is appended here rather than travelling glued to the task, which is
+ * what the card actually wanted and what a card is for. The web draws the same
+ * two facts stacked instead, and neither surface has to unpick the other's
+ * sentence to do it.
+ */
+function childLine(child: ChannelLedgerChild, indent: string): string {
+  const marker = STEP_MARKERS[child.status];
+  // The agent's role, written by the model when it spawned the child.
+  const label = bold(sanitizeRunText(child.label, ACTIVITY_LABEL_MAX));
+  const task  = child.outcome?.trim() ? truncateOutcome(child.outcome) : '';
+  const clock = child.elapsed?.trim() ? sanitizeRunText(child.elapsed, ELAPSED_MAX) : '';
+  const detail = [task, clock].filter(Boolean).join(' · ') as CardText;
+  return `${indent}${marker} ${label}${detail ? `  ${grey(detail)}` : ''}`;
 }
 
 /**
@@ -403,7 +469,7 @@ function activityMarkdown(timeline: ChannelTimeline): string | undefined {
   for (const row of visible) {
     lines.push(activityLine(row, ''));
     for (const child of row.children ?? []) {
-      lines.push(activityLine(child, '　└ '));
+      lines.push(childLine(child, '　└ '));
     }
   }
   return lines.join('\n');
@@ -438,12 +504,13 @@ function planPanel(timeline: ChannelTimeline): Record<string, unknown> | undefin
   const visible = hidden > 0 ? items.slice(0, TODO_VISIBLE_ROWS) : items;
   const body = [
     ...visible.map(item => {
-      const title = item.status === 'done'
-        ? `<font color='grey'>${item.title}</font>`
-        : item.title;
+      // The model wrote this title. It reaches the card exactly as written, and
+      // it was the last of the three fields nothing escaped.
+      const safe  = sanitizeRunText(item.title, ACTIVITY_LABEL_MAX);
+      const title = item.status === 'done' ? grey(safe) : safe;
       return `${STEP_MARKERS[item.status]} ${title}`;
     }),
-    ...(hidden > 0 ? [`<font color='grey'>+${hidden} more</font>`] : []),
+    ...(hidden > 0 ? [grey(own(`+${hidden} more`))] : []),
   ].join('\n');
 
   return {
@@ -489,7 +556,7 @@ function normalizeLive(value: string): string {
  * two together is the same sentence twice in different words.
  */
 function narrationMarkdown(timeline: ChannelTimeline): string | undefined {
-  const active = timeline.narrationActive?.trim() || timeline.liveLabel?.trim();
+  const active = timeline.liveLabel?.trim();
   if (!active) return undefined;
   if (timeline.ledger?.some(row => row.status === 'running')) return undefined;
 
@@ -822,6 +889,21 @@ export interface CallbackCardInput {
  * the webhook; this function owns presentation only.
  */
 export function buildCallbackCard(input: CallbackCardInput): string {
+  return JSON.stringify({
+    msg_type: 'interactive',
+    card: JSON.stringify(buildCallbackCardData(input)),
+  });
+}
+
+/**
+ * The same card as a value rather than a message envelope.
+ *
+ * Lark wants the card inline when it is answering a button press and doubly
+ * stringified when it is being sent as a message. Split so a caller that needs
+ * the first does not have to parse our own JSON back out of the second — which
+ * is how a card ends up escaped twice and renders as a wall of backslashes.
+ */
+export function buildCallbackCardData(input: CallbackCardInput): Record<string, unknown> {
   const elements: Record<string, unknown>[] = [];
   for (const block of input.markdownBlocks) {
     for (const chunk of splitMarkdown(softenHeadings(block))) {
@@ -858,7 +940,7 @@ export function buildCallbackCard(input: CallbackCardInput): string {
     });
   }
 
-  const card = {
+  return {
     schema: '2.0',
     config: {
       width_mode: 'fill',
@@ -876,7 +958,6 @@ export function buildCallbackCard(input: CallbackCardInput): string {
       elements,
     },
   };
-  return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
 }
 
 interface BuildFinalCardResult {
@@ -1254,13 +1335,11 @@ export function buildStatusCard(input: StatusCardInput): string {
   return JSON.stringify({ msg_type: 'interactive', card: JSON.stringify(card) });
 }
 
-/** Notification preview text — the run's subject and state, not a generic "Divo AI". */
+/** Notification preview text — the run's state and counter, not a generic "Divo AI". */
 function statusSummary(timeline: ChannelTimeline | undefined, now: number): string {
-  const title   = statusHeaderTitle(timeline);
   const state   = statusStateTitle(timeline);
   const counter = timeline ? statusCounterText(timeline, now) : '';
-  const tail    = [title === state ? '' : state, counter].filter(Boolean).join(' · ');
-  return tail ? `${title} — ${tail}` : title;
+  return counter ? `${state} — ${counter}` : state;
 }
 
 /**
@@ -1278,14 +1357,12 @@ function buildStatusHeader(
   branding: ChannelBranding | undefined,
 ): Record<string, unknown> | undefined {
   const state = timeline?.state;
-  if (!state) return buildHeader(timeline?.subject?.trim(), branding);
-  const subject = timeline.subject?.trim();
+  if (!state) return buildHeader(undefined, branding);
   return {
     template: 'default',
-    // No title unless the run has a subject. The only other thing to put there
-    // is the state, which is the chip sitting immediately beside it — and
-    // "Working… | Working" is the one-fact-twice this card exists to remove.
-    ...(subject ? { title: { tag: 'plain_text', content: subject } } : {}),
+    // No title at all. The only thing there is to put there is the state, which
+    // is the chip sitting immediately beside it — and "Working… | Working" is
+    // the one-fact-twice this card exists to remove.
     text_tag_list: [{
       tag:   'text_tag',
       text:  { tag: 'plain_text', content: RUN_STATE_WORD[state] },

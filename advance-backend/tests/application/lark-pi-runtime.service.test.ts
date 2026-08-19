@@ -5,6 +5,10 @@ import {
   LarkPiRuntimeError,
   LarkPiRuntimeService,
 } from '../../src/application/runtime/lark-pi-runtime.service.ts';
+import {
+  RunLatencyRecorder,
+  type RunLatencySpanStore,
+} from '../../src/application/observability/run-latency-recorder.ts';
 
 const logger = {
   child() { return this; },
@@ -44,6 +48,78 @@ function runtimeInput() {
     threadId: 'lark:chat-1:user-1',
   } as any;
 }
+
+test('records one causal runtime path without storing prompts or answers', async () => {
+  const spans: Array<Record<string, any>> = [];
+  const admissions: unknown[] = [];
+  const controllerStartedAt = Date.now() - 5;
+  const store: RunLatencySpanStore = {
+    findOwnedIdByRequestId: async () => {
+      throw new Error('bound execution id should avoid a late lookup');
+    },
+    insertSpans: async batch => { spans.push(...batch); },
+  };
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    runLatencyRecorder: new RunLatencyRecorder(store, logger),
+    executionRuns: {
+      admit: async input => {
+        admissions.push(input);
+        return 'execution-1';
+      },
+      failDetached() {},
+    },
+    fetch: async () => new Response(JSON.stringify({
+      text: 'Finished secret answer',
+      runtimeTelemetry: {
+        wallMs: 5,
+        phases: [{
+          name: 'model',
+          startedAt: controllerStartedAt,
+          endedAt: controllerStartedAt + 5,
+          durationMs: 5,
+          status: 'ok',
+        }],
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  });
+
+  await service.run(runtimeInput());
+  await new Promise(resolve => setImmediate(resolve));
+
+  const byName = new Map(spans.map(span => [span.name, span]));
+  assert.equal(admissions.length, 1);
+  assert.equal(byName.get('runtime.run.admit')?.parentSpanId, 'runtime.request');
+  assert.equal(byName.get('runtime.request')?.status, 'ok');
+  assert.equal(byName.get('runtime.controller.turn')?.spanId, 'runtime.controller');
+  assert.equal(byName.get('runtime.controller.turn')?.parentSpanId, 'runtime.request');
+  assert.equal(byName.get('runtime.controller.connect')?.parentSpanId, 'runtime.controller');
+  assert.equal(byName.get('controller.model')?.parentSpanId, 'runtime.controller');
+  assert.equal(byName.get('controller.model')?.source, 'pi-controller');
+  assert.equal(byName.has('runtime.session.resolve'), true);
+  assert.equal(byName.has('runtime.effects.knowledge'), true);
+  const serialized = JSON.stringify(spans);
+  assert.equal(serialized.includes('Do the work'), false);
+  assert.equal(serialized.includes('Finished secret answer'), false);
+});
 
 test('mints a scoped Lark lease and sends no caller-selected profile or approval', async () => {
   let controllerBody: Record<string, unknown> | undefined;
@@ -456,6 +532,97 @@ test('persists private turns idempotently and teaches from the recent human conv
   ]);
 });
 
+/*
+ * A web ask carrying a video reads, to the model, as the evidence block first
+ * and the member's question after it. Anything that learns durable personal
+ * facts must be handed the question — screen text is not something the member
+ * said, and the extractor's input window would be spent on the excerpt before
+ * ever reaching their words.
+ */
+const VIDEO_ASK = '[Video: "flow.mov" — Divo watched this recording (30s, 1 screens examined). '
+  + 'frame:1 Zoho Books — Overdue invoice 4182]\n\nwhich of these is overdue?';
+
+function learningService(history: {
+  ok: boolean;
+  value?: unknown;
+  error?: unknown;
+}, capture: (input: any) => void) {
+  return new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    runEffectReceipts,
+    conversationHistory: {
+      appendTurn: async (_chatId, turn) => ({ ok: true as const, value: { id: 'turn-1', ...turn } }),
+      getHistory: async () => history as any,
+    },
+    knowledgeLearning: { captureCompletedTurn: async (input: any) => { capture(input); } },
+    fetch: async () => new Response(JSON.stringify({ text: 'Invoice 4182.' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+  } as any);
+}
+
+const videoRun = () => ({
+  ...runtimeInput(),
+  incoming: {
+    ...runtimeInput().incoming,
+    chatType: 'p2p' as const,
+    messageId: 'om-video-1',
+    timestamp: '2026-08-18T00:00:02.000Z',
+    text: VIDEO_ASK,
+  },
+  ask: { text: 'which of these is overdue?', attachments: [] },
+});
+
+test('learns from what the member typed, not from what Divo read off the screen', async () => {
+  let captured: any;
+  const service = learningService({
+    ok: true,
+    value: [
+      { id: '1', role: 'user', content: 'earlier question', timestamp: '2026-08-18T00:00:00.000Z' },
+      { id: '2', role: 'user', content: VIDEO_ASK, timestamp: '2026-08-18T00:00:02.000Z' },
+    ],
+  }, input => { captured = input; });
+
+  await service.run(videoRun() as any);
+
+  assert.equal(captured.userMessages.at(-1), 'which of these is overdue?');
+  assert.equal(
+    JSON.stringify(captured.userMessages).includes('Overdue invoice 4182'),
+    false,
+    'machine-read screen text must never be learned as the member\'s own words',
+  );
+});
+
+test('keeps the member\'s words even when the conversation could not be read back', async () => {
+  let captured: any;
+  // The degraded path: persistence threw, so there is no history to correct —
+  // and it is exactly the path a guard on the happy path alone would miss.
+  const service = learningService(
+    { ok: false, error: new Error('postgres is down') },
+    input => { captured = input; },
+  );
+
+  await service.run(videoRun() as any);
+
+  assert.equal(captured.userMessages.at(-1), 'which of these is overdue?');
+  assert.equal(JSON.stringify(captured.userMessages).includes('Overdue invoice 4182'), false);
+});
+
 test('a protected run is neither persisted nor learned and emits cleanup-confirmed provenance', async () => {
   let persisted = 0;
   let learned = 0;
@@ -699,6 +866,7 @@ test('does not accept another Lark workspace session for the same member', async
 
 test('streams sanitized controller progress before returning the final text', async () => {
   const progress: unknown[] = [];
+  const spans: Array<Record<string, any>> = [];
   const service = new LarkPiRuntimeService({
     prisma: {
       memberSession: {
@@ -715,6 +883,14 @@ test('streams sanitized controller progress before returning the final text', as
     instanceId: 'pi-local-1',
     leaseTtlSeconds: 3_600,
     runTimeoutMs: 30_000,
+    runLatencyRecorder: new RunLatencyRecorder({
+      findOwnedIdByRequestId: async () => { throw new Error('run is bound at admission'); },
+      insertSpans: async batch => { spans.push(...batch); },
+    }, logger),
+    executionRuns: {
+      admit: async () => 'execution-1',
+      failDetached() {},
+    },
     fetch: async () => new Response([
       JSON.stringify({
         type: 'progress',
@@ -747,6 +923,9 @@ test('streams sanitized controller progress before returning the final text', as
       }),
       JSON.stringify({ type: 'heartbeat' }),
       JSON.stringify({ type: 'progress', progress: { type: 'working' } }),
+      JSON.stringify({ type: 'progress', progress: { type: 'thinking' } }),
+      JSON.stringify({ type: 'progress', progress: { type: 'thought', index: 0, text: 'Checking.' } }),
+      JSON.stringify({ type: 'progress', progress: { type: 'answer_delta', index: 0, delta: 'Fin' } }),
       JSON.stringify({ type: 'progress', progress: { type: 'writing' } }),
       JSON.stringify({ type: 'result', text: 'Finished' }),
       '',
@@ -781,8 +960,20 @@ test('streams sanitized controller progress before returning the final text', as
       isError: false,
     },
     { type: 'working' },
+    { type: 'thinking' },
+    { type: 'thought', index: 0, text: 'Checking.' },
+    { type: 'answer_delta', index: 0, delta: 'Fin' },
     { type: 'writing' },
   ]);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(
+    spans.filter(span => span.name.startsWith('runtime.output.')).map(span => span.name),
+    [
+      'runtime.output.first_progress',
+      'runtime.output.first_reasoning',
+      'runtime.output.first_text',
+    ],
+  );
 });
 
 test('rejects an unterminated oversized controller frame without buffering indefinitely', async () => {
@@ -1595,7 +1786,7 @@ test('a caller-issued session is used verbatim, not the member\'s own sign-in', 
   assert.equal(where['revokedAt'], null);
 });
 
-test('the run asks for the Pro model pinned to the Lark channel', async () => {
+test('the run asks for Flash at high reasoning when Lark supplies no choice', async () => {
   let runBody: Record<string, unknown> | undefined;
   const service = new LarkPiRuntimeService({
     prisma: {
@@ -1624,8 +1815,66 @@ test('the run asks for the Pro model pinned to the Lark channel', async () => {
 
   await service.run(runtimeInput());
 
-  assert.equal(runBody?.['model'], 'deepseek-v4-pro');
+  assert.equal(runBody?.['model'], 'deepseek-v4-flash');
   assert.equal(runBody?.['provider'], 'deepseek');
+  assert.equal(runBody?.['thinkingLevel'], 'high');
+});
+
+test('an allowed web choice reaches the controller as the exact model and effort pair', async () => {
+  let runBody: Record<string, unknown> | undefined;
+  const service = new LarkPiRuntimeService({
+    prisma: {
+      memberSession: {
+        findFirst: async () => ({
+          sessionId: 'session-1',
+          expiresAt: new Date(Date.now() + 2 * 60 * 60_000),
+        }),
+      },
+    } as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    allowedModelsFor: async () => ['gpt-5.6-luna'],
+    fetch: (async (_url: string, init?: RequestInit) => {
+      runBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      return new Response(JSON.stringify({ text: 'ok' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as any,
+  });
+
+  await service.run({
+    ...runtimeInput(),
+    modelSelection: { model: 'gpt-5.6-luna', reasoningEffort: 'medium' },
+  });
+
+  assert.equal(runBody?.['model'], 'gpt-5.6-luna');
+  assert.equal(runBody?.['provider'], 'openai');
+  assert.equal(runBody?.['thinkingLevel'], 'medium');
+});
+
+test('a tampered web choice is refused before the controller is called', async () => {
+  const service = new LarkPiRuntimeService({
+    prisma: {} as any,
+    logger,
+    memberJwtSecret: 'test-secret',
+    backendUrl: 'https://backend.example',
+    controllerUrl: 'http://127.0.0.1:4317',
+    instanceId: 'pi-local-1',
+    leaseTtlSeconds: 3_600,
+    runTimeoutMs: 30_000,
+    allowedModelsFor: async () => ['deepseek-v4-flash'],
+  });
+
+  await assert.rejects(
+    service.modelFor('user-1', { model: 'gpt-5.6-luna', reasoningEffort: 'high' }),
+    (error) => error instanceof LarkPiRuntimeError && error.code === 'model_not_allowed',
+  );
 });
 
 function larkIngressInput(overrides: Record<string, unknown> = {}) {

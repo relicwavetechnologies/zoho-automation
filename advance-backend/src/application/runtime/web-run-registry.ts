@@ -1,3 +1,4 @@
+import type { AskAttachment } from '../../domain/channel/web-thread';
 import type { Logger } from '../../shared/logger';
 import type { WebRunEvent } from './web-run.service';
 
@@ -33,6 +34,8 @@ export interface WebRunHandle {
   readonly userId: string;
   /** What was asked. Shown by a reader who arrives after the run started. */
   readonly prompt: string;
+  /** The files it was asked with, so a reload mid-run redraws the whole ask. */
+  readonly attachments: readonly AskAttachment[];
   readonly startedAt: number;
   readonly settled: boolean;
 }
@@ -46,8 +49,19 @@ interface Entry {
    * every token or every historical timeline frame.
    */
   latestTimeline: Extract<WebRunEvent, { type: 'timeline' }> | undefined;
+  /** The reading in progress, so a reader who attaches mid-wait sees it too. */
+  latestWatching: Extract<WebRunEvent, { type: 'watching' }> | undefined;
   latestAnswer: Extract<WebRunEvent, { type: 'answer' }> | undefined;
   answerOverflowed: boolean;
+  /**
+   * Documents this run has finished, newest version per id.
+   *
+   * Kept rather than published-and-forgotten because prose is disposable and a
+   * document is not: a reader whose laptop slept through the moment a report was
+   * saved would otherwise come back to a thread that never mentions it. Keyed by
+   * id so a revised document replaces itself instead of queueing twice.
+   */
+  readonly artifacts: Map<string, Extract<WebRunEvent, { type: 'artifact' }>>;
   terminal: WebRunEvent | undefined;
   readonly listeners: Set<(event: WebRunEvent) => void>;
   sweepAt: ReturnType<typeof setTimeout> | undefined;
@@ -58,6 +72,7 @@ export interface WebRunStartInput {
   readonly threadId: string;
   readonly userId: string;
   readonly prompt: string;
+  readonly attachments?: readonly AskAttachment[];
   readonly controller: AbortController;
   /** The run itself. The registry drains it; the caller does not. */
   readonly events: AsyncGenerator<WebRunEvent>;
@@ -113,13 +128,16 @@ export class WebRunRegistry {
         threadId: input.threadId,
         userId: input.userId,
         prompt: input.prompt,
+        attachments: input.attachments ?? [],
         startedAt: Date.now(),
         settled: false,
       },
       controller: input.controller,
       latestTimeline: undefined,
+      latestWatching: undefined,
       latestAnswer: undefined,
       answerOverflowed: false,
+      artifacts: new Map(),
       terminal: undefined,
       listeners: new Set(),
       sweepAt: undefined,
@@ -158,7 +176,14 @@ export class WebRunRegistry {
         } else if (event.type === 'answer_reset') {
           entry.latestAnswer = { type: 'answer', text: '' };
           entry.answerOverflowed = false;
-        } else {
+        } else if (event.type === 'artifact') {
+          entry.artifacts.set(event.artifactId, event);
+        } else if (event.type === 'watching') {
+          // Nothing is remembered. A reader who attaches after the reading has
+          // finished should see the run, not a stale progress bar for a video
+          // that was taken in minutes ago.
+          entry.latestWatching = event.step === 'ready' ? undefined : event;
+        } else if (event.type === 'answer') {
           if (event.text.length <= MAX_RECONNECT_ANSWER_CHARS) {
             entry.latestAnswer = event;
             entry.answerOverflowed = false;
@@ -212,7 +237,11 @@ export class WebRunRegistry {
 
     const queue: WebRunEvent[] = [];
     if (entry.latestTimeline) queue.push(entry.latestTimeline);
+    if (entry.latestWatching) queue.push(entry.latestWatching);
     if (entry.latestAnswer) queue.push(entry.latestAnswer);
+    // Before the terminal event, so a view that attaches after the run finished
+    // still opens the documents rather than receiving them behind the ending.
+    for (const artifact of entry.artifacts.values()) queue.push(artifact);
     if (entry.terminal) queue.push(entry.terminal);
 
     if (entry.handle.settled) {
@@ -315,6 +344,27 @@ function enqueueViewEvent(queue: WebRunEvent[], event: WebRunEvent): void {
   if (event.type === 'answer') {
     removeQueuedAnswerEvents(queue);
     queue.push(event);
+    return;
+  }
+  if (event.type === 'watching') {
+    // Progress replaces progress. A view that fell behind wants to know how far
+    // along the reading is now, never how far along it was three redraws ago.
+    const index = queue.findIndex(
+      candidate => candidate.type === 'watching' && candidate.fileName === event.fileName,
+    );
+    if (index >= 0) queue[index] = event;
+    else queue.push(event);
+    return;
+  }
+  if (event.type === 'artifact') {
+    // A view too slow to paint version 3 has no use for versions 1 and 2 of the
+    // same document — it would open the panel, then replace its contents twice
+    // in front of the reader. Only the newest form of each id survives.
+    const index = queue.findIndex(
+      candidate => candidate.type === 'artifact' && candidate.artifactId === event.artifactId,
+    );
+    if (index >= 0) queue[index] = event;
+    else queue.push(event);
     return;
   }
 

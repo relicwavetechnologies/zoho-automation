@@ -37,7 +37,23 @@ export interface SurfaceCapabilities {
   readonly maxMessageBytes: number;
   /** How the work log reaches the reader. */
   readonly worklog: 'patched-card' | 'streamed';
-  readonly approvals: 'card-buttons' | 'inline';
+  /** How densely public-web evidence is attached to the claims it supports. */
+  readonly citations: 'compact' | 'claim-level';
+  /**
+   * How much of a question this surface can put to a person.
+   *
+   * `buttons` is a row of choices and nothing else — no text field, no
+   * multi-select that survives a redraw, which is a chat card's real limit
+   * rather than a style. `form` is a surface that can hold every question shape
+   * at once, so a three-part decision arrives as one card instead of three.
+   *
+   * Read by the decision module when it picks a renderer. A decision the
+   * buttons surface cannot carry is still delivered there — as a card that says
+   * what is being asked and sends the reader to the web — in the same spirit as
+   * `artifacts: 'none'`: the limit shows up as an honest absence rather than as
+   * something broken.
+   */
+  readonly decisions: 'buttons' | 'form';
   /** May Divo offer "this is better on the web"? */
   readonly handoff: boolean;
 }
@@ -53,27 +69,47 @@ const LARK: SurfaceCapabilities = {
   maxBlockChars: LARK_CARD_LIMITS.maxBlockChars,
   maxMessageBytes: LARK_CARD_LIMITS.maxCardBytes,
   worklog: 'patched-card',
-  approvals: 'card-buttons',
+  citations: 'compact',
+  decisions: 'buttons',
   handoff: false,
 };
 
 /**
- * The web's capabilities during level 1 — deliberately identical to Lark's
- * except for how the work log arrives.
+ * The web's capabilities — Lark's, plus the presentation modes its browser
+ * renderer can support without overwhelming a chat card.
  *
- * The web can obviously do more than this. Granting it now would mean the two
- * surfaces were never observed to behave the same, and "one soul" would be a
- * claim rather than something that had been true and was then relaxed on
- * purpose. Level 2 changes these values; if that turns out to need code, the
- * architecture was wrong and this is where we find out.
+ * This started identical to Lark on purpose, so that "one soul" was something
+ * observed rather than claimed. Each value relaxed since then is backed by a
+ * renderer that exists:
  *
- * `worklog: 'streamed'` is the one honest difference: a browser draws the log
- * natively instead of re-editing a card. It changes nothing the model decides.
+ * `worklog: 'streamed'` — a browser draws the log natively instead of re-editing
+ * a card. It changes nothing the model decides.
+ *
+ * `artifacts: 'inline'` — the web has a panel beside the thread that renders a
+ * document, and the runtime gives a web run the badge tool that fills it. A Lark
+ * run is never given that tool, so its `'none'` is enforced by absence and not
+ * by a rule the model is asked to remember.
+ *
+ * `decisions: 'form'` — the composer band swaps to the decision card, which can
+ * hold every question shape at once. Lark answers the same decision one card at
+ * a time because a card is a row of buttons; both settle through one module.
+ *
+ * `citations: 'claim-level'` — the answer renderer turns ordinary Markdown
+ * links into source marks beside prose and inside tables. Lark can render links
+ * too, but repeating one on every factual line would spend its small card on
+ * provenance rather than the answer, so it keeps the compact mode.
+ *
+ * Charts and the table/size caps stay where they are. There is no chart renderer
+ * yet, and raising a cap the browser has not been observed handling is exactly
+ * the shortcut this record exists to prevent.
  */
 const WEB: SurfaceCapabilities = {
   ...LARK,
   key: 'web',
   worklog: 'streamed',
+  citations: 'claim-level',
+  artifacts: 'inline',
+  decisions: 'form',
 };
 
 /** A desktop run answers into a terminal that owns its own rendering. */

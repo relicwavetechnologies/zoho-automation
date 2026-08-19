@@ -21,6 +21,13 @@ test("a phase reports what it cost", async () => {
 	});
 	assert.equal(result, "bootstrap");
 	assert.equal(phases.ms("skills"), 120);
+	assert.deepEqual(phases.samples(), [{
+		name: "skills",
+		startedAt: 1_000,
+		endedAt: 1_120,
+		durationMs: 120,
+		status: "ok",
+	}]);
 });
 
 test("a phase that throws is still measured", async () => {
@@ -34,6 +41,7 @@ test("a phase that throws is still measured", async () => {
 		/provider unavailable/,
 	);
 	assert.equal(phases.ms("model"), 11_000);
+	assert.equal(phases.samples()[0].status, "error");
 });
 
 test("a phase that runs twice reports the total, not the last attempt", async () => {

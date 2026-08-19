@@ -16,7 +16,7 @@ describe('ManagerTeachService', () => {
       prisma: { departmentMembership: { findFirst: async () => null } } as never,
       queue: {} as never,
       logger: noopLogger,
-      mediaProcessor: {} as never,
+      understanding: {} as never,
       personaProcessor: {} as never,
       maxVideoBytes: 100,
       rawRetentionHours: 24,
@@ -80,13 +80,17 @@ describe('ManagerTeachService', () => {
       prisma,
       queue: { enqueue: async (payload: unknown) => { enqueued.push(payload); return 'queue-1'; } } as never,
       logger: noopLogger,
-      mediaProcessor: {
-        process: async (input: any) => {
+      understanding: {
+        understand: async (input: any) => {
           await input.assertActive();
-          await mkdir(input.evidenceDir, { recursive: true });
-          const manifestPath = join(input.evidenceDir, 'evidence-manifest.json');
-          await writeFile(manifestPath, '{}');
-          return { manifestPath, sizeBytes: 2, frameCount: 3, warningCount: 0 };
+          await mkdir(input.workDir, { recursive: true });
+          return {
+            video: { durationSeconds: 3 },
+            extraction: { strategy: 'scene' },
+            frames: [{ sequence: 1, path: 'frame_0001.jpg', bytes: 5, reading: { ocrText: 'x' } }],
+            transcript: { provider: 'openai', model: 'm', timing: 'chunk', durationSeconds: 3, segments: [], text: '', warnings: [] },
+            warnings: [],
+          };
         },
       } as never,
       personaProcessor: {} as never,
@@ -113,7 +117,7 @@ describe('ManagerTeachService', () => {
       prisma: { managerTeachArtifact: { findMany: async () => [] } } as never,
       queue: {} as never,
       logger: noopLogger,
-      mediaProcessor: {} as never,
+      understanding: {} as never,
       personaProcessor: {
         getContext: async () => { calls.push('context'); return { teachSessionId: 'teach-1' }; },
         apply: async () => {
@@ -174,7 +178,7 @@ describe('ManagerTeachService stalled ingestion recovery', () => {
       },
     } as never,
     logger: noopLogger,
-    mediaProcessor: {} as never,
+    understanding: {} as never,
     personaProcessor: {} as never,
     maxVideoBytes: 100,
     rawRetentionHours: 24,

@@ -27,6 +27,7 @@
  */
 
 import type { Logger } from '../../shared/logger';
+import type { AskAttachment } from '../../domain/channel/web-thread';
 import type { LarkPiRuntimeAttachment } from './lark-pi-runtime.service';
 import {
   audioMimeType,
@@ -54,8 +55,20 @@ export interface UploadTranscriber {
 export interface UploadIntake {
   /** The files the container will actually receive. */
   readonly attachments: readonly LarkPiRuntimeAttachment[];
+  /** The same usable file bytes, kept for backend provider actions such as Zoho attachment. */
+  readonly providerFiles: readonly UploadedFile[];
   /** The ask, with every refusal and transcript folded in ahead of it. */
   readonly text: string;
+  /**
+   * Every file that was handed over, named with what became of it.
+   *
+   * Not the same list as `attachments`, and that is the point: audio is heard
+   * and never staged, an unopenable format is refused and never staged, and
+   * both of those are still things the person attached. This is the only place
+   * all three outcomes exist together, so it is where the record is made —
+   * anywhere downstream could only see the survivors.
+   */
+  readonly manifest: readonly AskAttachment[];
 }
 
 /**
@@ -109,7 +122,17 @@ export async function intakeUploads(input: {
   readonly abortSignal?: AbortSignal;
 }): Promise<UploadIntake> {
   const attachments: LarkPiRuntimeAttachment[] = [];
+  const providerFiles: UploadedFile[] = [];
   const notices: string[] = [];
+  const manifest: AskAttachment[] = [];
+  const noted = (file: UploadedFile, outcome: AskAttachment['outcome']): void => {
+    manifest.push({
+      name: file.originalname,
+      mime: file.mimetype,
+      bytes: file.buffer.length,
+      outcome,
+    });
+  };
 
   for (const file of input.files) {
     if (isAudio(file)) {
@@ -117,6 +140,7 @@ export async function intakeUploads(input: {
       notices.push(heard === null
         ? unheardAudioNotice(file.originalname)
         : voiceTranscriptNotice(file.originalname, heard));
+      noted(file, 'audio');
       continue;
     }
 
@@ -127,15 +151,20 @@ export async function intakeUploads(input: {
     });
     if (!supported) {
       notices.push(unsupportedDocumentNotice(file.originalname));
+      noted(file, 'refused');
       continue;
     }
 
     attachments.push(attachmentFromUpload(file));
+    providerFiles.push(file);
+    noted(file, 'file');
   }
 
   return {
     attachments,
+    providerFiles,
     text: [...notices, input.text.trim()].filter(Boolean).join('\n\n'),
+    manifest,
   };
 }
 

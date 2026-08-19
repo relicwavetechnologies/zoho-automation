@@ -22,6 +22,8 @@ describe('intakeUploads', () => {
     assert.equal(intake.attachments.length, 1);
     assert.equal(intake.attachments[0]?.name, 'q3.pdf');
     assert.equal(intake.attachments[0]?.kind, 'file');
+    assert.equal(intake.providerFiles.length, 1);
+    assert.equal(intake.providerFiles[0]?.originalname, 'q3.pdf');
     assert.equal(intake.text, 'what is the total?');
   });
 
@@ -44,6 +46,7 @@ describe('intakeUploads', () => {
     });
 
     assert.equal(intake.attachments.length, 0);
+    assert.equal(intake.providerFiles.length, 0);
     assert.match(intake.text, /standup\.mp4/);
     assert.match(intake.text, /NOT SAVED/);
     assert.match(intake.text, /Do not guess or infer/i);
@@ -59,6 +62,7 @@ describe('intakeUploads', () => {
     });
 
     assert.equal(intake.attachments.length, 0);
+    assert.equal(intake.providerFiles.length, 0);
     assert.match(intake.text, /memo\.m4a/);
     assert.match(intake.text, /Please chase the Acme invoice\./);
     assert.match(intake.text, /what did I ask for\?$/);
@@ -149,6 +153,41 @@ describe('intakeUploads', () => {
 
     assert.equal(intake.attachments.length, 0);
     assert.equal(intake.text, 'hello');
+  });
+
+  it('names every file that was handed over, including the ones it staged nothing for', async () => {
+    /* The manifest is what the reader's own message is drawn from, and it is
+       the only place all three outcomes exist together: `attachments` holds
+       the staged file alone, so a transcript built from that would show a
+       person a message with no sign of the recording they attached and no sign
+       of the file that was turned away. */
+    const intake = await intakeUploads({
+      files: [
+        file('q3.pdf', 'application/pdf'),
+        file('memo.m4a', 'audio/mp4'),
+        file('clip.mp4', 'video/mp4'),
+      ],
+      text: 'go',
+      transcriber: heard('the numbers are in'),
+    });
+
+    assert.equal(intake.attachments.length, 1);
+    assert.deepEqual(intake.manifest.map(item => [item.name, item.outcome]), [
+      ['q3.pdf', 'file'],
+      ['memo.m4a', 'audio'],
+      ['clip.mp4', 'refused'],
+    ]);
+    assert.equal(intake.manifest[0]?.bytes, 5);
+    assert.equal(intake.manifest[0]?.mime, 'application/pdf');
+  });
+
+  it('says a recording was attached even when it could not be heard', async () => {
+    // The file is still something the person handed over, and the message they
+    // sent should say so whether or not anything came of it.
+    const intake = await intakeUploads({ files: [file('memo.m4a', 'audio/mp4')], text: 'go' });
+
+    assert.equal(intake.manifest.length, 1);
+    assert.equal(intake.manifest[0]?.outcome, 'audio');
   });
 
   it('hands over the exact bytes it was given', async () => {

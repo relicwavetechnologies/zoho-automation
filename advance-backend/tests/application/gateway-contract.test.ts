@@ -132,10 +132,18 @@ describe('public gateway request contract', () => {
   it('accepts either an exact toolId or an exact family for tools.list', () => {
     assert.equal(toolsListPayloadSchema.safeParse({ toolId: 'googleGmail' }).success, true);
     assert.equal(toolsListPayloadSchema.safeParse({ family: 'google' }).success, true);
+    assert.equal(toolsListPayloadSchema.safeParse({
+      toolIds: ['googleSheets'],
+      contractMode: 'complete',
+    }).success, true);
     assert.equal(toolsListPayloadSchema.safeParse({ family: 'unknown' }).success, false);
     assert.equal(toolsListPayloadSchema.safeParse({
       toolId: 'googleGmail',
       family: 'google',
+    }).success, false);
+    assert.equal(toolsListPayloadSchema.safeParse({
+      toolId: 'googleGmail',
+      contractMode: 'complete',
     }).success, false);
   });
 

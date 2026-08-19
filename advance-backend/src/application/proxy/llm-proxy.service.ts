@@ -14,6 +14,7 @@
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import { ExecutionRepository } from '../../infrastructure/persistence/execution.repository';
+import { ExecutionRunLifecycle } from '../observability/execution-run-lifecycle';
 import { TokenUsageService } from '../observability/token-usage.service';
 import { costUsd, DEFAULT_ALLOWED_MODELS } from '../observability/pricing';
 
@@ -55,12 +56,14 @@ const safeJson = (s: string | undefined): Record<string, unknown> => {
 
 export class LlmProxyService {
   private readonly repo: ExecutionRepository;
+  private readonly runs: ExecutionRunLifecycle;
   private readonly tokens: TokenUsageService;
   // In-memory per-user request timestamps for rate limiting (single-instance).
   private readonly hits = new Map<string, number[]>();
 
   constructor(private readonly prisma: PrismaClient, private readonly logger: Logger) {
     this.repo = new ExecutionRepository(prisma);
+    this.runs = new ExecutionRunLifecycle(this.repo, logger);
     this.tokens = new TokenUsageService(prisma, logger);
   }
 
@@ -85,7 +88,8 @@ export class LlmProxyService {
     if (policy?.blocked) return { allow: false, status: 403, reason: 'This account is blocked from the AI proxy.' };
 
     // `input.model` is already canonical (route normalizes). When no policy has been
-    // set, members receive the shared default grant. Pro still requires an admin grant.
+    // set, members receive the shared default grant. An explicit policy can
+    // narrow that catalogue; this proxy remains the final enforcement point.
     const allowed: readonly string[] =
       policy && policy.allowedModels.length > 0 ? policy.allowedModels : DEFAULT_ALLOWED_MODELS;
     if (!allowed.includes(input.model)) {
@@ -143,8 +147,8 @@ export class LlmProxyService {
     channel?: string;
     agentTarget?: string;
   }): Promise<string> {
-    return this.repo.findOrCreateByRequestId({
-      requestId:  input.runId,
+    return this.runs.admit({
+      runId:      input.runId,
       companyId:  input.companyId,
       userId:     input.userId,
       channel:    input.channel ?? 'desktop',

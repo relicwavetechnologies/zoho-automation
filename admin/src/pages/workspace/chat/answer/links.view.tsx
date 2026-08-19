@@ -8,19 +8,22 @@
  * and every kind it recognises carries its mark. Bareness survives as one
  * detail of one kind: whether a site's own address is worth printing twice.
  *
- * The mark is drawn locally, never fetched. A favicon service would tell a
- * third party every domain that appears in this company's answers, which is a
- * strange price to pay for a 16-pixel picture. Which mark a site gets is
- * `tool-identity`'s answer, so a Zoho link and a Zoho step in the work log
- * cannot disagree about what Zoho looks like.
+ * Known companies use the shared brand catalogue. Arbitrary citations stay on
+ * Divo's own favicon proxy: Logo.dev does not learn every domain a company
+ * researched, and the browser never contacts those sites directly. The backend
+ * caches each favicon for a month; a monogram remains the failure state.
+ *
+ * Which mark a *known* vendor gets is `tool-identity`'s answer and is checked
+ * first, so a Zoho link and a Zoho step in the work log cannot disagree about
+ * what Zoho looks like.
  */
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Check, FileArchive, FileCode, FileImage, FileSpreadsheet, FileText, Mail, Presentation,
 } from 'lucide-react'
 import { ToolMark } from '../tools'
+import { SiteBrandMark } from '@/components/admin/brand-mark'
 import { markForUrl } from '../tool-identity'
-import { useRevealedIndex } from '../reveal'
 import {
   fileNameOf, initialOf, isBareLink, isNavigable, targetOf, tintOf,
   type FileFamily, type Source,
@@ -35,24 +38,51 @@ export function SiteMark({ href, domain, size = 14 }: {
   domain: string
   size?: number
 }) {
+  /* Known vendors use the same catalogue as tool traces; unknown sites stay
+     behind the privacy-preserving favicon adapter. */
   const known = markForUrl(href ?? `https://${domain}`)
-  if (known) return <ToolMark name={known} size={size} />
 
+  /* Reset per domain. Without the key, a chip that failed once keeps its
+     monogram when the list is re-rendered for a different site at that
+     position — React reuses the element and the failure flag with it. */
+  return known
+    ? <ToolMark name={known} size={size} />
+    : <FetchedMark key={domain} domain={domain} size={size} />
+}
+
+/**
+ * A site's own icon, with the monogram underneath it.
+ *
+ * The fallback is not a nicety. Plenty of sites have no icon at all, and plenty
+ * more refuse anything that does not look like a browser, so a missing picture
+ * is the ordinary case rather than the error case — the chip has to read as
+ * finished either way.
+ *
+ * The image is only swapped in once it has actually loaded. Rendering it
+ * immediately and letting a broken `<img>` show through would replace a legible
+ * letter with the browser's own torn-page glyph, which is worse than what it
+ * replaced. So the monogram holds the space until there is something better to
+ * put in it, and the swap is invisible because both are the same size.
+ */
+function FetchedMark({ domain, size }: { domain: string; size: number }) {
   const hue = tintOf(domain)
   return (
-    <span
-      aria-hidden
-      className="grid shrink-0 place-items-center rounded-[3px] font-medium"
-      style={{
-        width: size,
-        height: size,
-        fontSize: size * 0.62,
-        background: `oklch(0.62 0.13 ${hue} / 0.16)`,
-        color: `oklch(0.62 0.13 ${hue})`,
-      }}
-    >
-      {initialOf(domain)}
-    </span>
+    <SiteBrandMark
+      domain={domain}
+      size={size}
+      fallback={(
+        <span
+          className="grid h-full w-full place-items-center rounded-[3px] font-medium"
+          style={{
+            fontSize: size * 0.62,
+            background: `oklch(0.62 0.13 ${hue} / 0.16)`,
+            color: `oklch(0.62 0.13 ${hue})`,
+          }}
+        >
+          {initialOf(domain)}
+        </span>
+      )}
+    />
   )
 }
 
@@ -86,27 +116,22 @@ function FileMark({ family, size = 13 }: { family: FileFamily; size?: number }) 
  * else.
  */
 export function SourceLink({
-  href, text, word = null, children,
+  href, text, children,
 }: {
   href: string
   text: string
-  /** Where the words it replaces sat in the reveal, when it replaces any. */
-  word?: number | null
   children?: ReactNode
 }) {
-  const revealed = useRevealedIndex(word)
   const target = targetOf(href)
 
-  if (target.kind === 'file') return revealed ? <FileLink href={href} target={target} word={word} /> : null
+  if (target.kind === 'file') return <FileLink href={href} target={target} />
 
   if (target.kind === 'site' && isBareLink(text, href)) {
     /* An address printed in full is the least readable thing on a line. The
        chip says the same thing in the width of a word. */
-    if (!revealed) return null
     return (
       <a
         href={href}
-        data-word={word ?? undefined}
         target="_blank"
         rel="noreferrer noopener"
         className="mx-[1px] inline-flex max-w-full translate-y-[2px] items-center gap-1 rounded-[5px] bg-fill px-1.5 py-[1px] align-baseline text-[11.5px] text-ink-2 no-underline transition-colors duration-100 hover:bg-field hover:text-ink"
@@ -159,10 +184,9 @@ export function SourceLink({
  * glyph confirms the copy happened. A link that silently does nothing is worse
  * than no link, and a silent copy is only marginally better.
  */
-function FileLink({ href, target, word }: {
+function FileLink({ href, target }: {
   href: string
   target: Extract<ReturnType<typeof targetOf>, { kind: 'file' }>
-  word: number | null
 }) {
   const [copied, setCopied] = useState(false)
   const settle = useRef<number | undefined>(undefined)
@@ -174,7 +198,6 @@ function FileLink({ href, target, word }: {
   return (
     <a
       href={href}
-      data-word={word ?? undefined}
       {...(navigable ? { target: '_blank', rel: 'noreferrer noopener' } : {})}
       title={navigable ? href : `${href} — click to copy this path`}
       onClick={event => {

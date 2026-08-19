@@ -641,7 +641,7 @@ export function CompanyPersonDetail({ replay, toast, go }: Props) {
                   <span className="ws-sub">{budget === null ? 'no dollar budget set' : `of ${money(budget)} this month`}</span>
                 </div>
                 {budget !== null ? (
-                  <div style={{ marginTop: 12 }}><Bar pct={(spent / budget) * 100} tone="brand" /></div>
+                  <div style={{ marginTop: 12 }}><Bar pct={(spent / budget) * 100} tone="mark" /></div>
                 ) : null}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 22 }}>
                   <div style={{ flex: 1 }}>
@@ -898,7 +898,7 @@ export function CompanyDepartmentDetail({ replay, go }: Props) {
             </Fade>
           )}
           <div className="ws-panel-foot">
-            Role grants are edited by the department's manager. The company ceiling is the only thing you set from here.
+            Role grants are edited by the department's manager, not from here.
           </div>
         </Panel>
       ) : null}
@@ -935,14 +935,17 @@ export function CompanyDepartmentDetail({ replay, go }: Props) {
 
           <Panel title="Changing any of this">
             <div className="ws-panel-body">
+              {/* The button that opened the company ceiling used to sit here.
+                  That editor has been retired, so the sentence stops offering a
+                  door there — the ceiling is still enforced on every call and
+                  still explained wherever it locks a grant, it simply has no
+                  screen. Saying so is better than a button that 404s. */}
               <p className="ws-sub" style={{ lineHeight: 1.6 }}>
                 Permissions inside a department are the manager's to set, and there is deliberately no second editor
-                here — two places to change the same grant is how the two disagree. Raise or lower what any team is
-                allowed to grant at all from the <b>company ceiling</b>.
+                here — two places to change the same grant is how the two disagree. Above all of them sits the
+                <b> company ceiling</b>, which caps what any team is allowed to grant; it is enforced on every call
+                and shown as a lock wherever it bites, but nothing in this app edits it today.
               </p>
-              <div style={{ marginTop: 14 }}>
-                <button type="button" className="btn" onClick={() => go('co-policy')}>Open the company ceiling</button>
-              </div>
             </div>
           </Panel>
         </div>

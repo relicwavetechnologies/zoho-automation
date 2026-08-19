@@ -18,16 +18,14 @@ import { LinkLarkPage } from "@/pages/LinkLarkPage"
 import { MailPreview } from "@/pages/preview/MailPreview"
 import { routed } from "@/pages/workspace/routes"
 import { SettingsShell } from "@/components/admin/settings-shell"
-import {
-  SettingsModels, SettingsPreferences, SettingsProfile,
-} from "@/pages/workspace/screens-settings"
+import { SettingsPreferences } from "@/pages/workspace/screens-settings"
+import { SettingsProfile } from "@/pages/workspace/screens-profile"
 import { NoAccess } from "@/pages/workspace/ui"
 import {
-  YouAccess, YouApprovals, YouConnections, YouMemory, YouSkills, YouUsage,
+  YouConnections, YouMemory, YouUsage,
 } from "@/pages/workspace/screens-you"
 import { WorkspaceHome } from "@/pages/workspace/screens-home"
 import { WorkspaceChat } from "@/pages/workspace/screens-chat"
-import { AutomationDetail, Automations } from "@/pages/workspace/screens-automations"
 import { MailRuleDetail, MailRules } from "@/pages/workspace/screens-mail"
 import { MailRuleEdit, MailRuleNew } from "@/pages/workspace/screens-mail-new"
 import { MailSettings } from "@/pages/workspace/screens-mail-settings"
@@ -37,10 +35,9 @@ import {
   TeamApprovalPolicy, TeamHome, TeamPeople, TeamRoles, TeamUsage,
 } from "@/pages/workspace/screens-team"
 import {
-  CompanyAiOps, CompanyAudit, CompanyConnections, CompanyDepartments, CompanyGuardrails,
-  CompanyHome, CompanyPeople, CompanyPolicy,
+  CompanyAiOps, CompanyAudit, CompanyDepartments, CompanyGuardrails,
+  CompanyHome, CompanyPeople,
 } from "@/pages/workspace/screens-company"
-import { Artifacts } from "@/pages/workspace/screens-artifacts"
 /*
  * Split out, alone among the screens.
  *
@@ -270,19 +267,17 @@ const RequireScope = ({ kind, children }: { kind: ScopeKind; children: JSX.Eleme
 
 /* Workspace screens, adapted to routes. Live, apart from the few panels
    that mark themselves as sample data. */
-const MeHome = routed(WorkspaceHome)
+/* `full` because Home owns its own scroller now. The landing has to be exactly
+   one screenful, and "one screenful" is only knowable inside a box with a
+   definite height — measured against the shell's padding it is always a topbar
+   and 30 pixels out. See the hero note in `screens-home.tsx`. */
+const MeHome = routed(WorkspaceHome, { full: true })
 const MeChat = routed(WorkspaceChat, { full: true })
-const MeApprovals = routed(YouApprovals)
-const MeArtifacts = routed(Artifacts)
-const MeAutomations = routed(Automations)
-const MeAutomationDetail = routed(AutomationDetail)
 const MeConnections = routed(YouConnections)
-const MeAccess = routed(YouAccess)
 const MeMail = routed(MailRules)
 const MeMailNew = routed(MailRuleNew)
 const MeMailEdit = routed(MailRuleEdit)
 const MeMailDetail = routed(MailRuleDetail)
-const MeSkills = routed(YouSkills)
 const MeMemory = routed(YouMemory)
 const MeUsage = routed(YouUsage)
 const TeamOverview = routed(TeamHome)
@@ -290,7 +285,6 @@ const TeamPeopleRoute = routed(TeamPeople)
 const TeamRolesRoute = routed(TeamRoles)
 const TeamApprovalsRoute = routed(TeamApprovalPolicy)
 const TeamUsageRoute = routed(TeamUsage)
-const CompanyConnectionsRoute = routed(CompanyConnections)
 const CompanyHomeRoute = routed(CompanyHome)
 const CompanyPeopleRoute = routed(CompanyPeople)
 const CompanyDepartmentsRoute = routed(CompanyDepartments)
@@ -298,7 +292,6 @@ const CompanyAiOpsRoute = routed(CompanyAiOps)
 const CompanyAgentsRoute = routed(AgentMap)
 const CompanyGuardrailsRoute = routed(CompanyGuardrails)
 const CompanyAuditRoute = routed(CompanyAudit)
-const CompanyPolicyRoute = routed(CompanyPolicy)
 const CompanyRunDetailRoute = routed(CompanyRunDetail)
 const CompanyPersonDetailRoute = routed(CompanyPersonDetail)
 const CompanySkillsRoute = routed(CompanySkills)
@@ -374,21 +367,44 @@ export function App() {
               step in making one — it is the other half of the same question. */}
           <Route path="me/home" element={<MailHome />} />
           <Route path="me/caught" element={<MailCaught />} />
-          {/* Workspace features. A member on the mail surface is told they are
-              not theirs rather than being redirected — see `RequireWorkspace`. */}
-          <Route path="me/approvals" element={<RequireWorkspace><MeApprovals /></RequireWorkspace>} />
-          <Route path="me/artifacts" element={<RequireWorkspace><MeArtifacts /></RequireWorkspace>} />
-          <Route path="me/automations" element={<RequireWorkspace><MeAutomations /></RequireWorkspace>} />
-          <Route path="me/automations/:automationId" element={<RequireWorkspace><MeAutomationDetail /></RequireWorkspace>} />
+          {/* Approvals is retired, and the thread is what replaced it.
+
+              It was live, so this is the one removal that moved a capability
+              rather than deleting a mock. A decision raised in a web chat is
+              answered where it was asked — the composer swaps itself for the
+              same card, which is why one renderer was worth having. A decision
+              raised from Lark carries no thread at all, and the Lark card it
+              was already sent to is where it is answered. Home still lists
+              everything waiting on you either way. */}
+          <Route path="me/approvals" element={<Navigate to="/me" replace />} />
+          {/* "Things Divo made" is retired. It was a hardcoded list of four
+              invented documents standing in front of a real feature: a run
+              genuinely writes an artifact, `GET /api/artifacts` lists them, and
+              two surfaces already show the real ones — the panel beside the
+              chat and the "Made" band on Home. A fake index of a real thing is
+              worse than no index. */}
+          <Route path="me/artifacts" element={<Navigate to="/me" replace />} />
+          {/* Automations is retired: a complete backend domain with no door
+              facing a browser. No HTTP route reaches
+              `ScheduledWorkflowControlService`, and its `create()` refuses any
+              channel that is not desktop or lark — so the page showed four
+              invented rows above controls that were every one of them
+              disabled. It comes back when a route does. */}
+          <Route path="me/automations" element={<Navigate to="/me" replace />} />
+          <Route path="me/automations/:automationId" element={<Navigate to="/me" replace />} />
 
           {/* Where the configuration pages used to live. Kept as redirects
               rather than deleted: these paths are in people's history and in
               links they have already sent each other, and a 404 for a page that
               still exists somewhere else is the rudest possible answer. */}
           <Route path="me/connections" element={<Navigate to="/settings/connections" replace />} />
-          <Route path="me/access" element={<Navigate to="/settings/access" replace />} />
+          {/* Access, Skills and Models were retired. Connected apps is the
+              nearest surviving answer to "what can Divo do for me, and with
+              what", so every path that used to reach one of them lands there
+              rather than on a 404. */}
+          <Route path="me/access" element={<Navigate to="/settings/connections" replace />} />
           <Route path="me/mail-rules" element={<Navigate to="/me/mail" replace />} />
-          <Route path="me/skills" element={<Navigate to="/settings/skills" replace />} />
+          <Route path="me/skills" element={<Navigate to="/settings/connections" replace />} />
           <Route path="me/memory" element={<Navigate to="/settings/memory" replace />} />
           <Route path="me/usage" element={<Navigate to="/settings/usage" replace />} />
           {/* `me/settings` used to redirect into the takeover. It is a real page
@@ -432,9 +448,9 @@ export function App() {
           <Route path="skills" element={<Navigate to="/settings/company/skills" replace />} />
           <Route path="memories" element={<Navigate to="/settings/company/memory" replace />} />
           <Route path="guardrails" element={<Navigate to="/settings/company/guardrails" replace />} />
-          <Route path="policy" element={<Navigate to="/settings/company/policy" replace />} />
-          <Route path="connections" element={<Navigate to="/settings/company/connections" replace />} />
-          <Route path="connections/web-search" element={<Navigate to="/settings/company/connections/web-search" replace />} />
+          <Route path="policy" element={<Navigate to="/settings/company/people" replace />} />
+          <Route path="connections" element={<Navigate to="/settings/connections" replace />} />
+          <Route path="connections/web-search" element={<Navigate to="/settings/connections/web-search" replace />} />
         </Route>
 
         {/* ── Settings takeover ─────────────────────────────
@@ -454,11 +470,15 @@ export function App() {
 
           <Route path="profile" element={<SettingsProfile />} />
           <Route path="preferences" element={<SettingsPreferences />} />
-          <Route path="models" element={<SettingsModels />} />
           <Route path="connections" element={<MeConnections />} />
-          <Route path="access" element={<MeAccess />} />
+          <Route path="connections/web-search" element={<RequireScope kind="company"><WebSearchPage /></RequireScope>} />
+          {/* Retired, and kept reachable. Somebody's bookmark or a link already
+              sent to a colleague still resolves to the page that answers the
+              question they were asking. */}
+          <Route path="access" element={<Navigate to="/settings/connections" replace />} />
           <Route path="mail-rules" element={<Navigate to="/me/mail" replace />} />
-          <Route path="skills" element={<MeSkills />} />
+          <Route path="skills" element={<Navigate to="/settings/connections" replace />} />
+          <Route path="models" element={<Navigate to="/settings/connections" replace />} />
           <Route path="memory" element={<MeMemory />} />
           <Route path="usage" element={<MeUsage />} />
 
@@ -475,9 +495,15 @@ export function App() {
           <Route path="company/skills" element={<RequireScope kind="company"><CompanySkillsRoute /></RequireScope>} />
           <Route path="company/memory" element={<RequireScope kind="company"><MemoriesPage /></RequireScope>} />
           <Route path="company/guardrails" element={<RequireScope kind="company"><CompanyGuardrailsRoute /></RequireScope>} />
-          <Route path="company/policy" element={<RequireScope kind="company"><CompanyPolicyRoute /></RequireScope>} />
-          <Route path="company/connections" element={<RequireScope kind="company"><CompanyConnectionsRoute /></RequireScope>} />
-          <Route path="company/connections/web-search" element={<RequireScope kind="company"><WebSearchPage /></RequireScope>} />
+          {/* The company ceiling and the company connections page are retired.
+              The ceiling is still enforced by the backend and still explained
+              wherever it locks something — there is simply no screen that edits
+              it. Connections moved: the coverage panels are gone, and the three
+              company-held connections live on Connected apps, which is the one
+              place a person looks to find out what Divo can reach. */}
+          <Route path="company/policy" element={<Navigate to="/settings/company/people" replace />} />
+          <Route path="company/connections" element={<Navigate to="/settings/connections" replace />} />
+          <Route path="company/connections/web-search" element={<Navigate to="/settings/connections/web-search" replace />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

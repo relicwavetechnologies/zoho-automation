@@ -143,7 +143,7 @@ const ZOHO_BOOKS_BILL_WORKFLOW = `ZOHO BOOKS BILL RECORDING:
 - Preserve the source currency for a foreign vendor unless the member or current Zoho record establishes a different booked currency. Never invent an exchange rate.
 - For inventory-backed lines, resolve the exact item/SKU. When governed live evidence says storage/bin tracking applies, use the confirmed location and storage with in_quantity for purchased stock. Never evade tracking by altering an item name or silently converting it to a generic expense line. If the governed surface cannot expose the required location/storage, say that plainly and stop rather than borrowing an old or hard-coded ID.
 - Stage the bill with op="stage_bill" and fields containing vendor_id, bill_number, date, due_date, line_items, and notes including IRN/payment context when available. Every line uses a numeric account_id or item_id resolved from current Zoho data plus quantity and rate; never put an account name in an ID field or replace quantity/rate with an improvised amount. Ordinary GST belongs on each taxable line as tax_id. Reverse charge belongs on each taxable line as reverse_charge_tax_id with is_reverse_charge_applied=true at bill level and no ordinary tax_id. Never send a top-level taxes array or mix normal and reverse-charge tax fields. After the member confirms, call op="create_bill" with only stagingId.
-- Attach the source PDF with op="attach_document" and recordType="bill" on the bill_id. If the tool says it cannot find or download the file, say the bill was created without its PDF and ask the member to send the file again.
+- Attach the source PDF with op="attach_document" and recordType="bill" on the bill_id. Use the exact filename the member sent or uploaded in this conversation. If the tool says it cannot find or download the file, say the bill was created without its PDF and ask the member to send or upload the file again.
 - Record payment only when the user asks or the invoice is clearly paid. If unpaid or bill-only, leave it open and say payment was not recorded.
 - For vendor payments, Zoho defaults to Undeposited Funds unless paid_through_account_id is set in the create payload. There is no vendor-payment update op, so if that account is not known before recording, stop and ask rather than recording a payment that will need correcting by hand.
 - Verify from the stored record returned by create_bill and, where needed, an exact list_bills read-back. Check vendor, bill number, dates, line mapping, ordinary tax versus RCM fields, tax/TDS totals, supplier balance, status, payment_made, bill_id, and document list. State anything the available read surface could not verify.
@@ -267,7 +267,7 @@ CORRECTING:
 - Zoho refuses edits to an invoice that is paid or partially paid. When that happens, say so and offer a credit note as the next step rather than retrying.
 
 ATTACHING:
-- op="attach_document" with recordType="invoice" on the invoice_id. If the tool says the file is missing, ambiguous, or undownloadable, say the invoice stands without its attachment and ask the member to send the file again.
+- op="attach_document" with recordType="invoice" on the invoice_id. Use the exact filename the member sent or uploaded in this conversation. If the tool says the file is missing, ambiguous, or undownloadable, say the invoice stands without its attachment and ask the member to send or upload the file again.
 
 VERIFY AND REPORT:
 - State the invoice number, its status, total, balance, and its link, all from what the tool returned.

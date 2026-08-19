@@ -2,10 +2,12 @@ import { z } from 'zod';
 
 /**
  * The OMS webhook exposes a dynamic query language. Divo deliberately does
- * not pass that language through to the agent. These three operations are the
+ * not pass that language through to the agent. These operations are the
  * reviewed, stable subset that map to useful inventory workflows.
  */
 export const OMS_SITE_DATA_OPERATIONS = [
+  'sanitize_website_inputs',
+  'lookup_vendors',
   'search_sites',
   'get_site_profiles',
   'list_catalog_values',
@@ -30,10 +32,16 @@ const website = z.string().trim().toLowerCase().min(3).max(253)
     'Use a bare website hostname, without protocol, path, credentials, port, or query string.',
   );
 
+const vendorWebsite = website.refine(
+  (value) => value.startsWith('www.'),
+  'Use the OMS-ready vendor lookup format from sanitize_website_inputs, e.g. www.example.com.',
+);
+
 const metric = z.number().finite().min(0).max(10_000_000_000);
 
 /** The provider AND-combines filters and documents a hard ceiling of 20. */
 export const MAX_PROVIDER_FILTERS = 20;
+export const MAX_VENDOR_LOOKUP_WEBSITES = 20;
 
 /**
  * Fields where a smaller value is the better result. The provider sorts before
@@ -83,6 +91,20 @@ export const SEARCH_SORT_FIELDS = [
 ] as const;
 
 const searchSortField = z.enum(SEARCH_SORT_FIELDS);
+
+const SanitizeWebsiteInputsSchema = z.object({
+  operation: z.literal('sanitize_website_inputs'),
+  inputs: z.array(z.string().trim().min(1).max(2_000)).min(1).max(200),
+}).strict();
+
+const LookupVendorsSchema = z.object({
+  operation: z.literal('lookup_vendors'),
+  websites: z.array(vendorWebsite).min(1).max(MAX_VENDOR_LOOKUP_WEBSITES).superRefine((items, ctx) => {
+    if (new Set(items).size !== items.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Vendor lookup websites must be unique.' });
+    }
+  }),
+}).strict();
 
 // Kept as a raw object so the union below can discriminate on `operation`.
 // The cross-field checks live in `refineSearchSites` and run once the branch
@@ -210,6 +232,8 @@ const ListCatalogValuesSchema = z.object({
  */
 export const OmsSiteDataToolArgsSchema = z
   .discriminatedUnion('operation', [
+    SanitizeWebsiteInputsSchema,
+    LookupVendorsSchema,
     SearchSitesObject,
     GetSiteProfilesSchema,
     ListCatalogValuesSchema,
@@ -218,6 +242,7 @@ export const OmsSiteDataToolArgsSchema = z
     if (value.operation === 'search_sites') refineSearchSites(value, ctx);
   });
 export type OmsSiteDataToolArgs = z.infer<typeof OmsSiteDataToolArgsSchema>;
+export type OmsProviderSiteDataToolArgs = Exclude<OmsSiteDataToolArgs, { operation: 'sanitize_website_inputs' } | { operation: 'lookup_vendors' }>;
 
 // The provider allows up to 25 columns per request. Every filterable metric is
 // also selected so a shortlist always shows the fields it was filtered on.
@@ -297,7 +322,97 @@ export interface OmsFetchedData {
   readonly rows: Array<Record<string, unknown>>;
 }
 
-export function buildOmsProviderRequest(args: OmsSiteDataToolArgs): OmsProviderRequest {
+export type OmsSanitizedWebsiteRow = {
+  readonly input: string;
+  readonly status: 'sanitized' | 'invalid';
+  readonly inputKind?: 'email' | 'url' | 'hostname';
+  readonly hostname?: string;
+  readonly website?: string;
+  readonly reason?: string;
+};
+
+export function sanitizeOmsWebsiteInputs(inputs: readonly string[]): OmsSanitizedWebsiteRow[] {
+  const rows: OmsSanitizedWebsiteRow[] = [];
+  for (const input of inputs) {
+    const candidates = websiteCandidates(input);
+    if (candidates.length === 0) {
+      rows.push({ input, status: 'invalid', reason: 'No URL, email, or hostname found.' });
+      continue;
+    }
+    for (const candidate of candidates) rows.push(sanitizeOneWebsiteInput(candidate));
+  }
+  return rows;
+}
+
+function sanitizeOneWebsiteInput(input: string): OmsSanitizedWebsiteRow {
+  const candidate = stripWrapper(input);
+  const emailHost = hostFromEmail(candidate);
+  const parsed = emailHost
+    ? { host: emailHost, kind: 'email' as const }
+    : hostFromUrlOrHostname(candidate);
+  if (!parsed) return { input, status: 'invalid', reason: 'Not a valid email, URL, or website hostname.' };
+  if ('reason' in parsed) return { input, status: 'invalid', reason: parsed.reason };
+  const hostname = parsed.host.replace(/\.$/, '').toLowerCase();
+  if (!website.safeParse(hostname).success) {
+    return { input, status: 'invalid', reason: 'Hostname must be a public domain, not an IP, localhost, or malformed value.' };
+  }
+  return {
+    input,
+    status: 'sanitized',
+    inputKind: parsed.kind,
+    hostname,
+    website: omsWebsiteFor(hostname),
+  };
+}
+
+function websiteCandidates(input: string): string[] {
+  return expandMarkdownLinks(input)
+    .split(/[\s,;]+/)
+    .map(stripWrapper)
+    .filter((candidate) => candidate && /@|:\/\/|\.|^www\./i.test(candidate));
+}
+
+function expandMarkdownLinks(input: string): string {
+  return input.replace(/\[[^\]\r\n]{1,500}\]\(([^)\s]{1,2000})\)/g, ' $1 ');
+}
+
+function stripWrapper(value: string): string {
+  return value.trim().replace(/^[<([{'"`]+|[>\])}'"`.,]+$/g, '');
+}
+
+function hostFromEmail(value: string): string | undefined {
+  const isMailto = /^mailto:/i.test(value);
+  const address = isMailto
+    ? value.replace(/^mailto:/i, '').split(/[?#]/, 1)[0] ?? ''
+    : value;
+  const match = /^[^@\s]+@([^@\s/?#]+)$/i.exec(address);
+  return match?.[1];
+}
+
+function hostFromUrlOrHostname(value: string): { host: string; kind: 'url' | 'hostname'; reason?: never } | { reason: string } | undefined {
+  const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(value);
+  if (hasScheme && !/^https?:\/\//i.test(value)) return { reason: 'Only http and https URLs are accepted.' };
+  const looksUrl = hasScheme || /[/?#]/.test(value);
+  try {
+    const url = new URL(hasScheme ? value : `https://${value}`);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return { reason: 'Only http and https URLs are accepted.' };
+    if (url.username || url.password) return { reason: 'URLs with usernames or passwords are not accepted.' };
+    return url.hostname ? { host: url.hostname, kind: looksUrl ? 'url' : 'hostname' } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function omsWebsiteFor(hostname: string): string {
+  if (hostname.startsWith('www.')) return hostname;
+  const labels = hostname.split('.');
+  const [, second, third] = labels;
+  const countrySecondLevel = labels.length === 3 && second !== undefined && third !== undefined && second.length <= 3 && third.length === 2;
+  const bareDomain = labels.length === 2 || countrySecondLevel;
+  return bareDomain ? `www.${hostname}` : hostname;
+}
+
+export function buildOmsProviderRequest(args: OmsProviderSiteDataToolArgs): OmsProviderRequest {
   switch (args.operation) {
     case 'search_sites': {
       const filters: OmsFilter[] = [];

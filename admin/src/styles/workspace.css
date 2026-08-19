@@ -17,14 +17,34 @@
 */
 
 .cur {
-  /* cursor.css never defined a warning token — pages fall back inline. Define it once. */
-  --ws-warning: #b7791f;
+  /* The palette's orange, under the name twenty-eight rules here already use.
+     It was two hand-picked ambers — #b7791f light, #d9a441 dark — which is one
+     colour more than the palette has and neither of them was it. */
+  --ws-warning: var(--bui-orange);
+  /* The same colour at the weight you can actually read it in. Warning orange
+     was the worst offender in the whole light theme — 2.65 against the content
+     canvas, used for fifteen pieces of text whose entire job is to be noticed.
+     The fill keeps the vivid value; only the letterforms moved. */
+  --ws-warning-ink: var(--bui-orange-ink);
+  /*
+    What a chart is drawn in.
+
+    The accent, not the brand. This was brand orange, and one page — the
+    profile — had already overridden it back to the accent with the note that
+    on a surface made of charts, orange "stops being the scarce mark that means
+    'this is the thing being asked for' and starts being the background". That
+    was true of every settings screen, not of one of them, so the exception has
+    become the rule and the local override is gone.
+
+    Still a token rather than a literal, so a one-off surface can still say
+    otherwise. Nothing does today.
+  */
+  --ws-chart-ink: var(--cur-accent);
   /* Scrim must NOT derive from --cur-ink: ink inverts in dark and would tint the overlay light. */
   --ws-scrim: rgba(0, 0, 0, 0.34);
   --ws-float: 0 16px 40px -12px rgba(0, 0, 0, 0.24), 0 0 0 1px var(--cur-hairline);
 }
 .dark .cur {
-  --ws-warning: #d9a441;
   --ws-scrim: rgba(0, 0, 0, 0.62);
   --ws-float: 0 16px 40px -8px rgba(0, 0, 0, 0.7), 0 0 0 1px var(--cur-hairline-strong);
 }
@@ -80,7 +100,7 @@
   text-align: left; color: var(--cur-ink);
 }
 .cur .ws-scope-opt:hover { background: var(--cur-canvas-soft); }
-.cur .ws-scope-opt .ck { margin-left: auto; color: var(--cur-primary); }
+.cur .ws-scope-opt .ck { margin-left: auto; color: var(--cur-accent-ink); }
 
 /* ── Sidebar additions ───────────────────────────────── */
 /* Sizes to its own rows and no further. It used to be `flex: 1`, which handed
@@ -100,7 +120,7 @@
 /* ── Topbar additions ────────────────────────────────── */
 .cur .ws-crumb { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--cur-muted); flex: 1; min-width: 0; }
 .cur .ws-crumb button { border: 0; background: none; padding: 0; font-size: 13px; color: var(--cur-body); cursor: pointer; }
-.cur .ws-crumb button:hover { color: var(--cur-primary); }
+.cur .ws-crumb button:hover { color: var(--cur-accent-ink); }
 .cur .ws-crumb b { color: var(--cur-ink); font-weight: 500; }
 .cur .ws-kbd {
   font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 11px;
@@ -121,32 +141,13 @@
 .cur .ws-run-detail .ws-ph-act { margin-top: 12px; width: fit-content; }
 .cur .ws-run-detail .ws-raw-toggle { height: 34px; padding: 0 12px; }
 
-/* A page that is not built yet, said beside its name.
-   Reads as a label, not a control: no pointer, no hover, nothing to press. The
-   accent carries it — this is the one thing on the page that should be noticed
-   before the content, since the content is a preview of something absent. */
-.cur .ws-soon {
-  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
-  padding: 4px 11px; border-radius: 999px;
-  font-size: 11px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
-  white-space: nowrap; position: relative; top: -3px;
-  color: var(--cur-accent);
-  background: color-mix(in srgb, var(--cur-accent) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--cur-accent) 30%, transparent);
-}
-/* The dot is the eye-catch. It pulses slowly enough to register as alive and
-   not as an alarm, and holds still for anyone who asked motion to stop. */
-.cur .ws-soon::before {
-  content: ''; width: 5px; height: 5px; border-radius: 999px;
-  background: var(--cur-accent); animation: ws-soon-pulse 2.4s ease-in-out infinite;
-}
-@keyframes ws-soon-pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.35 } }
-@media (prefers-reduced-motion: reduce) {
-  .cur .ws-soon::before { animation: none }
-}
 
 /* ── Panel ───────────────────────────────────────────── */
-.cur .ws-panel { background: var(--cur-surface); border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); }
+/* The app's five card primitives — `.card`, `.section`, `.ws-panel`,
+   `.set-group`, `.prof-card` — draw the same border, radius and lift. They had
+   drifted into two groups, one with a shadow and one without, which is what
+   made a settings page read as flatter than the screen it was reached from. */
+.cur .ws-panel { background: var(--cur-surface); border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); box-shadow: var(--cur-shadow-card); }
 .cur .ws-panel > header { padding: 15px 18px; border-bottom: 1px solid var(--cur-hairline); display: flex; align-items: center; gap: 12px; }
 .cur .ws-panel > header .ws-panel-t { flex: 1; min-width: 0; }
 .cur .ws-panel > header h2 { font-size: 14px; font-weight: 500; letter-spacing: -0.01em; }
@@ -176,9 +177,9 @@
   width: 32px; height: 32px; border-radius: var(--cur-r-cta); flex-shrink: 0; display: grid; place-items: center;
   background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); color: var(--cur-body);
 }
-.cur .ws-ic[data-tone="ok"] { color: var(--cur-success); }
-.cur .ws-ic[data-tone="warn"] { color: var(--ws-warning); }
-.cur .ws-ic[data-tone="err"] { color: var(--cur-error); }
+.cur .ws-ic[data-tone="ok"] { color: var(--cur-success-ink); }
+.cur .ws-ic[data-tone="warn"] { color: var(--ws-warning-ink); }
+.cur .ws-ic[data-tone="err"] { color: var(--cur-error-ink); }
 
 /* ── Attention list — replaces the KPI carousel ───────
    The old mock opened every screen with four equal-weight counts. This opens
@@ -187,7 +188,7 @@
 .cur .ws-attn-item { display: flex; gap: 13px; padding: 15px 18px; border-top: 1px solid var(--cur-hairline-soft); align-items: flex-start; }
 .cur .ws-attn-item:first-child { border-top: 0; }
 .cur .ws-attn-bar { width: 2px; align-self: stretch; border-radius: 999px; background: var(--cur-hairline-strong); flex-shrink: 0; }
-.cur .ws-attn-item[data-tone="act"] .ws-attn-bar { background: var(--cur-primary); }
+.cur .ws-attn-item[data-tone="act"] .ws-attn-bar { background: var(--cur-accent); }
 .cur .ws-attn-item[data-tone="warn"] .ws-attn-bar { background: var(--ws-warning); }
 .cur .ws-attn-main { flex: 1; min-width: 0; }
 .cur .ws-attn-main b { font-size: 13px; font-weight: 500; }
@@ -211,7 +212,7 @@
   font-size: 11px; font-weight: 500; letter-spacing: 0; text-transform: none;
   background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); color: var(--cur-muted);
 }
-.cur .ws-prov[data-src="department_user_override"] { color: var(--cur-primary); border-color: color-mix(in srgb, var(--cur-primary) 34%, transparent); background: color-mix(in srgb, var(--cur-primary) 9%, transparent); }
+.cur .ws-prov[data-src="department_user_override"] { color: var(--cur-accent-ink); border-color: color-mix(in srgb, var(--cur-accent) 34%, transparent); background: color-mix(in srgb, var(--cur-accent) 9%, transparent); }
 .cur .ws-prov[data-src="derived"] { font-style: italic; }
 
 /* ── Change preview — never apply a permission edit blind ── */
@@ -221,9 +222,9 @@
 .cur .ws-diff-i { display: flex; align-items: center; gap: 10px; padding: 10px 16px; font-size: 13px; border-top: 1px solid var(--cur-hairline-soft); }
 .cur .ws-diff-l > .ws-diff-i:first-child { border-top: 0; }
 .cur .ws-diff-i .sg { width: 15px; text-align: center; font-weight: 600; font-size: 13px; flex-shrink: 0; }
-.cur .ws-diff-i[data-k="add"] .sg { color: var(--cur-success); }
-.cur .ws-diff-i[data-k="remove"] .sg { color: var(--cur-error); }
-.cur .ws-diff-i[data-k="blocked"] .sg { color: var(--ws-warning); }
+.cur .ws-diff-i[data-k="add"] .sg { color: var(--cur-success-ink); }
+.cur .ws-diff-i[data-k="remove"] .sg { color: var(--cur-error-ink); }
+.cur .ws-diff-i[data-k="blocked"] .sg { color: var(--ws-warning-ink); }
 .cur .ws-diff-i small { color: var(--cur-muted); font-size: 12px; }
 .cur .ws-diff-f { padding: 12px 16px; border-top: 1px solid var(--cur-hairline); display: flex; gap: 8px; justify-content: flex-end; background: var(--cur-surface); }
 
@@ -234,7 +235,7 @@
   border: 1px solid color-mix(in srgb, var(--ws-warning) 28%, transparent);
   font-size: 12px; color: var(--cur-body); line-height: 1.5;
 }
-.cur .ws-ceiling svg { color: var(--ws-warning); flex-shrink: 0; margin-top: 1px; }
+.cur .ws-ceiling svg { color: var(--ws-warning-ink); flex-shrink: 0; margin-top: 1px; }
 .cur .ws-ceiling b { color: var(--cur-ink); font-weight: 500; }
 
 /* The remedy sits under the sentence that explains it, not beside it: what is
@@ -269,7 +270,7 @@
   background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline); font-size: 12px;
   color: var(--cur-body); line-height: 1.5;
 }
-.cur .ws-private svg { color: var(--cur-success); flex-shrink: 0; margin-top: 1px; }
+.cur .ws-private svg { color: var(--cur-success-ink); flex-shrink: 0; margin-top: 1px; }
 
 /* ── Matrix ──────────────────────────────────────────── */
 .cur .ws-matrix { width: 100%; border-collapse: collapse; }
@@ -286,16 +287,20 @@
   background: var(--cur-surface); cursor: pointer; display: inline-grid; place-items: center;
   color: var(--cur-muted-soft); padding: 0;
 }
-.cur .ws-cell:hover { border-color: var(--cur-muted-soft); }
+.cur .ws-cell:hover { border-color: var(--cur-hairline-hover); }
 .cur .ws-cell[data-on="true"] { background: var(--cur-ink); border-color: var(--cur-ink); color: var(--cur-canvas); }
-.cur .ws-cell[data-on="true"][data-src="department_user_override"] { background: var(--cur-primary); border-color: var(--cur-primary); color: var(--cur-on-primary); }
+.cur .ws-cell[data-on="true"][data-src="department_user_override"] { background: var(--cur-accent); border-color: var(--cur-accent); color: var(--cur-on-accent); }
 .cur .ws-cell[data-locked="true"] { cursor: not-allowed; opacity: 0.45; background: var(--cur-canvas-soft); }
 .cur .ws-cell-na { color: var(--cur-muted-soft); font-size: 13px; }
 
 /* ── Usage bar ───────────────────────────────────────── */
 .cur .ws-bar { height: 6px; border-radius: 999px; background: var(--cur-surface-strong); overflow: hidden; }
 .cur .ws-bar i { display: block; height: 100%; border-radius: 999px; background: var(--cur-ink); }
-.cur .ws-bar i[data-tone="brand"] { background: var(--cur-primary); }
+/* One bar in a set can be marked. The base bar is ink, so the mark has to be
+   a hue rather than a weight — the accent, the same one the charts draw in.
+   The attribute said "brand" while meaning "the one worth looking at", which is
+   why it was painted in the brand; both are now called what they are. */
+.cur .ws-bar i[data-tone="mark"] { background: var(--ws-chart-ink); }
 .cur .ws-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--cur-muted); }
 
 /* ── Segmented control ───────────────────────────────── */
@@ -316,7 +321,7 @@
   position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
   background: var(--cur-surface); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); transition: transform .14s ease;
 }
-.cur .ws-switch[data-on="true"] { background: var(--cur-primary); border-color: var(--cur-primary); }
+.cur .ws-switch[data-on="true"] { background: var(--cur-ink); border-color: var(--cur-ink); }
 .cur .ws-switch[data-on="true"] i { transform: translateX(14px); }
 
 /* ── Data-honesty note ────────────────────────────────
@@ -327,19 +332,24 @@
   font-size: 11px; font-weight: 500; letter-spacing: 0; white-space: nowrap;
   border: 1px dashed var(--cur-hairline-strong); color: var(--cur-muted); background: var(--cur-canvas-soft);
 }
-.cur .ws-note[data-kind="new"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 40%, transparent); }
+.cur .ws-note[data-kind="new"] { color: var(--ws-warning-ink); border-color: color-mix(in srgb, var(--ws-warning) 40%, transparent); }
 /* Fixtures rendered at a real path. Solid, not dashed — this one is a claim
-   about the numbers on screen, not a note about the roadmap. */
+   about the numbers on screen, not a note about the roadmap.
+
+   The warning orange, not the brand's. These two notes sat next to each other
+   wearing #ef720c and #f54e00, which is one colour told apart by nothing and
+   two meanings told apart by nothing either. Caution is orange here; Divo is
+   orange nowhere but its own mark. */
 .cur .ws-note[data-kind="sample"] {
-  border-style: solid; color: var(--cur-primary);
-  border-color: color-mix(in srgb, var(--cur-primary) 38%, transparent);
-  background: color-mix(in srgb, var(--cur-primary) 8%, transparent);
+  border-style: solid; color: var(--ws-warning-ink);
+  border-color: color-mix(in srgb, var(--ws-warning) 38%, transparent);
+  background: color-mix(in srgb, var(--ws-warning) 8%, transparent);
 }
 /* The positive case, used only where a real block sits beside a proposed one.
    `DataNote` still renders nothing for a live source — this is for a section
    heading that has to distinguish itself from the unbuilt section below it. */
 .cur .ws-note[data-kind="live"] {
-  border-style: solid; color: var(--cur-success);
+  border-style: solid; color: var(--cur-success-ink);
   border-color: color-mix(in srgb, var(--cur-success) 34%, transparent);
   background: color-mix(in srgb, var(--cur-success) 8%, transparent);
 }
@@ -455,14 +465,14 @@
 }
 /* A tag that is reporting something that did not go well. Amber, not red: an
    audit row saying "denied" is a record, not an incident. */
-.cur .ws-tag[data-tone="warn"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 34%, transparent); }
+.cur .ws-tag[data-tone="warn"] { color: var(--ws-warning-ink); border-color: color-mix(in srgb, var(--ws-warning) 34%, transparent); }
 .cur .ws-num { font-size: 30px; letter-spacing: -0.03em; font-weight: 400; }
 .cur .ws-num-sm { font-size: 20px; letter-spacing: -0.02em; font-weight: 400; }
 .cur .ws-lbl { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--cur-muted); }
 .cur .ws-sub { font-size: 12px; color: var(--cur-muted); }
 .cur .ws-spark { height: 46px; display: flex; align-items: flex-end; gap: 3px; }
 .cur .ws-spark i { flex: 1; border-radius: 2px 2px 0 0; background: var(--cur-surface-strong); min-height: 2px; }
-.cur .ws-spark i[data-hot="true"] { background: color-mix(in srgb, var(--cur-primary) 60%, transparent); }
+.cur .ws-spark i[data-hot="true"] { background: color-mix(in srgb, var(--ws-chart-ink) 60%, transparent); }
 .cur .ws-person-stats {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px;
 }
@@ -497,15 +507,20 @@
 }
 /* Square from its own width, so the rows follow the columns rather than
    needing a height the container cannot know. */
-.cur .ws-heat-grid i { aspect-ratio: 1; border-radius: 5px; background: var(--cur-surface-strong); }
+/* A proportional radius, not a fixed one. At sixteen columns a cell is ~30px
+   and 5px read as a rounded square; the profile's year draws fifty-three
+   columns at ~13px, where the same 5px turns every day into a dot. 17% is the
+   same corner the sixteen-column grids already had, and it now holds at any
+   cell size. */
+.cur .ws-heat-grid i { aspect-ratio: 1; border-radius: 17%; background: var(--cur-surface-strong); }
 /* An unstarted week is absence, not a zero-cost day, so it holds the space
    without drawing a tile that could be counted. */
 .cur .ws-heat-grid i[data-pad="true"] { background: none; }
 .cur .ws-heat-grid i[data-level="0"] { background: var(--cur-surface-strong); }
-.cur .ws-heat-grid i[data-level="1"] { background: color-mix(in srgb, var(--cur-primary) 24%, var(--cur-surface-strong)); }
-.cur .ws-heat-grid i[data-level="2"] { background: color-mix(in srgb, var(--cur-primary) 48%, var(--cur-surface-strong)); }
-.cur .ws-heat-grid i[data-level="3"] { background: color-mix(in srgb, var(--cur-primary) 72%, var(--cur-surface-strong)); }
-.cur .ws-heat-grid i[data-level="4"] { background: var(--cur-primary); }
+.cur .ws-heat-grid i[data-level="1"] { background: color-mix(in srgb, var(--ws-chart-ink) 24%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="2"] { background: color-mix(in srgb, var(--ws-chart-ink) 48%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="3"] { background: color-mix(in srgb, var(--ws-chart-ink) 72%, var(--cur-surface-strong)); }
+.cur .ws-heat-grid i[data-level="4"] { background: var(--ws-chart-ink); }
 /* Inside `.ws-heat`, so it ends where the last column ends rather than at the
    card's edge — a legend floating past the grid reads as a stray control. */
 .cur .ws-heat-key {
@@ -513,10 +528,10 @@
   margin-top: 10px; font-size: 10.5px; color: var(--cur-muted-soft);
 }
 .cur .ws-heat-key i { width: 11px; height: 11px; border-radius: 3px; background: var(--cur-surface-strong); }
-.cur .ws-heat-key i[data-level="1"] { background: color-mix(in srgb, var(--cur-primary) 24%, var(--cur-surface-strong)); }
-.cur .ws-heat-key i[data-level="2"] { background: color-mix(in srgb, var(--cur-primary) 48%, var(--cur-surface-strong)); }
-.cur .ws-heat-key i[data-level="3"] { background: color-mix(in srgb, var(--cur-primary) 72%, var(--cur-surface-strong)); }
-.cur .ws-heat-key i[data-level="4"] { background: var(--cur-primary); }
+.cur .ws-heat-key i[data-level="1"] { background: color-mix(in srgb, var(--ws-chart-ink) 24%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="2"] { background: color-mix(in srgb, var(--ws-chart-ink) 48%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="3"] { background: color-mix(in srgb, var(--ws-chart-ink) 72%, var(--cur-surface-strong)); }
+.cur .ws-heat-key i[data-level="4"] { background: var(--ws-chart-ink); }
 .cur .ws-heat-key span:first-child { margin-right: 2px; }
 .cur .ws-heat-key span:last-child { margin-left: 2px; }
 
@@ -526,6 +541,66 @@
 .cur .ws-heat-facts {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px; margin-top: 16px;
+}
+
+/* ── Home: what is waiting ────────────────────────────
+   Counts with a way in, at the top of the page. Never rendered empty — the
+   band is absent on a settled workspace rather than present and saying so, so
+   these rules describe a row that always has something in it. */
+.cur .ws-acts {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(232px, 1fr)); gap: 10px;
+}
+.cur .ws-act {
+  background: var(--cur-surface); border-radius: var(--cur-r-card);
+  box-shadow: 0 0 0 1px var(--cur-hairline), var(--cur-shadow-card);
+  padding: 13px 15px;
+}
+.cur .ws-act-h {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12.5px; font-weight: 500; color: var(--cur-body);
+}
+/* The mark is a tile like every other app mark on this page, not a bare icon —
+   a 15px glyph floating beside 13px text reads as a bullet, not a subject. */
+.cur .ws-act-ic {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 7px; flex: none;
+  background: var(--cur-canvas-soft); box-shadow: 0 0 0 1px var(--cur-hairline);
+  color: var(--cur-muted);
+}
+.cur .ws-act-b { display: flex; align-items: baseline; gap: 8px; margin-top: 11px; }
+.cur .ws-act-n {
+  font-size: 26px; letter-spacing: -0.02em; color: var(--cur-ink);
+  font-variant-numeric: tabular-nums; line-height: 1;
+}
+.cur .ws-act-u { font-size: 12px; color: var(--cur-muted); }
+/* The action sits on the baseline row with the number so the tile reads as one
+   statement — "3 decisions, review" — rather than a figure and a stray button. */
+.cur .ws-act-b .btn { margin-left: auto; align-self: center; }
+
+/* A late task says so in the error tone; everything else keeps meta ink. The
+   date is already in the sentence, so this only has to carry that it is past. */
+
+/* ── Home: share of spend ─────────────────────────────
+   The rows under the hex cluster. The cluster carries the proportion and these
+   carry the figures, which is why the percentage is a quiet pill and the money
+   is the column that lines up. */
+.cur .ws-share { margin-top: 14px; }
+.cur .ws-share-r {
+  display: flex; align-items: center; gap: 9px; padding: 7px 0;
+  border-top: 1px solid var(--cur-hairline-soft); font-size: 12.5px;
+}
+.cur .ws-share-r:first-child { border-top: 0; }
+.cur .ws-share-d { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.cur .ws-share-n {
+  color: var(--cur-ink); min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.cur .ws-share-p {
+  font-size: 11px; color: var(--cur-body); background: var(--cur-surface-strong);
+  border-radius: 4px; padding: 1px 5px; font-variant-numeric: tabular-nums; flex: none;
+}
+.cur .ws-share-v {
+  margin-left: auto; color: var(--cur-ink); font-variant-numeric: tabular-nums; flex: none;
 }
 
 /* ── Lark → browser connect flow ──────────────────────
@@ -580,10 +655,10 @@
 }
 .cur .ws-land-ic {
   width: 46px; height: 46px; border-radius: 50%; margin: 0 auto 18px; display: grid; place-items: center;
-  background: color-mix(in srgb, var(--cur-success) 13%, transparent); color: var(--cur-success);
+  background: color-mix(in srgb, var(--cur-success) 13%, transparent); color: var(--cur-success-ink);
 }
-.cur .ws-land-ic[data-tone="err"] { background: color-mix(in srgb, var(--cur-error) 13%, transparent); color: var(--cur-error); }
-.cur .ws-land-ic[data-tone="warn"] { background: color-mix(in srgb, var(--ws-warning) 14%, transparent); color: var(--ws-warning); }
+.cur .ws-land-ic[data-tone="err"] { background: color-mix(in srgb, var(--cur-error) 13%, transparent); color: var(--cur-error-ink); }
+.cur .ws-land-ic[data-tone="warn"] { background: color-mix(in srgb, var(--ws-warning) 14%, transparent); color: var(--ws-warning-ink); }
 .cur .ws-land h2 { font-size: 20px; font-weight: 400; letter-spacing: -0.02em; }
 .cur .ws-land > p { font-size: 13px; color: var(--cur-body); margin-top: 9px; line-height: 1.55; max-width: 420px; margin-left: auto; margin-right: auto; }
 .cur .ws-land-resume {
@@ -595,99 +670,6 @@
   border-left: 2px solid var(--cur-primary); line-height: 1.5;
 }
 .cur .ws-land-acts { display: flex; gap: 8px; justify-content: center; margin-top: 22px; flex-wrap: wrap; }
-
-/* ── Artifacts ────────────────────────────────────────
-   Things Divo makes during a chat — a deck, a plan, a research brief. Today
-   they die inside the container workspace. These styles are the surface that
-   gives them somewhere to live. */
-.cur .ws-art-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 14px; }
-.cur .ws-art-card {
-  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card); background: var(--cur-surface);
-  overflow: hidden; cursor: pointer; text-align: left; padding: 0; color: var(--cur-ink); display: block; width: 100%;
-}
-.cur .ws-art-card:hover { border-color: var(--cur-muted-soft); }
-.cur .ws-art-thumb {
-  height: 116px; background: var(--cur-canvas-soft); border-bottom: 1px solid var(--cur-hairline);
-  display: grid; place-items: center; color: var(--cur-muted-soft); position: relative; overflow: hidden;
-}
-.cur .ws-art-thumb[data-kind="deck"] { background: linear-gradient(135deg, var(--cur-canvas-soft), var(--cur-surface-strong)); }
-.cur .ws-art-live {
-  position: absolute; top: 9px; right: 9px; display: inline-flex; align-items: center; gap: 5px;
-  padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
-  background: var(--cur-primary); color: var(--cur-on-primary);
-}
-.cur .ws-art-meta { padding: 12px 14px; }
-.cur .ws-art-meta b { display: block; font-size: 13px; font-weight: 500; letter-spacing: -0.005em; }
-.cur .ws-art-meta p { font-size: 11px; color: var(--cur-muted); margin-top: 4px; }
-
-/* Pulsing dot — "Divo is editing this right now". The whole point of the
-   file-write event: the open render updates without a refresh. */
-@keyframes ws-live { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(0.82); } }
-.cur .ws-live-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: ws-live 1.1s ease-in-out infinite; }
-
-/* Viewer */
-.cur .ws-view { display: grid; grid-template-columns: 1fr 296px; gap: 16px; align-items: start; }
-@media (max-width: 1180px) { .cur .ws-view { grid-template-columns: 1fr; } }
-.cur .ws-canvas {
-  border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
-  background: var(--cur-surface); overflow: hidden;
-}
-.cur .ws-canvas-bar {
-  height: 40px; display: flex; align-items: center; gap: 9px; padding: 0 14px;
-  border-bottom: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft); font-size: 12px; color: var(--cur-muted);
-}
-.cur .ws-canvas-body { padding: 22px; }
-
-/* Sandboxed HTML frame. Agent-written HTML cannot run on the dashboard
-   origin — it renders in a sandboxed iframe, and the chrome says so. */
-.cur .ws-sandbox { border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-cta); overflow: hidden; background: #fff; }
-.cur .ws-slide {
-  aspect-ratio: 16 / 9; padding: 34px 38px; display: flex; flex-direction: column; justify-content: center;
-  background: #faf9f6; color: #211f1a; font-family: Inter, system-ui, sans-serif;
-}
-.cur .ws-slide h3 { font-size: 26px; font-weight: 400; letter-spacing: -0.025em; line-height: 1.15; }
-.cur .ws-slide p { font-size: 13px; color: #5f5c54; margin-top: 12px; line-height: 1.55; max-width: 60ch; }
-.cur .ws-slide ul { margin-top: 16px; display: flex; flex-direction: column; gap: 9px; }
-.cur .ws-slide li { font-size: 13px; color: #3d3a34; display: flex; gap: 9px; align-items: flex-start; }
-.cur .ws-slide li::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: #f54e00; margin-top: 6px; flex-shrink: 0; }
-.cur .ws-slide .eyebrow-s { font-size: 10px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: #f54e00; margin-bottom: 14px; }
-.cur .ws-slide-nav { display: flex; align-items: center; gap: 8px; justify-content: center; padding: 12px; border-top: 1px solid var(--cur-hairline); }
-.cur .ws-slide-pip { width: 22px; height: 3px; border-radius: 999px; background: var(--cur-hairline-strong); border: 0; padding: 0; cursor: pointer; }
-.cur .ws-slide-pip[data-on="true"] { background: var(--cur-primary); }
-
-/* Todo artifact */
-.cur .ws-todo { display: flex; flex-direction: column; }
-.cur .ws-todo-grp { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--cur-muted-soft); margin: 18px 0 8px; }
-.cur .ws-todo-grp:first-child { margin-top: 0; }
-.cur .ws-todo-i { display: flex; align-items: flex-start; gap: 11px; padding: 9px 0; border-top: 1px solid var(--cur-hairline-soft); }
-.cur .ws-todo-box {
-  width: 17px; height: 17px; border-radius: 5px; border: 1px solid var(--cur-hairline-strong); flex-shrink: 0;
-  margin-top: 1px; display: grid; place-items: center; background: var(--cur-surface); cursor: pointer; padding: 0; color: transparent;
-}
-.cur .ws-todo-box[data-done="true"] { background: var(--cur-ink); border-color: var(--cur-ink); color: var(--cur-canvas); }
-.cur .ws-todo-i b { font-size: 13px; font-weight: 400; }
-.cur .ws-todo-i[data-done="true"] b { color: var(--cur-muted); text-decoration: line-through; }
-.cur .ws-todo-i p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; }
-
-/* Sources */
-.cur .ws-src { display: flex; gap: 11px; padding: 12px 0; border-top: 1px solid var(--cur-hairline-soft); }
-.cur .ws-src:first-child { border-top: 0; }
-.cur .ws-src-fav {
-  width: 26px; height: 26px; border-radius: 6px; flex-shrink: 0; display: grid; place-items: center;
-  background: var(--cur-surface-strong); color: var(--cur-body); font-size: 11px; font-weight: 600;
-}
-.cur .ws-src b { font-size: 13px; font-weight: 500; display: block; }
-.cur .ws-src p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; line-height: 1.45; }
-.cur .ws-src .host { font-size: 11px; color: var(--cur-muted-soft); margin-top: 5px; display: block; }
-
-/* Version rail */
-.cur .ws-ver { display: flex; gap: 11px; padding: 10px 0; }
-.cur .ws-ver-line { display: flex; flex-direction: column; align-items: center; flex-shrink: 0; }
-.cur .ws-ver-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--cur-hairline-strong); margin-top: 5px; }
-.cur .ws-ver-dot[data-now="true"] { background: var(--cur-primary); }
-.cur .ws-ver-rail { flex: 1; width: 1px; background: var(--cur-hairline); margin-top: 4px; }
-.cur .ws-ver b { font-size: 12px; font-weight: 500; display: block; }
-.cur .ws-ver p { font-size: 11px; color: var(--cur-muted); margin-top: 2px; }
 
 /* ══════════════════════════════════════════════════════
    Company list surfaces.
@@ -720,8 +702,8 @@
   font-size: 11px; font-weight: 500; background: var(--cur-canvas-soft);
   border: 1px solid var(--cur-hairline); color: var(--cur-muted);
 }
-.cur .ws-delta[data-tone="warn"] { color: var(--cur-primary); border-color: color-mix(in srgb, var(--cur-primary) 32%, transparent); background: color-mix(in srgb, var(--cur-primary) 8%, transparent); }
-.cur .ws-delta[data-tone="good"] { color: var(--cur-success); border-color: color-mix(in srgb, var(--cur-success) 32%, transparent); background: color-mix(in srgb, var(--cur-success) 8%, transparent); }
+.cur .ws-delta[data-tone="warn"] { color: var(--ws-warning-ink); border-color: color-mix(in srgb, var(--ws-warning) 32%, transparent); background: color-mix(in srgb, var(--ws-warning) 8%, transparent); }
+.cur .ws-delta[data-tone="good"] { color: var(--cur-success-ink); border-color: color-mix(in srgb, var(--cur-success) 32%, transparent); background: color-mix(in srgb, var(--cur-success) 8%, transparent); }
 
 /* ── Day chart ────────────────────────────────────────
    Hover gives the exact figure. A chart nobody can read a value off is
@@ -729,10 +711,10 @@
 .cur .ws-chart { display: flex; align-items: flex-end; gap: 4px; height: 118px; }
 .cur .ws-chart-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; height: 100%; position: relative; }
 .cur .ws-chart-col i { display: block; border-radius: 3px 3px 0 0; background: var(--cur-surface-strong); min-height: 2px; transition: background .12s ease; }
-/* The current window reads as "now" in ink. Orange is spent on the single
-   outlier the annotation below explains — not on a whole week of bars. */
+/* The current window reads as "now" in ink. The chart's own ink is spent on
+   the single outlier the annotation below explains — not on a whole week. */
 .cur .ws-chart-col[data-hot="true"] i { background: color-mix(in srgb, var(--cur-ink) 34%, transparent); }
-.cur .ws-chart-col[data-peak="true"] i { background: var(--cur-primary); }
+.cur .ws-chart-col[data-peak="true"] i { background: var(--ws-chart-ink); }
 .cur .ws-chart-col:hover i { background: var(--cur-ink); }
 .cur .ws-chart-tip {
   position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); z-index: 5;
@@ -751,7 +733,7 @@
 }
 .cur .ws-why svg { color: var(--cur-muted); flex-shrink: 0; margin-top: 1px; }
 .cur .ws-why b { color: var(--cur-ink); font-weight: 500; }
-.cur .ws-why button { border: 0; background: none; padding: 0; font: inherit; color: var(--cur-primary); cursor: pointer; }
+.cur .ws-why button { border: 0; background: none; padding: 0; font: inherit; color: var(--cur-accent-ink); cursor: pointer; }
 
 /* ── Filter chips ─────────────────────────────────────
    Counts live on the chip. Filtering to an empty set is a dead end you should
@@ -761,7 +743,7 @@
   background: var(--cur-surface); font-size: 12px; color: var(--cur-body); cursor: pointer;
   display: inline-flex; align-items: center; gap: 7px; font-family: inherit;
 }
-.cur .ws-chip:hover { border-color: var(--cur-muted-soft); }
+.cur .ws-chip:hover { border-color: var(--cur-hairline-hover); }
 .cur .ws-chip[data-on="true"] { background: var(--cur-ink); border-color: var(--cur-ink); color: var(--cur-canvas); }
 .cur .ws-chip[data-empty="true"] { opacity: 0.5; }
 .cur .ws-chip .n { font-size: 11px; color: var(--cur-muted); }
@@ -832,6 +814,8 @@
 /* Right: the form. Bounded, centred, never full-bleed. */
 .cur .ws-auth-main { display: flex; align-items: center; justify-content: center; padding: 44px 32px; position: relative; }
 .cur .ws-auth-theme { position: absolute; top: 22px; right: 22px; }
+.cur .ws-auth-attribution { position: absolute; bottom: 16px; color: var(--cur-muted-soft); font-size: 10px; }
+.cur .ws-auth-attribution:hover { color: var(--cur-muted); }
 .cur .ws-auth-box { width: 100%; max-width: 372px; }
 /* The mark inside the box is the fallback identity for narrow screens, where
    the aside that carries it is gone. Two marks side by side is one too many. */
@@ -849,20 +833,20 @@
 .cur .ws-field .input, .cur .ws-field .select { width: 100%; height: 38px; font-family: inherit; }
 .cur .ws-field .input::placeholder { color: var(--cur-muted-soft); }
 .cur .ws-field .input:focus, .cur .ws-field .select:focus {
-  outline: none; border-color: var(--cur-primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cur-primary) 16%, transparent);
+  outline: none; border-color: var(--cur-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cur-accent) 16%, transparent);
 }
 .cur .ws-field .hint { font-size: 11px; color: var(--cur-muted); margin-top: 6px; line-height: 1.45; }
 
 .cur .ws-auth-err {
   display: flex; gap: 9px; padding: 11px 13px; border-radius: var(--cur-r-cta); font-size: 12px; line-height: 1.5;
-  color: var(--cur-error); background: color-mix(in srgb, var(--cur-error) 9%, transparent);
+  color: var(--cur-error-ink); background: color-mix(in srgb, var(--cur-error) 9%, transparent);
   border: 1px solid color-mix(in srgb, var(--cur-error) 30%, transparent);
 }
 .cur .ws-auth-err svg { flex-shrink: 0; margin-top: 1px; }
 .cur .ws-auth-ok {
   display: flex; gap: 9px; padding: 11px 13px; border-radius: var(--cur-r-cta); font-size: 12px; line-height: 1.5;
-  color: var(--cur-success); background: color-mix(in srgb, var(--cur-success) 10%, transparent);
+  color: var(--cur-success-ink); background: color-mix(in srgb, var(--cur-success) 10%, transparent);
   border: 1px solid color-mix(in srgb, var(--cur-success) 30%, transparent);
 }
 .cur .ws-auth-ok svg { flex-shrink: 0; margin-top: 1px; }
@@ -878,7 +862,7 @@
   padding-top: 16px; border-top: 1px solid var(--cur-hairline); font-size: 12px;
 }
 .cur .ws-auth-alt a { color: var(--cur-muted); }
-.cur .ws-auth-alt a:hover { color: var(--cur-primary); }
+.cur .ws-auth-alt a:hover { color: var(--cur-accent-ink); }
 
 /* Separator between the two ways in. A rule through the middle rather than a
    heading, because neither side is a section — they are one choice. */
@@ -911,12 +895,12 @@
 .cur .ws-auth-done, .cur .ws-auth-warn {
   display: flex; align-items: center; gap: 8px; font-size: 13px; line-height: 1.45;
 }
-.cur .ws-auth-done { color: var(--cur-success); }
-.cur .ws-auth-warn { color: var(--ws-warning); }
+.cur .ws-auth-done { color: var(--cur-success-ink); }
+.cur .ws-auth-warn { color: var(--ws-warning-ink); }
 
 /* ── Disclosure row ──────────────────────────────────── */
 .cur .ws-more {
-  border: 0; background: none; padding: 0; font-size: 12px; color: var(--cur-primary);
+  border: 0; background: none; padding: 0; font-size: 12px; color: var(--cur-accent-ink);
   cursor: pointer; display: inline-flex; align-items: center; gap: 5px; font-family: inherit;
 }
 .cur .ws-more svg { transition: transform .14s ease; }
@@ -949,7 +933,7 @@
 .cur .ws-node-ic[data-skill="true"] { color: var(--cur-body); }
 /* A skill nobody can run. Amber rather than red: it is a gap in setup, not a
    fault — the skill is fine, it has simply never been shared with anyone. */
-.cur .ws-node-dead { color: var(--ws-warning); flex-shrink: 0; }
+.cur .ws-node-dead { color: var(--ws-warning-ink); flex-shrink: 0; }
 
 /* ── Library lenses ───────────────────────────────────
    The faults in the library, each one the way in to itself. A count you cannot
@@ -966,7 +950,7 @@
 }
 .cur .ws-lens-b:hover { color: var(--cur-ink); }
 .cur .ws-lens-b span { color: var(--cur-muted-soft); font-variant-numeric: tabular-nums; }
-.cur .ws-lens-b[data-tone="warn"] { color: var(--ws-warning); border-color: color-mix(in srgb, var(--ws-warning) 30%, transparent); }
+.cur .ws-lens-b[data-tone="warn"] { color: var(--ws-warning-ink); border-color: color-mix(in srgb, var(--ws-warning) 30%, transparent); }
 .cur .ws-lens-b[data-tone="warn"] span { color: color-mix(in srgb, var(--ws-warning) 70%, transparent); }
 /* Selected reads as pressed, not merely hovered — the tree beneath it is
    filtered, and that has to be obviously a state you are in. */
@@ -1043,7 +1027,7 @@
 .cur .ws-roster-top { display: flex; gap: 8px; align-items: center; margin-bottom: 9px; }
 .cur .ws-roster-top .search {
   flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px;
-  padding: 6px 10px; border-radius: var(--cur-r-ctl);
+  padding: 6px 10px; border-radius: var(--cur-r-cta);
   background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
   color: var(--cur-muted-soft);
 }
@@ -1062,7 +1046,7 @@
    into a mail client. */
 .cur .ws-roster-manual {
   width: 100%; margin-bottom: 9px; padding: 9px 11px; resize: vertical;
-  border-radius: var(--cur-r-ctl); border: 1px solid var(--cur-accent);
+  border-radius: var(--cur-r-cta); border: 1px solid var(--cur-accent);
   background: var(--cur-canvas-soft); color: var(--cur-body);
   font-family: var(--cur-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 11.5px; line-height: 1.6; outline: none;
@@ -1120,7 +1104,7 @@
 /* Separator only between adjacent metadata, never before the right-aligned
    cost — a dot pushed to the far right separates nothing. */
 .cur .ws-turn-m + .ws-turn-m::before { content: "·"; margin-right: 12px; color: var(--cur-hairline-strong); }
-.cur .ws-turn-c { font-size: 11.5px; color: var(--cur-primary); margin-left: auto; }
+.cur .ws-turn-c { font-size: 11.5px; color: var(--cur-body); margin-left: auto; }
 .cur .ws-turn-m:last-child { margin-left: auto; }
 .cur .ws-turn-m:last-child::before { content: none; }
 
@@ -1153,7 +1137,7 @@
 }
 /* A write is the one thing on this row worth a second look, so it is the only
    thing that gets a colour. Reads are the overwhelming majority and stay grey. */
-.cur .ws-step-a[data-a="write"] { color: var(--ws-warning); }
+.cur .ws-step-a[data-a="write"] { color: var(--ws-warning-ink); }
 .cur .ws-step-h .badge { margin-left: auto; flex-shrink: 0; }
 .cur .ws-step-b { padding: 2px 0 14px 22px; }
 .cur .ws-step-summary {
@@ -1177,7 +1161,7 @@
   border-radius: 6px; background: color-mix(in srgb, var(--cur-error) 8%, transparent);
 }
 .cur .ws-step-brief[data-tone="error"] span,
-.cur .ws-step-brief[data-tone="error"] p { color: var(--cur-error); }
+.cur .ws-step-brief[data-tone="error"] p { color: var(--cur-error-ink); }
 .cur .ws-run-briefs {
   list-style: none; margin: 0; padding: 0; display: grid; gap: 8px;
 }
@@ -1196,7 +1180,7 @@
   color: var(--cur-muted-soft); font-size: 11.5px; white-space: nowrap;
 }
 .cur .ws-run-brief[data-tone="error"] p,
-.cur .ws-run-brief[data-tone="error"] small { color: var(--cur-error); }
+.cur .ws-run-brief[data-tone="error"] small { color: var(--cur-error-ink); }
 .cur .ws-run-brief[data-tone="error"] > span { color: color-mix(in srgb, var(--cur-error) 68%, var(--cur-muted)); }
 @media (max-width: 760px) {
   .cur .ws-run-brief { grid-template-columns: 1fr; gap: 4px; }
@@ -1217,7 +1201,7 @@
   border: 0; background: none; padding: 0; cursor: pointer;
   font-family: inherit; font-size: 12.5px; color: var(--cur-body);
 }
-.cur .ws-linkish:hover { color: var(--cur-primary); }
+.cur .ws-linkish:hover { color: var(--cur-accent-ink); }
 .cur .ws-linkish:disabled { color: var(--cur-muted-soft); cursor: default; }
 
 /* ── Granted scopes ───────────────────────────────────
@@ -1247,7 +1231,144 @@
 /* The Home column is narrower than a data page. The composer is a writing
    surface and long measure hurts it, so the page is centred and capped rather
    than filling a 1600px monitor. */
-.cur .ws-home { max-width: 940px; margin: 0 auto; padding-bottom: 40px; }
+.cur .ws-home { max-width: 940px; margin: 0 auto; padding: 0 34px 40px; }
+
+/* ── The landing ──────────────────────────────────────
+   Home scrolls itself rather than being scrolled by the shell. That is what
+   makes "one screenful" a number this file can use: `.ws-scroller` has a
+   definite height, so the hero can be exactly that height minus the bar the
+   composer ends up as, and the dashboard reaches the top at the same moment
+   the composer finishes compressing. Inside `.page`, the same section is
+   always a topbar and 30 pixels too tall. */
+.cur .ws-scroller { height: 100%; overflow-y: auto; }
+
+/* The composer's rail. Sticky from the first pixel and only as tall as the
+   bar it becomes — while nobody has scrolled, the composer inside is pushed
+   down into the middle of the screen by a transform, which costs no layout. */
+.cur .ws-stage {
+  position: sticky; top: 0; z-index: 20; height: 96px;
+  display: flex; justify-content: center; pointer-events: none;
+  /* Not `stretch`, which is the default and was the bug: the inner block was
+     being stretched to the rail's 96px rather than taking the composer's own
+     height, so anything positioned off its bottom edge — the scroll
+     invitation — landed partway UP the composer, on top of the quick starts. */
+  align-items: flex-start;
+}
+/* Appears only once the composer has become a bar. Before that there is
+   nothing behind it to hide, and a backdrop on an empty screen reads as a
+   toolbar somebody forgot to fill. */
+.cur .ws-stage::before {
+  content: ''; position: absolute; inset: -30px 0 -22px;
+  opacity: var(--chrome, 0);
+  /* A fade rather than an edge. A rule across the full width drew a lid over
+     the page, and the composer is not a header — what it needs is for the band
+     scrolling under it to stop being legible, which a gradient does without
+     announcing itself. */
+  background: linear-gradient(var(--cur-canvas) 76%, transparent);
+}
+.cur .ws-stage-in { position: relative; pointer-events: auto; max-width: calc(100% - 68px); }
+
+/* One screenful, minus the bar the composer becomes. Empty: the stage floats
+   everything over it. It exists to be the distance you scroll. */
+.cur .ws-hero { height: calc(100dvh - 46px - 96px); }
+
+/* Greeting above the box, invitation below it, both measured off the box's own
+   edges rather than the screen's — that is what keeps the three reading as one
+   cluster instead of as three things at three heights. */
+.cur .ws-hero-greet {
+  position: absolute; left: 6px; right: 6px; bottom: 100%;
+  margin-bottom: 20px; pointer-events: none;
+}
+/* Small line first, big line second. The question is the thing being asked of
+   the reader, so it is the one set at title size; the greeting is context for
+   it and sits above in the quiet colour. */
+.cur .ws-hero-hi { font-size: 13px; color: var(--cur-muted); }
+.cur .ws-hero-ask {
+  font-size: 27px; letter-spacing: -0.025em; color: var(--cur-ink); margin-top: 5px;
+}
+.cur .ws-hero-more {
+  position: absolute; left: 50%; top: 100%; transform: translateX(-50%);
+  /* Measured from the bottom of the whole composer, tray included. */
+  display: inline-flex; align-items: center; gap: 6px; margin-top: 26px;
+  font-size: 12.5px; color: var(--cur-muted); background: none; border: 0;
+  cursor: pointer; padding: 6px 12px; border-radius: 999px; white-space: nowrap;
+}
+.cur .ws-hero-more:hover { color: var(--cur-ink); background: var(--cur-surface); }
+.cur .ws-hero-more svg { animation: ws-nudge 2.2s cubic-bezier(0.23, 1, 0.32, 1) infinite; }
+@keyframes ws-nudge { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(3px); } }
+
+/* ── The composer, on the landing ─────────────────────
+   Box on a plate, tray under the box: one object with two levels, rather than
+   a box with a row of buttons parked beneath it. The plate is what makes the
+   tray read as part of the composer instead of as page content that happens to
+   sit close to it. */
+.cur .ws-comp-plate { position: relative; padding: 5px; border-radius: 22px; }
+.cur .ws-comp-plate::before {
+  content: ''; position: absolute; inset: 0; border-radius: 22px;
+  /* `surface-strong`, not `canvas-soft`. Soft is one step off the page in
+     light — #f4f5f6 on #f1f2f3 — so the plate simply vanished there while
+     reading fine in dark, and the tray under the box looked like loose buttons
+     on the page. This tone is a real step in both themes: grey under a white
+     box in light, raised under a recessed box in dark. */
+  background: var(--cur-surface-strong); border: 1px solid var(--cur-hairline);
+  /* Fades out with the rest of the landing geometry, so what is left at the
+     top of a scrolled page is a single-edged bar rather than a box inside a
+     box. */
+  opacity: var(--plate, 1);
+}
+.cur .ws-comp-plate > * { position: relative; }
+.cur .ws-comp-tray { overflow: hidden; }
+/* The tray's own row. It sets no gap and no spacing of any kind: what goes in
+   it is one composed thing — today a deck of app marks that overlap on purpose
+   — so the spacing belongs to whatever is put here, not to the strip holding
+   it. Scrolls rather than squashes, because a flex row's default is to shrink
+   its children and a squashed logo is not a logo. */
+.cur .ws-comp-tray-in {
+  display: flex; align-items: center; padding: 9px 8px 4px;
+  overflow-x: auto; scrollbar-width: none;
+}
+.cur .ws-comp-tray-in::-webkit-scrollbar { display: none; }
+.cur .ws-comp-tray-in > * { flex: none; }
+
+/* ── The app deck ─────────────────────────────────────
+   A stack of marks, overlapping by roughly a third.
+
+   It was a row of pills reading Gmail · Drive · Sheets · Calendar, which spanned
+   the whole box and read as a toolbar — eight things of equal weight competing
+   with the field above them. The names were never the information: a person
+   knows the Gmail mark faster than they can read the word, and the tray is a
+   glance rather than a menu. The word is still there for anyone who needs it,
+   as the button's own label, which is also what a screen reader announces.
+
+   Nothing here runs anything. A press types the app's name into the box, which
+   is why these are marks the way a stack of avatars is, not a row of buttons. */
+.cur .ws-app-chip {
+  width: 30px; height: 30px; flex: none; display: grid; place-items: center;
+  border-radius: 999px; cursor: pointer; position: relative;
+  border: 1px solid var(--cur-hairline); background: var(--cur-surface);
+  transition: transform .12s ease, border-color .12s ease;
+}
+/* A third of a mark. Enough that the set reads as one object rather than eight,
+   and not so much that any single logo becomes a sliver. */
+.cur .ws-app-chip + .ws-app-chip { margin-left: -10px; }
+/* Out of the deck rather than merely tinted. Without the z-index the mark you
+   are pointing at stays half-buried under its neighbour, which reads as a
+   control that did not notice you. */
+.cur .ws-app-chip:hover,
+.cur .ws-app-chip:focus-visible {
+  z-index: 2; transform: translateY(-2px); border-color: var(--cur-hairline-strong);
+}
+/* The deck before the connections are known: the same circles, empty. The tray
+   is the right height from the first frame, so the composer does not resize
+   under somebody's hands when the read lands. */
+.cur .ws-app-chip[data-ghost] {
+  background: var(--cur-canvas-soft); border-color: transparent; cursor: default;
+  animation: ws-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cur .ws-hero-more svg { animation: none; }
+}
 
 /* ── Composer ─────────────────────────────────────────
    Home no longer draws its own composer. It renders the SAME component
@@ -1255,7 +1376,10 @@
    into is identical on both sides of the handoff — one control, one set of
    keybindings, one place to change it. All this rule does is give it the
    breathing room the old panel had. */
-.cur .ws-comp-slot { margin-bottom: 26px; }
+/* No margin any more: the composer rides in `.ws-stage`, whose own height is
+   the space it is allowed, and a margin under it would push every band down by
+   26px for a gap the sticky bar already accounts for. */
+.cur .ws-comp-slot { margin-bottom: 0; }
 
 /* ── Connected apps ───────────────────────────────────
    A grid of cards rather than a list of rows. Seven full-width rows all the
@@ -1340,6 +1464,16 @@
 .cur .ws-appcard-act .ws-tag {
   width: 100%; justify-content: center; min-height: 34px; box-sizing: border-box;
 }
+/* A second way to connect, offered quietly under the first.
+   Airtable takes either a sign-in or a company token and only an admin may post
+   the token, so two buttons of equal weight would put a decision in front of
+   everybody that most people do not have. Text under the control, centred on
+   it, reads as a footnote to the button rather than as a rival to it. */
+.cur .ws-appcard-alt {
+  display: flex; width: 100%; justify-content: center;
+  margin-top: 8px; font-size: 12px; color: var(--cur-muted);
+}
+.cur .ws-appcard-alt:hover { color: var(--cur-accent-ink); }
 
 /* The accounts under an app. Compact rows, because the card is about the app
    and these are what it currently holds. */
@@ -1367,7 +1501,7 @@
 .cur .ws-appcard-accs svg {
   grid-column: 2; grid-row: 1; color: var(--cur-muted-soft); flex-shrink: 0;
 }
-.cur .ws-appcard-accs li[data-dead="true"] .ws-appcard-acc-s { color: var(--cur-error); }
+.cur .ws-appcard-accs li[data-dead="true"] .ws-appcard-acc-s { color: var(--cur-error-ink); }
 
 /* ── App icons ────────────────────────────────────────
    The tile every provider mark sits in, so a drawn logo, a PNG and a lettered
@@ -1409,7 +1543,7 @@
   border: 1px solid var(--cur-hairline-strong); background: var(--cur-surface);
   color: var(--cur-body); cursor: pointer;
 }
-.cur .ws-band-nav:hover:not(:disabled) { border-color: var(--cur-muted-soft); color: var(--cur-ink); }
+.cur .ws-band-nav:hover:not(:disabled) { border-color: var(--cur-hairline-hover); color: var(--cur-ink); }
 .cur .ws-band-nav:disabled { opacity: 0.4; cursor: default; }
 
 /* ── Get started carousel ─────────────────────────────
@@ -1510,6 +1644,18 @@
 }
 .cur .ws-recent-empty { padding: 4px 10px; font-size: 12px; color: var(--cur-muted-soft); line-height: 1.5; }
 
+/* Deliberately not a row. It sits in the same column as the chats but reads as
+   an action rather than a destination — no card, no hover surface — so the eye
+   does not count it as one more chat at the bottom of the list. */
+.cur .ws-recent-expand {
+  display: block; width: 100%; text-align: left; border: 0; cursor: pointer;
+  font-family: inherit; font-size: 12px; line-height: 1.4;
+  padding: 7px 10px; margin: 2px 0 4px; border-radius: 8px;
+  background: transparent; color: var(--cur-muted);
+  transition: background .12s ease, color .12s ease;
+}
+.cur .ws-recent-expand:hover { background: var(--cur-canvas-soft); color: var(--cur-ink); }
+
 /* A chat's own controls, on the chat.
    Hidden at rest: this rail is scanned, not operated, and a delete control
    sitting on every row is a list you read carefully instead of quickly. The
@@ -1540,14 +1686,14 @@
   font-family: inherit; font-size: 12.5px; text-align: left; color: var(--cur-body);
 }
 .cur .ws-recent-menu button:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
-.cur .ws-recent-menu button[data-danger] { color: var(--cur-error); }
-.cur .ws-recent-menu button[data-danger]:hover { color: var(--cur-error); }
+.cur .ws-recent-menu button[data-danger] { color: var(--cur-error-ink); }
+.cur .ws-recent-menu button[data-danger]:hover { color: var(--cur-error-ink); }
 
 /* Renaming happens in place. A dialog for one short string would take the
    reader off the list they are naming something in. */
 .cur .ws-recent-rename {
   display: block; width: 100%; padding: 8px 10px; margin-bottom: 4px;
-  border: 1px solid var(--cur-primary); border-radius: 10px;
+  border: 1px solid var(--cur-accent); border-radius: 10px;
   background: var(--cur-canvas-soft); color: var(--cur-ink);
   font-family: inherit; font-size: 13px; line-height: 1.35; outline: none;
 }
@@ -1575,7 +1721,7 @@
 .cur .ws-onb-li { display: flex; align-items: center; gap: 9px; padding: 4px 0; font-size: 12.5px; color: var(--cur-muted); }
 .cur .ws-onb-li[data-done="true"] { color: var(--cur-ink); }
 .cur .ws-onb-li svg { flex-shrink: 0; color: var(--cur-muted-soft); }
-.cur .ws-onb-li[data-done="true"] svg { color: var(--cur-accent); }
+.cur .ws-onb-li[data-done="true"] svg { color: var(--cur-accent-ink); }
 /* An incomplete step is the one thing here you can act on, so it is a button —
    but it must not look like a link in a list of plain labels. */
 .cur .ws-onb-go {
@@ -1645,6 +1791,19 @@
   margin-top: 2px; font-size: 11px; line-height: 1.2;
 }
 .cur .workspace-sidebar .ws-scope-menu { top: calc(100% + 4px); }
+
+/* Only the recent list gives up height.
+   The rail is a flex column, and every child of it shrinks by default. These
+   have an intrinsic height — a 32px control, a 44px switcher — so left
+   shrinkable they get squeezed the moment the column is over-full, which is
+   what a long chat list does to it. The search field lost four pixels and read
+   as distorted; `.ws-nav` already carried this declaration for the same reason.
+   `.ws-recent` is the one that should absorb it: it scrolls, and it has the
+   `min-height: 0` that lets it. */
+.cur .workspace-sidebar > .ws-workspace,
+.cur .ws-quick-search,
+.cur .ws-new-chat,
+.cur .sidebar-foot { flex: none; }
 
 /* Quick search is the existing route palette, now placed where the reference
    puts it. Slash joins Cmd/Ctrl+K, but is ignored while a field is editable. */
@@ -1771,10 +1930,57 @@
 }
 .cur .workspace-sidebar .sidebar-foot .nav-item { border-radius: 7px; }
 
-/* Off-canvas only when the rail would otherwise consume most of the viewport.
-   Desktop keeps the reference's fixed 240px root column. */
+/* ── Putting the rail away ────────────────────────────
+   Two behaviours behind one pair of controls, split by width because the rail
+   is two different objects at the two sizes. Narrow: a sheet over the page,
+   which must shut itself. Wide: a column of the layout, which collapses and
+   hands its width to the content — and stays collapsed, because a reader who
+   closed it wants the room, not a reminder on the next reload. */
 .cur .ws-sidebar-trigger,
 .cur .ws-sidebar-backdrop { display: none; }
+
+/* Sits in the identity row, quiet until wanted: the rail is read constantly and
+   its own close button is pressed once a session. Full opacity on keyboard focus
+   as well as hover — a control you can reach with Tab but not see is not one. */
+.cur .workspace-sidebar .ws-rail-hide {
+  width: 28px; height: 28px; flex-shrink: 0; display: grid; place-items: center;
+  padding: 0; border: 0; border-radius: 7px; background: transparent;
+  color: var(--cur-muted); cursor: pointer; opacity: 0;
+  transition: opacity .12s ease, background-color .12s ease, color .12s ease;
+}
+.cur .workspace-sidebar:hover .ws-rail-hide,
+.cur .workspace-sidebar .ws-rail-hide:focus-visible { opacity: 1; }
+.cur .workspace-sidebar .ws-rail-hide:hover {
+  background: var(--cur-surface-strong); color: var(--cur-ink);
+}
+
+/* The button that brings it back. Fixed rather than in the flow: the surfaces it
+   would have to sit inside are three different headers, and two of the screens
+   (a chat, the landing) deliberately have none. */
+.cur .ws-sidebar-trigger {
+  place-items: center; position: fixed; top: 8px; left: 8px; z-index: 45;
+  width: 30px; height: 30px; padding: 0;
+  border: 1px solid var(--cur-hairline); border-radius: 8px;
+  background: color-mix(in srgb, var(--cur-canvas) 84%, transparent);
+  color: var(--cur-body); backdrop-filter: blur(10px); cursor: pointer;
+}
+.cur .ws-sidebar-trigger:hover { color: var(--cur-ink); border-color: var(--cur-hairline-strong); }
+
+@media (min-width: 761px) {
+  /* Width, not `display: none`: the rail keeps its place in the flex row, so the
+     content slides across rather than jumping, and `overflow: hidden` on the
+     rail clips its rows as they go. */
+  .cur.workspace-app .workspace-sidebar {
+    transition: width 200ms cubic-bezier(.23, 1, .32, 1), padding 200ms cubic-bezier(.23, 1, .32, 1);
+  }
+  .cur.workspace-app[data-rail="hidden"] .workspace-sidebar {
+    width: 0; padding-left: 0; padding-right: 0; border-right-width: 0;
+  }
+  .cur.workspace-app[data-rail="hidden"] .ws-sidebar-trigger { display: grid; }
+  /* Room for that button, and only while it is there. */
+  .cur.workspace-app[data-rail="hidden"] .topbar { padding-left: 50px; }
+  .cur.workspace-app[data-rail="hidden"] .ws-chat-head > div { padding-left: 50px; }
+}
 
 @media (max-width: 760px) {
   .cur.workspace-app .workspace-sidebar {
@@ -1785,7 +1991,7 @@
     box-shadow: var(--ws-float);
     transition: transform 220ms cubic-bezier(.23, 1, .32, 1);
   }
-  .cur.workspace-app[data-sidebar-open="true"] .workspace-sidebar { transform: translateX(0); }
+  .cur.workspace-app[data-drawer-open="true"] .workspace-sidebar { transform: translateX(0); }
 
   .cur .ws-sidebar-backdrop {
     display: block; position: fixed; inset: 0; z-index: 55;
@@ -1793,18 +1999,14 @@
     opacity: 0; visibility: hidden; pointer-events: none;
     transition: opacity .18s ease, visibility .18s ease;
   }
-  .cur.workspace-app[data-sidebar-open="true"] .ws-sidebar-backdrop {
+  .cur.workspace-app[data-drawer-open="true"] .ws-sidebar-backdrop {
     opacity: 1; visibility: visible; pointer-events: auto;
   }
-  .cur .ws-sidebar-trigger {
-    display: grid; place-items: center; position: fixed; top: 8px; left: 8px; z-index: 45;
-    width: 30px; height: 30px; padding: 0;
-    border: 1px solid var(--cur-hairline); border-radius: 8px;
-    background: color-mix(in srgb, var(--cur-canvas) 84%, transparent);
-    color: var(--cur-body); backdrop-filter: blur(10px); cursor: pointer;
-  }
-  .cur .ws-sidebar-trigger:hover { color: var(--cur-ink); border-color: var(--cur-hairline-strong); }
-  .cur.workspace-app[data-sidebar-open="true"] .ws-sidebar-trigger { visibility: hidden; }
+  .cur .ws-sidebar-trigger { display: grid; }
+  .cur.workspace-app[data-drawer-open="true"] .ws-sidebar-trigger { visibility: hidden; }
+  /* Always shown here: on a touch screen there is no pointer to reveal it with,
+     and the sheet covers the page until something dismisses it. */
+  .cur .workspace-sidebar .ws-rail-hide { opacity: 1; }
 
   .cur.workspace-app .topbar { padding-left: 50px; }
   .cur.workspace-app .ws-chat-head > div { padding-left: 50px; }
@@ -1814,6 +2016,7 @@
 @media (prefers-reduced-motion: reduce) {
   .cur .workspace-sidebar .ws-nav-highlight,
   .cur.workspace-app .workspace-sidebar,
+  .cur .ws-rail-hide,
   .cur .ws-sidebar-backdrop { transition: none; }
 }
 
@@ -1830,20 +2033,17 @@
 .cur .topbar { width: 100%; max-width: 1160px; margin-inline: auto; padding-inline: 34px; }
 
 /*
-  Focus rings, on the tokens.
+  Focus, inset where the box has no room outside it.
 
-  global.css applies `ring-2 ring-ring ring-offset-2` to every `:focus-visible`,
-  and `--ring` resolves to the brand orange — so clicking a nav row left a
-  bright orange halo around it that read as a selected state rather than as
-  keyboard focus. Inside `.cur` it becomes a quiet outline, still clearly
-  visible to a keyboard user and no longer shouting at a mouse user.
+  The colour and the ring itself now come from `global.css`, which draws focus
+  as the accent — the reference's own answer. This block used to override that
+  to a grey outline because `--ring` resolved to the brand orange and a clicked
+  nav row kept a bright halo that read as the selected state. `--ring` is gone
+  and focus is blue everywhere; the only thing still worth saying here is that
+  a nav row is flush to the rail's padding, so its ring is drawn inside.
 */
-.cur :focus-visible {
-  box-shadow: none;
-  outline: 2px solid var(--cur-muted-soft);
-  outline-offset: 1px;
-}
-.cur .nav-item:focus-visible { outline-offset: -2px; }
+.cur .nav-item:focus-visible,
+.cur .set-back:focus-visible { outline-offset: -2px; }
 
 /* ══════════════════════════════════════════════════════
    SETTINGS TAKEOVER
@@ -1855,42 +2055,100 @@
    ══════════════════════════════════════════════════════ */
 .cur.set { display: flex; height: 100vh; overflow: hidden; }
 
+/*
+  The rail, in the same language as the app's.
+
+  It used to be the base `.nav-item` styling and nothing else: 262px wide,
+  10px padding, sentence-case 12px group labels, 8px rows with 16px icons, and
+  an active row marked by a fill plus a 2px accent bar down its left edge. The
+  product rail had since been rebuilt under `.workspace-sidebar` — 240px, 8px
+  padding, uppercase 10.5px labels, 7px rows, 14px icons, and an active row
+  that is a plain fill — and the takeover was never brought along. Somebody
+  going into Settings crossed into a rail from the previous design.
+
+  Every metric below is `.workspace-sidebar`'s. What is deliberately NOT copied
+  is the moving highlight pill: that is a measured element the product nav
+  animates between rows, and its resting appearance is exactly this fill, so a
+  static rail loses the travel and nothing else.
+*/
 .cur .set-rail {
-  width: 262px; flex-shrink: 0; display: flex; flex-direction: column;
-  padding: 10px 10px 12px; overflow-y: auto;
+  width: 240px; flex-shrink: 0; display: flex; flex-direction: column;
+  padding: 8px; overflow-y: auto;
   border-right: 1px solid var(--cur-hairline); background: var(--cur-sidebar);
 }
 .cur .set-back {
-  display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px; margin-bottom: 6px;
-  border: 0; border-radius: var(--cur-r-cta); background: none; cursor: pointer;
-  font-family: inherit; font-size: 13.5px; color: var(--cur-body);
+  display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 8px; margin-bottom: 8px;
+  border: 0; border-radius: 7px; background: transparent; cursor: pointer;
+  font-family: inherit; font-size: 13px; color: var(--cur-body);
+  transition: color .15s ease, background-color .15s ease, transform .15s ease;
 }
 .cur .set-back:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
-.cur .set-rail-nav { display: flex; flex-direction: column; gap: 1px; }
+.cur .set-back:active { transform: scale(.98); }
+.cur .set-back svg { color: var(--cur-muted); }
+
+/* Groups are spaced; rows inside a group are not. Same rhythm as the product
+   rail, where the gap belongs between one scope and the next rather than
+   between two links that mean the same kind of thing. */
+.cur .set-rail-nav { display: flex; flex-direction: column; gap: 8px; }
+.cur .set-rail-nav > div { display: flex; flex-direction: column; gap: 1px; }
+.cur .set-rail .nav-label {
+  padding: 5px 8px 4px; color: var(--cur-muted);
+  font-size: 10.5px; font-weight: 500; line-height: 1.4;
+  letter-spacing: .08em; text-transform: uppercase;
+}
+.cur .set-rail .nav-item {
+  height: 30px; gap: 8px; padding: 0 8px; border-radius: 7px;
+  background: transparent; color: var(--cur-body);
+  transition: color .15s ease, background-color .15s ease, transform .15s ease;
+}
+.cur .set-rail .nav-item:hover { background: var(--cur-canvas-soft); color: var(--cur-ink); }
+.cur .set-rail .nav-item:active { transform: scale(.98); }
+.cur .set-rail .nav-item.active {
+  background: var(--cur-surface-strong); color: var(--cur-ink); font-weight: 500;
+}
+/* The accent bar goes. The product rail marks the current row with the fill
+   alone, and two rails marking the same fact two ways is the inconsistency
+   this block exists to close. */
+.cur .set-rail .nav-item.active::before { display: none; }
+.cur .set-rail .nav-item .g {
+  width: 14px; color: var(--cur-muted); opacity: 1; transition: color .15s ease;
+}
+.cur .set-rail .nav-item:hover .g,
+.cur .set-rail .nav-item.active .g { color: var(--cur-ink); }
 
 .cur .set-body { flex: 1; min-width: 0; overflow-y: auto; }
 /*
-  The column is wide; the FORM is narrow.
+  One column, and every page in it.
 
-  Capping the column itself at a reading measure looked right on Profile and
-  broke every data screen behind it. `.ws-skills` and `.ws-cols` drop to one
-  column at `max-width: 1080px` — and a media query measures the VIEWPORT, not
-  the container. On a wide monitor those grids stayed two-up inside a 652px
-  box, so the Skills detail pane got ~344px: its header wrapped one word per
-  line and its Rename/Archive buttons overflowed the panel entirely.
+  This was three widths at once. The column ran to 1180px, the settings
+  primitives capped themselves at 720 and centred inside it, and Profile set
+  its own 880 — so a page title started at a different x depending on which
+  page you were on, and moving between two settings screens moved the text
+  under your eyes. Preferences was a centred 720px form; Connected apps was an
+  1180px table; Profile was 880 between them.
 
-  So the column is sized for the widest thing it hosts, and the settings
-  primitives below carry the reading measure themselves. Pages that want width
-  get it; pages that are a list of statements still read as one column.
+  It was three widths for a reason. Capping the column used to break the data
+  screens: `.ws-cols` and `.ws-skills` fold to one column at a 1080px viewport,
+  and a media query cannot see that it is sitting in an 880px box on a 27"
+  monitor — so those grids stayed two-up and were squeezed to a few hundred
+  pixels a side. The three lines below say it directly instead.
+
+  A container query would say it properly, and is the obvious answer here. It
+  is not usable yet: `container-type` makes an element the containing block for
+  every `position: fixed` descendant, and this app renders its modals, scrims
+  and drawers inline rather than through a portal — so every overlay opened
+  from a settings page would be trapped inside this column. Portal them and the
+  three lines below become one query.
+
+  880 is Profile's width, which is the page in here that was already right.
 */
-.cur .set-col { max-width: 1180px; margin: 0 auto; padding: 46px 34px 90px; }
+.cur .set-col { max-width: 880px; margin: 0 auto; padding: 46px 34px 90px; }
 
-/* Centred, not just capped.
-   The column centres itself at 1180px and the content inside it stops at 720,
-   so on any screen wider than that the whole page sat against the left edge
-   with 460px of nothing to its right — a reading column pushed off-centre
-   rather than a page with a margin. */
-.cur .set-h, .cur .set-row, .cur .set-note { max-width: 720px; margin-inline: auto; }
+/* What a container query would have said. Scoped to the takeover, so the app's
+   own 1160px pages keep the viewport behaviour these grids were tuned for. */
+.cur .set-col .ws-cols,
+.cur .set-col .ws-cols-even,
+.cur .set-col .ws-skills { grid-template-columns: minmax(0, 1fr); }
 .cur .set-h { margin-bottom: 30px; }
 .cur .set-h h1 { font-size: 26px; font-weight: 500; letter-spacing: -0.02em; color: var(--cur-ink); }
 .cur .set-h p { font-size: 13.5px; color: var(--cur-muted); margin-top: 7px; line-height: 1.5; }
@@ -1914,6 +2172,56 @@
 /* Two lines exactly: the label's line-height is 1.5, so 3em is 2 × 16.5px at
    its 11px size. 2.5em looked right and left the first figure 5px low. */
 .cur .ws-stat3 .ws-lbl { min-height: 3em; }
+/* ── Usage: figures, and a model's share of the bill ───
+   Three cards rather than three columns in one. The numbers are in different
+   units and answer unrelated questions, so a shared surface only invites a
+   comparison that means nothing. `auto-fit` rather than a fixed three: the
+   settings takeover is a narrow column on a laptop and a wide one on a
+   monitor, and three 30px figures crushed side by side read worse than two
+   above one. */
+.cur .ws-tiles {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+}
+.cur .ws-tile {
+  padding: 16px 18px 18px; border-radius: 12px;
+  border: 1px solid var(--cur-hairline); background: var(--cur-surface);
+}
+.cur .ws-tile-num { margin-top: 10px; }
+/* Cost is the figure this page exists for, so it is the only one of the three
+   wearing a colour. A palette where everything is emphasised emphasises
+   nothing — and the colour is the accent, because the figure is the answer to
+   the question the page asks, not a piece of Divo's identity. */
+.cur .ws-tile-num[data-accent="true"] { color: var(--cur-accent-ink); }
+.cur .ws-tile-foot { margin-top: 6px; }
+
+/* The sentence under the chart. Sits close to it because it describes the peak
+   the chart is drawing, not the panel as a whole. */
+.cur .ws-usage-read { margin: 12px 0 0; line-height: 1.5; }
+
+/* One model's share of the bill.
+   The row used to be a name, a bar, and "n calls · $x" on the same line with
+   the percentage nowhere — so the share, which is the whole reason the bar is
+   there, had to be eyeballed against its neighbours. */
+.cur .ws-model + .ws-model { margin-top: 18px; }
+.cur .ws-model-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; margin-bottom: 8px;
+}
+/* `min-width: 0` or a long model id refuses to shrink and pushes the share off
+   the end of the card instead of ellipsing inside it. */
+.cur .ws-model-id {
+  font-size: 13px; font-weight: 500; color: var(--cur-ink);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cur .ws-model-share {
+  font-size: 13px; font-weight: 500; color: var(--cur-ink);
+  font-variant-numeric: tabular-nums; flex: none;
+}
+.cur .ws-model-foot {
+  margin-top: 7px; font-size: 11.5px; line-height: 1.3; color: var(--cur-muted);
+}
+
 
 /* The brief, as the lines it was written as. Markdown from the composer, so
    the newlines are the structure and collapsing them would run a summary into
@@ -1938,14 +2246,20 @@
    route cannot look different.
 
    This block was written twice. The older copy sat *after* this one and so won
-   every property they shared — including stripping the fallbacks back off, so
-   the safety net above has been inert since the day it was added. Merged: the
-   geometry is the one that has actually been rendering, the fallbacks are back,
-   and there is one block to change. */
+   every property they shared. Merged: the geometry is the one that has actually
+   been rendering, and there is one block to change.
+
+   It reads `--bui-*` rather than `--cur-*`, and that is the actual fix for the
+   problem the fallbacks were papering over. A toast is portalled to
+   `document.body`, outside `.cur`, where every `--cur-*` value is undefined —
+   so each declaration fell through to its fallback, and the fallbacks that had
+   been chosen were the dark-mode hexes. A light-mode toast has been rendering
+   as a dark card. `palette.css` puts the palette on `:root`, which a portal can
+   see, so there is nothing left to fall back to. */
 .cur-toast[data-sonner-toaster] { --width: 348px; }
 [data-sonner-toast] {
-  background: var(--cur-surface, #1a1a1a) !important;
-  border: 1px solid var(--cur-hairline-strong, #333333) !important;
+  background: var(--bui-surface) !important;
+  border: 1px solid var(--bui-line-strong) !important;
   border-radius: 12px !important;
   box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.45) !important;
   padding: 12px 14px !important;
@@ -1955,31 +2269,31 @@
 [data-sonner-toast] [data-content] { gap: 3px !important; }
 [data-sonner-toast] [data-title] {
   font-size: 13px !important; font-weight: 500 !important;
-  line-height: 1.45 !important; color: var(--cur-ink, #e8e8e8) !important;
+  line-height: 1.45 !important; color: var(--bui-ink) !important;
 }
 [data-sonner-toast] [data-description] {
   font-size: 12px !important; line-height: 1.5 !important;
-  color: var(--cur-muted, #8f8f8f) !important; margin-top: 3px !important;
+  color: var(--bui-ink-3) !important; margin-top: 3px !important;
 }
 /* One dot, coloured by intent. An icon box and a tinted card were two signals
    for one fact, and neither of them was the sentence. */
 [data-sonner-toast] [data-icon] {
   width: 8px !important; height: 8px !important; border-radius: 50%;
   margin: 6px 0 0 0 !important; align-self: flex-start; flex-shrink: 0;
-  background: var(--cur-muted, #8f8f8f);
+  background: var(--bui-ink-3);
 }
 [data-sonner-toast] [data-icon] svg { display: none; }
-[data-sonner-toast][data-type="error"] [data-icon] { background: var(--cur-error, #e35a7d); }
-[data-sonner-toast][data-type="warning"] [data-icon] { background: var(--cur-primary, #fb5613); }
-[data-sonner-toast][data-type="success"] [data-icon] { background: var(--cur-success, #35b083); }
-[data-sonner-toast][data-type="info"] [data-icon] { background: var(--cur-accent, #3b82f6); }
+[data-sonner-toast][data-type="error"] [data-icon] { background: var(--bui-red); }
+[data-sonner-toast][data-type="warning"] [data-icon] { background: var(--bui-orange); }
+[data-sonner-toast][data-type="success"] [data-icon] { background: var(--bui-green); }
+[data-sonner-toast][data-type="info"] [data-icon] { background: var(--bui-accent); }
 /* The way out of a message whose remedy is elsewhere. Reads as a control
    rather than as a third line of prose. */
 [data-sonner-toast] [data-button] {
   height: 26px !important; padding: 0 11px !important; margin-left: 4px !important;
   border-radius: 999px !important; font-size: 12px !important; font-weight: 500 !important;
-  background: var(--cur-cta, #3a3a3a) !important; color: var(--cur-on-cta, #e8e8e8) !important;
-  border: 1px solid var(--cur-hairline-strong, #333333) !important;
+  background: var(--bui-ink) !important; color: var(--bui-surface) !important;
+  border: 0 !important;
 }
 /* ── Avatar ───────────────────────────────────────────
    Accent rather than brand orange: orange is scarce here and marks the one
@@ -1999,33 +2313,29 @@
    row belongs to a section by containment rather than by being the next thing
    after a heading. */
 .cur .set-section {
-  /* `margin-inline: auto` after the shorthand, which would otherwise zero it
-     and leave the labels hanging left of the cards they belong to. */
-  max-width: 720px; margin: 32px 0 10px; margin-inline: auto;
+  margin: 32px 0 10px;
   font-size: 12.5px; font-weight: 500; color: var(--cur-muted);
   letter-spacing: 0.01em;
 }
 .cur .set-section:first-of-type { margin-top: 0; }
 .cur .set-group {
-  max-width: 720px; margin-inline: auto; background: var(--cur-surface);
+  background: var(--cur-surface);
   border: 1px solid var(--cur-hairline); border-radius: var(--cur-r-card);
-  overflow: hidden;
+  box-shadow: var(--cur-shadow-card); overflow: hidden;
 }
 /* Inside a card the rows carry their own padding and a divider between them,
-   rather than a rule above each that also draws one at the very top. */
+   rather than a rule above each that also draws one at the very top. 18px to
+   match `.ws-row`, so a row in a settings group and a row in a panel are the
+   same row — they sit on the same page often enough to be compared. */
 .cur .set-group .set-row {
-  max-width: none; padding: 14px 16px;
+  padding: 14px 18px;
   border-top: 1px solid var(--cur-hairline-soft);
 }
 .cur .set-group .set-row:first-child { border-top: 0; }
 .cur .set-group .set-note {
-  max-width: none; margin: 0; padding: 12px 16px;
+  margin: 0; padding: 12px 18px;
   border-top: 1px solid var(--cur-hairline-soft); background: var(--cur-canvas-soft);
 }
-
-/* Separates groups of rows. The next row draws its own top rule, so this is
-   space rather than a second line. */
-.cur .set-gap { height: 26px; }
 
 .cur .set-note {
   display: flex; align-items: flex-start; gap: 8px; margin-top: 26px;
@@ -2038,7 +2348,7 @@
 .cur .set-col .page { padding: 0; max-width: none; }
 
 /* `b-ok` and `b-err` existed; a "not linked yet" state is neither. */
-.cur .b-warn { color: var(--ws-warning); background: color-mix(in srgb, var(--ws-warning) 14%, transparent); }
+.cur .b-warn { color: var(--ws-warning-ink); background: color-mix(in srgb, var(--ws-warning) 14%, transparent); }
 
 /*
   One header inside the takeover.
@@ -2064,8 +2374,224 @@
 
 /* The team selector in the rail. Full width so it reads as part of the group
    heading rather than as a control floating beside the links. */
-.cur .set-picker { padding: 2px 10px 8px; }
+.cur .set-picker { padding: 2px 8px 6px; }
 .cur .set-picker .select { width: 100%; height: 30px; font-size: 12.5px; }
+
+/* ══════════════════════════════════════════════════════
+   PROFILE
+
+   The one screen in the takeover that is not a list of statements. It carries a
+   year of somebody's activity — a calendar, two charts, four figures — none of
+   which fits the 720px reading measure the settings rows use, so the page sets
+   its own and every block inside it, rows included, takes that width. Mixing
+   the two produced a heatmap indented from the card above it. The column is
+   880 now, which is what this page used to have to ask for.
+
+   It also used to override `--ws-chart-ink` back to the accent, because in
+   brand orange a wall of 365 calendar squares read as a brand exercise. That
+   is now the default for every chart in the app, so the override is gone.
+   ══════════════════════════════════════════════════════ */
+
+.cur .prof-card {
+  background: var(--cur-surface); border: 1px solid var(--cur-hairline);
+  border-radius: var(--cur-r-card); box-shadow: var(--cur-shadow-card);
+  overflow: hidden; margin-bottom: 16px;
+}
+
+/*
+  A cover Divo draws rather than one anybody uploads.
+
+  Two stops off a hue derived from the user id, with a soft light thrown across
+  the top left — enough to read as a deliberate surface rather than as a block
+  of colour, and stable for a given person because the hue is not random.
+  Saturation is held well below the brand orange so a page full of charts still
+  has one loudest thing on it, and that thing is the data.
+*/
+.cur .prof-cover {
+  height: 116px; position: relative;
+  /*
+    Deep and desaturated, not a swatch.
+
+    The first pass was a 48%-saturation band at 34% lightness and it dominated
+    the card — a person opening their own profile saw a colour first and their
+    own name second. These values keep it a surface: the hue is legible, the
+    card below is still the brightest thing, and it holds up in light mode where
+    a saturated band would fight the white page.
+  */
+  background:
+    radial-gradient(130% 180% at 14% 0%, hsl(var(--prof-hue) 42% 46% / 0.42) 0%, transparent 66%),
+    linear-gradient(112deg,
+      hsl(var(--prof-hue) 30% 24%) 0%,
+      hsl(calc(var(--prof-hue) + 38) 26% 17%) 100%);
+}
+/* A grid, at the strength of a watermark. Flat colour at this size reads as an
+   image that failed to load; texture reads as a choice. At 0.14 it read as
+   graph paper, which is a third thing and the wrong one. */
+.cur .prof-cover::after {
+  content: ''; position: absolute; inset: 0; opacity: 0.05;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, 0.7) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.7) 1px, transparent 1px);
+  background-size: 34px 34px;
+}
+/* Grounds the avatar and the name against the band, so the eye lands on the
+   card rather than on the join. */
+.cur .prof-cover::before {
+  content: ''; position: absolute; inset: 0; z-index: 1;
+  background: linear-gradient(to bottom, transparent 42%, color-mix(in srgb, var(--cur-surface) 55%, transparent) 100%);
+}
+
+/*
+  Above the cover's fade.
+
+  `.prof-cover::before` is positioned and the identity block was not, so the
+  pseudo-element painted over it — the avatar's lower half came out washed to
+  the card colour and read as an image that had failed to finish loading. A
+  stacking context here puts the person in front of their own banner.
+*/
+.cur .prof-id { position: relative; z-index: 2; padding: 0 22px 18px; }
+/* Half over the cover, half over the card — the shape that says "this person is
+   the subject of what is below" without needing a heading to say it. */
+.cur .prof-face { margin-top: -36px; margin-bottom: 12px; width: max-content; }
+.cur .prof-face .ws-avatar {
+  border: 3px solid var(--cur-surface); box-shadow: 0 6px 18px -8px rgba(0, 0, 0, 0.5);
+}
+.cur .prof-id h1 {
+  font-size: 22px; font-weight: 500; letter-spacing: -0.02em; color: var(--cur-ink);
+}
+.cur .prof-sub {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+  margin-top: 6px; font-size: 12.5px; color: var(--cur-muted);
+}
+/* The company role, worn as a badge. It is the one piece of identity here that
+   changes what a person can do, so it is the one that gets a shape. */
+.cur .prof-tag {
+  padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
+  letter-spacing: 0.02em; color: var(--cur-accent-ink);
+  background: color-mix(in srgb, var(--cur-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--cur-accent) 28%, transparent);
+}
+
+.cur .prof-head { padding: 4px 22px 18px; }
+.cur .prof-hero { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.cur .prof-hero b {
+  font-size: 34px; font-weight: 500; letter-spacing: -0.03em; line-height: 1;
+  color: var(--cur-ink); font-variant-numeric: tabular-nums;
+}
+/* Untinted on purpose — see the component. More tasks is not good news and
+   fewer is not bad, and a green arrow here would be an opinion about a bill. */
+.cur .prof-delta {
+  padding: 3px 8px; border-radius: 6px; font-size: 12px; font-weight: 500;
+  color: var(--cur-body); background: var(--cur-surface-strong);
+  font-variant-numeric: tabular-nums;
+}
+.cur .prof-cost { margin-top: 9px; }
+
+/* Four across on a wide card, two on a narrow one. Never three: a 3+1 last row
+   reads as one figure that failed to load. */
+.cur .prof-tiles {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px; padding: 0 22px 20px;
+}
+.cur .prof-tile {
+  padding: 12px 13px; border-radius: 10px;
+  background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+}
+.cur .prof-tile b {
+  display: block; font-size: 17px; font-weight: 500; letter-spacing: -0.01em;
+  color: var(--cur-ink); font-variant-numeric: tabular-nums;
+}
+.cur .prof-tile span {
+  display: block; margin-top: 4px; font-size: 11.5px; color: var(--cur-muted);
+}
+
+.cur .prof-activity {
+  padding: 18px 22px 20px; border-top: 1px solid var(--cur-hairline-soft);
+  background: var(--cur-canvas-soft);
+}
+/* The calendar centres itself at its natural width; inside a card this wide it
+   should start where the label above it starts.
+
+   The cap it carries stays. Lifting it — which the first pass did — lets the
+   grid stretch to the card, and a thirty-day window is five columns: each cell
+   became a 140px tile and the "calendar" turned into fifteen enormous squares.
+   The cap is what makes a short range look like a short range. */
+.cur .prof-activity .ws-heat { margin-inline: 0; }
+
+.cur .prof-bar {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 16px; margin-bottom: 14px;
+}
+.cur .prof-chart { padding: 18px 22px 20px; }
+.cur .prof-figure {
+  display: flex; align-items: center; gap: 9px; margin-top: 7px;
+  font-size: 19px; font-weight: 500; letter-spacing: -0.01em; color: var(--cur-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ‹ August 2026 › */
+.cur .prof-switch {
+  display: flex; align-items: center; gap: 2px; flex-shrink: 0;
+  padding: 3px; border-radius: var(--cur-r-cta); background: var(--cur-surface-strong);
+}
+.cur .prof-switch b {
+  min-width: 118px; text-align: center; font-size: 12.5px; font-weight: 500;
+  color: var(--cur-ink);
+}
+.cur .prof-switch button {
+  width: 24px; height: 24px; display: grid; place-items: center; flex-shrink: 0;
+  border: 0; border-radius: 6px; background: none; cursor: pointer; color: var(--cur-body);
+}
+.cur .prof-switch button:hover:not(:disabled) { background: var(--cur-surface); color: var(--cur-ink); }
+/* Disabled rather than hidden: a control that vanishes at the end of the range
+   moves the label under the pointer that was about to press it. */
+.cur .prof-switch button:disabled { color: var(--cur-muted-soft); cursor: default; }
+
+/* One bar per day. `align-items: flex-end` so a bar grows up from the axis, and
+   `flex: 1` so a 28-day month and a 31-day one both fill the card. */
+.cur .prof-bars {
+  display: flex; align-items: flex-end; gap: 3px; height: 150px;
+}
+.cur .prof-bars i {
+  flex: 1; min-width: 0; min-height: 3px; border-radius: 3px;
+  background: var(--cur-accent);
+}
+/* A day with nothing keeps its place in the row, drawn in the colour of nothing
+   happening. Dropping it would close the gap and quietly redraw the month.
+   Mixed off the ink rather than set to `--cur-hairline-strong`, which at #333
+   on a #1a1a1a card was so close to the background that a quiet fortnight
+   looked like a chart that had stopped rendering. */
+.cur .prof-bars i[data-empty="true"] {
+  min-height: 4px;
+  background: color-mix(in srgb, var(--cur-ink) 15%, transparent);
+}
+
+.cur .prof-axis {
+  display: flex; justify-content: space-between; margin-top: 9px;
+  font-size: 11px; color: var(--cur-muted-soft);
+}
+
+/* Under about 760px the four figures go two-up and the card loses its outer
+   padding — a 22px gutter on a phone leaves the chart about 280px wide. */
+@media (max-width: 760px) {
+  .cur .prof-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* A year is fifty-three columns. Fitted to a phone each day is under three
+     pixels, which is a texture rather than a calendar — so it keeps a legible
+     cell and the band scrolls, the way every contribution grid does. */
+  /* `rtl` on the scroller and `ltr` back on its contents: a year that opens
+     scrolled to its left edge shows the twelve months before this person
+     started, and the part they came to see is off-screen. This starts it at
+     today without a scroll position to set in JavaScript. */
+  .cur .prof-activity { overflow-x: auto; direction: rtl; }
+  .cur .prof-activity > * { direction: ltr; }
+  .cur .prof-activity .ws-heat {
+    --ws-cell-max: 13px;
+    width: calc(var(--ws-cols) * var(--ws-cell-max) + (var(--ws-cols) - 1) * var(--ws-gap));
+  }
+  .cur .prof-id, .cur .prof-head { padding-inline: 16px; }
+  .cur .prof-tiles, .cur .prof-activity, .cur .prof-chart { padding-inline: 16px; }
+  .cur .prof-bar { flex-direction: column; align-items: flex-start; }
+}
 
 /* ══════════════════════════════════════════════════════
    DETAIL PAGE — header, body, inspector rail.
@@ -2172,8 +2698,8 @@
 }
 .cur .dt-run-hd:hover { background: var(--cur-canvas-soft); }
 .cur .dt-run-ic { flex-shrink: 0; color: var(--cur-muted); margin-top: 1px; }
-.cur .dt-run[data-tone="ok"] .dt-run-ic { color: var(--cur-success); }
-.cur .dt-run[data-tone="err"] .dt-run-ic { color: var(--cur-error); }
+.cur .dt-run[data-tone="ok"] .dt-run-ic { color: var(--cur-success-ink); }
+.cur .dt-run[data-tone="err"] .dt-run-ic { color: var(--cur-error-ink); }
 .cur .dt-run-t { min-width: 0; }
 .cur .dt-run-t b { display: block; font-size: 12.5px; font-weight: 400; color: var(--cur-ink); line-height: 1.4; }
 .cur .dt-run-t span { display: block; font-size: 11.5px; color: var(--cur-muted); margin-top: 2px; }
@@ -2229,12 +2755,12 @@
   margin: 3px 0 0; font-size: 12px; color: var(--cur-muted);
 }
 .cur .ws-mbx-state { display: inline-flex; align-items: center; gap: 5px; color: var(--cur-body); }
-.cur .ws-mbx-state > svg { color: var(--cur-error); flex-shrink: 0; }
+.cur .ws-mbx-state > svg { color: var(--cur-error-ink); flex-shrink: 0; }
 .cur .ws-mbx-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; background: var(--cur-muted-soft); }
 .cur .ws-mbx-card[data-tone="ok"] .ws-mbx-dot { background: var(--cur-success); }
 .cur .ws-mbx-card[data-tone="err"] .ws-mbx-dot { background: var(--cur-error); }
 .cur .ws-mbx-card[data-tone="warn"] .ws-mbx-dot { background: var(--ws-warning, #b4451f); }
-.cur .ws-mbx-card[data-tone="err"] .ws-mbx-state { color: var(--cur-error); }
+.cur .ws-mbx-card[data-tone="err"] .ws-mbx-state { color: var(--cur-error-ink); }
 .cur .ws-mbx-sep { color: var(--cur-muted-soft); }
 
 /* The evidence, as numbers rather than as a sentence in a box. Right-aligned
@@ -2246,7 +2772,7 @@
   letter-spacing: -0.01em; color: var(--cur-ink); font-variant-numeric: tabular-nums;
 }
 .cur .ws-mbx-stats dd { margin: 3px 0 0; font-size: 11px; color: var(--cur-muted-soft); white-space: nowrap; }
-.cur .ws-mbx-stats > div[data-tone="err"] dt { color: var(--cur-error); }
+.cur .ws-mbx-stats > div[data-tone="err"] dt { color: var(--cur-error-ink); }
 .cur .ws-mbx-since { padding-left: 4px; border-left: 1px solid var(--cur-hairline); }
 .cur .ws-mbx-since dd { margin: 0; padding-left: 12px; }
 .cur .ws-mbx-quiet { margin: 0; font-size: 11.5px; color: var(--cur-muted-soft); flex-shrink: 0; }
@@ -2335,8 +2861,8 @@
 }
 .cur .ws-menu button:hover { background: var(--cur-canvas-soft); color: var(--cur-ink); }
 .cur .ws-menu button svg { color: var(--cur-muted); flex-shrink: 0; }
-.cur .ws-menu button[data-danger="true"]:hover { color: var(--cur-error); }
-.cur .ws-menu button[data-danger="true"]:hover svg { color: var(--cur-error); }
+.cur .ws-menu button[data-danger="true"]:hover { color: var(--cur-error-ink); }
+.cur .ws-menu button[data-danger="true"]:hover svg { color: var(--cur-error-ink); }
 
 /* The rule's conditions. A list rather than a paragraph because every line is
    a separate thing that has to hold, and prose hides that. */
@@ -2374,7 +2900,7 @@
   border: 1px dashed var(--cur-hairline-strong); border-radius: 999px; background: none;
   font: inherit; font-size: 12.5px; color: var(--cur-muted); cursor: pointer;
 }
-.cur .ws-mk-chip:hover { color: var(--cur-ink); border-color: var(--cur-muted-soft); }
+.cur .ws-mk-chip:hover { color: var(--cur-ink); border-color: var(--cur-hairline-hover); }
 .cur .ws-mk-chip[data-neg="true"] { border-color: var(--cur-featured-ring); }
 
 /* ── The routing table ────────────────────────────────
@@ -2410,7 +2936,7 @@
   border-radius: 999px; background: none;
   font: inherit; font-size: 12.5px; color: var(--cur-muted); cursor: pointer;
 }
-.cur .ws-add:hover:not(:disabled) { color: var(--cur-ink); border-color: var(--cur-muted-soft); }
+.cur .ws-add:hover:not(:disabled) { color: var(--cur-ink); border-color: var(--cur-hairline-hover); }
 .cur .ws-add:disabled { opacity: 0.4; cursor: default; }
 
 /* What happens to everything else, separated by a rule from the branches
@@ -2482,7 +3008,7 @@
   background: var(--cur-canvas-soft); transition: border-color 0.12s ease, background 0.12s ease;
 }
 .cur .ws-pick:hover { border-color: var(--cur-hairline-strong); }
-.cur .ws-pick[data-on="true"] { border-color: var(--cur-muted-soft); background: var(--cur-surface-strong); }
+.cur .ws-pick[data-on="true"] { border-color: var(--cur-hairline-hover); background: var(--cur-surface-strong); }
 .cur .ws-pick-i {
   display: grid; place-items: center; width: 26px; height: 26px; margin-bottom: 9px;
   border-radius: 7px; background: var(--cur-surface); color: var(--cur-body);
@@ -2497,11 +3023,11 @@
   border: 1px solid var(--cur-hairline); border-radius: 10px;
   background: var(--cur-canvas-soft); font-size: 12.5px; line-height: 1.55;
 }
-.cur .ws-note-row > svg { color: var(--cur-success); flex-shrink: 0; }
+.cur .ws-note-row > svg { color: var(--cur-success-ink); flex-shrink: 0; }
 .cur .ws-note-row > img { flex-shrink: 0; }
 .cur .ws-note-row > div { flex: 1; min-width: 0; }
 .cur .ws-note-row[data-warn="true"] { border-color: color-mix(in srgb, var(--ws-warning) 30%, var(--cur-hairline)); }
-.cur .ws-note-row[data-warn="true"] > svg { color: var(--ws-warning); }
+.cur .ws-note-row[data-warn="true"] > svg { color: var(--ws-warning-ink); }
 
 /* The properties rail. Everything here is true *about* the rule rather than
    part of it, which is why it is not in the sentence on the left. */
@@ -2616,7 +3142,7 @@
   display: flex; align-items: flex-start; gap: 6px;
   color: color-mix(in srgb, var(--ws-warning) 60%, var(--cur-body));
 }
-.cur .ws-proof-warn svg { flex-shrink: 0; margin-top: 2px; color: var(--ws-warning); }
+.cur .ws-proof-warn svg { flex-shrink: 0; margin-top: 2px; color: var(--ws-warning-ink); }
 
 /* One line per matched message. These were full rows with a bordered icon
    square, which made three hits look like the content of the step rather than
@@ -2695,8 +3221,8 @@
 }
 .cur .ws-caught-o svg { flex-shrink: 0; }
 .cur .ws-caught-o em { font-style: normal; color: var(--cur-muted-soft); }
-.cur .ws-caught[data-tone="ok"] .ws-caught-o svg { color: var(--cur-success); }
-.cur .ws-caught[data-tone="fail"] .ws-caught-o svg { color: var(--cur-error); }
+.cur .ws-caught[data-tone="ok"] .ws-caught-o svg { color: var(--cur-success-ink); }
+.cur .ws-caught[data-tone="fail"] .ws-caught-o svg { color: var(--cur-error-ink); }
 
 .cur .ws-caught-more {
   display: flex; align-items: center; gap: 7px; margin-top: 22px;
@@ -2710,7 +3236,7 @@
   display: inline-flex; align-items: center; gap: 7px;
   font-size: 12.5px; color: var(--cur-body); cursor: pointer;
 }
-.cur .ws-mk-tog input { accent-color: var(--cur-primary); cursor: pointer; }
+.cur .ws-mk-tog input { accent-color: var(--cur-ink); cursor: pointer; }
 .cur .ws-mk-q { width: 100%; resize: vertical; min-height: 58px; line-height: 1.5; }
 
 /* An option with the reason for it attached, instead of a bare box whose
@@ -2727,10 +3253,10 @@
 }
 .cur .ws-opt:hover { border-color: var(--cur-hairline-strong); }
 .cur .ws-opt[data-on="true"] {
-  border-color: var(--cur-muted-soft); background: var(--cur-surface-strong);
+  border-color: var(--cur-hairline-hover); background: var(--cur-surface-strong);
 }
 .cur .ws-opt > input {
-  margin: 2px 0 0; accent-color: var(--cur-primary); cursor: pointer;
+  margin: 2px 0 0; accent-color: var(--cur-ink); cursor: pointer;
 }
 .cur .ws-opt b { display: block; font-size: 12.5px; font-weight: 500; color: var(--cur-ink); }
 /* Capped, like every other explanatory line in this sheet. The card is around
@@ -2776,11 +3302,11 @@
   stroke: var(--cur-hairline-soft); stroke-width: 1; stroke-dasharray: 3 5;
 }
 .cur .ws-trend-line {
-  stroke: var(--cur-primary); stroke-width: 1.5;
+  stroke: var(--ws-chart-ink); stroke-width: 1.5;
   stroke-linejoin: round; stroke-linecap: round;
 }
 .cur .ws-trend-guide { stroke: var(--cur-hairline-strong); stroke-width: 1; }
-.cur .ws-trend-dot { fill: var(--cur-primary); stroke: var(--cur-surface); stroke-width: 2; }
+.cur .ws-trend-dot { fill: var(--ws-chart-ink); stroke: var(--cur-surface); stroke-width: 2; }
 .cur .ws-trend-foot {
   display: flex; justify-content: space-between; align-items: baseline;
   margin-top: 2px; font-size: 11.5px; color: var(--cur-muted-soft);
@@ -2925,13 +3451,13 @@
   border: 1px solid var(--cur-hairline); color: var(--cur-muted); background: var(--cur-surface);
 }
 .cur .agm-chip[data-state="on"] {
-  color: var(--cur-success); background: color-mix(in srgb, var(--cur-success) 9%, transparent);
+  color: var(--cur-success-ink); background: color-mix(in srgb, var(--cur-success) 9%, transparent);
   border-color: color-mix(in srgb, var(--cur-success) 30%, transparent);
 }
 /* Granted for this person, held down by a company rule. The one state a
    manager has to be able to tell apart from "never granted". */
 .cur .agm-chip[data-state="blocked"] {
-  color: var(--ws-warning); background: color-mix(in srgb, var(--ws-warning) 9%, transparent);
+  color: var(--ws-warning-ink); background: color-mix(in srgb, var(--ws-warning) 9%, transparent);
   border-color: color-mix(in srgb, var(--ws-warning) 32%, transparent);
   text-decoration: line-through;
 }
@@ -2992,7 +3518,7 @@
   border-radius: 7px; cursor: pointer;
 }
 .cur .agm-pick-r:hover { background: var(--cur-canvas-soft); }
-.cur .agm-pick-r input { accent-color: var(--cur-primary); cursor: pointer; }
+.cur .agm-pick-r input { accent-color: var(--cur-ink); cursor: pointer; }
 .cur .agm-pick-n { flex: 1; min-width: 0; font-size: 12.5px; color: var(--cur-ink); }
 .cur .agm-pick-m { font-size: 11px; color: var(--cur-muted); flex: 0 0 auto; }
 /* Taken, not hidden — knowing Gmail belongs to the finance desk is more useful
@@ -3010,7 +3536,7 @@
   cursor: col-resize; z-index: 2;
 }
 .cur .ws-drawer-grip::after {
-  content: ''; position: absolute; inset: 0 3px; background: var(--cur-primary);
+  content: ''; position: absolute; inset: 0 3px; background: var(--cur-accent);
   opacity: 0; transition: opacity .12s ease;
 }
 .cur .ws-drawer-grip:hover::after { opacity: .5; }

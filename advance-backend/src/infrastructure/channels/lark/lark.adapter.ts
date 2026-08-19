@@ -276,7 +276,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
       await coordinator.update({
         ...(update.branding  ? { branding:  update.branding  } : {}),
         ...(update.timeline  ? { timeline:  update.timeline  } : {}),
-      });
+      }, { urgent: update.urgent === true });
       const mid = coordinator.getStatusMessageId() ?? '';
       return ok({
         channel: 'lark',
@@ -307,7 +307,7 @@ export class LarkChannelAdapter implements ChannelAdapter {
         await coordinator.update({
           ...(update.branding ? { branding: update.branding } : {}),
           ...(update.timeline ? { timeline: update.timeline } : {}),
-        });
+        }, { urgent: update.urgent === true });
       }
       return ok(handle);
     } catch (e) {

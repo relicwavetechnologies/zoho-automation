@@ -22,7 +22,14 @@ export interface ZohoAttachmentSourcePort {
     chatId: string;
     fileName: string;
   }): Promise<
-    | { readonly kind: 'resolved'; readonly fileName: string; readonly mimeType: string; readonly content: Buffer }
+    | {
+        readonly kind: 'resolved';
+        readonly fileName: string;
+        readonly mimeType: string;
+        readonly content: Buffer;
+        readonly onAttached?: () => Promise<void>;
+        readonly onUnconfirmed?: () => Promise<void>;
+      }
     | { readonly kind: 'unavailable'; readonly message: string }
   >;
 }
@@ -63,10 +70,10 @@ export function createZohoAttachmentService(input: {
     readonly destination?: { connectionId: string; organizationId?: string | undefined };
   }): Promise<ZohoAttachmentOutcome> => {
     const { recordType, recordId, fileName } = request;
-    if (!input.attachmentSource || input.channel !== 'lark') {
+    if (!input.attachmentSource) {
       return {
         outcome: 'refused',
-        message: `Divo cannot attach files from the ${input.channel} channel yet — only files sent in Lark.`,
+        message: `Divo cannot attach files from the ${input.channel} channel yet.`,
       };
     }
     if (!input.chatId) {
@@ -86,9 +93,13 @@ export function createZohoAttachmentService(input: {
     };
 
     // Zoho appends rather than replaces, so an unchecked retry leaves the same
-    // PDF on the record twice.
+    // PDF on the record twice. For Lark this can stay an idempotent retry guard:
+    // the source file is external and stable. Web uploads are different because
+    // the member may have uploaded a corrected file with the same local name, so
+    // resolve that current upload before deciding whether a same-name Zoho
+    // document is safe.
     const before = await readDocuments();
-    if (before?.some(name => sameName(name, fileName))) {
+    if (input.channel !== 'web' && before?.some(name => sameName(name, fileName))) {
       return { outcome: 'attached', message: `"${fileName}" was already attached; it was not uploaded again.` };
     }
 
@@ -100,6 +111,12 @@ export function createZohoAttachmentService(input: {
       fileName,
     });
     if (resolved.kind === 'unavailable') return { outcome: 'refused', message: resolved.message };
+    if (input.channel === 'web' && before?.some(name => sameName(name, resolved.fileName))) {
+      return {
+        outcome: 'refused',
+        message: `Zoho already has a document named "${resolved.fileName}" on this ${recordType}. Rename the uploaded file and try again so Divo can prove it attached the current upload.`,
+      };
+    }
 
     const policy = validateAttachmentPolicy([{
       fileName: resolved.fileName,
@@ -131,25 +148,31 @@ export function createZohoAttachmentService(input: {
     } catch (error) {
       // A dispatched upload that then failed may still have landed, so this
       // cannot claim the record is untouched.
-      return error instanceof WriteNotDispatchedError
-        ? { outcome: 'refused', message: `The upload was never sent: ${error.message}` }
-        : { outcome: 'unconfirmed', message: `Zoho did not accept the upload cleanly: ${mapZohoError(error)}` };
+      if (error instanceof WriteNotDispatchedError) {
+        return { outcome: 'refused', message: `The upload was never sent: ${error.message}` };
+      }
+      await resolved.onUnconfirmed?.().catch(() => undefined);
+      return { outcome: 'unconfirmed', message: `Zoho did not accept the upload cleanly: ${mapZohoError(error)}` };
     }
 
     // Zoho's own record is the only proof the upload landed.
     const after = await readDocuments();
     if (after === null) {
+      await resolved.onUnconfirmed?.().catch(() => undefined);
       return {
         outcome: 'unconfirmed',
         message: `Zoho accepted "${resolved.fileName}" but the record could not be re-read, so the attachment is unconfirmed.`,
       };
     }
-    return after.some(name => sameName(name, resolved.fileName))
-      ? { outcome: 'attached', message: `Attached "${resolved.fileName}". Zoho now lists: ${after.join(', ')}.` }
-      : {
-          outcome: 'unconfirmed',
-          message: `Zoho accepted the upload but does not list "${resolved.fileName}" on the ${recordType}. Treat the attachment as unconfirmed.`,
-        };
+    if (after.some(name => sameName(name, resolved.fileName))) {
+      await resolved.onAttached?.().catch(() => undefined);
+      return { outcome: 'attached', message: `Attached "${resolved.fileName}". Zoho now lists: ${after.join(', ')}.` };
+    }
+    await resolved.onUnconfirmed?.().catch(() => undefined);
+    return {
+      outcome: 'unconfirmed',
+      message: `Zoho accepted the upload but does not list "${resolved.fileName}" on the ${recordType}. Treat the attachment as unconfirmed.`,
+    };
   };
 
   return { attach };

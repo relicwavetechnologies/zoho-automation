@@ -100,10 +100,13 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(ROUTER_SKILL, /\/run\/divo-skills\/current\/<slug>\/SKILL\.md/i);
 	});
 
-	it("requires a fresh exact skill read for governed finance writes", () => {
+	// Which families are skill=required is runtime data from the bootstrap, so
+	// the persona states the rule and names no family. Naming one is what let
+	// this assertion stay green while the persona claimed Zoho Books was
+	// required and the registry marked it optional.
+	it("requires a fresh exact skill read wherever the bootstrap marks one required", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /family marked skill=required is never this direct-action exception/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Every Zoho Books mutation follows this rule/i);
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /including a short approval follow-up/i);
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /short approval follow-up/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /compaction summary.*is not a substitute/i);
 	});
 
@@ -135,11 +138,16 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /google_workspace, zoho, canva, airtable, lark, or shopify/i);
 	});
 
-	it("uses one persistent local Python file and never routes through the retired inline-code tool", () => {
+	it("uses one persistent local Python file for a governed local workflow", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, new RegExp(DIVO_GOVERNED_DIRECT_ACTION_CRITERION));
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, new RegExp(DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION));
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, new RegExp(DIVO_GOVERNED_DIRECT_ACTION_CRITERION));
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, new RegExp(DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION));
+		// Stated once. The Lark paragraph inherits it rather than repeating it.
+		assert.equal(
+			DIVO_COMPANY_PERSONA_PROMPT.split(DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION).length - 1,
+			1,
+		);
 		assert.match(ROUTER_SKILL, new RegExp(DIVO_GOVERNED_DIRECT_ACTION_CRITERION));
 		assert.match(ROUTER_SKILL, new RegExp(DIVO_GOVERNED_LOCAL_WORKFLOW_CRITERION));
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /write once/i);
@@ -166,8 +174,11 @@ describe("Divo normal-session routing policy", () => {
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /genuinely required native operation schema was not already loaded/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /divo-local owns one safe exact retry/i);
 		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /never add sleeps or retry rate_limited yourself/i);
-		assert.match(DIVO_LOCAL_EXECUTION_PROMPT, /retired divo_python_automation tool is unavailable/i);
-		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /use one divo_python_automation call/i);
+		// The tool is gone from the codebase. Naming it in the prompt was the only
+		// way a model could learn it had ever existed, so the warning taught the
+		// mistake it was written to prevent. No prompt may mention it now.
+		assert.doesNotMatch(DIVO_LOCAL_EXECUTION_PROMPT, /divo_python_automation/i);
+		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /divo_python_automation/i);
 		assert.match(ROUTER_SKILL, /create one descriptive `.py` file/i);
 		assert.match(ROUTER_SKILL, /DIVO_THREAD_WORK_DIR.*\.divo-workflow\.json/is);
 		assert.match(ROUTER_SKILL, /Never resume merely because files exist/i);
@@ -210,8 +221,10 @@ describe("Divo normal-session routing policy", () => {
 		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /mandatory even when only one account/i);
 	});
 
-	it("keeps Lark outcomes in chat while local artifact delivery is disabled", () => {
-		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /complete user-facing outcome in Lark chat/i);
+	// Which channel the reply lands on is presentation-policy's to say, and it
+	// reads the run's real surface. The persona names no channel.
+	it("keeps outcomes in the reply while local artifact delivery is disabled", () => {
+		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /complete user-facing outcome in your reply/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /Do not create a local artifact/i);
 		assert.match(DIVO_COMPANY_PERSONA_PROMPT, /inaccessible workspace path/i);
 		assert.doesNotMatch(DIVO_COMPANY_PERSONA_PROMPT, /artifact surface/i);

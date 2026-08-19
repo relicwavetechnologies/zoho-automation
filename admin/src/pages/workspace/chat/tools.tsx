@@ -1,10 +1,9 @@
 /**
  * Every tool a run can touch, and the mark that identifies it.
  *
- * The marks are the real vendor logos — the same `brand-icons` set the desktop
- * work log renders — not lucide stand-ins. A step that says "Google Sheets"
- * carries the Sheets mark, so a reader scanning the trace recognises what Divo
- * touched before reading a single word.
+ * Vendor identity is delegated to the shared BrandMark system. A step that says
+ * "Google Sheets" carries the product mark, so a reader scanning the trace
+ * recognises what Divo touched before reading a single word.
  *
  * Divo's own capabilities (thinking, the local workspace, knowledge search)
  * have no vendor, so they take lucide glyphs and are drawn in ink. That
@@ -22,12 +21,8 @@ import {
   BookOpen, CalendarClock, FilePlus, FolderOpen, Globe, GraduationCap, ListChecks,
   PencilLine, Search, Sparkles, Table, Terminal, Wrench,
 } from 'lucide-react'
-import {
-  AirtableIcon, CanvaIcon, GmailIcon, GoogleAppsScriptIcon, GoogleCalendarIcon,
-  GoogleChatIcon, GoogleContactsIcon, GoogleDocsIcon, GoogleDriveIcon, GoogleFormsIcon,
-  GoogleIcon, GoogleSheetsIcon, GoogleSlidesIcon, GoogleTasksIcon, LarkIcon,
-  SemrushIcon, ShopifyIcon, ZohoIcon,
-} from '@/components/brand-icons'
+import { BrandMark } from '@/components/admin/brand-mark'
+import type { BrandKey } from '@/components/admin/brand-catalog'
 
 export type ToolKey =
   /* Divo's own, and the container's verbs. */
@@ -45,21 +40,11 @@ type Mark = ComponentType<SVGProps<SVGSVGElement>>
 type ToolDef = {
   /** What the step header calls it. */
   app: string
-  Mark: Mark
+  Mark?: Mark
+  brand?: BrandKey
   /** True for Divo's own capabilities — drawn in ink, not in vendor colour. */
   own?: boolean
-  /**
-   * Width ÷ height, for marks that are not square.
-   *
-   * Zoho's is a wordmark on a 1024×365 viewBox. Forced into a square box it
-   * letterboxes down to a 14×5 smudge that reads as dirt on the screen. Given
-   * its real ratio it renders as a small wordmark instead, which is legible
-   * and is how Zoho actually presents itself.
-   */
-  aspect?: number
 }
-
-const ZOHO_ASPECT = 1024 / 365
 
 const TOOLS: Record<ToolKey, ToolDef> = {
   /* Divo's own capabilities and the container's verbs — ink, not colour. */
@@ -82,27 +67,26 @@ const TOOLS: Record<ToolKey, ToolDef> = {
   /* Something ran and we cannot say what. Honest, rather than borrowed. */
   tool: { app: 'Tool', Mark: Wrench, own: true },
 
-  google: { app: 'Google', Mark: GoogleIcon },
-  gmail: { app: 'Gmail', Mark: GmailIcon },
-  sheets: { app: 'Google Sheets', Mark: GoogleSheetsIcon },
-  drive: { app: 'Google Drive', Mark: GoogleDriveIcon },
-  calendar: { app: 'Google Calendar', Mark: GoogleCalendarIcon },
-  docs: { app: 'Google Docs', Mark: GoogleDocsIcon },
-  slides: { app: 'Google Slides', Mark: GoogleSlidesIcon },
-  forms: { app: 'Google Forms', Mark: GoogleFormsIcon },
-  googleTasks: { app: 'Google Tasks', Mark: GoogleTasksIcon },
-  contacts: { app: 'Google Contacts', Mark: GoogleContactsIcon },
-  googleChat: { app: 'Google Chat', Mark: GoogleChatIcon },
-  appsScript: { app: 'Apps Script', Mark: GoogleAppsScriptIcon },
+  google: { app: 'Google', brand: 'google' },
+  gmail: { app: 'Gmail', brand: 'gmail' },
+  sheets: { app: 'Google Sheets', brand: 'googleSheets' },
+  drive: { app: 'Google Drive', brand: 'googleDrive' },
+  calendar: { app: 'Google Calendar', brand: 'googleCalendar' },
+  docs: { app: 'Google Docs', brand: 'googleDocs' },
+  slides: { app: 'Google Slides', brand: 'googleSlides' },
+  forms: { app: 'Google Forms', brand: 'googleForms' },
+  googleTasks: { app: 'Google Tasks', brand: 'googleTasks' },
+  contacts: { app: 'Google Contacts', brand: 'googleContacts' },
+  googleChat: { app: 'Google Chat', brand: 'googleChat' },
+  appsScript: { app: 'Apps Script', brand: 'googleAppsScript' },
 
-  zohoBooks: { app: 'Zoho Books', Mark: ZohoIcon, aspect: ZOHO_ASPECT },
-  zohoCrm: { app: 'Zoho CRM', Mark: ZohoIcon, aspect: ZOHO_ASPECT },
-
-  lark: { app: 'Lark', Mark: LarkIcon },
-  airtable: { app: 'Airtable', Mark: AirtableIcon },
-  canva: { app: 'Canva', Mark: CanvaIcon },
-  semrush: { app: 'Semrush', Mark: SemrushIcon },
-  shopify: { app: 'Shopify', Mark: ShopifyIcon },
+  zohoBooks: { app: 'Zoho Books', brand: 'zohoBooks' },
+  zohoCrm: { app: 'Zoho CRM', brand: 'zohoCrm' },
+  lark: { app: 'Lark', brand: 'lark' },
+  airtable: { app: 'Airtable', brand: 'airtable' },
+  canva: { app: 'Canva', brand: 'canva' },
+  semrush: { app: 'Semrush', brand: 'semrush' },
+  shopify: { app: 'Shopify', brand: 'shopify' },
 }
 
 export function tool(key: ToolKey) {
@@ -130,11 +114,13 @@ export function ToolMark({
    */
   dim?: boolean
 }) {
-  const { Mark, own, aspect } = TOOLS[name] ?? TOOLS.tool
+  const { Mark, own, brand } = TOOLS[name] ?? TOOLS.tool
   const held = dim && !own
+  if (brand) return <BrandMark brand={brand} size={size} dim={dim} className="bui-mark" />
+  if (!Mark) return null
   return (
     <Mark
-      width={aspect ? Math.round(size * aspect) : size}
+      width={size}
       height={size}
       className={[
         own ? '' : 'bui-mark',

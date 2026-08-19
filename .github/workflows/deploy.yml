@@ -314,18 +314,24 @@ jobs:
       - name: Provision main directory, environment, and HTTPS
         env:
           PRODUCTION_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
+          LOGO_DEV_PUBLISHABLE_KEY: ${{ secrets.LOGO_DEV_PUBLISHABLE_KEY }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           test -n "${PRODUCTION_ENV_FILE}"
+          test -n "${LOGO_DEV_PUBLISHABLE_KEY}"
           test -n "${VPS_PASSWORD}"
           test -n "${VPS_USER}"
           sudo apt-get update
           sudo apt-get install -y sshpass
 
-          printf '%s' "${PRODUCTION_ENV_FILE}" | SSHPASS="${VPS_PASSWORD}" sshpass -e \
+          merged_env="$(mktemp)"
+          trap 'rm -f "${merged_env}"' EXIT
+          printf '%s\n' "${PRODUCTION_ENV_FILE}" | sed '/^LOGO_DEV_PUBLISHABLE_KEY=/d' > "${merged_env}"
+          printf 'LOGO_DEV_PUBLISHABLE_KEY=%s\n' "${LOGO_DEV_PUBLISHABLE_KEY}" >> "${merged_env}"
+          SSHPASS="${VPS_PASSWORD}" sshpass -e \
             ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${DIVO_MAIN_HOST}" \
-            "test \"\$(id -u)\" = 0 && install -d -m 700 -o deploy -g deploy '${DEPLOY_DIR}' && if test -s '${DEPLOY_DIR}/.env.production.local'; then cp -p '${DEPLOY_DIR}/.env.production.local' '${DEPLOY_DIR}/.release-rollback.env.production.local'; fi && cat > '${DEPLOY_DIR}/.env.production.local' && chown deploy:deploy '${DEPLOY_DIR}/.env.production.local' && chmod 600 '${DEPLOY_DIR}/.env.production.local'"
+            "test \"\$(id -u)\" = 0 && install -d -m 700 -o deploy -g deploy '${DEPLOY_DIR}' && if test -s '${DEPLOY_DIR}/.env.production.local'; then cp -p '${DEPLOY_DIR}/.env.production.local' '${DEPLOY_DIR}/.release-rollback.env.production.local'; fi && cat > '${DEPLOY_DIR}/.env.production.local' && chown deploy:deploy '${DEPLOY_DIR}/.env.production.local' && chmod 600 '${DEPLOY_DIR}/.env.production.local'" < "${merged_env}"
 
           SSHPASS="${VPS_PASSWORD}" sshpass -e scp -o StrictHostKeyChecking=yes \
             infra/production/nginx/app.http.conf \

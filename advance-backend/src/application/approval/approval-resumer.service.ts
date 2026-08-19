@@ -21,11 +21,29 @@ import { isAutomationPlanApproval } from '../gateway/automation-plan.service';
 import type { AutomationPlanExecutor } from '../gateway/automation-plan.executor';
 import type { ChannelKey } from '../../domain/channel/incoming-message';
 
-/** An outcome and the adapter that can actually reach its destination. */
-interface FinalDelivery {
-  readonly adapter: Pick<LarkChannelAdapter, 'sendFinalReply'>;
-  readonly conversation: ConversationHandle;
-}
+/**
+ * Where the outcome of a resumed action goes.
+ *
+ * Two destinations, because there are two kinds of place a person is waiting.
+ * A Lark run is waiting in a chat and the answer is a message into it. A web
+ * run is waiting in a thread, and until now it was waiting for nothing: every
+ * non-Lark source resolved to `null` here, so an approval raised in a browser
+ * executed correctly and reported its result into the void. The person saw a
+ * request disappear and no answer arrive.
+ */
+type FinalDelivery =
+  | {
+      readonly to: 'lark';
+      readonly adapter: Pick<LarkChannelAdapter, 'sendFinalReply'>;
+      readonly conversation: ConversationHandle;
+    }
+  | {
+      readonly to: 'web';
+      readonly threadId: string;
+      readonly companyId: string;
+      readonly userId: string;
+      readonly approvalId: string;
+    };
 
 export interface ApprovalResumerDeps {
   approvalRepo:        RuntimeApprovalRepository;
@@ -49,6 +67,23 @@ export interface ApprovalResumerDeps {
   permissions:         PermissionService;
   /** Handles immutable multi-call batches that were approved in a Lark DM. */
   automationPlanExecutor?: AutomationPlanExecutor;
+  /**
+   * Where the outcome of a web-raised approval is written down.
+   *
+   * The same port the web run itself writes its turns through, so a resumed
+   * action lands in the thread as an ordinary assistant message rather than as
+   * a second kind of record the reader has to be taught about. Optional because
+   * a deployment without it behaves exactly as this did before — silently — and
+   * that is worth a missing dependency rather than a crash.
+   */
+  webTranscript?: {
+    appendTurn(
+      chatId: string,
+      turn: { role: 'user' | 'assistant'; content: string; timestamp: string },
+      scope: { companyId: string; channel: string },
+      metadata?: { dedupeKey?: string; sourceRunId?: string },
+    ): Promise<unknown>;
+  };
   logger:              Logger;
 }
 
@@ -137,14 +172,28 @@ export class ApprovalResumerService {
     // that reads a conversation id as an open_id.
     const scheduledToCreator = deliveryMode === 'scheduled_runtime_delivery'
       && Boolean(requesterLarkOpenId);
-    const delivery: FinalDelivery | null = sourceChannel !== 'lark' && !scheduledToCreator
-      ? null
-      : scheduledToCreator
+    /* A web run's thread id is on the execution context and nowhere else — the
+       stored chat id is a namespacing key, not a conversation. */
+    const webThreadId = sourceChannel === 'web' && execution?.threadId
+      ? execution.threadId
+      : null;
+    const delivery: FinalDelivery | null = scheduledToCreator
       ? {
+          to: 'lark',
           adapter: this.deps.scheduledDmAdapter,
           conversation: { ...conversation, chatId: asChatId(requesterLarkOpenId!) },
         }
-      : { adapter: this.deps.larkAdapter, conversation };
+      : sourceChannel === 'lark'
+      ? { to: 'lark', adapter: this.deps.larkAdapter, conversation }
+      : webThreadId && this.deps.webTranscript
+      ? {
+          to: 'web',
+          threadId: webThreadId,
+          companyId: approvalCompanyId,
+          userId: requesterId,
+          approvalId,
+        }
+      : null;
 
     if (decision === 'rejected') {
       await this.deliverFinal(delivery, 'The requested action was not approved by the manager, so nothing was changed.');
@@ -260,10 +309,7 @@ export class ApprovalResumerService {
         kind: 'status',
         terminal: false,
         timeline: {
-          phase: 'Completing approved action',
-          progressPct: 75,
-          completedSteps: 1,
-          totalSteps: 2,
+          state: 'working',
           liveLabel: 'Executing the exact approved action…',
         },
       });
@@ -327,6 +373,21 @@ export class ApprovalResumerService {
     text: string,
   ): Promise<void> {
     if (!delivery) return;
+    if (delivery.to === 'web') {
+      /* Keyed on the approval rather than on a run id: the same approval can be
+         resolved from a card and from a browser at once, and only one of those
+         races should leave a message in the thread. */
+      await this.deps.webTranscript!.appendTurn(
+        delivery.threadId,
+        { role: 'assistant', content: text, timestamp: new Date().toISOString() },
+        { companyId: delivery.companyId, channel: 'web' },
+        { dedupeKey: `approval:${delivery.approvalId}:outcome` },
+      ).catch(error => this.log.error('resumer.web_delivery_failed', {
+        approvalId: delivery.approvalId,
+        error: String(error),
+      }));
+      return;
+    }
     const delivered = await delivery.adapter.sendFinalReply(delivery.conversation, {
       kind: 'final',
       text,

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 import divoLlmExtension, {
+	DIVO_LUNA_MODEL,
 	DIVO_REQUEST_TOO_LARGE_ERROR,
 	normalizeDivoLlmRequestError,
 } from "./index.ts";
 import { clearCapturedDivoGatewayConfig } from "../divo-gateway/gateway-client.ts";
+import { reasoningLevelsForModel } from "../../runtime-models.mjs";
 
 afterEach(() => {
 	clearCapturedDivoGatewayConfig();
@@ -133,5 +135,27 @@ describe("Divo LLM proxy failure normalization", () => {
 
 		assert.equal(registered, false);
 		assert.equal(process.env.DIVO_MEMBER_TOKEN, undefined);
+	});
+});
+
+// Both rungs above `high` are opt-in: Pi hides one unless this map names it.
+// So runtime-models.mjs can advertise a level this entry forgot to map and
+// nothing errors — the run just quietly thinks less than it was asked to.
+describe("Luna reasoning ladder", () => {
+	it("maps every rung the runtime table advertises to its own wire value", () => {
+		const map: Record<string, string | null> = DIVO_LUNA_MODEL.thinkingLevelMap;
+
+		for (const level of reasoningLevelsForModel("gpt-5.6-luna")) {
+			// `off` is deliberately unmapped: this API already sends it as `none`.
+			if (level === "off") continue;
+			assert.equal(map[level] ?? level, level, `${level} must reach the provider as itself`);
+		}
+		assert.equal(map.xhigh, "xhigh");
+		assert.equal(map.max, "max");
+	});
+
+	it("marks the retired minimal level unsupported so Pi clamps it", () => {
+		assert.equal(reasoningLevelsForModel("gpt-5.6-luna").includes("minimal"), false);
+		assert.equal(DIVO_LUNA_MODEL.thinkingLevelMap.minimal, null);
 	});
 });

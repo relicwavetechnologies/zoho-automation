@@ -13,8 +13,11 @@
  * That miss is guarded separately, at the window, because it can land anywhere.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { FileText, Image as ImageIcon, AudioLines, X } from 'lucide-react'
-import { acceptFiles, formatBytes, kindOf, rejectionSentence, type Rejection } from './attach'
+import { FileText, Image as ImageIcon, AudioLines, Clapperboard, Play, X } from 'lucide-react'
+import {
+  acceptFiles, formatBytes, kindOf, kindOfSent, rejectionSentence,
+  type FileKind, type Rejection, type SentFile,
+} from './attach'
 
 /**
  * Stop a missed drop from replacing the app with the file.
@@ -112,8 +115,7 @@ export function DropVeil({ visible }: { visible: boolean }) {
   if (!visible) return null
   return (
     <div
-      className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center p-4"
-      style={{ background: 'color-mix(in oklab, var(--bui-page) 72%, transparent)' }}
+      className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-veil p-4"
     >
       <div
         className="flex flex-col items-center gap-2 rounded-card border border-dashed px-8 py-6"
@@ -126,7 +128,17 @@ export function DropVeil({ visible }: { visible: boolean }) {
   )
 }
 
-const ICON = { image: ImageIcon, audio: AudioLines, doc: FileText } as const
+const ICON = {
+  image: ImageIcon, audio: AudioLines, video: Clapperboard, doc: FileText,
+} as const
+
+/** What each kind is called, when the size is not the useful thing to say. */
+const KIND_LABEL: Record<FileKind, string> = {
+  image: 'Image',
+  audio: 'Audio',
+  video: 'Video',
+  doc: 'File',
+}
 
 /**
  * The files this message will carry, above the field they were attached to.
@@ -145,30 +157,162 @@ export function FileChips({
   if (files.length === 0) return null
   return (
     <div className="flex flex-wrap gap-1.5 px-1 pb-1.5">
-      {files.map((file, index) => {
-        const Icon = ICON[kindOf(file)]
-        return (
-          <span
-            key={`${file.name}:${file.size}`}
-            className="flex h-7 max-w-[220px] items-center gap-1.5 rounded-full bg-fill pl-2 pr-1 text-[12px] text-ink"
-            style={{ animation: 'bui-pop-in 160ms cubic-bezier(0.23,1,0.32,1) both' }}
+      {files.map((file, index) => (
+        <FileCard
+          key={`${file.name}:${file.size}`}
+          name={file.name}
+          kind={kindOf(file)}
+          bytes={file.size}
+          file={file}
+        >
+          <button
+            type="button"
+            aria-label={`Remove ${file.name}`}
+            onClick={(event) => { event.stopPropagation(); onRemove(index) }}
+            className="flex size-5 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors duration-100 hover:bg-surface hover:text-ink"
           >
-            <Icon size={12} className="shrink-0 text-ink-3" />
-            <span className="min-w-0 flex-1 truncate">{file.name}</span>
-            <span className="shrink-0 text-[11px] text-ink-3">{formatBytes(file.size)}</span>
-            <button
-              type="button"
-              aria-label={`Remove ${file.name}`}
-              onClick={(event) => { event.stopPropagation(); onRemove(index) }}
-              className="flex size-5 shrink-0 items-center justify-center rounded-full text-ink-3 transition-colors duration-100 hover:bg-surface hover:text-ink"
-            >
-              <X size={11} />
-            </button>
-          </span>
-        )
-      })}
+            <X size={11} />
+          </button>
+        </FileCard>
+      ))}
     </div>
   )
+}
+
+/**
+ * The files a message went with, under the message.
+ *
+ * Same chip as the composer's, deliberately: what somebody saw themselves
+ * attach is what they should recognise in their own message afterwards, and a
+ * second chip drawn from a second description is how the two stop matching.
+ * Right-aligned because the ask is.
+ *
+ * A file nothing could be done with is still shown, dimmed and said so. It is
+ * the one a reader comes back puzzled about, and a transcript that quietly drops
+ * it answers the puzzle with silence.
+ */
+export function SentChips({ files }: { files: readonly SentFile[] }) {
+  if (files.length === 0) return null
+  return (
+    <div className="flex flex-wrap justify-end gap-1.5">
+      {files.map((file) => (
+        <FileCard
+          key={`${file.name}:${file.bytes}`}
+          name={file.name}
+          kind={kindOfSent(file)}
+          bytes={file.bytes}
+          {...(file.file ? { file: file.file } : {})}
+          muted={file.outcome === 'refused'}
+          note={noteFor(file)}
+        />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * What to say under the name, when the size is not the interesting part.
+ *
+ * A refusal and a transcription are both things that happened *to* the file
+ * after it left, and a reader coming back to the message wants to know which —
+ * "2.4 MB" is true and answers nothing.
+ */
+function noteFor(file: SentFile): string | undefined {
+  if (file.outcome === 'refused') return 'Not readable'
+  if (file.outcome === 'audio') return 'Audio · transcribed'
+  return undefined
+}
+
+/**
+ * One file, shown as itself wherever it appears.
+ *
+ * A pill with an icon in it was the same drawing for a screenshot, a contract
+ * and a two-minute screen recording — three things a reader tells apart
+ * instantly by *looking*, reduced to three identical rounded rectangles whose
+ * only distinguishing mark was a filename they had to read.
+ *
+ * So the tile leads, and it shows the thing itself when the thing can be shown:
+ * the actual image, the recording's own first frame. That is possible only
+ * while this tab still holds the bytes — a transcript re-read after a reload
+ * comes back from the server as names and sizes — so the typed tile is not a
+ * fallback for failure, it is the ordinary case for anything not sent just now.
+ *
+ * One component for the composer and the transcript, because what somebody
+ * watched themselves attach is what they should recognise in their own message
+ * afterwards, and two drawings from two descriptions is how those drift apart.
+ */
+export function FileCard({ name, kind, bytes, file, muted, note, children }: {
+  name: string
+  kind: FileKind
+  bytes: number
+  /** The bytes, when this tab still has them. Enables a real preview. */
+  file?: File
+  muted?: boolean
+  /** Replaces the size when there is something more worth saying than how big it is. */
+  note?: string
+  children?: React.ReactNode
+}) {
+  const Icon = ICON[kind]
+  const preview = usePreviewUrl(file, kind)
+  return (
+    <span
+      className={`flex max-w-[240px] items-center gap-2 rounded-xl bg-fill p-1.5 text-[12px] ${
+        children ? 'pr-1' : 'pr-2.5'
+      } ${muted ? 'text-ink-3' : 'text-ink'}`}
+      style={{ animation: 'bui-pop-in 160ms cubic-bezier(0.23,1,0.32,1) both' }}
+    >
+      <span className="relative grid size-9 shrink-0 place-items-center overflow-hidden rounded-lg bg-surface">
+        {preview && kind === 'image' ? (
+          <img src={preview} alt="" className="size-full object-cover" />
+        ) : preview && kind === 'video' ? (
+          <>
+            {/* `preload="metadata"` is what paints the first frame without
+                fetching the whole recording — a two-gigabyte file would
+                otherwise be pulled into memory to draw a 36-pixel square. */}
+            <video src={preview} preload="metadata" muted playsInline className="size-full object-cover" />
+            <span className="absolute inset-0 grid place-items-center bg-black/25 text-white">
+              <Play size={11} fill="currentColor" strokeWidth={0} />
+            </span>
+          </>
+        ) : (
+          <Icon size={15} className="text-ink-3" />
+        )}
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col leading-tight">
+        <span className="truncate">{name}</span>
+        <span className="truncate text-[11px] text-ink-3">
+          {note ?? `${KIND_LABEL[kind]} · ${formatBytes(bytes)}`}
+        </span>
+      </span>
+      {children}
+    </span>
+  )
+}
+
+/**
+ * An object URL for as long as the card that uses it is on screen.
+ *
+ * Minted and revoked here rather than where the file was picked up: a URL made
+ * at send time outlives every card that ever drew it, and nothing at that point
+ * knows when the last one goes away. Only kinds that can actually be shown get
+ * one — there is no sense allocating a handle to a PDF nobody will render.
+ */
+function usePreviewUrl(file: File | undefined, kind: FileKind): string | null {
+  const showable = Boolean(file) && (kind === 'image' || kind === 'video')
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    if (!file || !showable) {
+      setUrl(null)
+      return
+    }
+    const created = URL.createObjectURL(file)
+    setUrl(created)
+    return () => {
+      URL.revokeObjectURL(created)
+      setUrl(null)
+    }
+  }, [file, showable])
+  return url
 }
 
 /**

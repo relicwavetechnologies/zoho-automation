@@ -4,7 +4,8 @@ import type { Logger } from '../../shared/logger';
 import { CompanyOmsConnectionRepository, type SafeOmsConnection } from '../../infrastructure/persistence/company-oms-connection.repository';
 import { OmsSiteDataClient } from '../../infrastructure/oms/oms-site-data.client';
 import type { OmsFetchedData, OmsSiteDataToolArgs } from './oms-site-data.types';
-import { OmsSiteDataServiceError } from './oms-site-data.types';
+import { OmsSiteDataServiceError, sanitizeOmsWebsiteInputs } from './oms-site-data.types';
+import { MAX_VENDOR_LOOKUP_WEBSITES } from './oms-site-data.types';
 import type { ApiKeyExhaustionNotifierPort } from '../governance/api-key-exhaustion.notifier';
 
 const CONNECTION_PROOF_TTL_SECONDS = 10 * 60;
@@ -20,6 +21,7 @@ export class CompanyOmsSiteDataService {
     private readonly cache: CachePort,
     private readonly logger: Logger,
     private readonly environmentApiKey: string,
+    private readonly environmentVendorApiKey = '',
   ) {}
 
   bindExhaustionNotifier(notifier: ApiKeyExhaustionNotifierPort): void {
@@ -50,6 +52,27 @@ export class CompanyOmsSiteDataService {
   }
 
   async preflight(companyId: string, args: OmsSiteDataToolArgs): Promise<Record<string, unknown>> {
+    if (args.operation === 'sanitize_website_inputs') {
+      return {
+        configured: true,
+        enabled: true,
+        operation: args.operation,
+        connectionSource: 'none',
+        limits: { maxInputs: 200 },
+        caveats: ['This operation is deterministic and does not call OMS or any vendor API.'],
+      };
+    }
+    if (args.operation === 'lookup_vendors') {
+      const connection = this.requireVendorConnection();
+      return {
+        configured: true,
+        enabled: true,
+        operation: args.operation,
+        connectionSource: connection.source,
+        limits: { maxVendorLookupWebsites: MAX_VENDOR_LOOKUP_WEBSITES },
+        caveats: ['Vendor lookup requires exact OMS-ready websites in www.example.com format. Empty vendor_fetch responses are reported as no vendor found.'],
+      };
+    }
     const connection = await this.requireActiveConnection(companyId);
     return {
       configured: true,
@@ -62,11 +85,31 @@ export class CompanyOmsSiteDataService {
   }
 
   async execute(input: { companyId: string; args: OmsSiteDataToolArgs }): Promise<OmsFetchedData> {
-    const connection = await this.requireActiveConnection(input.companyId);
+    if (input.args.operation === 'sanitize_website_inputs') {
+      const rows = sanitizeOmsWebsiteInputs(input.args.inputs);
+      const sanitizedRows = rows.filter(row => row.status === 'sanitized').length;
+      return {
+        operation: input.args.operation,
+        status: sanitizedRows === 0 ? 'empty' : 'complete',
+        coverage: {
+          source: 'Divo OMS input sanitizer',
+          inputCount: input.args.inputs.length,
+          candidateCount: rows.length,
+          sanitizedRows,
+          invalidRows: rows.length - sanitizedRows,
+        },
+        rows,
+      };
+    }
+    const connection = input.args.operation === 'lookup_vendors'
+      ? this.requireVendorConnection()
+      : await this.requireActiveConnection(input.companyId);
     try {
-      const data = await this.client.fetch(connection.apiKey, input.args);
+      const data = input.args.operation === 'lookup_vendors'
+        ? await this.client.fetchVendors(connection.apiKey, input.args.websites)
+        : await this.client.fetch(connection.apiKey, input.args);
       if (connection.source === 'company') await this.connections.markSuccess(connection.id);
-      void this.exhaustionNotifier?.clear(input.companyId, 'oms_site_data');
+      if (input.args.operation !== 'lookup_vendors') void this.exhaustionNotifier?.clear(input.companyId, 'oms_site_data');
       return data;
     } catch (error) {
       const normalized = error instanceof OmsSiteDataServiceError
@@ -82,7 +125,7 @@ export class CompanyOmsSiteDataService {
           error: markError instanceof Error ? markError.message : String(markError),
         });
       });
-      if (normalized.code === 'provider_auth_failed') {
+      if (normalized.code === 'provider_auth_failed' && input.args.operation !== 'lookup_vendors') {
         void this.exhaustionNotifier?.notifyIfExhausted({
           companyId: input.companyId,
           provider: 'oms_site_data',
@@ -106,6 +149,12 @@ export class CompanyOmsSiteDataService {
     const apiKey = this.environmentApiKey.trim();
     if (apiKey) return { source: 'environment' as const, id: 'environment', apiKey };
     throw new OmsSiteDataServiceError('not_configured', 'OMS Site Data has not been configured for this company.');
+  }
+
+  private requireVendorConnection() {
+    const apiKey = this.environmentVendorApiKey.trim();
+    if (apiKey) return { source: 'environment_vendor' as const, id: 'environment_vendor', apiKey };
+    throw new OmsSiteDataServiceError('not_configured', 'OMS Vendor Fetch has not been configured on this backend.');
   }
 }
 

@@ -41,6 +41,11 @@ const RUNTIME_FLAGS = {
 		decides:
 			"whether a finished thread runtime keeps its Pi process for the next turn. Setting it to false makes every turn cold, which is the way to take warm reuse out of the picture during an incident without shipping code.",
 	},
+	DIVO_DEEPSEEK_TOOL_SURFACE: {
+		where: "docker-compose.yml / .dev / .localprod; main defaults off while dev and localprod default on",
+		decides:
+			"whether DeepSeek receives a retrieved permission-scoped business-tool surface instead of the entire generated catalogue on every model call.",
+	},
 	DIVO_CONTROLLER_HOST: {
 		where: "docker-compose.yml / .dev / .localprod, all 0.0.0.0",
 		decides: "the interface the controller's HTTP server binds; it defaults to loopback.",

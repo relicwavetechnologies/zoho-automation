@@ -4,9 +4,11 @@
  * Same layout primitives as `WorkspaceShell`, deliberately: identical rail
  * width, identical rows, identical page frame, so this reads as the same
  * product rather than a cut-down copy of one. What is gone is everything a
- * member cannot act on — the scope switcher, Approvals, Automations, Things
- * Divo made, the ⌘K palette that mostly listed settings pages, and the
- * Settings takeover with its four groups.
+ * member cannot act on — the scope switcher, the ⌘K palette that mostly listed
+ * settings pages, and the Settings takeover with its groups. Approvals,
+ * Automations and Things Divo made used to be on that list too; they have since
+ * been retired from the workspace shell as well, so there is nothing left to
+ * withhold.
  *
  * What is left is what they were given Divo for. Mail rules, what those rules
  * caught, the brief, and a settings page that fits on one screen.

@@ -14,6 +14,7 @@
     "check:pi-native-tools": "tsx scripts/generate-pi-native-tools.ts --check",
     "build": "prisma generate",
     "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --noEmit -p tsconfig.tests.json",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",

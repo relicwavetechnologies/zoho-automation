@@ -198,7 +198,7 @@ export function ConnectionGovernancePage() {
         <section className="section">
           <header><div><h3>Access grants</h3><p>Who can use this connection. Governance controls do not add access.</p></div></header>
           {data.grants.length === 0 ? <div className="muted" style={{ padding: "18px" }}>No active grants.</div> : data.grants.map((grant) => (
-            <div key={grant.id} style={{ padding: "14px 18px", borderTop: "1px solid var(--cur-line)", display: "flex", justifyContent: "space-between", gap: "12px" }}>
+            <div key={grant.id} style={{ padding: "14px 18px", borderTop: "1px solid var(--cur-hairline)", display: "flex", justifyContent: "space-between", gap: "12px" }}>
               <div><b style={{ fontWeight: 500 }}>{grant.granteeType} · {grant.granteeId}</b><div className="muted" style={{ fontSize: "12px", marginTop: "4px" }}>Granted {humanDate(grant.grantedAt)}</div></div><span className="badge">{grant.access.replace(/_/g, " ")}</span>
             </div>
           ))}

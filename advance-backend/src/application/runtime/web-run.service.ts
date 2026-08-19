@@ -3,7 +3,14 @@ import type { Logger } from '../../shared/logger';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { ChannelLedgerRow, ChannelTimeline, InteractiveAction } from '../../domain/channel/outbound';
-import { WEB_RUN_CONTENT_KIND, webThreadTitle, type WebThreadRunRecord } from '../../domain/channel/web-thread';
+import {
+  WEB_RUN_CONTENT_KIND,
+  askContent,
+  askFor,
+  webThreadTitle,
+  type AskAttachment,
+  type WebThreadRunRecord,
+} from '../../domain/channel/web-thread';
 import { asChatId, asCorrelationId, asDepartmentId, asMessageId } from '../../shared/ids';
 import { createRunTimelineReducer } from '../channels/run-timeline.reducer';
 import type { ChannelIdentityRepoPort } from '../../infrastructure/persistence/channel-identity.repository';
@@ -14,6 +21,9 @@ import type {
 } from './lark-pi-runtime.service';
 import { LarkPiRuntimeError } from './lark-pi-runtime.service';
 import { createLiveAnswerPublisher } from './live-answer-publisher';
+import type { RuntimeModelSelection } from '../observability/pricing';
+import type { ConversationVideoService } from '../conversation-video/conversation-video.service';
+import { askNoticeFor, fenced } from '../video-understanding/video-understanding.precis';
 
 /**
  * A Divo run driven from the browser.
@@ -37,12 +47,40 @@ export type WebRunEvent =
   | { readonly type: 'answer_delta'; readonly delta: string }
   /** The preceding prose became pre-tool narration, not the final answer. */
   | { readonly type: 'answer_reset' }
+  /**
+   * A document is ready to read beside the thread.
+   *
+   * Carries the address, never the body: the reader may already have this
+   * version open, and re-sending a long report on every revision would put a
+   * document-sized payload on a stream built for sentences.
+   */
+  | {
+      readonly type: 'artifact';
+      readonly artifactId: string;
+      readonly title: string;
+      readonly mime: string;
+      readonly version: number;
+    }
   /** The answer. Terminal. */
   | {
       readonly type: 'final';
       readonly text: string;
       readonly actions?: readonly InteractiveAction[];
       readonly timeline: ChannelTimeline;
+    }
+  /**
+   * Divo is still taking in a video that came with the ask.
+   *
+   * Its own event rather than a timeline step, because it happens before the
+   * run has a timeline: the reading has to finish before the model can be asked
+   * anything about it. Sent repeatedly as the reading advances, so the wait
+   * reads as work rather than as a stall.
+   */
+  | {
+      readonly type: 'watching';
+      readonly fileName: string;
+      readonly percent: number;
+      readonly step: 'watching' | 'transcribing' | 'reading_screens' | 'ready';
     }
   /** The run did not produce an answer. Terminal. */
   | { readonly type: 'error'; readonly message: string; readonly code: string };
@@ -64,12 +102,40 @@ export interface WebRunInput {
   readonly sessionId: string;
   /** Files handed over with this ask. Staged exactly as a Lark DM's are. */
   readonly attachments?: readonly LarkPiRuntimeAttachment[];
+  /**
+   * Videos uploaded to this thread ahead of the ask, which the run waits for.
+   *
+   * Ids rather than content: the recording is already on the server and being
+   * read, and what the run needs back is the reading.
+   */
+  readonly videoIds?: readonly string[];
+  /**
+   * The ask as the person made it: their own words, and every file they handed
+   * over named with what became of it.
+   *
+   * `text` above is what the model reads — transcripts and refusals folded in
+   * ahead of the question. This is what the thread shows back, which is not the
+   * same string and must not be allowed to become it.
+   */
+  readonly ask?: {
+    readonly text: string;
+    readonly attachments: readonly AskAttachment[];
+  };
+  /** The exact model/effort pair selected in the web composer. */
+  readonly modelSelection?: RuntimeModelSelection;
   readonly abortSignal?: AbortSignal;
 }
 
 export interface WebRunServiceDeps {
   readonly piRuntime: Pick<LarkPiRuntimeService, 'run'>;
   readonly logger: Logger;
+  /**
+   * Reads the videos an ask arrived with.
+   *
+   * Optional: without it a run carrying video ids says so in the ask rather
+   * than failing, which is the same bargain the transcriber strikes for audio.
+   */
+  readonly videos?: Pick<ConversationVideoService, 'understandingFor' | 'progressFor' | 'recordFor'>;
   /** Resolves the same backend-owned active department used by Lark turns. */
   readonly identity?: Pick<ChannelIdentityRepoPort, 'resolveByUserId'>;
   /** Rejects a stale preference before it can be minted into a runtime lease. */
@@ -112,8 +178,116 @@ export interface WebRunServiceDeps {
  */
 const TIMELINE_PUBLISH_MS = 1_000;
 
+/** How often the watcher redraws while a reading runs. */
+const WATCH_POLL_MS = 700;
+
 export class WebRunService {
   constructor(private readonly deps: WebRunServiceDeps) {}
+
+  /**
+   * Take in every video the ask arrived with, out loud.
+   *
+   * Yields as it goes so the member sees a recording being read rather than a
+   * thread that has gone quiet — the whole reason D4 chose to make the run wait
+   * instead of answering first and fetching later.
+   *
+   * A video that cannot be read does not fail the turn. The person asked a
+   * question and attached a recording to it; refusing the question because the
+   * recording was unreadable throws away the half that still works. The model
+   * is told, by name, that it has nothing to look at, exactly as it is for an
+   * audio file that could not be heard.
+   */
+  private async *watch(
+    input: WebRunInput,
+    log: Logger,
+  ): AsyncGenerator<WebRunEvent, { readonly notice: string }[]> {
+    if (input.abortSignal?.aborted) return [];
+    const videoIds = input.videoIds ?? [];
+    if (videoIds.length === 0) return [];
+    if (!this.deps.videos) {
+      return videoIds.map(() => ({
+        notice: '[Video attached — NOT WATCHED. Divo cannot read video in this deployment. '
+          + 'Tell the user plainly and do not guess at the contents.]',
+      }));
+    }
+
+    const owner = {
+      companyId: String(input.runContext.companyId),
+      userId: input.userExternalId,
+      channel: 'web',
+      threadId: input.threadId,
+    };
+    const watched: { notice: string }[] = [];
+
+    for (const videoId of videoIds) {
+      let fileName: string;
+      try {
+        fileName = (await this.deps.videos.recordFor({ owner, videoId })).fileName;
+      } catch {
+        // An id that names nothing in this conversation is not an error worth
+        // failing a question over — but it must never pass silently, or the
+        // model answers as though it had watched something.
+        log.warn('web_run.video.unknown', { videoId });
+        watched.push({
+          notice: '[Video attached — NOT WATCHED. Divo could not find that recording in this '
+            + 'conversation. Tell the user plainly and ask them to attach it again.]',
+        });
+        continue;
+      }
+      const reading = this.deps.videos.understandingFor({
+        owner,
+        videoId,
+        ...(input.abortSignal ? { signal: input.abortSignal } : {}),
+      });
+      let settled = false;
+      // Attached before the poll loop so a rejection can never be unhandled,
+      // and swallowed here because the loop below re-awaits the same promise
+      // for the real outcome.
+      const finished = reading.then(() => { settled = true; }, () => { settled = true; });
+
+      yield { type: 'watching', fileName, percent: 0, step: 'watching' };
+      while (!settled && !input.abortSignal?.aborted) {
+        await Promise.race([finished, delay(WATCH_POLL_MS)]);
+        const progress = this.deps.videos.progressFor(videoId);
+        if (progress && !settled) {
+          yield { type: 'watching', fileName, percent: progress.percent, step: progress.step };
+        }
+      }
+
+      try {
+        const understanding = await reading;
+        yield { type: 'watching', fileName, percent: 100, step: 'ready' };
+        watched.push({
+          notice: askNoticeFor({ fileName, understanding, question: input.text }),
+        });
+      } catch (error) {
+        /* A stop is not a failure to read. Both arrive here as a rejection, and
+           telling them apart matters because this notice is persisted as the
+           member's own turn: recording "could not be read" for a reading that
+           was merely abandoned would have Divo tell them, for the rest of the
+           thread, that a perfectly good recording was corrupt. */
+        /* Terminal either way. Only a `ready` frame clears the watcher — in the
+           browser and in the registry's replay — so a reading that ended
+           without one leaves "reading screens · 40%" shimmering over the whole
+           model turn, and over the answer that follows it. */
+        yield { type: 'watching', fileName, percent: 100, step: 'ready' };
+        if (input.abortSignal?.aborted) return watched;
+        log.warn('web_run.video.unreadable', {
+          videoId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        watched.push({
+          // Fenced for the same reason the watched notice fences it: the name
+          // comes from a header the uploader controls, and a `]` in it would
+          // close the block that marks everything inside untrusted.
+          notice: `[Video: "${fenced(fileName)}" — NOT WATCHED. Divo could not read this `
+            + `recording. Tell the user plainly that it could not be read and ask them to `
+            + `try again; never answer from the file name.]`,
+        });
+      }
+    }
+    return watched;
+  }
 
   /**
    * Run one turn, yielding events as they happen.
@@ -124,8 +298,26 @@ export class WebRunService {
    */
   async *run(input: WebRunInput): AsyncGenerator<WebRunEvent> {
     const log = this.deps.logger.child({ service: 'web-run' });
+    // Before anything else, and deliberately: the model cannot be asked about a
+    // recording that has not been read yet, so the reading is the first thing
+    // that happens and the member watches it happen.
     const runId = randomUUID();
     const startedAtMs = Date.now();
+    const watched = yield* this.watch(input, log);
+    const askText = watched.length > 0
+      ? [...watched.map(entry => entry.notice), input.text].filter(Boolean).join('\n\n')
+      : input.text;
+    // Stopping during the reading means stopping, not "stop once the video is
+    // done" — otherwise the run spends a model turn on a question the member
+    // already withdrew. The turn is still written down, because every other
+    // stop path writes one: a thread that loses the question as well as the
+    // answer leaves the reader no evidence they ever asked.
+    if (input.abortSignal?.aborted) {
+      const message = 'Stopped before Divo finished watching.';
+      await this.recordFailure(input, runId, { code: 'cancelled', message }, [], startedAtMs, askText);
+      yield { type: 'error', code: 'cancelled', message };
+      return;
+    }
     const timeline = createRunTimelineReducer({ startedAtMs });
 
     // Frames arrive faster than they are consumed, so they queue here and the
@@ -165,7 +357,7 @@ export class WebRunService {
     const incoming = webIncomingMessage({
       runId,
       threadId: input.threadId,
-      text: input.text,
+      text: askText,
       userExternalId: input.userExternalId,
     });
     let answerStarted = false;
@@ -181,7 +373,9 @@ export class WebRunService {
       },
       threadId: input.threadId,
       sessionId: input.sessionId,
+      ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
+      ...(input.ask ? { ask: input.ask } : {}),
       ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
       onProgress: event => {
         if (event.type === 'answer_delta') {
@@ -194,14 +388,37 @@ export class WebRunService {
           liveAnswer.reset();
           return;
         }
-        // Text before a tool call was narration, not the terminal answer. It
-        // remains in the sentence-sized timeline `say` row; clear the live
-        // answer lane so the next assistant turn starts from an honest blank.
-        if (event.type === 'tool_start' && answerStarted) {
+        // A finished document, forwarded as itself rather than folded into the
+        // timeline. It is the one frame here that is not about how the run is
+        // going: it says a deliverable now exists and can be opened, and the
+        // panel that opens it has no business reading the work log to find out.
+        if (event.type === 'artifact') {
+          push({
+            type: 'artifact',
+            artifactId: event.artifactId,
+            title: event.title,
+            mime: event.mime,
+            version: event.version,
+          });
+          return;
+        }
+        // Text before a tool call was an aside, not the terminal answer, and the
+        // live answer lane has to give it up so the next assistant turn starts
+        // from an honest blank.
+        //
+        // The timeline goes first, and the order is the whole point: the same
+        // prose is on screen twice over — as the reply, and as the `say` rows
+        // the reducer has just marked `aside`. Resetting the lane first would
+        // take it out of the reply before the log had claimed it, and the reader
+        // would watch a sentence they were mid-way through vanish from the page
+        // entirely. This way it is filed into the log and then released, which
+        // is the direction it actually travelled.
+        const settlesAside = event.type === 'tool_start' && answerStarted;
+        publishTimeline(timeline.apply(event) === 'immediate');
+        if (settlesAside) {
           answerStarted = false;
           liveAnswer.reset();
         }
-        publishTimeline(timeline.apply(event) === 'immediate');
       },
       // Asked for at the moment the answer is written down, so the work log a
       // reader watched happen is still attached to it tomorrow. Without this a
@@ -239,7 +456,9 @@ export class WebRunService {
         ? error.userMessage
         : 'Divo hit a temporary problem while finishing this request. Please try again.';
       log.error('web_run.failed', { code, error: String(error), runId });
-      await this.recordFailure(input, runId, { code, message }, timeline.timeline().ledger ?? [], startedAtMs);
+      await this.recordFailure(
+        input, runId, { code, message }, timeline.timeline().ledger ?? [], startedAtMs, askText,
+      );
       yield { type: 'error', message, code };
       return;
     }
@@ -321,21 +540,34 @@ export class WebRunService {
     failure: { readonly code: string; readonly message: string },
     ledger: readonly ChannelLedgerRow[],
     startedAtMs: number,
+    /* What the model was given, not what the person typed — the same string the
+       runtime would have persisted had the run reached it. */
+    askText: string,
   ): Promise<void> {
     if (!this.deps.transcript) return;
     const scope = { companyId: String(input.runContext.companyId), channel: 'web' };
     try {
+      /* The same turn the runtime would have written, files included — a run
+         that failed is the case where the reader most needs their own message
+         back intact, since there is no answer to read it against. */
+      /* Compared against what was *stored*, not against what the person typed.
+         `askFor` returns nothing when the two are equal and no file came with
+         the ask — and for a video-only message the multipart text is unchanged,
+         so comparing against `input.text` dropped the reader's copy and left the
+         thread showing the whole evidence block back as their own words. */
+      const readerAsk = askFor(input.ask, askText);
       await this.deps.transcript.appendTurn(
         input.threadId,
-        { role: 'user', content: input.text, timestamp: new Date(startedAtMs).toISOString() },
+        { role: 'user', content: askText, timestamp: new Date(startedAtMs).toISOString() },
         scope,
         {
           dedupeKey: `web:${runId}:user`,
           sourceRunId: runId,
+          ...(readerAsk ? { contentJson: askContent(readerAsk) } : {}),
           conversationDefaults: {
             createdByUserId: String(input.runContext.userId),
             ...(input.runContext.requesterEmail ? { createdByEmail: input.runContext.requesterEmail } : {}),
-            title: webThreadTitle(input.text),
+            title: webThreadTitle(input.ask?.text.trim() || input.text),
           },
         },
       );
@@ -405,4 +637,9 @@ function webIncomingMessage(input: {
     mentionsSelf: true,
     raw: null,
   };
+}
+
+/** A promise that settles after `ms`, used to pace the watcher's redraws. */
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => { const timer = setTimeout(resolve, ms); timer.unref?.(); });
 }

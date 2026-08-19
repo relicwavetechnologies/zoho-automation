@@ -6,7 +6,10 @@ import {
   resolveRedisUrl,
 } from './config/env';
 import { RuntimeApprovalRepository } from './infrastructure/persistence/runtime-approval.repository';
-import { ApprovalInboxService } from './application/approval/approval-inbox.service';
+import { DecisionService } from './application/decision/decision.service';
+import { LarkDecisionCourier } from './infrastructure/channels/lark/lark-decision.courier';
+import { LarkDecisionCardHandler } from './infrastructure/channels/lark/lark-decision-card.handler';
+import { buildDecisionResolvedCard } from './infrastructure/channels/lark/lark-decision-card';
 import { buildApprovalResolutionCard } from './application/approval/approval-card-builder';
 import { ApprovalResolverService } from './application/approval/approval-resolver.service';
 import { ApprovalGateService } from './application/approval/approval-gate.service';
@@ -23,6 +26,7 @@ import { systemClock } from './shared/clock';
 import { getPrismaClient } from './infrastructure/persistence/prisma.client';
 import { getRedisClient } from './infrastructure/cache/redis.client';
 import { RedisCache } from './infrastructure/cache/redis-cache';
+import { SiteIconService } from './application/icons/site-icon.service';
 import { RedisRateLimitStore } from './infrastructure/governance/redis-rate-limit.store';
 import { PrismaConnectionGovernanceRepository } from './infrastructure/persistence/connection-governance.repository';
 import { CompanyRoleRepository } from './infrastructure/persistence/company-role.repository';
@@ -103,9 +107,14 @@ import {
 import { ZohoConnectionRepository } from './infrastructure/zoho/zoho-connection.repository';
 import { ZohoTokenService } from './infrastructure/zoho/zoho-token.service';
 import { ZohoBooksPaginatedClient } from './infrastructure/zoho/zoho-books-paginated.client';
+import { ConversationAttachmentAssetService } from './application/conversation-attachments/conversation-attachment-asset.service';
 import { ConversationAttachmentService } from './application/conversation-attachments/conversation-attachment.service';
+import { CloudinaryConversationAttachmentObjectStore } from './infrastructure/conversation-attachments/cloudinary-conversation-attachment-object.store';
+import { PrismaConversationAttachmentAssetStore } from './infrastructure/persistence/conversation-attachment-asset.repository';
 import { PrismaConversationAttachmentStore } from './infrastructure/persistence/conversation-attachment.repository';
+import { ChannelAttachmentSource } from './application/zoho/channel-attachment-source';
 import { LarkConversationAttachmentSource } from './infrastructure/zoho/lark-conversation-attachment.source';
+import { WebConversationAttachmentSource } from './infrastructure/zoho/web-conversation-attachment.source';
 import { PrismaStagedInvoiceStore } from './infrastructure/persistence/zoho-invoice-staging.repository';
 import { PrismaStagedPurchaseOrderStore } from './infrastructure/persistence/zoho-purchase-order-staging.repository';
 import { PrismaStagedBillStore } from './infrastructure/persistence/zoho-bill-staging.repository';
@@ -120,6 +129,8 @@ import type { CachePort } from './shared/cache';
 // Observability
 import { ExecutionRepository } from './infrastructure/persistence/execution.repository';
 import { ExecutionQueryService } from './application/observability/execution-query.service';
+import { RunLatencyRecorder } from './application/observability/run-latency-recorder';
+import { ExecutionRunLifecycle } from './application/observability/execution-run-lifecycle';
 import { AuditService } from './application/observability/audit.service';
 import { TokenUsageService } from './application/observability/token-usage.service';
 import { ProxyKeyStore } from './application/proxy/proxy-key.store';
@@ -128,6 +139,7 @@ import { SkillRepository } from './infrastructure/persistence/skill.repository';
 import { SkillAccessRepository } from './infrastructure/persistence/skill-access.repository';
 import { SkillCatalogService } from './application/skills/skill-catalog.service';
 import { SkillRegistryAdminService } from './application/skills/skill-registry-admin.service';
+import { RuntimeContextLifecycle } from './application/runtime/runtime-context-lifecycle';
 
 // Application
 import { PermissionServiceImpl } from './application/permissions/permission.service';
@@ -200,11 +212,13 @@ import { ManagerPersonaRuntimeService } from './application/persona-learning/man
 import { ManagerPersonaRevisionService } from './application/persona-learning/manager-persona-revision.service';
 import { ManagerTeachQueue } from './application/persona-learning/manager-teach.queue';
 import { ManagerTeachService } from './application/persona-learning/manager-teach.service';
-import { ManagerTeachMediaProcessor } from './application/persona-learning/manager-teach-media.processor';
+import { VideoUnderstandingService } from './application/video-understanding/video-understanding.service';
+import { ConversationVideoService } from './application/conversation-video/conversation-video.service';
+import { ConversationVideoStore } from './application/conversation-video/conversation-video.store';
 import { ManagerTeachPersonaProcessor } from './application/persona-learning/manager-teach-persona.processor';
-import { PeepshowManagerTeachExtractor } from './infrastructure/media/peepshow-manager-teach.extractor';
-import { OpenRouterManagerTeachFrameOcr } from './infrastructure/ai/ocr/openrouter-manager-teach.ocr';
-import { OpenAiManagerTeachTranscriber } from './infrastructure/ai/transcription/openai-manager-teach.transcriber';
+import { PeepshowVideoExtractor } from './infrastructure/media/peepshow-video.extractor';
+import { OpenRouterFrameReader } from './infrastructure/ai/ocr/openrouter-frame.reader';
+import { OpenAiVideoTranscriber } from './infrastructure/ai/transcription/openai-video.transcriber';
 
 // Central knowledge authority and semantic recall projection
 import type { MemoryService } from './application/knowledge/semantic-memory.port';
@@ -344,6 +358,8 @@ export interface Container {
   prisma: ReturnType<typeof getPrismaClient>;
   /** Hot-path app cache: permissions, OAuth tokens, agent defs. → REDIS_CACHE_URL */
   cache: CachePort;
+  /** Favicons for cited domains, fetched by us so no third party learns them. */
+  siteIcons: SiteIconService;
   /** Short-lived security/workflow keys: nonces, run effects, uploads. → REDIS_MEMORY_URL (legacy env name) */
   ephemeralCache: CachePort;
   /** Resolved Redis URL for the BullMQ queue — exposed so workers can share the same URL. */
@@ -363,6 +379,7 @@ export interface Container {
   skillCatalog: SkillCatalogService;
   skillAccessEnforcement: SkillAccessRepository;
   skillRegistryAdminService: SkillRegistryAdminService;
+  runtimeContextLifecycle: RuntimeContextLifecycle;
   // Agent admin CRUD
   departmentAdminService: DepartmentAdminService;
   desktopDepartmentManagementService: DesktopDepartmentManagementService;
@@ -416,6 +433,8 @@ export interface Container {
   // Observability
   executionRepo: ExecutionRepository;
   executionQueryService: ExecutionQueryService;
+  runLatencyRecorder: RunLatencyRecorder;
+  executionRunLifecycle: ExecutionRunLifecycle;
   auditService: AuditService;
   tokenUsageService: TokenUsageService;
   proxyKeyStore: ProxyKeyStore;
@@ -426,7 +445,9 @@ export interface Container {
   approvalCardHandler: LarkApprovalCardHandler;
   workbookConversionCardHandler: LarkWorkbookConversionCardHandler;
   approvalResumer: ApprovalResumerService;
-  approvalInbox: ApprovalInboxService;
+  /** The one place Divo asks a person something and hears back. */
+  decisions: DecisionService;
+  decisionCardHandler: LarkDecisionCardHandler;
   businessActions: BusinessActionService;
   workbookConversionQueue: WorkbookConversionQueue;
   workbookConversionWorker: GoogleDriveXlsxConversionConsumer;
@@ -468,16 +489,25 @@ export interface Container {
   larkContactsClient: LarkContactsClient;
   /** Files the member sent, indexed by name so a tool can attach one later. */
   conversationAttachments: ConversationAttachmentService;
+  /** Browser-uploaded files held privately for provider attachment. */
+  conversationAttachmentAssets: ConversationAttachmentAssetService;
   // Pi/Desktop capability gateway
   gatewayDispatcher: GatewayDispatcher;
   /** Container runtime shared by the Lark webhook and the scheduled-workflow poller. */
   larkPiRuntime: import('./application/runtime/lark-pi-runtime.service').LarkPiRuntimeService;
   /** The same runtime, driven from the browser. Not a second agent — a second view. */
   webRuns: import('./application/runtime/web-run.service').WebRunService;
+  /** Video attached to a conversation: taken in, read, and thrown away. */
+  /** Absent when the deployment has no vision or transcription key. */
+  conversationVideo: import('./application/conversation-video/conversation-video.service').ConversationVideoService | undefined;
   /** Web runs in flight. They outlive the connection that started them. */
   webRunRegistry: import('./application/runtime/web-run-registry').WebRunRegistry;
   /** The reader's view of their own conversations: list, read, rename, delete. */
   webThreads: import('./infrastructure/persistence/web-thread.repository').WebThreadRepository;
+  /** Documents the agent wrote, kept after the container that wrote them is gone. */
+  artifacts: import('./infrastructure/persistence/artifact.repository').ArtifactRepository;
+  /** What a member still has to do, read from their own Lark account. */
+  openTasks: import('./application/work/open-tasks').OpenTasksDeps;
 }
 
 export interface BuildContainerOptions {
@@ -511,6 +541,10 @@ export async function buildContainer(
 
   const cache       = new RedisCache(getRedisClient(cacheRedisUrl));
   const ephemeralCache = new RedisCache(getRedisClient(ephemeralRedisUrl));
+  /* On the hot cache rather than the ephemeral one: an icon is worth keeping
+     for a month, and it is the only thing here whose value is the bytes rather
+     than a permission or a token. */
+  const siteIcons = new SiteIconService({ cache, logger });
   const runOrigins = new RunOriginStore(ephemeralCache);
   const connectionRateLimits = new ConnectionRateLimitService({
     repository: new PrismaConnectionGovernanceRepository(prisma),
@@ -570,6 +604,14 @@ export async function buildContainer(
     repo:   executionRepo,
     logger: logger.child({ service: 'execution-query' }),
   });
+  const runLatencyRecorder = new RunLatencyRecorder(
+    executionRepo,
+    logger.child({ service: 'run-latency' }),
+  );
+  const executionRunLifecycle = new ExecutionRunLifecycle(
+    executionRepo,
+    logger.child({ service: 'execution-run-lifecycle' }),
+  );
   const auditService       = new AuditService(prisma, logger.child({ service: 'audit' }));
   const menhoodQueryService = new MenhoodQueryService(
     env,
@@ -727,6 +769,7 @@ export async function buildContainer(
     ephemeralCache,
     logger.child({ service: 'company-oms-site-data' }),
     env.OMS_SITE_DATA_API_KEY ?? '',
+    env.OMS_VENDOR_FETCH_API_KEY ?? '',
   );
 
   // ── Lark user OAuth ───────────────────────────────────────────────────────
@@ -1478,26 +1521,46 @@ export async function buildContainer(
   const managerPersonaRevisionService = new ManagerPersonaRevisionService({ prisma, logger });
   const managerTeachQueue = new ManagerTeachQueue(queueRedisUrl, env.REDIS_MANAGER_TEACH_QUEUE_NAME);
   const managerTeachUploadDir = resolve(env.MANAGER_TEACH_UPLOAD_DIR);
-  const managerTeachMediaProcessor = new ManagerTeachMediaProcessor({
-    extractor: new PeepshowManagerTeachExtractor({
+  const videoUnderstanding = new VideoUnderstandingService({
+    extractor: new PeepshowVideoExtractor({
       maxFrames: env.MANAGER_TEACH_MAX_FRAMES,
       width: env.MANAGER_TEACH_FRAME_WIDTH,
       sceneThreshold: env.MANAGER_TEACH_SCENE_THRESHOLD,
       timeoutMs: env.MANAGER_TEACH_MEDIA_TIMEOUT_SECONDS * 1_000,
     }),
-    ocr: new OpenRouterManagerTeachFrameOcr({
+    reader: new OpenRouterFrameReader({
       apiKey: env.OPENROUTER_API_KEY ?? '',
       model: env.VISION_OCR_MODEL,
     }),
-    transcriber: new OpenAiManagerTeachTranscriber({
+    transcriber: new OpenAiVideoTranscriber({
       apiKey: env.OPENAI_API_KEY,
       model: env.MANAGER_TEACH_TRANSCRIPTION_MODEL,
       chunkSeconds: env.MANAGER_TEACH_TRANSCRIPTION_CHUNK_SECONDS,
     }),
     logger,
-    ocrConcurrency: env.MANAGER_TEACH_OCR_CONCURRENCY,
+    readConcurrency: env.MANAGER_TEACH_OCR_CONCURRENCY,
     transcriptionModel: env.MANAGER_TEACH_TRANSCRIPTION_MODEL,
   });
+  /* Video in an ordinary conversation. Shares the one reader with Teach — the
+     work is identical, and a second copy of it would drift.
+     Wired only when both halves of reading are configured. Without them the
+     upload would still be accepted, the disk still filled and ffmpeg still run,
+     only to fail at the last step — so the route says "not here" up front
+     instead, which is what its 503 was written for. */
+  const conversationVideo = env.OPENROUTER_API_KEY && env.OPENAI_API_KEY
+    ? new ConversationVideoService({
+      store: new ConversationVideoStore({
+        rootDir: resolve(env.CONVERSATION_VIDEO_DIR),
+        maxBytes: env.CONVERSATION_VIDEO_MAX_MB * 1_024 * 1_024,
+      }),
+      understanding: videoUnderstanding,
+      maxConcurrentReads: env.CONVERSATION_VIDEO_READ_CONCURRENCY,
+      maxCompanyBytes: env.CONVERSATION_VIDEO_COMPANY_BUDGET_MB * 1_024 * 1_024,
+      maxReadsPerWindow: env.CONVERSATION_VIDEO_READS_PER_HOUR,
+      maxTotalBytes: env.CONVERSATION_VIDEO_TOTAL_BUDGET_MB * 1_024 * 1_024,
+      logger,
+    })
+    : undefined;
   const managerTeachPersonaProcessor = new ManagerTeachPersonaProcessor({
     prisma,
     logger,
@@ -1511,7 +1574,7 @@ export async function buildContainer(
     prisma,
     queue: managerTeachQueue,
     logger,
-    mediaProcessor: managerTeachMediaProcessor,
+    understanding: videoUnderstanding,
     personaProcessor: managerTeachPersonaProcessor,
     maxVideoBytes: env.MANAGER_TEACH_MAX_VIDEO_MB * 1_024 * 1_024,
     rawRetentionHours: env.MANAGER_TEACH_RAW_RETENTION_HOURS,
@@ -1540,12 +1603,6 @@ export async function buildContainer(
     maxArchiveCompressionRatio: env.KNOWLEDGE_DOCUMENT_MAX_ARCHIVE_COMPRESSION_RATIO,
   });
 
-  const conversationAttachmentSource = new LarkConversationAttachmentSource(
-    conversationAttachments,
-    new LarkFileClient(env, logger),
-    logger,
-  );
-
   // ── Zoho Books paginated client + finance ops ────────────────────────────
   const zohoPaginatedBooksClient = new ZohoBooksPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
   const zohoPaginatedCrmClient = new ZohoCrmPaginatedClient(zohoTokenService, env.ZOHO_API_BASE_URL);
@@ -1573,6 +1630,15 @@ export async function buildContainer(
   const skillRegistryAdminService = new SkillRegistryAdminService({
     prisma,
     logger: logger.child({ service: 'skill-registry-admin' }),
+  });
+  const runtimeContextLifecycle = new RuntimeContextLifecycle({
+    prisma,
+    permissions,
+    skillCatalog,
+    skillAccessEnforcement,
+    managerPersonaRuntime: managerPersonaRuntimeService,
+    connectionRegistry: integrationConnectionRepo,
+    logger,
   });
 
   // Adapter: company-owned Serper pool → gateway web-search tool.
@@ -1625,6 +1691,26 @@ export async function buildContainer(
     threatScanner: knowledgeThreatScanner,
     threatScanRequired: env.KNOWLEDGE_FILE_MALWARE_SCAN_MODE === 'required',
     threatScanTimeoutMs: env.CLAMAV_SCAN_TIMEOUT_SECONDS * 1_000,
+  });
+  const conversationAttachmentAssets = new ConversationAttachmentAssetService({
+    assets: new PrismaConversationAttachmentAssetStore(prisma),
+    objects: new CloudinaryConversationAttachmentObjectStore(cloudinaryAdapter),
+    logger,
+    maxBytes: env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
+    threatScanner: knowledgeThreatScanner,
+    threatScanRequired: env.KNOWLEDGE_FILE_MALWARE_SCAN_MODE === 'required',
+    threatScanTimeoutMs: env.CLAMAV_SCAN_TIMEOUT_SECONDS * 1_000,
+  });
+  const conversationAttachmentSource = new ChannelAttachmentSource({
+    lark: new LarkConversationAttachmentSource(
+      conversationAttachments,
+      new LarkFileClient(env, logger),
+      logger,
+    ),
+    web: new WebConversationAttachmentSource(
+      conversationAttachmentAssets,
+      logger,
+    ),
   });
   const knowledgeDocuments = new PrismaKnowledgeDocumentRepository(prisma);
   const knowledgeDocumentIndex = new KnowledgeDocumentIndexService({
@@ -2121,6 +2207,8 @@ export async function buildContainer(
     leaseTtlSeconds: env.PI_RUNTIME_LEASE_TTL_SECONDS,
     runTimeoutMs: env.PI_LARK_RUN_TIMEOUT_MS,
     runEffectReceipts,
+    runLatencyRecorder,
+    executionRuns: executionRunLifecycle,
     conversationHistory: conversationRepo,
     knowledgeRecall,
     runOrigins,
@@ -2572,6 +2660,10 @@ export async function buildContainer(
     toolExecutor: gatewayToolExecutor,
     permissions,
     automationPlanExecutor,
+    /* The same store the web run writes its own turns through, so a resumed
+       approval lands in the thread as an ordinary message. Without it a web
+       approval executed correctly and reported into the void. */
+    webTranscript: conversationRepo,
     logger: logger.child({ service: 'approval-resumer' }),
   });
   const approvalCardHandler = new LarkApprovalCardHandler(
@@ -2693,24 +2785,33 @@ export async function buildContainer(
     logger,
   });
 
-  // The same decisions the Lark card carries, reachable by anyone signed in.
-  // `onResolvedCard` is what stops a delivered card from still offering buttons
-  // for a decision that was already made in the inbox.
-  const approvalInbox = new ApprovalInboxService({
-    approvals: approvalRepo,
-    resumer: approvalResumer,
-    logger: logger.child({ service: 'approval-inbox' }),
-    audit: auditService,
-    onResolvedCard: async (messageId, decision, byName) => {
-      await larkAdapter.updateMessageById(messageId, buildApprovalResolutionCard(decision, byName, new Date()));
-    },
-  });
-
   const businessActions = new BusinessActionService({
     approvals: approvalRepo,
     toolExecutor: gatewayToolExecutor,
     logger: logger.child({ service: 'business-action' }),
   });
+
+  // Every question Divo puts to a person, whichever surface it lands on.
+  // `onResolvedCard` is what stops a delivered card from still offering buttons
+  // for a decision that was already answered somewhere else.
+  const decisions = new DecisionService({
+    approvals: approvalRepo,
+    resumer: approvalResumer,
+    businessActions,
+    logger: logger.child({ service: 'decision' }),
+    audit: auditService,
+    courier: new LarkDecisionCourier(larkAdapter, logger, env.APP_BASE_URL),
+    /* Which card is drawn over the settled one. A decision opened through this
+       module carries what was actually answered, and the approval resolution
+       card has no field for it — it can only say approved or rejected. */
+    onResolvedCard: async ({ messageId, verdict, byName, title, summary, native }) => {
+      const card = native
+        ? buildDecisionResolvedCard({ title, verdict, summary, byName, at: new Date() })
+        : buildApprovalResolutionCard(verdict, byName, new Date());
+      await larkAdapter.updateMessageById(messageId, card);
+    },
+  });
+  const decisionCardHandler = new LarkDecisionCardHandler(decisions, logger, env.APP_BASE_URL);
   const automationPlanService = new AutomationPlanService({
     toolExecutor: gatewayToolExecutor,
     permissions,
@@ -2772,6 +2873,7 @@ export async function buildContainer(
     logger,
     prisma,
     cache,
+    siteIcons,
     ephemeralCache,
     queueRedisUrl,
     permissions,
@@ -2784,6 +2886,7 @@ export async function buildContainer(
     skillCatalog,
     skillAccessEnforcement,
     skillRegistryAdminService,
+    runtimeContextLifecycle,
     // Agent admin CRUD
     departmentAdminService,
     desktopDepartmentManagementService,
@@ -2819,6 +2922,8 @@ export async function buildContainer(
     // Observability
     executionRepo,
     executionQueryService,
+    runLatencyRecorder,
+    executionRunLifecycle,
     auditService,
     tokenUsageService,
   proxyKeyStore,
@@ -2829,7 +2934,8 @@ export async function buildContainer(
     approvalCardHandler,
     workbookConversionCardHandler,
     approvalResumer,
-    approvalInbox,
+    decisions,
+    decisionCardHandler,
     businessActions,
     // Workbook conversion and async ingress
     workbookConversionQueue,
@@ -2869,6 +2975,7 @@ export async function buildContainer(
     // Lark contacts (for directory sync)
     larkContactsClient,
     conversationAttachments,
+    conversationAttachmentAssets,
     // Pi/Desktop capability gateway
     gatewayDispatcher,
     // Container runtime, shared by the Lark webhook and the scheduler.
@@ -2878,12 +2985,41 @@ export async function buildContainer(
       identity: channelIdentityRepo,
       departments: deptRepo,
       transcript: conversationRepo,
+      ...(conversationVideo ? { videos: conversationVideo } : {}),
       logger: logger.child({ service: 'web-run' }),
     }),
+    conversationVideo,
     webRunRegistry: new (await import('./application/runtime/web-run-registry')).WebRunRegistry({
       logger: logger.child({ service: 'web-run-registry' }),
     }),
     webThreads: new (await import('./infrastructure/persistence/web-thread.repository')).WebThreadRepository(prisma),
+    artifacts: new (await import('./infrastructure/persistence/artifact.repository')).ArtifactRepository(prisma),
+    /*
+      The member's own Lark account, resolved from the connection they
+      authorized rather than from a run context. `userExternalId` is an open_id
+      on Lark and a Divo user id on the web, so anything that reads it and asks
+      Lark about it gets nothing on the web and calls that an empty list.
+      The connection is the one place that always holds a real open_id.
+    */
+    openTasks: {
+      accounts: {
+        async openIdFor({ userId }) {
+          const connection = await prisma.integrationConnection.findFirst({
+            where: { ownerUserId: userId, provider: 'lark', status: 'connected', revokedAt: null },
+            select: { externalAccountId: true },
+            orderBy: { updatedAt: 'desc' },
+          });
+          return connection?.externalAccountId ?? null;
+        },
+      },
+      tokens: larkUserTokenResolver,
+      createClient: (userToken: string) => new LarkTaskClient({
+        appId: env.LARK_APP_ID,
+        appSecret: env.LARK_APP_SECRET,
+        apiBaseUrl: env.LARK_API_BASE_URL,
+        userToken,
+      }),
+    },
     // Scheduled workflow executor
     scheduledWorkflowService: new (await import('./application/scheduling/scheduled-workflow.service')).ScheduledWorkflowService({
       prisma,

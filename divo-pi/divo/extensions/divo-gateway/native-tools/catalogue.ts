@@ -14,6 +14,7 @@ export interface NativeCatalogueRegistration {
 
 export type NativeContract = WorkBootstrap["nativeContracts"][number];
 export type NativeContractCache = Map<string, NativeContract>;
+export type NativeContractCoverage = Set<string>;
 
 const PROVIDER_NATIVE_CONTRACT_TOOL_IDS = new Set([
 	"airtableBase",
@@ -28,6 +29,26 @@ const PROVIDER_NATIVE_CONTRACT_TOOL_IDS = new Set([
 /** Keep provider schema preload away from tools whose outer contract is complete. */
 export function providerNativeContractToolIds(toolIds: readonly string[]): string[] {
 	return [...new Set(toolIds.filter(toolId => PROVIDER_NATIVE_CONTRACT_TOOL_IDS.has(toolId)))];
+}
+
+export function missingCompleteNativeContractToolIds(
+	toolIds: readonly string[],
+	coverage: NativeContractCoverage,
+): string[] {
+	return providerNativeContractToolIds(toolIds).filter(toolId => !coverage.has(toolId));
+}
+
+export function markCompleteNativeContractCoverage(
+	contracts: readonly NativeContract[],
+	coverage: NativeContractCoverage,
+): string[] {
+	const added: string[] = [];
+	for (const contract of contracts) {
+		if (coverage.has(contract.toolId)) continue;
+		coverage.add(contract.toolId);
+		added.push(contract.toolId);
+	}
+	return added;
 }
 
 /** Register one permanent Pi definition per generated backend capability. */
@@ -45,14 +66,18 @@ export function registerGeneratedNativeToolCatalogue(
 }
 
 /**
- * Merge prompt-relevant provider-native input schemas into permanent Google
- * and Airtable wrappers. The outer tool identity, operations, guidance, and
- * handler remain Pi-owned; the provider description contributes only the
- * nested `input` object it is authoritative for.
+ * Record provider-native contracts without touching what the model can see.
+ *
+ * Caching and binding used to be one call, which made "we now know Gmail's
+ * exact schema" and "the model's Gmail tool just changed" the same event. They
+ * are not: the first is internal knowledge the backend is authoritative for,
+ * the second is a model-visible mutation that has to happen where the turn's
+ * surface is decided. Keeping them apart is what lets a runtime cache a
+ * complete contract bundle without paying for it on every request.
+ *
+ * Returns the backend tool IDs whose cached contracts actually changed.
  */
-export function enrichGeneratedNativeToolCatalogue(
-	host: TypedToolHost,
-	invoke: TypedToolInvoker,
+export function cacheNativeContracts(
 	contracts: readonly NativeContract[],
 	cache: NativeContractCache,
 ): string[] {
@@ -64,10 +89,41 @@ export function enrichGeneratedNativeToolCatalogue(
 		cache.set(key, contract);
 		changedToolIds.add(contract.toolId);
 	}
+	return [...changedToolIds];
+}
+
+/**
+ * Merge the given provider-native input schemas into permanent Google and
+ * Airtable wrappers. The outer tool identity, operations, guidance, and handler
+ * remain Pi-owned; the provider description contributes only the nested `input`
+ * object it is authoritative for.
+ *
+ * The contracts to bind are an argument rather than a cache lookup. Everything
+ * the runtime knows is not everything the model should be shown, and reading
+ * the cache here would have made those the same set — which is how a single
+ * selected Google tool came to carry every operation its provider offers.
+ * Unbound operations keep their describe-then-call branch, so nothing becomes
+ * unreachable by being left out.
+ *
+ * This registers, so it changes the model-visible surface. Call it before the
+ * turn's surface is applied, never after: registration re-expands Pi's active
+ * tool set, which silently discards a narrower plan.
+ */
+export function bindNativeContractsToCatalogue(
+	host: TypedToolHost,
+	invoke: TypedToolInvoker,
+	contracts: readonly NativeContract[],
+): string[] {
+	const byToolId = new Map<string, NativeContract[]>();
+	for (const contract of contracts) {
+		const existing = byToolId.get(contract.toolId);
+		if (existing) existing.push(contract);
+		else byToolId.set(contract.toolId, [contract]);
+	}
 	const refreshed: string[] = [];
 	for (const spec of GENERATED_NATIVE_TOOL_SPECS) {
-		if (!changedToolIds.has(spec.toolId)) continue;
-		const matching = [...cache.values()].filter(contract => contract.toolId === spec.toolId);
+		const matching = byToolId.get(spec.toolId);
+		if (!matching || matching.length === 0) continue;
 		const parameters = bindNativeContracts(
 			spec.parameters as Record<string, unknown>,
 			matching,

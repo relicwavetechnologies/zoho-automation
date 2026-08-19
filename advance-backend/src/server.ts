@@ -2,6 +2,7 @@ import express, { type Express } from 'express';
 import { randomUUID } from 'node:crypto';
 import type { Container } from './composition';
 import { createHealthRoutes } from './http/health.routes';
+import { createSiteIconRoutes } from './http/icons/site-icon.routes';
 import { createErrorBoundary } from './http/error-boundary';
 import {
   createLarkWebhookRoutes,
@@ -54,6 +55,8 @@ import { createProxyRoutes } from './http/admin/proxy.routes';
 import { createLlmProxyRoutes } from './http/llm/llm-proxy.routes';
 import { createDesktopAuthRoutes } from './http/desktop/desktop-auth.routes';
 import { createTraceIngestRoutes } from './http/desktop/trace-ingest.routes';
+import { createArtifactRoutes } from './http/member/artifacts.routes';
+import { createMemberTaskRoutes } from './http/member/tasks.routes';
 import { ExecutionRepository } from './infrastructure/persistence/execution.repository';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
@@ -123,6 +126,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     appBaseUrl:            c.env.APP_BASE_URL,
     approvalGate:          c.approvalGate,
     approvalCardHandler:   c.approvalCardHandler,
+    decisionCardHandler:   c.decisionCardHandler,
     workbookConversionCardHandler: c.workbookConversionCardHandler,
     knowledgeReviewService: c.larkKnowledgeReviewService,
     larkOAuthService:      c.larkOAuthService,
@@ -269,6 +273,45 @@ export const createServer = (c: Container): DivoServerApplication => {
   );
   knowledgeFileCleanupTimer.unref?.();
 
+  const cleanupConversationAttachmentAssets = () => {
+    void c.conversationAttachmentAssets.cleanupExpired().catch(error => {
+      c.logger.warn('conversation_attachment_asset.cleanup.failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+  cleanupConversationAttachmentAssets();
+  const conversationAttachmentCleanupTimer = setInterval(
+    cleanupConversationAttachmentAssets,
+    c.env.KNOWLEDGE_FILE_CLEANUP_INTERVAL_SECONDS * 1_000,
+  );
+  conversationAttachmentCleanupTimer.unref?.();
+
+  /* Readings age out on the same clock an ordinary chat attachment does. The
+     recordings themselves are already gone by now — deleted the moment each one
+     was read — so this only ever sweeps transcripts, screen text and the frames
+     they were taken from. */
+  const videoStore = c.conversationVideo;
+  const pruneConversationVideo = () => {
+    if (!videoStore) return;
+    void videoStore
+      .prune(c.env.CONVERSATION_VIDEO_RETENTION_HOURS * 3_600_000)
+      .then(removed => {
+        if (removed > 0) c.logger.info('conversation_video.prune.complete', { removed });
+      })
+      .catch(error => {
+        c.logger.warn('conversation_video.prune.failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+  pruneConversationVideo();
+  const conversationVideoPruneTimer = setInterval(
+    pruneConversationVideo,
+    c.env.KNOWLEDGE_FILE_CLEANUP_INTERVAL_SECONDS * 1_000,
+  );
+  conversationVideoPruneTimer.unref?.();
+
   if (c.env.DIVO_AUTONOMOUS_WORKERS_ENABLED) {
     c.scheduledWorkflowService.start();
   }
@@ -289,17 +332,18 @@ export const createServer = (c: Container): DivoServerApplication => {
   );
   cloudinaryCleanupTimer.unref?.();
 
-  // Run-trace retention (Track A): prune detailed ExecutionEvent + StepResult
-  // payloads past the window; AiTokenUsage (cost history) is never pruned.
+  // Run-trace retention (Track A): prune detailed events, step results, and
+  // latency spans past the window; AiTokenUsage (cost history) is never pruned.
   const executionRepoForRetention = new ExecutionRepository(c.prisma);
   const runTraceRetention = () => {
     const cutoff = new Date(Date.now() - c.env.TRACE_RETENTION_DAYS * 86_400_000);
     void executionRepoForRetention.pruneExpiredDetail(cutoff)
       .then((pruned) => {
-        if (pruned.events > 0 || pruned.steps > 0) {
+        if (pruned.events > 0 || pruned.steps > 0 || pruned.spans > 0) {
           c.logger.info('trace.retention.pruned', {
             events: pruned.events,
             steps:  pruned.steps,
+            spans:  pruned.spans,
             cutoff: cutoff.toISOString(),
           });
         }
@@ -349,7 +393,12 @@ export const createServer = (c: Container): DivoServerApplication => {
       res.header('Access-Control-Allow-Origin', origin);
     }
     res.header('Vary', 'Origin');
-    res.header('Access-Control-Allow-Headers', 'Authorization, Content-Type, x-api-key, x-company-id');
+    res.header(
+      'Access-Control-Allow-Headers',
+      // `x-file-name` carries a recording's name on the video upload, whose body
+      // is the file itself and so has no multipart envelope to put it in.
+      'Authorization, Content-Type, x-api-key, x-company-id, x-file-name',
+    );
     res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     res.header('Access-Control-Allow-Credentials', 'true');
 
@@ -425,6 +474,14 @@ export const createServer = (c: Container): DivoServerApplication => {
       : {}),
     knowledgeOperations: c.knowledgeOperations,
   }));
+
+  /* Site icons, deliberately before the authenticated mounts: an `<img>` cannot
+     carry a bearer token, so this one is reached without a session. It takes a
+     domain rather than a URL and cannot be aimed anywhere — see the route. */
+  app.use(
+    '/api/icon',
+    createSiteIconRoutes({ icons: c.siteIcons, logger: c.logger }),
+  );
 
   app.use(
     '/api/admin/auth',
@@ -616,6 +673,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     createGatewayRoutes({
       dispatcher: c.gatewayDispatcher,
       logger:     c.logger,
+      latencyRecorder: c.runLatencyRecorder,
     }),
   );
   app.use(
@@ -640,9 +698,14 @@ export const createServer = (c: Container): DivoServerApplication => {
       threads: c.webThreads,
       logger:  c.logger,
       maxUploadBytes: c.env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
+      ...(c.conversationVideo ? { videos: c.conversationVideo } : {}),
+      attachmentAssets: c.conversationAttachmentAssets,
       // The same client the Lark voice-note path uses, so a recording is heard
       // identically whichever surface it was handed over on.
       ...(voiceTranscriber ? { transcriber: voiceTranscriber } : {}),
+      // What Divo is waiting to hear from this person, in the thread that
+      // asked rather than on a page beside it.
+      decisions: c.decisions,
     }),
   );
 
@@ -654,8 +717,7 @@ export const createServer = (c: Container): DivoServerApplication => {
       prisma:          c.prisma,
       memberJwtSecret: c.env.MEMBER_JWT_SECRET,
       logger:          c.logger,
-      inbox:           c.approvalInbox,
-      businessActions: c.businessActions,
+      decisions:       c.decisions,
     }),
   );
 
@@ -781,16 +843,14 @@ export const createServer = (c: Container): DivoServerApplication => {
       mailBriefOnboarding:    c.mailBriefOnboarding,
       invalidateLarkIdentityCache: (larkOpenId: string) =>
         c.channelIdentityRepo.invalidateIdentityCache(larkOpenId),
-      permissions:            c.permissions,
-      skillCatalog:           c.skillCatalog,
-      skillAccessEnforcement: c.skillAccessEnforcement,
-      managerPersonaRuntime:  c.managerPersonaRuntimeService,
+      runtimeContextLifecycle: c.runtimeContextLifecycle,
       logger:                 c.logger,
       env:                    c.env,
       memberJwtSecret:        c.env.MEMBER_JWT_SECRET,
       backendPublicUrl:       c.env.BACKEND_PUBLIC_URL,
       appBaseUrl:             c.env.APP_BASE_URL,
       sessionTtlMinutes:      MEMBER_SESSION_TTL_MINUTES,
+      runLatencyRecorder:     c.runLatencyRecorder,
     }),
   );
 
@@ -807,6 +867,33 @@ export const createServer = (c: Container): DivoServerApplication => {
       uploadDir: c.managerTeachUploadDir,
       maxVideoBytes: c.env.MANAGER_TEACH_MAX_VIDEO_MB * 1_024 * 1_024,
     }),
+  );
+
+  // Artifacts. One mount for both directions on purpose: the container writes
+  // with a runtime lease, the browser reads with a session, and both resolve to
+  // the same member — so ownership is checked once, in the repository, rather
+  // than twice with a chance of disagreeing.
+  //
+  // Named for the resource, not for a client. A document belongs to a person,
+  // and both the browser showing it and the container that wrote it are the same
+  // person — so `/api/desktop/artifacts` would have named the one caller that is
+  // neither of them.
+  app.use(
+    '/api/artifacts',
+    piRuntimeMemberAuth,
+    createArtifactRoutes({
+      artifacts: c.artifacts,
+      logger:    c.logger,
+    }),
+  );
+
+  // What the signed-in member still has to do, read from their own Lark
+  // account. Read-only by construction — see the module for why a dashboard
+  // must not hold a credential that could finish somebody's work for them.
+  app.use(
+    '/api/me/tasks',
+    piRuntimeMemberAuth,
+    createMemberTaskRoutes({ ...c.openTasks, logger: c.logger }),
   );
 
   // Desktop/PI run-trace ingest (Track A — member auth). Current clients share
@@ -838,6 +925,7 @@ export const createServer = (c: Container): DivoServerApplication => {
         logger:  c.logger,
         store:   c.proxyKeyStore,
         service: c.llmProxyService,
+        latencyRecorder: c.runLatencyRecorder,
         baseUrls: { deepseek: c.env.DEEPSEEK_BASE_URL, openai: c.env.OPENAI_BASE_URL },
         apiKeyExhaustion: c.apiKeyExhaustionNotifier,
       }),

@@ -10,9 +10,13 @@ import type { ChannelPlanStepStatus } from '../../domain/channel/outbound';
 
 /** One subagent working under a tool call. */
 export interface RunProgressChild {
+  /** The agent's role — "scout", "reviewer" — which is what names it on screen. */
   readonly label: string;
   readonly status: ChannelPlanStepStatus;
+  /** What it was asked to do, in the words the run gave it. */
   readonly detail?: string;
+  /** How long it has been going, while it still is. Absent once it settles. */
+  readonly elapsed?: string;
 }
 
 /** One line of the checklist the run declared. */
@@ -76,4 +80,23 @@ export type RunProgressEvent =
       readonly callId: string;
       readonly toolName: string;
       readonly isError: boolean;
-    } & RunProgressDetail);
+    } & RunProgressDetail)
+  /**
+   * A document the run finished and stored, ready to be read beside the thread.
+   *
+   * Its own frame rather than a `tool_end` detail, because it is not a line of
+   * the work log — it is the work. The log says a thing happened; this says a
+   * thing now exists and where to get it. A surface that cannot show a document
+   * ignores this frame, which is the same thing it does with every other
+   * capability it lacks.
+   *
+   * The body is deliberately absent. It is already stored under `artifactId`,
+   * and a report can be far larger than a progress frame should ever be.
+   */
+  | {
+      readonly type: 'artifact';
+      readonly artifactId: string;
+      readonly title: string;
+      readonly mime: string;
+      readonly version: number;
+    };

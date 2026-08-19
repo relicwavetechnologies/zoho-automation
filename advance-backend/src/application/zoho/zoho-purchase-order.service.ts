@@ -5,11 +5,13 @@ import type { Result } from '../../shared/result';
 import { err, ok } from '../../shared/result';
 import { mapZohoError } from './zoho-error.utils';
 import { refuseSelfDealing } from './zoho-self-dealing';
-import { unwrapZohoRecord, type ZohoWriteSummary } from './zoho-books-write-result';
+import { unwrapZohoRecord } from './zoho-books-write-result';
+import { createZohoBooksWriteRunner } from './zoho-books-write';
 import {
-  classifyZohoBooksWriteFailure,
-  createZohoBooksWriteRunner,
-} from './zoho-books-write';
+  completeZohoDocument,
+  writeZohoDocument,
+  type ZohoDocumentAttachment,
+} from './zoho-document-lifecycle';
 import {
   checkPurchaseOrder,
   hasBlockingPurchaseOrderFinding,
@@ -45,8 +47,6 @@ type CallContext = {
   readonly signal?: AbortSignal;
   readonly onProgress?: (message: string) => void;
 };
-
-type AttachmentResult = { outcome: 'attached' | 'unconfirmed' | 'refused'; message: string };
 
 const text = (record: Record<string, unknown>, ...keys: string[]): string =>
   keys.map(key => record[key]).find(value => typeof value === 'string' && value.trim()) as string | undefined ?? '';
@@ -200,7 +200,7 @@ export function createZohoPurchaseOrderService(deps: {
     async create(
       input: CallContext & {
         stagingId?: string;
-        attach?: (purchaseOrderId: string, fileName: string, organizationId: string) => Promise<AttachmentResult>;
+        attach?: (purchaseOrderId: string, fileName: string, organizationId: string) => Promise<ZohoDocumentAttachment>;
       },
     ): Promise<Result<PurchaseOrderCreateOutput, ToolError>> {
       if (!input.stagingId) {
@@ -243,8 +243,6 @@ export function createZohoPurchaseOrderService(deps: {
         }));
       }
 
-      let record: Record<string, unknown>;
-      let summary: ZohoWriteSummary;
       const writer = createZohoBooksWriteRunner({
         booksClient: deps.booksClient,
         companyId: input.companyId,
@@ -254,9 +252,11 @@ export function createZohoPurchaseOrderService(deps: {
         ...(input.signal ? { signal: input.signal } : {}),
         appBaseUrl: deps.appBaseUrl,
       });
-      try {
-        const poNumber = staged.payload['purchaseorder_number'];
-        const written = await writer.writeRecord({
+      const poNumber = staged.payload['purchaseorder_number'];
+      const written = await writeZohoDocument({
+        writer,
+        receivedObject: 'the purchase order',
+        request: {
           module: 'purchaseorders',
           verb: 'created',
           method: 'POST',
@@ -265,14 +265,12 @@ export function createZohoPurchaseOrderService(deps: {
             ? { params: { ignore_auto_number_generation: 'true' } }
             : {}),
           body: staged.payload,
-        });
-        record = written.record;
-        summary = written.summary;
-      } catch (error) {
-        const failure = classifyZohoBooksWriteFailure(error, { receivedObject: 'the purchase order' });
-        if (failure.kind !== 'unknown') {
+        },
+      });
+      if (written.kind === 'failed') {
+        if (written.failure.kind !== 'unknown') {
           await deps.staging.release({ stagingId: staged.stagingId, companyId: input.companyId, marker });
-          return err(new ToolError({ toolId: 'zohoBooks', reason: 'upstream_failure', cause: error, message: mapZohoError(error) }));
+          return err(new ToolError({ toolId: 'zohoBooks', reason: 'upstream_failure', cause: written.error, message: mapZohoError(written.error) }));
         }
         await deps.staging.markUnresolved({
           stagingId: staged.stagingId,
@@ -281,12 +279,11 @@ export function createZohoPurchaseOrderService(deps: {
           unresolved: `${PURCHASE_ORDER_CLAIM_UNRESOLVED}${input.correlationId}`,
         });
         return err(new ToolError({
-          toolId: 'zohoBooks', reason: 'upstream_failure', cause: error,
-          message: `${mapZohoError(error)} The request may have reached Zoho, so Divo will not retry it. Check purchase orders before staging another.`,
+          toolId: 'zohoBooks', reason: 'upstream_failure', cause: written.error,
+          message: `${mapZohoError(written.error)} The request may have reached Zoho, so Divo will not retry it. Check purchase orders before staging another.`,
         }));
       }
-
-      if (!summary.id) {
+      if (written.kind === 'missing_id') {
         await deps.staging.markUnresolved({
           stagingId: staged.stagingId,
           companyId: input.companyId,
@@ -298,30 +295,30 @@ export function createZohoPurchaseOrderService(deps: {
           message: 'Zoho accepted the purchase order but returned no purchaseorder_id. Check Zoho before trying again.',
         }));
       }
-      await deps.staging.settle({
-        stagingId: staged.stagingId,
-        companyId: input.companyId,
-        purchaseOrderId: summary.id,
-      });
-
-      let attachmentNote = '';
-      if (staged.attachFileName && input.attach) {
-        const outcome = await input.attach(summary.id, staged.attachFileName, staged.organizationId);
-        attachmentNote = outcome.outcome === 'attached'
-          ? ` ${outcome.message}`
-          : ` The purchase order exists, but its attachment is ${outcome.outcome}: ${outcome.message}`;
-      }
-      const verified = await writer.verifyRecord({
+      const completed = await completeZohoDocument({
+        writer,
         module: 'purchaseorders',
         verb: 'created',
-        recordId: summary.id,
-        fallbackRecord: record,
+        written: written.written,
+        settle: purchaseOrderId => deps.staging!.settle({
+          stagingId: staged.stagingId,
+          companyId: input.companyId,
+          purchaseOrderId,
+        }),
+        ...(staged.attachFileName && input.attach
+          ? { attach: () => input.attach!(written.written.summary.id, staged.attachFileName!, staged.organizationId) }
+          : {}),
       });
+      const attachmentNote = completed.attachment
+        ? completed.attachment.outcome === 'attached'
+          ? ` ${completed.attachment.message}`
+          : ` The purchase order exists, but its attachment is ${completed.attachment.outcome}: ${completed.attachment.message}`
+        : '';
       return ok({
-        id: verified.summary.id,
-        record: verified.record,
-        message: `${verified.message}${attachmentNote}`.trim(),
-        ...(verified.summary.recordUrl ? { recordUrl: verified.summary.recordUrl } : {}),
+        id: completed.summary.id,
+        record: completed.record,
+        message: `${completed.verification.message}${attachmentNote}`.trim(),
+        ...(completed.summary.recordUrl ? { recordUrl: completed.summary.recordUrl } : {}),
       });
     },
   };

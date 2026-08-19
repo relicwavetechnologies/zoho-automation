@@ -14,7 +14,8 @@ const LARK: DivoSurfaceCapabilities = {
 	maxBlockChars: 1_200,
 	maxMessageBytes: 18_000,
 	worklog: "patched-card",
-	approvals: "card-buttons",
+	citations: "compact",
+	decisions: "buttons",
 	handoff: false,
 };
 
@@ -22,12 +23,9 @@ describe("presentation policy", () => {
 	// The whole design rests on this: one generator, no second prompt. A policy
 	// that read the channel's name would be two prompts wearing one function.
 	it("never branches on which surface it is describing", () => {
-		const web = presentationPolicy({ ...LARK, key: "web", worklog: "streamed" });
+		const web = presentationPolicy({ ...LARK, key: "web" });
 		const lark = presentationPolicy(LARK);
-		// The only prose difference between level-1 web and Lark is the work log.
-		const normalize = (text: string) => text
-			.replace(/"(lark|web)"/, '"surface"')
-			.replace(/Your progress is[\s\S]*?do not restate the whole run at the end\./, "PROGRESS");
+		const normalize = (text: string) => text.replace(/"(lark|web)"/, '"surface"');
 		assert.equal(normalize(web), normalize(lark));
 	});
 
@@ -37,6 +35,18 @@ describe("presentation policy", () => {
 		assert.match(policy, /at most 3 tables/);
 		assert.match(policy, /under 1200 characters/);
 		assert.match(policy, /under roughly 18KB/);
+	});
+
+	it("makes dense claim citations a capability rather than a channel rule", () => {
+		const web = presentationPolicy({ ...LARK, key: "web", citations: "claim-level" });
+		const lark = presentationPolicy(LARK);
+
+		assert.match(web, /every externally verifiable factual paragraph and list item/);
+		assert.match(web, /Cite every factual table row/);
+		assert.match(web, /Sources section may supplement these links but cannot\s+replace them/);
+		assert.doesNotMatch(lark, /every externally verifiable factual paragraph/);
+		assert.match(lark, /finish with a short Sources section/);
+		assert.match(lark, /do\s+not repeat the same source on every paragraph/);
 	});
 
 	// This is the line company-workspace.md used to hard-code. It is now derived,
@@ -64,6 +74,8 @@ describe("presentation policy", () => {
 			assert.equal(parseSurfaceCapabilities({ ...LARK, maxBlockChars: 0 }), null);
 			assert.equal(parseSurfaceCapabilities({ ...LARK, tables: { maxRows: 15 } }), null);
 			assert.equal(parseSurfaceCapabilities({ ...LARK, charts: "yes" }), null);
+			assert.equal(parseSurfaceCapabilities({ ...LARK, citations: "dense" }), null);
+			assert.equal(parseSurfaceCapabilities({ ...LARK, decisions: "modal" }), null);
 		});
 	});
 });

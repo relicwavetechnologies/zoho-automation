@@ -29,6 +29,7 @@ import {
 import {
 	emitRuntimeProgress,
 	projectRuntimeAnswerDelta,
+	projectRuntimeArtifact,
 	projectRuntimeProgress,
 } from "./runtime-progress.mjs";
 
@@ -158,6 +159,10 @@ export class JsonlRpc {
 			if (progress.type === "writing") this.writingStarted = true;
 			emitRuntimeProgress(this.onProgress, progress);
 		}
+		// After the tool's own row settles, so a reader watching the log sees the
+		// step finish and then the document arrive, in that order.
+		const artifact = projectRuntimeArtifact(value);
+		if (artifact) emitRuntimeProgress(this.onProgress, artifact);
 		if (value.type === "extension_ui_request") {
 			void this.answerRequest(value, (response) => this.write(response));
 		}

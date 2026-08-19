@@ -14,7 +14,7 @@ import { CheckCircle2, Loader2, Mail, ShieldCheck, Sparkles } from "lucide-react
 import { AuthCard, AuthError, Field } from "@/components/admin/auth-card"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { api } from "@/lib/api"
-import { GmailMark } from "@/pages/workspace/brand"
+import { GmailMark, LarkMark } from "@/pages/workspace/brand"
 import { hasUsableMailerConnection, type MailerGoogleConnection } from "@/pages/mailer-onboarding"
 
 export function LoginPage() {
@@ -187,7 +187,7 @@ export function LoginPage() {
           disabled={busy !== null}
           onClick={() => void attempt("lark", () => loginWithLark(next))}
         >
-          {busy === "lark" ? <Loader2 size={14} className="ws-spin" /> : <LarkGlyph />}
+          {busy === "lark" ? <Loader2 size={14} className="ws-spin" /> : <LarkMark size={14} />}
           {busy === "lark" ? "Waiting for Lark" : "Continue with Lark"}
         </button>
 
@@ -306,12 +306,3 @@ function LoginNotice({
     </div>
   )
 }
-
-/* Lark's mark, drawn rather than fetched — the auth page must render before any
-   network call resolves, and a broken logo is a bad first impression. */
-const LarkGlyph = () => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-    <path d="M4 5.5h9.4c1.2 0 1.8 1.4 1 2.3l-1.7 1.8c-2 2.2-4.7 3.5-7.6 3.7A.9.9 0 0 1 4 12.4V5.5Z" opacity=".55" />
-    <path d="M9.6 16.6c3.4-.6 6.4-2.5 8.4-5.3l1.4-2c.5-.8 1.8-.4 1.8.6v7.6c0 1.4-1.1 2.5-2.5 2.5H5.4c-.9 0-1.2-1.2-.4-1.6l4.6-1.8Z" />
-  </svg>
-)

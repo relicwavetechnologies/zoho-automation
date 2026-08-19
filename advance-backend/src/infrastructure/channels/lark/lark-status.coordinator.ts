@@ -68,7 +68,17 @@ export class LarkStatusCoordinator {
 
   getStatusMessageId(): string | undefined { return this.statusMessageId; }
 
-  async update(renderable: StatusCardInput, opts?: { force?: boolean; terminal?: boolean }): Promise<void> {
+  /**
+   * `urgent` buys past the minimum interval and nothing else.
+   *
+   * Deliberately not `force`, which also skips the deduplicator: urgency is a
+   * claim about *when* a real change should be drawn, not a licence to repaint
+   * a card that says exactly what it already said.
+   */
+  async update(
+    renderable: StatusCardInput,
+    opts?: { force?: boolean; terminal?: boolean; urgent?: boolean },
+  ): Promise<void> {
     if (this.closed || this.finalizing || (this.terminalLocked && !opts?.terminal)) return;
 
     const previewText = this.renderBodyPreview(renderable);
@@ -83,7 +93,7 @@ export class LarkStatusCoordinator {
     this.pending = renderable;
     const elapsed = Date.now() - this.lastSentAt;
 
-    if (elapsed >= this.minIntervalMs || opts?.terminal || opts?.force) {
+    if (elapsed >= this.minIntervalMs || opts?.terminal || opts?.force || opts?.urgent) {
       await this.flush();
     } else if (!this.flushTimer) {
       const delay = this.minIntervalMs - elapsed;
@@ -158,12 +168,10 @@ export class LarkStatusCoordinator {
     // deduped away as "no update". Elapsed time is deliberately excluded — it
     // ticks every second and would defeat the rate limiter on its own.
     const parts = [
-      t.phase,
       t.state,
       String(t.actionCount ?? ''),
       t.declared ? `${t.declared.done}/${t.declared.total}:${t.declared.current ?? ''}` : '',
       t.liveLabel,
-      t.narrationActive,
       /* The rows this card will actually draw, not every row in the run. The
          model's reasoning is on the timeline and never on a card, so counting
          it here would make every settled thought look like a change worth an
@@ -181,7 +189,11 @@ export class LarkStatusCoordinator {
       row.label,
       row.count,
       row.outcome ?? '',
-      row.children?.map(child => this.ledgerPreview(child)).join(',') ?? '',
+      /* The child's elapsed label is deliberately not here. It ticks once a
+         second, and folding it in made every subagent run repaint the card on
+         a clock rather than on news — dozens of Lark edits to move a digit
+         nobody was watching. */
+      row.children?.map(c => `${c.status}:${c.label}:${c.outcome ?? ''}`).join(',') ?? '',
     ].join(':');
   }
 

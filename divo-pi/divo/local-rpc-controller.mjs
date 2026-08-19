@@ -62,6 +62,7 @@ import {
 	readProfile,
 } from "./local-profile.mjs";
 import { createTurnPhases } from "./runtime-turn-phases.mjs";
+import { thinkingLevelForModel } from "./runtime-models.mjs";
 import {
 	assertPinnedProfile,
 	trustedRuntimeSession,
@@ -182,6 +183,7 @@ async function runTurn({
 	attachments,
 	sessionScope,
 	model,
+	thinkingLevel,
 	signal,
 	onProgress,
 	ephemeral = false,
@@ -202,7 +204,16 @@ async function runTurn({
 	record.sessionScope = normalizedSessionScope;
 	if (signal?.aborted) throw new Error("Pi run was interrupted before container start");
 	let resources = resourcesFor(profile);
-	const selectedModel = validateRuntimeModel(model);
+	const validatedModel = validateRuntimeModel(model);
+	if (!validatedModel && thinkingLevel !== undefined) {
+		throw new Error("A thinking level requires an explicit runtime model");
+	}
+	const selectedModel = validatedModel
+		? {
+			...validatedModel,
+			thinkingLevel: thinkingLevelForModel(validatedModel.model, thinkingLevel),
+		}
+		: undefined;
 	// Nothing this turn computes decides the image ID, and `ensureRuntime` cannot
 	// begin without it, so it is resolved alongside the skill fetch instead of
 	// after it — one Docker round trip leaves the critical path of every turn.
@@ -218,11 +229,16 @@ async function runTurn({
 	// Handled so an image failure during a fetch that throws first is not an
 	// unhandled rejection. The real rejection still surfaces at the await below.
 	imageIdReady.catch(() => {});
+	const nativeSkillScope = { companyId, userId, departmentId, channel };
 	const { runtimeContext, nativeSkills: nativeSkillBootstrap } = await phases.measure(
 		"skills",
-		() => effects.fetchRunContext({ backendUrl, token, departmentId }),
+		() => effects.fetchRunContext({
+			backendUrl,
+			token,
+			departmentId,
+			scope: nativeSkillScope,
+		}),
 	);
-	const nativeSkillScope = { companyId, userId, departmentId, channel };
 	const nativeSkillDigest = nativeSkillBootstrapDigest(nativeSkillBootstrap, nativeSkillScope);
 	const piKeepAlive = canReusePiProcess({
 		ephemeral,
@@ -260,6 +276,11 @@ async function runTurn({
 		departmentId,
 		selectedModel,
 		nativeSkillDigest,
+		// A container is keyed by profile, so one member's Lark turns and web
+		// turns reach the same one. The surface decides which tools Pi is
+		// launched with, and a launch cannot be revised — so a surface change
+		// has to replace the process, exactly as a model change does.
+		channel,
 	});
 	if (!ephemeral) await phases.measure("idle", () => effects.activateIdleContainer(profile));
 	const cachedRuntime = getWarmPiProcess(profile);
@@ -573,7 +594,15 @@ async function runPrompt(request, effects = defaultTurnEffects) {
 	try {
 		const result = await runTurn(request, effects, phases, record);
 		answered = true;
-		return result;
+		return request.runId
+			? {
+				...result,
+				runtimeTelemetry: {
+					wallMs: phases.wallMs(),
+					phases: phases.samples(),
+				},
+			}
+			: result;
 	} catch (error) {
 		// Latched as the failure surfaces, for the same reason the run latches its
 		// own: by the time the record is written the member may have given up.
@@ -683,6 +712,7 @@ export async function promptWithRuntimeLease(runtime, message, options = {}, eff
 		sessionScope: validateSessionScope(options.sessionScope),
 		ephemeral: runtime.ephemeral === true,
 		model: options.model,
+		thinkingLevel: options.thinkingLevel,
 		signal: options.signal,
 		onProgress: options.onProgress,
 	}, effects);

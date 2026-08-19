@@ -294,7 +294,9 @@ export async function prepareContainerRun(bootstrapJson) {
 	const { options } = await resolvePiOptions();
 	const prepared = prepareDivoPiRun(options);
 	return {
-		environment: buildRuntimeEnvironmentPatch(prepared.values),
+		// The controller passes rollout controls on this prepare exec. Include
+		// them in the patch so an already-running Pi changes on its next turn.
+		environment: buildRuntimeEnvironmentPatch(prepared.values, process.env),
 	};
 }
 

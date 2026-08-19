@@ -71,7 +71,18 @@ export type KnownImagesProvider = "openrouter";
 
 export type ImagesProviderId = KnownImagesProvider | string;
 
-export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
+/**
+ * `max` is a Divo addition to upstream's five rungs.
+ *
+ * Upstream treats `xhigh` as "whatever this model calls its ceiling", which is
+ * why nearly every provider table maps `xhigh` to the string `"max"`. That
+ * holds until a model offers `xhigh` AND `max` as different amounts of
+ * thinking — GPT-5.6 does — at which point one rung has to carry two values
+ * and the ladder can no longer reach the top. Both `xhigh` and `max` are
+ * opt-in: a model gets them only by naming them in its `thinkingLevelMap`, so
+ * no existing model gains a level from this.
+ */
+export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ModelThinkingLevel = "off" | ThinkingLevel;
 export type ThinkingLevelMap = Partial<Record<ModelThinkingLevel, string | null>>;
 export type ChatTemplateKwargValue =

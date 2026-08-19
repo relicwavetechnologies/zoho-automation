@@ -4,6 +4,11 @@ import type { GatewayDispatcher } from '../../application/gateway/gateway-dispat
 import type { GatewayMemberContext } from '../../application/gateway/gateway.types';
 import { gatewayFailure, gatewayRequestSchema } from '../../application/gateway/gateway.types';
 import { asChannelKey } from '../../domain/channel/runtime-channel';
+import {
+  measureRunLatency,
+  piToolSpanId,
+  type RunLatencyRecorder,
+} from '../../application/observability/run-latency-recorder';
 
 const PI_RUNTIME_BLOCKED_OPS = new Set([
   'teach.learning.apply',
@@ -15,6 +20,7 @@ const PI_RUNTIME_BLOCKED_OPS = new Set([
 export interface GatewayRoutesDeps {
   readonly dispatcher: GatewayDispatcher;
   readonly logger: Logger;
+  readonly latencyRecorder?: RunLatencyRecorder;
 }
 
 export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
@@ -108,8 +114,31 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
       authProvider: (res.locals['authProvider'] as string | null | undefined) ?? null,
     };
 
+    const execution = parsed.data.execution;
+    const parentSpanId = execution?.actionId === 'native-inputs-eager'
+      && res.locals['isPiRuntimeLease'] === true
+      ? 'controller.model'
+      : execution ? piToolSpanId(execution.actionId) : undefined;
+    const latencyTrace = execution && deps.latencyRecorder
+      ? deps.latencyRecorder.trace({
+          runId: execution.runId,
+          companyId,
+          userId,
+          source: 'gateway',
+          ...(parentSpanId ? { parentSpanId } : {}),
+        })
+      : undefined;
+
     try {
-      const result = await deps.dispatcher.dispatch(parsed.data, member);
+      const result = await measureRunLatency(
+        latencyTrace,
+        {
+          name: 'gateway.request',
+          category: 'gateway',
+          attributes: { op: parsed.data.op },
+        },
+        () => deps.dispatcher.dispatch(parsed.data, member, latencyTrace),
+      );
       res.status(200).json(result);
     } catch (error) {
       log.error('gateway.dispatch.error', {
@@ -121,6 +150,8 @@ export function createGatewayRoutes(deps: GatewayRoutesDeps): Router {
       res.status(500).json(
         gatewayFailure('tool_error', 'Gateway request failed'),
       );
+    } finally {
+      void latencyTrace?.flush();
     }
   });
 

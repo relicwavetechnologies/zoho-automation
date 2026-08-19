@@ -71,6 +71,21 @@ describe('web run', () => {
     assert.equal(input['threadId'], 'web:thread-1');
   });
 
+  it('hands the composer model and reasoning choice to the shared runtime unchanged', async () => {
+    const { piRuntime, seen } = fakeRuntime({});
+    const service = new WebRunService({ piRuntime, logger: noopLogger });
+
+    await collect(service.run({
+      ...ask,
+      modelSelection: { model: 'deepseek-v4-pro', reasoningEffort: 'xhigh' },
+    }));
+
+    assert.deepEqual(seen[0]!['modelSelection'], {
+      model: 'deepseek-v4-pro',
+      reasoningEffort: 'xhigh',
+    });
+  });
+
   it('carries the validated backend-owned active department into the shared runtime', async () => {
     const { piRuntime, seen } = fakeRuntime({});
     const service = new WebRunService({

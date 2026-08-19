@@ -1,152 +1,42 @@
-import { createHash } from 'node:crypto';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
-import { recordSkillRegistryMutation } from './skill-registry-versioning';
+import type { SystemSkillDefinition } from './system-skill-definition';
+import {
+  buildSystemSkill,
+  ensureSystemSkillFolder,
+  provisionSystemSkill,
+  type SystemSkillStore,
+} from './system-skill-provisioner';
 
-export interface DivoProductivitySystemSkillDefinition {
-  readonly slug: string;
-  readonly name: string;
-  readonly summary: string;
-  readonly markdown: string;
-  readonly toolIds: readonly string[];
-  readonly tags: readonly string[];
+export type DivoProductivitySystemSkillDefinition = SystemSkillDefinition & {
   readonly aliases: readonly string[];
-  readonly sortOrder: number;
-}
+};
 
 const DIVO_PRODUCTIVITY_FOLDER = {
+  key: 'folder:divo-productivity',
   name: 'Divo Productivity',
   slug: 'divo-productivity',
-  departmentId: null,
-  parentId: null,
-  status: 'active',
   sortOrder: 10,
 } as const;
 
-type DivoProductivitySkillStore = Pick<
-  Prisma.TransactionClient,
-  'skillFolder' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant' | 'skillAlias'
->;
-
-type ExistingSkill = {
-  id: string;
-  companyId: string;
-  departmentId: string | null;
-  folderId: string | null;
-  scope: string;
-  name: string;
-  slug: string;
-  summary: string;
-  markdown: string;
-  toolIds: string[];
-  tags: string[];
-  status: string;
-  isSystem: boolean;
-  sortOrder: number;
-  revision: number;
-  createdBy: string | null;
-  updatedBy: string | null;
-  aliases: { alias: string }[];
-};
-
-const EXISTING_SKILL_SELECT = {
-  id: true,
-  companyId: true,
-  departmentId: true,
-  folderId: true,
-  scope: true,
-  name: true,
-  slug: true,
-  summary: true,
-  markdown: true,
-  toolIds: true,
-  tags: true,
-  status: true,
-  isSystem: true,
-  sortOrder: true,
-  revision: true,
-  createdBy: true,
-  updatedBy: true,
-  aliases: { select: { alias: true }, orderBy: { alias: 'asc' as const } },
-} as const;
+const COMPANY_PLACEMENT = (companyId: string, folderId: string) => ({
+  folderId,
+  departmentId: null,
+  scope: 'company' as const,
+  granteeType: 'company' as const,
+  granteeId: companyId,
+});
 
 export async function provisionDivoProductivitySystemSkill(
-  db: DivoProductivitySkillStore,
+  db: SystemSkillStore,
   companyId: string,
   definition: DivoProductivitySystemSkillDefinition,
 ): Promise<{ id: string; outcome: 'created' | 'updated' | 'existing' | 'skipped' }> {
-  const folderId = await ensureFolder(db, companyId);
-  let current = await db.skill.findFirst({
-    where: { companyId, slug: definition.slug, status: { not: 'archived' } },
-    select: EXISTING_SKILL_SELECT,
-  }) as ExistingSkill | null;
-  if (current && !current.isSystem) return { id: current.id, outcome: 'skipped' };
-
-  let skill: ExistingSkill | undefined;
-  let outcome: 'created' | 'updated' | 'existing' | undefined;
-  if (!current) {
-    try {
-      skill = await db.skill.create({
-        data: buildDivoProductivitySystemSkill(companyId, folderId, definition),
-        select: EXISTING_SKILL_SELECT,
-      }) as ExistingSkill;
-    } catch (error) {
-      if ((error as { code?: string }).code !== 'P2002') throw error;
-      current = await db.skill.findFirst({
-        where: { companyId, slug: definition.slug, status: { not: 'archived' } },
-        select: EXISTING_SKILL_SELECT,
-      }) as ExistingSkill | null;
-      if (!current) throw error;
-      if (!current.isSystem) return { id: current.id, outcome: 'skipped' };
-    }
-    if (skill) {
-      await recordSkillRegistryMutation(db, skill, 'system');
-      outcome = 'created';
-    }
-  }
-  if (current) {
-    if (matchesDefinition(current, folderId, definition)) {
-      skill = current;
-      outcome = 'existing';
-    } else {
-      skill = await db.skill.update({
-        where: { id: current.id },
-        data: {
-          ...definitionFields(folderId, definition),
-          toolIds: [...definition.toolIds],
-          tags: [...definition.tags],
-          revision: { increment: 1 },
-        },
-        select: EXISTING_SKILL_SELECT,
-      }) as ExistingSkill;
-      await recordSkillRegistryMutation(db, skill, 'system');
-      outcome = 'updated';
-    }
-  }
-  if (!skill || !outcome) throw new Error(`Failed to reconcile system skill: ${definition.slug}`);
-
-  await db.skillAccessGrant.upsert({
-    where: {
-      skillId_granteeType_granteeId: {
-        skillId: skill.id,
-        granteeType: 'company',
-        granteeId: companyId,
-      },
-    },
-    create: {
-      companyId,
-      skillId: skill.id,
-      granteeType: 'company',
-      granteeId: companyId,
-    },
-    update: {},
-  });
-  await syncAliases(db, skill.id, definition.aliases);
-
-  return { id: skill.id, outcome };
+  const folderId = await ensureSystemSkillFolder(db, companyId, DIVO_PRODUCTIVITY_FOLDER);
+  return provisionSystemSkill(db, companyId, definition, COMPANY_PLACEMENT(companyId, folderId));
 }
 
 export async function provisionDivoProductivitySkillForExistingCompanies(
-  db: Pick<PrismaClient, 'company' | 'skillFolder' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant' | 'skillAlias'>,
+  db: Pick<PrismaClient, 'company'> & SystemSkillStore,
   definition: DivoProductivitySystemSkillDefinition,
 ): Promise<{ companies: number; created: number; updated: number; existing: number; skipped: number }> {
   const companies = await db.company.findMany({ select: { id: true } });
@@ -163,94 +53,5 @@ export function buildDivoProductivitySystemSkill(
   folderId: string,
   definition: DivoProductivitySystemSkillDefinition,
 ): Prisma.SkillUncheckedCreateInput & { id: string } {
-  return {
-    id: deterministicId(companyId, `skill:${definition.slug}`),
-    companyId,
-    ...definitionFields(folderId, definition),
-    toolIds: [...definition.toolIds],
-    tags: [...definition.tags],
-  };
-}
-
-async function ensureFolder(db: DivoProductivitySkillStore, companyId: string): Promise<string> {
-  const current = await db.skillFolder.findFirst({
-    where: {
-      companyId,
-      departmentId: null,
-      parentId: null,
-      slug: DIVO_PRODUCTIVITY_FOLDER.slug,
-      status: 'active',
-    },
-    select: { id: true },
-  });
-  if (current) return current.id;
-
-  const folder = await db.skillFolder.upsert({
-    where: { id: deterministicId(companyId, 'folder:divo-productivity') },
-    create: {
-      id: deterministicId(companyId, 'folder:divo-productivity'),
-      companyId,
-      ...DIVO_PRODUCTIVITY_FOLDER,
-    },
-    update: { ...DIVO_PRODUCTIVITY_FOLDER },
-    select: { id: true },
-  });
-  return folder.id;
-}
-
-function definitionFields(folderId: string, definition: DivoProductivitySystemSkillDefinition) {
-  return {
-    departmentId: null,
-    folderId,
-    scope: 'company',
-    name: definition.name,
-    slug: definition.slug,
-    summary: definition.summary,
-    markdown: definition.markdown,
-    status: 'active',
-    isSystem: true,
-    sortOrder: definition.sortOrder,
-  } as const;
-}
-
-function matchesDefinition(
-  current: ExistingSkill,
-  folderId: string,
-  definition: DivoProductivitySystemSkillDefinition,
-): boolean {
-  return current.departmentId === null
-    && current.folderId === folderId
-    && current.scope === 'company'
-    && current.name === definition.name
-    && current.slug === definition.slug
-    && current.summary === definition.summary
-    && current.markdown === definition.markdown
-    && current.status === 'active'
-    && current.isSystem
-    && current.sortOrder === definition.sortOrder
-    && arraysEqual(current.toolIds, definition.toolIds)
-    && arraysEqual(current.tags, definition.tags)
-    && arraysEqual(current.aliases.map((item) => item.alias), [...definition.aliases].sort());
-}
-
-async function syncAliases(
-  db: DivoProductivitySkillStore,
-  skillId: string,
-  aliases: readonly string[],
-): Promise<void> {
-  await db.skillAlias.deleteMany({ where: { skillId, alias: { notIn: [...aliases] } } });
-  if (aliases.length === 0) return;
-  await db.skillAlias.createMany({
-    data: aliases.map((alias) => ({ skillId, alias })),
-    skipDuplicates: true,
-  });
-}
-
-function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function deterministicId(companyId: string, key: string): string {
-  const hex = createHash('md5').update(`${companyId}:${key}`).digest('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  return buildSystemSkill(companyId, definition, COMPANY_PLACEMENT(companyId, folderId));
 }

@@ -52,8 +52,6 @@ function elementById(card: Record<string, unknown>, id: string): Record<string, 
 
 describe('lark-card.builder buildStatusCard', () => {
   const workingTimeline = {
-    subject:     'Invoice for Acme Corp',
-    phase:       'Executing',
     state:       'working' as const,
     liveLabel:   'Attaching the PDF to the Lark task…',
     actionCount: 11,
@@ -77,7 +75,10 @@ describe('lark-card.builder buildStatusCard', () => {
     const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
 
     assert.deepEqual(chips(card), ['Working']);
-    assert.equal(headerTitle(card), 'Invoice for Acme Corp');
+    // No title beside the chip. The header used to prefer a `subject` — a short
+    // restatement of the request — and this fixture was the only place one was
+    // ever set, which is how a field with no producer looked alive for so long.
+    assert.equal(headerTitle(card), undefined);
     for (const content of markdownContents(card)) {
       assert.doesNotMatch(content, /\bWorking\b/);
     }
@@ -105,8 +106,11 @@ describe('lark-card.builder buildStatusCard', () => {
         ledger: [{
           label: 'Subagents', count: 1, status: 'running' as const,
           children: [
-            { label: 'scout', count: 1, outcome: 'reading the export', status: 'running' as const },
-            { label: 'reviewer', count: 1, outcome: 'checking totals', status: 'done' as const },
+            {
+              label: 'scout', outcome: 'reading the export',
+              status: 'running' as const, elapsed: '1m 30s',
+            },
+            { label: 'reviewer', outcome: 'checking totals', status: 'done' as const },
           ],
         }],
       },
@@ -115,8 +119,11 @@ describe('lark-card.builder buildStatusCard', () => {
 
     assert.equal(lines.length, 3);
     assert.match(lines[0]!, /^● \*\*Subagents\*\*/);
-    assert.match(lines[1]!, /^　└ ● \*\*scout\*\*/);
-    assert.match(lines[2]!, /^　└ ✓ \*\*reviewer\*\*/);
+    // The card joins the task and the clock; they travel as two fields, so the
+    // web can stack them instead and neither surface unpicks the other's
+    // sentence.
+    assert.match(lines[1]!, /^　└ ● \*\*scout\*\*.*reading the export · 1m 30s/);
+    assert.match(lines[2]!, /^　└ ✓ \*\*reviewer\*\*.*checking totals/);
   });
 
   // A ✓ already says "done"; writing "Done" beside it is the padding this
@@ -268,10 +275,13 @@ describe('lark-card.builder buildStatusCard', () => {
     );
   });
 
+  // A run has no honest denominator until the model declares a checklist, so
+  // this card draws progress as a count of what happened and never as a bar.
+  // The timeline used to carry a percentage for one to be drawn from; nothing
+  // ever drew it, and it is gone.
   it('never renders a progress chart', () => {
-    const card = parseCard(buildStatusCard({ timeline: { ...workingTimeline, progressPct: 88 } }));
+    const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
     assert.equal(bodyElements(card).some(e => e['tag'] === 'chart'), false);
-    assert.doesNotMatch(JSON.stringify(card), /88/);
   });
 
   it('ships only the icon token the collapsible panel is known to accept', () => {
@@ -308,7 +318,7 @@ describe('lark-card.builder buildStatusCard', () => {
   it('previews the run in the notification summary', () => {
     const card = parseCard(buildStatusCard({ timeline: workingTimeline }));
     const config = card['config'] as { summary: { content: string } };
-    assert.match(config.summary.content, /Invoice for Acme Corp — Working… · 11 steps/);
+    assert.match(config.summary.content, /Working… — 11 steps/);
   });
 });
 
@@ -351,6 +361,81 @@ describe('lark-card.builder activity log', () => {
     assert.match(activity, /echo hi \/tmp\/f && cat x/);
     // Exactly the one opening and one closing tag the builder wrote itself.
     assert.equal((activity.match(/</g) ?? []).length, 2);
+  });
+});
+
+/**
+ * The three fields that reach a card from outside the trust seam.
+ *
+ * A tool's name, an agent's role and a checklist item's title are written by
+ * the container or by the model itself, and each was interpolated straight into
+ * the card's markup. Neither bound applied on the way in touches these
+ * characters — bounding text and escaping markup are different jobs, and the
+ * bounds only flatten whitespace.
+ *
+ * `<` is the one that matters: the card opens `<font color='grey'>` spans of
+ * its own, and an unescaped `<` in a row label closes one early and takes the
+ * rest of the card's structure with it.
+ */
+describe('lark-card.builder escaping outside the trust seam', () => {
+  const hostile = "Zoho <font color='red'>x</font> `code` <b>";
+
+  it('escapes a tool name the container chose', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working',
+        ledger: [{ label: hostile, count: 1, status: 'running' }],
+      },
+    }));
+    const log = markdownContents(card).join('\n');
+    // Both brackets go and the backticks with them, so what is left is inert
+    // text sitting where the card put it — inside its own bold run.
+    assert.match(log, /\*\*Zoho font color='red'x\/font code b\*\*/);
+  });
+
+  it('escapes an agent role the model wrote', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working',
+        ledger: [{
+          label: 'Subagents', count: 1, status: 'running',
+          children: [{ label: hostile, status: 'running' }],
+        }],
+      },
+    }));
+    assert.doesNotMatch(markdownContents(card).join('\n'), /<b>|<font color='red'>/);
+  });
+
+  it('escapes a checklist title the model wrote', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working',
+        declared: { done: 0, total: 1, items: [{ title: hostile, status: 'running' }] },
+      },
+    }));
+    assert.doesNotMatch(JSON.stringify(card), /<b>/);
+  });
+
+  /* The card opens exactly the spans it wrote itself. Counting them is how a
+     tag closed early by a run's own text shows up as a failure rather than as
+     a card that merely looks odd. */
+  it('leaves the card with balanced font spans whatever a run calls its steps', () => {
+    const card = parseCard(buildStatusCard({
+      timeline: {
+        state: 'working',
+        ledger: [
+          { label: hostile, count: 3, status: 'done', outcome: hostile },
+          { label: 'Sub', count: 1, status: 'running',
+            children: [{ label: hostile, status: 'running', outcome: hostile, elapsed: '2m' }] },
+        ],
+        declared: { done: 0, total: 1, items: [{ title: hostile, status: 'pending' }] },
+      },
+    }));
+    const markup = markdownContents(card).join('\n');
+    assert.equal(
+      (markup.match(/<font /g) ?? []).length,
+      (markup.match(/<\/font>/g) ?? []).length,
+    );
   });
 });
 

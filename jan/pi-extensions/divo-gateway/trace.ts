@@ -33,6 +33,21 @@ interface WireUsage {
 type TraceEvent =
 	| { kind: "tool"; seq: number; ts: number; toolName: string; input?: unknown; output?: unknown; isError?: boolean }
 	| { kind: "model"; seq: number; ts: number; provider: string; model: string; responseId?: string; mode?: string; usage?: WireUsage }
+	| {
+		kind: "span";
+		seq: number;
+		ts: number;
+		spanId: string;
+		parentSpanId?: string;
+		name: string;
+		category: "provider" | "tool";
+		source: "pi-extension";
+		startedAt: number;
+		endedAt: number;
+		durationMs: number;
+		status: "ok" | "error";
+		attributes?: Record<string, string | number | boolean | null>;
+	}
 	| { kind: "run_start" | "run_end" | "turn_start" | "turn_end"; seq: number; ts: number; title?: string; summary?: string; status?: "ok" | "error" }
 	| {
 		kind: "learning_context";
@@ -54,6 +69,14 @@ interface RunState {
 	buffer: TraceEvent[];
 	learningTools: Array<{ toolName: string; isError: boolean }>;
 	protectedDataObserved: boolean;
+	providerAttempt: number;
+	pendingProvider?: {
+		spanId: string;
+		startedAt: number;
+		provider: string;
+		model: string;
+		attempt: number;
+	};
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -158,7 +181,12 @@ export function isRecoverableDivoRequestTooLarge(messages: readonly unknown[]): 
 
 export function registerTraceCapture(pi: ExtensionAPI): void {
 	let run: RunState | null = null;
-	const pendingArgs = new Map<string, unknown>();
+	const pendingTools = new Map<string, {
+		args: unknown;
+		startedAt: number;
+		spanId: string;
+		toolName: string;
+	}>();
 
 	const startRun = (correlation: {
 		runId: string;
@@ -175,8 +203,9 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			buffer: [],
 			learningTools: [],
 			protectedDataObserved: false,
+			providerAttempt: 0,
 		};
-		pendingArgs.clear();
+		pendingTools.clear();
 		return run;
 	};
 	const ensureRun = (): RunState => {
@@ -232,7 +261,7 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 		push({ kind: "run_end", ...terminal });
 		flush();
 		run = null;
-		pendingArgs.clear();
+		pendingTools.clear();
 	};
 
 	const failPendingRecovery = (summary?: string): void => {
@@ -263,7 +292,7 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 				// Keep the same trace/run sequence and suppress a duplicate run_start.
 				run.pendingRecoveryFailure = undefined;
 				run.recoveryAttempted = true;
-				pendingArgs.clear();
+				pendingTools.clear();
 				return;
 			}
 			if (!correlation) return;
@@ -281,11 +310,40 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 	// run. The proxy keeps authoritative token usage while this extension owns
 	// the detailed local tool/model timeline.
 	pi.on("before_provider_request", async (event, ctx) => {
-		if (ctx.model?.provider !== "deepseek") return undefined;
+		if (!ctx.model || !run) return undefined;
+		const provider = String(ctx.model.provider);
+		const requestPayload = asRecord(event.payload);
+		const model = String(requestPayload?.model ?? "unknown");
+		const attempt = ++run.providerAttempt;
+		const spanId = `pi.provider.${attempt}`;
+		if (run.pendingProvider) {
+			const previous = run.pendingProvider;
+			const endedAt = Date.now();
+			push({
+				kind: "span",
+				spanId: previous.spanId,
+				...(run.runtimeChannel ? { parentSpanId: "controller.model" } : {}),
+				name: "provider.continuation",
+				category: "provider",
+				source: "pi-extension",
+				startedAt: previous.startedAt,
+				endedAt,
+				durationMs: Math.max(0, endedAt - previous.startedAt),
+				status: "error",
+				attributes: {
+					provider: previous.provider,
+					model: previous.model,
+					attempt: previous.attempt,
+					reason: "superseded",
+				},
+			});
+		}
+		run.pendingProvider = { spanId, startedAt: Date.now(), provider, model, attempt };
+		if (ctx.model.provider !== "deepseek") return undefined;
 		if (process.env.DIVO_LLM_PROXY_ACTIVE !== "1") return undefined;
 		if ("error" in resolveDivoGatewayConfig()) return undefined;
 		const correlation = await tryReadRunCorrelation();
-		const payload = asRecord(event.payload);
+		const payload = requestPayload;
 		const activeRecoveryRunId = run
 			&& (run.pendingRecoveryFailure || run.recoveryAttempted)
 			? run.runId
@@ -297,6 +355,7 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			...payload,
 			divo_run_id: runId,
 			divo_trace_mode: "desktop",
+			divo_parent_span_id: spanId,
 		};
 	});
 
@@ -305,13 +364,35 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_execution_start", (event) => {
-		guard(() => pendingArgs.set(event.toolCallId, event.args));
+		guard(() => pendingTools.set(event.toolCallId, {
+			args: event.args,
+			startedAt: Date.now(),
+			spanId: toolSpanId(event.toolCallId),
+			toolName: event.toolName,
+		}));
 	});
 
 	pi.on("tool_execution_end", (event) => {
 		guard(() => {
-			const input = pendingArgs.get(event.toolCallId);
-			pendingArgs.delete(event.toolCallId);
+			const pending = pendingTools.get(event.toolCallId);
+			const input = pending?.args;
+			pendingTools.delete(event.toolCallId);
+			if (pending) {
+				const endedAt = Date.now();
+				push({
+					kind: "span",
+					spanId: pending.spanId,
+					...(ensureRun().runtimeChannel ? { parentSpanId: "controller.model" } : {}),
+					name: "tool.execute",
+					category: "tool",
+					source: "pi-extension",
+					startedAt: pending.startedAt,
+					endedAt,
+					durationMs: Math.max(0, endedAt - pending.startedAt),
+					status: event.isError ? "error" : "ok",
+					attributes: { toolName: event.toolName || pending.toolName },
+				});
+			}
 			if (isProtectedShopifyInvocation(event.toolName, input)) ensureRun().protectedDataObserved = true;
 			push({
 				kind: "tool",
@@ -331,6 +412,34 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			const m = event.message;
 			if (m.role !== "assistant") return;
 			const u = m.usage;
+			const pending = ensureRun().pendingProvider;
+			if (pending) {
+				const endedAt = Date.now();
+				push({
+					kind: "span",
+					spanId: pending.spanId,
+					...(ensureRun().runtimeChannel ? { parentSpanId: "controller.model" } : {}),
+					name: "provider.continuation",
+					category: "provider",
+					source: "pi-extension",
+					startedAt: pending.startedAt,
+					endedAt,
+					durationMs: Math.max(0, endedAt - pending.startedAt),
+					status: m.stopReason === "error" ? "error" : "ok",
+					attributes: {
+						provider: pending.provider,
+						model: pending.model,
+						attempt: pending.attempt,
+						...(u ? {
+							inputTokens: u.input,
+							outputTokens: u.output,
+							cacheReadTokens: u.cacheRead,
+							cacheWriteTokens: u.cacheWrite,
+						} : {}),
+					},
+				});
+				ensureRun().pendingProvider = undefined;
+			}
 			push({
 				kind: "model",
 				provider: String(m.provider),
@@ -370,7 +479,7 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 				// event returns. Defer the terminal event until the retry succeeds,
 				// exhausts recovery, or another lifecycle boundary proves no retry ran.
 				ensureRun().pendingRecoveryFailure = terminal;
-				pendingArgs.clear();
+				pendingTools.clear();
 				flush();
 				return;
 			}
@@ -389,6 +498,11 @@ export function registerTraceCapture(pi: ExtensionAPI): void {
 			);
 		});
 	});
+}
+
+/** Stable parent ID shared with the backend gateway adapter. */
+function toolSpanId(toolCallId: string): string {
+	return `pi.tool.${toolCallId}`.slice(0, 300);
 }
 
 function isProtectedShopifyInvocation(toolName: string, input: unknown): boolean {

@@ -6,8 +6,9 @@ import type { IncomingMessage } from '../../domain/channel/incoming-message';
 import type { ChannelPlanStepStatus, InteractiveAction } from '../../domain/channel/outbound';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import { issuePiRuntimeLease } from './pi-runtime-lease';
+import { boundProgressText, PROGRESS_LIST_LIMITS } from './progress-limits';
 import { isRuntimeChannel, type RuntimeChannel } from '../../domain/channel/runtime-channel';
-import { webThreadTitle } from '../../domain/channel/web-thread';
+import { askContent, askFor, webThreadTitle, type AskAttachment } from '../../domain/channel/web-thread';
 import { canonicalToolIdForToolName } from '../../domain/tools/tool-id';
 import type { RunOrigin, RunOriginStore } from '../connections/run-origin.store';
 import type { KnowledgeLearningService } from '../knowledge/knowledge-learning.service';
@@ -26,8 +27,11 @@ import type {
   VerifiedKnowledgeEffect,
 } from './run-effect-receipt.store';
 import {
+  defaultModelSelection,
   providerOf,
   type ProxyModel,
+  type RuntimeModelSelection,
+  supportsReasoningEffort,
 } from '../observability/pricing';
 import {
   renderContextBlock,
@@ -39,10 +43,25 @@ import type {
   RunProgressEvent,
   RunProgressTodo,
 } from './run-progress';
+import {
+  measureRunLatency,
+  type RunLatencyRecorder,
+  type RunLatencySpanHandle,
+  type RunLatencyTrace,
+} from '../observability/run-latency-recorder';
+import type { ExecutionRunLifecycle } from '../observability/execution-run-lifecycle';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
-const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-pro';
+const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
 const MAX_CONTROLLER_STREAM_LINE_BYTES = 2 * 1_024 * 1_024;
+
+interface ControllerLatencySample {
+  readonly name: string;
+  readonly startedAt: number;
+  readonly endedAt: number;
+  readonly durationMs: number;
+  readonly status: 'ok' | 'error';
+}
 
 function asyncIterableBody(source: AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
   const iterator = source[Symbol.asyncIterator]();
@@ -114,6 +133,28 @@ export interface LarkPiRuntimeInput {
   readonly conversation: ConversationHandle;
   readonly threadId: string;
   readonly attachments?: readonly LarkPiRuntimeAttachment[];
+  /**
+   * The ask as the person made it, for a surface that redraws the conversation.
+   *
+   * `incoming.text` is what the *model* is given: transcripts and refusals are
+   * folded in ahead of the person's words, which is right for answering and
+   * wrong for a transcript — a reader would find their own message quoted back
+   * with two bracketed notices stapled to the front of it. Lark sends nothing
+   * here and needs to: its transcript is the Lark chat, where the message the
+   * person actually sent is still sitting.
+   */
+  readonly ask?: {
+    readonly text: string;
+    readonly attachments: readonly AskAttachment[];
+  };
+  /**
+   * A member's explicit web-composer choice.
+   *
+   * Lark sends none and remains pinned to Flash. An explicit choice is checked
+   * against the member grant before it reaches the controller; the proxy still
+   * performs the final authorization on every provider continuation.
+   */
+  readonly modelSelection?: RuntimeModelSelection;
   /**
    * Shared conversation the run must read before answering — the room
    * transcript for a group thread. Sent ahead of the ask, never persisted.
@@ -211,6 +252,16 @@ function controllerFailureMessage(code: string, detail?: string): string {
   return GENERIC_RUNTIME_FAILURE_MESSAGE;
 }
 
+function runtimeExecutionFailure(error: unknown): { code: string; message: string } {
+  if (error instanceof LarkPiRuntimeError) {
+    return { code: error.code, message: error.userMessage };
+  }
+  if (error instanceof DOMException && error.name === 'AbortError') {
+    return { code: 'interrupted', message: 'The Divo run was interrupted.' };
+  }
+  return { code: 'runtime_failed', message: GENERIC_RUNTIME_FAILURE_MESSAGE };
+}
+
 export interface LarkPiRuntimeServiceDeps {
   readonly prisma: PrismaClient;
   readonly logger: Logger;
@@ -252,6 +303,10 @@ export interface LarkPiRuntimeServiceDeps {
   readonly allowedModelsFor?: (userId: string) => Promise<readonly string[]>;
   /** Receives provenance only; protected content is deliberately not included. */
   readonly onProtectedRun?: (notice: LarkProtectedRunNotice) => Promise<void> | void;
+  /** Records one correlated critical path without making observability authoritative. */
+  readonly runLatencyRecorder?: RunLatencyRecorder;
+  /** Production run lifecycle owner. Optional only for direct legacy/test hosts. */
+  readonly executionRuns?: Pick<ExecutionRunLifecycle, 'admit' | 'failDetached'>;
 }
 
 export interface LarkPiRuntimeResult {
@@ -550,11 +605,33 @@ export class LarkPiRuntimeService {
   }
 
   /**
-   * Lark is intentionally pinned independently of member proxy grants. Grants
-   * authorize proxy use; they do not choose the channel's runtime model.
+   * Resolve one honest model control.
+   *
+   * Lark supplies no choice and is pinned to Flash without adding another DB
+   * read to its critical path. Web choices are untrusted input: when one is
+   * present, check it against the member's grant here. The proxy checks again
+   * on every provider continuation and remains the enforcement authority.
    */
-  async modelFor(_userId: string): Promise<ProxyModel> {
-    return LARK_RUNTIME_MODEL;
+  async modelFor(
+    userId: string,
+    requested?: RuntimeModelSelection,
+  ): Promise<RuntimeModelSelection> {
+    const selection = requested ?? defaultModelSelection(LARK_RUNTIME_MODEL);
+    if (!supportsReasoningEffort(selection.model, selection.reasoningEffort)) {
+      throw new LarkPiRuntimeError(
+        'invalid_reasoning_effort',
+        'That reasoning level is not available for this model.',
+        `${selection.model} does not support ${selection.reasoningEffort}`,
+      );
+    }
+    if (!requested || !this.deps.allowedModelsFor) return selection;
+    const allowed = await this.deps.allowedModelsFor(userId);
+    if (allowed.includes(selection.model)) return selection;
+    throw new LarkPiRuntimeError(
+      'model_not_allowed',
+      'That model is not enabled for your account. Choose one from the model menu.',
+      `${selection.model} is not granted to ${userId}`,
+    );
   }
 
   /**
@@ -758,7 +835,72 @@ export class LarkPiRuntimeService {
   }
 
   async run(input: LarkPiRuntimeInput): Promise<LarkPiRuntimeResult> {
-    const session = await this.findActiveSession(input.runContext, input.sessionId);
+    const latencyTrace = this.deps.runLatencyRecorder?.trace({
+      runId: String(input.incoming.traceId),
+      companyId: String(input.runContext.companyId),
+      userId: String(input.runContext.userId),
+      source: 'lark-runtime',
+    });
+    let executionId: string | undefined;
+    try {
+      return await measureRunLatency(latencyTrace, {
+        name: 'runtime.request',
+        category: 'runtime',
+        spanId: 'runtime.request',
+        attributes: {
+          channel: input.incoming.channel,
+          chatType: input.incoming.chatType,
+          deliveryMode: input.runContext.deliveryMode ?? null,
+        },
+      }, async () => {
+        if (this.deps.executionRuns) {
+          try {
+            executionId = await measureRunLatency(latencyTrace, {
+              name: 'runtime.run.admit',
+              category: 'persistence',
+            }, () => this.deps.executionRuns!.admit({
+              runId: String(input.incoming.traceId),
+              companyId: String(input.runContext.companyId),
+              userId: String(input.runContext.userId),
+              channel: input.incoming.channel,
+              entrypoint: 'pi',
+              threadId: input.threadId,
+              chatId: String(input.incoming.chatId),
+              ...(input.incoming.messageId
+                ? { messageId: String(input.incoming.messageId) }
+                : {}),
+            }));
+            latencyTrace?.bindExecutionId(executionId);
+          } catch (error) {
+            // Observability cannot become authority over whether work runs.
+            this.log.warn('pi.execution.admission_failed', {
+              correlationId: input.incoming.traceId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return this.runMeasured(input, latencyTrace);
+      });
+    } catch (error) {
+      if (executionId && this.deps.executionRuns) {
+        const failure = runtimeExecutionFailure(error);
+        this.deps.executionRuns.failDetached(executionId, failure.code, failure.message);
+      }
+      throw error;
+    } finally {
+      // Persistence is best-effort and cannot delay the answer that was measured.
+      void latencyTrace?.flush();
+    }
+  }
+
+  private async runMeasured(
+    input: LarkPiRuntimeInput,
+    latencyTrace: RunLatencyTrace | undefined,
+  ): Promise<LarkPiRuntimeResult> {
+    const session = await measureRunLatency(latencyTrace, {
+      name: 'runtime.session.resolve',
+      category: 'persistence',
+    }, async () => this.findActiveSession(input.runContext, input.sessionId));
     if (!session) {
       throw new LarkPiRuntimeError(
         'runtime_session_missing',
@@ -776,8 +918,14 @@ export class LarkPiRuntimeService {
     // and the pending-attachment lookup does not depend on it. Both used to be
     // awaited one after the other before the run could begin.
     const [, pendingRows] = await Promise.all([
-      this.rememberRunOrigin(input),
-      this.loadPendingAttachments(input),
+      measureRunLatency(latencyTrace, {
+        name: 'runtime.origin.remember',
+        category: 'cache',
+      }, () => this.rememberRunOrigin(input)),
+      measureRunLatency(latencyTrace, {
+        name: 'runtime.attachments.pending',
+        category: 'persistence',
+      }, () => this.loadPendingAttachments(input)),
     ]);
     const pendingAttachments = pendingRows.map(row => row.descriptor);
     // Sending five screenshots at once is an ordinary thing to do, and refusing
@@ -797,20 +945,31 @@ export class LarkPiRuntimeService {
     }
 
     let response: Response;
+    let controllerSpan: RunLatencySpanHandle | undefined;
     try {
       const stagedAttachments = [
         ...pendingAttachments.map(validateStagedAttachment),
-        ...await this.stageAttachments(
+        ...await measureRunLatency(latencyTrace, {
+          name: 'runtime.attachments.stage',
+          category: 'runtime',
+          attributes: { count: attachments.length },
+        }, () => this.stageAttachments(
           attachments,
           runtimeLease,
           signal,
-        ),
+        )),
       ];
       // The member's model grant is a lookup the recalled context never feeds,
       // so the two resolve together rather than one behind the other.
-      const [runtimeMessage, model] = await Promise.all([
-        this.withRecalledKnowledge(input, signal),
-        this.modelFor(String(input.runContext.userId)),
+      const [runtimeMessage, modelSelection] = await Promise.all([
+        measureRunLatency(latencyTrace, {
+          name: 'runtime.knowledge.recall',
+          category: 'memory',
+        }, () => this.withRecalledKnowledge(input, signal)),
+        measureRunLatency(latencyTrace, {
+          name: 'runtime.model.resolve',
+          category: 'authorization',
+        }, () => this.modelFor(String(input.runContext.userId), input.modelSelection)),
       ]);
       const ask = droppedAttachmentNotice(dropped, runtimeMessage);
       const askWithoutRecall = droppedAttachmentNotice(dropped, input.incoming.text);
@@ -819,8 +978,9 @@ export class LarkPiRuntimeService {
           backendUrl: this.deps.backendUrl,
           runtimeLease,
           message,
-          model,
-          provider: providerOf(model),
+          model: modelSelection.model,
+          provider: providerOf(modelSelection.model),
+          thinkingLevel: modelSelection.reasoningEffort,
           ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
           ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
         }),
@@ -839,8 +999,9 @@ export class LarkPiRuntimeService {
             backendUrl: this.deps.backendUrl,
             runtimeLease,
             message,
-            model,
-            provider: providerOf(model),
+            model: modelSelection.model,
+            provider: providerOf(modelSelection.model),
+            thinkingLevel: modelSelection.reasoningEffort,
             ...(input.sessionScope ? { sessionScope: input.sessionScope } : {}),
             ...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
           }),
@@ -858,7 +1019,16 @@ export class LarkPiRuntimeService {
           sentBytes: fitted.sentContextBytes,
         });
       }
-      response = await (this.deps.fetch ?? globalThis.fetch)(
+      controllerSpan = latencyTrace?.startSpan({
+        name: 'runtime.controller.turn',
+        category: 'runtime',
+        spanId: 'runtime.controller',
+      });
+      response = await measureRunLatency(latencyTrace, {
+        name: 'runtime.controller.connect',
+        category: 'runtime',
+        parentSpanId: 'runtime.controller',
+      }, () => (this.deps.fetch ?? globalThis.fetch)(
         `${this.deps.controllerUrl.replace(/\/+$/, '')}/v1/lark-runs`,
         {
           method: 'POST',
@@ -869,8 +1039,9 @@ export class LarkPiRuntimeService {
           body: JSON.stringify(fitted.body),
           signal,
         },
-      );
+      ));
     } catch (error) {
+      controllerSpan?.end('error');
       await this.throwIfCallerInterrupted(input);
       // Staging already decided what the user should be told — that a file is
       // too large, or could not be opened. Rewrapping it as
@@ -893,30 +1064,61 @@ export class LarkPiRuntimeService {
         text: string;
         protectedDataUsed: boolean;
         protectedReferences: readonly LarkProtectedRunReference[];
+        controllerLatency: readonly ControllerLatencySample[];
       };
       try {
-        streamed = await this.readStream(response, input);
+        streamed = await measureRunLatency(latencyTrace, {
+          name: 'runtime.controller.stream',
+          category: 'runtime',
+          parentSpanId: 'runtime.controller',
+          spanId: 'runtime.controller.stream',
+        }, () => this.readStream(response, input, latencyTrace));
       } catch (error) {
+        controllerSpan?.end('error');
         await this.throwIfCallerInterrupted(input);
         throw error;
       }
-      await this.consumePendingAttachments(pendingRows.map(row => row.id));
-      return this.finalizeResult(
+      recordControllerLatencySpans(
+        latencyTrace,
+        streamed.controllerLatency,
+        'runtime.controller.stream',
+      );
+      controllerSpan?.end('ok');
+      await measureRunLatency(latencyTrace, {
+        name: 'runtime.attachments.consume',
+        category: 'persistence',
+      }, () => this.consumePendingAttachments(pendingRows.map(row => row.id)));
+      return measureRunLatency(latencyTrace, {
+        name: 'runtime.finalize',
+        category: 'delivery',
+      }, () => this.finalizeResult(
         streamed.text,
         input,
         streamed.protectedDataUsed,
         streamed.protectedReferences,
-      );
+        latencyTrace,
+      ));
     }
 
-    const body = await response.json().catch(() => null) as {
+    const body = await measureRunLatency(latencyTrace, {
+      name: 'runtime.controller.response.read',
+      category: 'runtime',
+      parentSpanId: 'runtime.controller',
+    }, () => response.json().catch(() => null)) as {
       text?: unknown;
       protectedDataUsed?: unknown;
       protectedRefs?: unknown;
+      runtimeTelemetry?: unknown;
       error?: { code?: unknown; message?: unknown };
     } | null;
-    await this.throwIfCallerInterrupted(input);
+    try {
+      await this.throwIfCallerInterrupted(input);
+    } catch (error) {
+      controllerSpan?.end('error');
+      throw error;
+    }
     if (!response.ok) {
+      controllerSpan?.end('error');
       const code = typeof body?.error?.code === 'string'
         ? body.error.code
         : `controller_http_${response.status}`;
@@ -927,17 +1129,37 @@ export class LarkPiRuntimeService {
       throw new LarkPiRuntimeError(code, userMessage, controllerMessage);
     }
     if (typeof body?.text !== 'string' || !body.text.trim()) {
+      controllerSpan?.end('error');
       throw new LarkPiRuntimeError(
         'empty_runtime_response',
         GENERIC_RUNTIME_FAILURE_MESSAGE,
       );
     }
-    await this.consumePendingAttachments(pendingRows.map(row => row.id));
+    const responseText = body.text.trim();
+    recordControllerLatencySpans(
+      latencyTrace,
+      parseControllerLatency(body.runtimeTelemetry),
+      'runtime.controller',
+    );
+    controllerSpan?.end('ok');
+    await measureRunLatency(latencyTrace, {
+      name: 'runtime.attachments.consume',
+      category: 'persistence',
+    }, () => this.consumePendingAttachments(pendingRows.map(row => row.id)));
     const protectedMetadata = parseProtectedRunMetadata(
       body.protectedDataUsed,
       body.protectedRefs,
     );
-    return this.finalizeResult(body.text.trim(), input, protectedMetadata.used, protectedMetadata.references);
+    return measureRunLatency(latencyTrace, {
+      name: 'runtime.finalize',
+      category: 'delivery',
+    }, () => this.finalizeResult(
+      responseText,
+      input,
+      protectedMetadata.used,
+      protectedMetadata.references,
+      latencyTrace,
+    ));
   }
 
   private async loadPendingAttachments(
@@ -1028,6 +1250,7 @@ export class LarkPiRuntimeService {
     input: LarkPiRuntimeInput,
     protectedDataUsed = false,
     protectedReferences: readonly LarkProtectedRunReference[] = [],
+    latencyTrace?: RunLatencyTrace,
   ): Promise<LarkPiRuntimeResult> {
     if (protectedDataUsed) {
       const notice: LarkProtectedRunNotice = {
@@ -1041,7 +1264,12 @@ export class LarkPiRuntimeService {
         sessionDeletionRequested: true,
       };
       try {
-        await this.deps.onProtectedRun?.(notice);
+        await measureRunLatency(latencyTrace, {
+          name: 'runtime.protected.notice',
+          category: 'delivery',
+        }, async () => {
+          await this.deps.onProtectedRun?.(notice);
+        });
       } catch (error) {
         // Persistence remains disabled even if the provenance sink is down.
         this.log.error('pi.protected_run.notice_failed', {
@@ -1075,7 +1303,10 @@ export class LarkPiRuntimeService {
     let effectVerification: 'verified' | 'unavailable' = 'verified';
     if (this.deps.runEffectReceipts) {
       try {
-        effect = await this.deps.runEffectReceipts.getVerifiedKnowledgeEffect(identity);
+        effect = await measureRunLatency(latencyTrace, {
+          name: 'runtime.effects.knowledge',
+          category: 'cache',
+        }, () => this.deps.runEffectReceipts!.getVerifiedKnowledgeEffect(identity));
       } catch (error) {
         effectVerification = 'unavailable';
         this.log.error('pi.run_effect.lookup_failed', {
@@ -1085,7 +1316,10 @@ export class LarkPiRuntimeService {
         });
       }
       try {
-        workbookEffect = await this.deps.runEffectReceipts.getVerifiedWorkbookConversionOffer(identity);
+        workbookEffect = await measureRunLatency(latencyTrace, {
+          name: 'runtime.effects.workbook',
+          category: 'cache',
+        }, () => this.deps.runEffectReceipts!.getVerifiedWorkbookConversionOffer(identity));
       } catch (error) {
         effectVerification = 'unavailable';
         this.log.error('pi.run_effect.lookup_failed', {
@@ -1099,11 +1333,14 @@ export class LarkPiRuntimeService {
     }
     if (this.deps.runOrigins?.recall) {
       try {
-        googleAuthorization = (await this.deps.runOrigins.recall({
+        googleAuthorization = (await measureRunLatency(latencyTrace, {
+          name: 'runtime.origin.recall',
+          category: 'cache',
+        }, () => this.deps.runOrigins!.recall!({
           runId: input.incoming.traceId,
           companyId: identity.companyId,
           userId: identity.userId,
-        }))?.googleAuthorization;
+        })))?.googleAuthorization;
       } catch (error) {
         this.log.error('pi.google_authorization.lookup_failed', {
           correlationId: input.incoming.traceId,
@@ -1112,7 +1349,10 @@ export class LarkPiRuntimeService {
       }
     }
 
-    const userMessages = await this.persistPrivateConversation(input, assistantText);
+    const userMessages = await measureRunLatency(latencyTrace, {
+      name: 'runtime.conversation.persist',
+      category: 'persistence',
+    }, () => this.persistPrivateConversation(input, assistantText, latencyTrace));
 
     // Only a human-authored direct message can teach private memory here.
     // Group-room facts and scheduled prompts are intentionally excluded; any
@@ -1125,7 +1365,10 @@ export class LarkPiRuntimeService {
       && input.incoming.text.trim()
     ) {
       try {
-        await this.deps.knowledgeLearning.captureCompletedTurn({
+        await measureRunLatency(latencyTrace, {
+          name: 'runtime.learning.capture',
+          category: 'memory',
+        }, () => this.deps.knowledgeLearning!.captureCompletedTurn({
           sourceId: `${input.incoming.channel}:${input.incoming.traceId}`,
           companyId: String(input.runContext.companyId),
           userId: String(input.runContext.userId),
@@ -1133,7 +1376,7 @@ export class LarkPiRuntimeService {
           channel: input.incoming.channel,
           userMessages,
           assistantText,
-        });
+        }));
       } catch (error) {
         // The answer is already complete. The durable learning subsystem is
         // advisory and must not turn a successful user request into a failure.
@@ -1186,6 +1429,10 @@ export class LarkPiRuntimeService {
     readonly messageId: string;
     readonly text: string;
   } | null {
+    /* The model's text, deliberately. This row is the agent's memory of the
+       conversation, and for an ask carrying a recording the transcript is the
+       part it has to be able to read back. What the person typed is kept
+       beside it, on `contentJson`, for the reader. */
     const text = input.incoming.text.trim();
     if (
       input.incoming.chatType !== 'p2p'
@@ -1207,14 +1454,29 @@ export class LarkPiRuntimeService {
   private async persistPrivateConversation(
     input: LarkPiRuntimeInput,
     assistantText: string,
+    latencyTrace?: RunLatencyTrace,
   ): Promise<string[]> {
+    /*
+     * What the person typed, whenever we have it.
+     *
+     * `incoming.text` is what the model was given, and for a web ask carrying a
+     * recording that begins with everything Divo read off the screen. Anything
+     * downstream that learns from "the member's messages" must never be handed
+     * that — so the substitution happens on every exit from here, not only the
+     * one where persistence succeeded.
+     */
+    const typed = input.ask?.text.trim();
     const turn = this.persistableTurn(input);
     if (!turn) {
-      const current = input.incoming.text.trim();
+      const current = typed || input.incoming.text.trim();
       return current ? [current] : [];
     }
+    const readerAsk = askFor(input.ask, turn.text);
     try {
-      const user = await this.deps.conversationHistory!.appendTurn(turn.chatId, {
+      const user = await measureRunLatency(latencyTrace, {
+        name: 'runtime.conversation.user.append',
+        category: 'persistence',
+      }, () => this.deps.conversationHistory!.appendTurn(turn.chatId, {
         role: 'user',
         content: turn.text,
         timestamp: input.incoming.timestamp,
@@ -1222,19 +1484,28 @@ export class LarkPiRuntimeService {
         dedupeKey: `${turn.scope.channel}:${turn.messageId}:user`,
         sourceMessageId: turn.messageId,
         sourceRunId: String(input.incoming.traceId),
+        // The reader's half of the ask, written only when it has something to
+        // say: an ordinary typed message is already exactly what was sent, so
+        // it stores nothing extra.
+        ...(readerAsk ? { contentJson: askContent(readerAsk) } : {}),
         // Only used if this ask is what opens the conversation. A thread's
         // owner and its name both date from its first message, and nothing
         // later is allowed to change either by accident.
         conversationDefaults: {
           createdByUserId: String(input.runContext.userId),
           ...(input.runContext.requesterEmail ? { createdByEmail: input.runContext.requesterEmail } : {}),
-          title: webThreadTitle(turn.text),
+          // Named after the question, never after a transcript that happened to
+          // arrive above it.
+          title: webThreadTitle(input.ask?.text.trim() || turn.text),
         },
-      });
+      }));
       if (!user.ok) throw user.error;
 
       const runRecord = input.runRecord?.();
-      const assistant = await this.deps.conversationHistory!.appendTurn(turn.chatId, {
+      const assistant = await measureRunLatency(latencyTrace, {
+        name: 'runtime.conversation.assistant.append',
+        category: 'persistence',
+      }, () => this.deps.conversationHistory!.appendTurn(turn.chatId, {
         role: 'assistant',
         content: assistantText,
         timestamp: new Date().toISOString(),
@@ -1243,22 +1514,38 @@ export class LarkPiRuntimeService {
         sourceMessageId: turn.messageId,
         sourceRunId: String(input.incoming.traceId),
         ...(runRecord !== undefined ? { contentJson: runRecord } : {}),
-      });
+      }));
       if (!assistant.ok) throw assistant.error;
 
-      const history = await this.deps.conversationHistory!.getHistory(turn.chatId, 30, turn.scope);
+      const history = await measureRunLatency(latencyTrace, {
+        name: 'runtime.conversation.history.read',
+        category: 'persistence',
+      }, () => this.deps.conversationHistory!.getHistory(turn.chatId, 30, turn.scope));
       if (!history.ok) throw history.error;
-      return history.value
+      /*
+       * What the *person* said, for anything that learns from them.
+       *
+       * The stored turn is what the model read, which now begins with whatever
+       * Divo understood from an attached recording. Handing that back as the
+       * member's own words is wrong twice over: machine-read screen text
+       * becomes evidence nobody authored, and the extractor's 4 000-character
+       * window is spent on the excerpt before it ever reaches the question.
+       * Only the newest turn can be corrected here — older history has no
+       * record of the typed half — and the newest is the one being learnt from.
+       */
+      const messages = history.value
         .filter(item => item.role === 'user')
         .map(item => item.content.trim())
-        .filter(Boolean)
-        .slice(-12);
+        .filter(Boolean);
+      if (typed && messages.length > 0) messages[messages.length - 1] = typed;
+      return messages.slice(-12);
     } catch (error) {
       this.log.warn('pi.private-conversation.persist_failed', {
         correlationId: input.incoming.traceId,
         error: String(error),
       });
-      return [turn.text];
+      // Degraded, but still never the evidence block — see `typed` above.
+      return [typed || turn.text];
     }
   }
 
@@ -1317,10 +1604,12 @@ export class LarkPiRuntimeService {
   private async readStream(
     response: Response,
     input: LarkPiRuntimeInput,
+    latencyTrace?: RunLatencyTrace,
   ): Promise<{
     text: string;
     protectedDataUsed: boolean;
     protectedReferences: readonly LarkProtectedRunReference[];
+    controllerLatency: readonly ControllerLatencySample[];
   }> {
     if (!response.body) {
       throw new LarkPiRuntimeError(
@@ -1335,7 +1624,11 @@ export class LarkPiRuntimeService {
     let text = '';
     let protectedDataUsed = false;
     let protectedReferences: readonly LarkProtectedRunReference[] = [];
+    let controllerLatency: readonly ControllerLatencySample[] = [];
     let streamError: { code: string; message?: string } | undefined;
+    let firstProgressRecorded = false;
+    let firstReasoningRecorded = false;
+    let firstTextRecorded = false;
 
     const consume = async (line: string): Promise<void> => {
       if (!line.trim()) return;
@@ -1353,6 +1646,34 @@ export class LarkPiRuntimeService {
       if (record['type'] === 'heartbeat') return;
       if (record['type'] === 'progress') {
         const progress = parseProgressEvent(record['progress']);
+        if (progress && !firstProgressRecorded) {
+          firstProgressRecorded = true;
+          latencyTrace?.milestone({
+            name: 'runtime.output.first_progress',
+            category: 'runtime',
+            parentSpanId: 'runtime.controller.stream',
+          });
+        }
+        if (
+          progress
+          && !firstReasoningRecorded
+          && (progress.type === 'thinking' || progress.type === 'thought')
+        ) {
+          firstReasoningRecorded = true;
+          latencyTrace?.milestone({
+            name: 'runtime.output.first_reasoning',
+            category: 'runtime',
+            parentSpanId: 'runtime.controller.stream',
+          });
+        }
+        if (progress && !firstTextRecorded && progress.type === 'answer_delta') {
+          firstTextRecorded = true;
+          latencyTrace?.milestone({
+            name: 'runtime.output.first_text',
+            category: 'runtime',
+            parentSpanId: 'runtime.controller.stream',
+          });
+        }
         if (progress && input.onProgress) {
           try {
             await input.onProgress(progress);
@@ -1374,6 +1695,7 @@ export class LarkPiRuntimeService {
         );
         protectedDataUsed = metadata.used;
         protectedReferences = metadata.references;
+        controllerLatency = parseControllerLatency(record['runtimeTelemetry']);
         return;
       }
       const error = record['error'];
@@ -1412,7 +1734,74 @@ export class LarkPiRuntimeService {
         GENERIC_RUNTIME_FAILURE_MESSAGE,
       );
     }
-    return { text, protectedDataUsed, protectedReferences };
+    return { text, protectedDataUsed, protectedReferences, controllerLatency };
+  }
+}
+
+const CONTROLLER_PHASES = new Set([
+  'image', 'skills', 'idle', 'runtime', 'stage', 'start', 'prepare',
+  'attach', 'bootstrap', 'handshake', 'model', 'finalize',
+]);
+
+function parseControllerLatency(value: unknown): readonly ControllerLatencySample[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const phases = (value as Record<string, unknown>)['phases'];
+  if (!Array.isArray(phases) || phases.length > 50) return [];
+  const earliest = Date.UTC(2020, 0, 1);
+  const latest = Date.now() + 24 * 60 * 60 * 1_000;
+  return phases.flatMap((entry): ControllerLatencySample[] => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const sample = entry as Record<string, unknown>;
+    const name = sample['name'];
+    const startedAt = sample['startedAt'];
+    const endedAt = sample['endedAt'];
+    const durationMs = sample['durationMs'];
+    const status = sample['status'];
+    if (
+      typeof name !== 'string'
+      || !CONTROLLER_PHASES.has(name)
+      || typeof startedAt !== 'number'
+      || !Number.isFinite(startedAt)
+      || typeof endedAt !== 'number'
+      || !Number.isFinite(endedAt)
+      || typeof durationMs !== 'number'
+      || !Number.isFinite(durationMs)
+      || startedAt < earliest
+      || endedAt > latest
+      || endedAt < startedAt
+      || durationMs < 0
+      || durationMs > 24 * 60 * 60 * 1_000
+      || Math.abs((endedAt - startedAt) - durationMs) > 2_000
+      || (status !== 'ok' && status !== 'error')
+    ) return [];
+    return [{ name, startedAt, endedAt, durationMs, status }];
+  });
+}
+
+function recordControllerLatencySpans(
+  trace: RunLatencyTrace | undefined,
+  samples: readonly ControllerLatencySample[],
+  parentSpanId: string,
+): void {
+  if (!trace) return;
+  const occurrences = new Map<string, number>();
+  for (const sample of samples) {
+    const occurrence = (occurrences.get(sample.name) ?? 0) + 1;
+    occurrences.set(sample.name, occurrence);
+    const baseSpanId = sample.name === 'model'
+      ? 'controller.model'
+      : `controller.phase.${sample.name}`;
+    trace.addCompleted({
+      spanId: occurrence === 1 ? baseSpanId : `${baseSpanId}.${occurrence}`,
+      parentSpanId,
+      name: `controller.${sample.name}`,
+      category: sample.name === 'skills' ? 'persistence' : 'runtime',
+      source: 'pi-controller',
+      startedAtMs: sample.startedAt,
+      endedAtMs: sample.endedAt,
+      durationMs: sample.durationMs,
+      status: sample.status,
+    });
   }
 }
 
@@ -1551,6 +1940,13 @@ function renderRecalledKnowledge(
   ].join('\n');
 }
 
+/**
+ * An identifier off the wire, clamped.
+ *
+ * Clamped rather than bounded: these are matched, not read, so they must not
+ * pick up the ellipsis `boundProgressText` adds — a truncated id that looks
+ * truncated still compares unequal to the row it belongs to.
+ */
 function safeProgressString(value: unknown, maxLength = 120): string | undefined {
   if (typeof value !== 'string') return undefined;
   const normalized = value.replace(/\s+/g, ' ').trim();
@@ -1561,13 +1957,24 @@ const STEP_STATUSES: ReadonlySet<string> = new Set([
   'pending', 'running', 'done', 'failed', 'skipped',
 ]);
 
-const MAX_PROGRESS_CHILDREN = 8;
-const MAX_PROGRESS_TODOS = 12;
-
-function safeStepStatus(value: unknown, fallback: ChannelPlanStepStatus): ChannelPlanStepStatus {
+/**
+ * A status off the wire, or the weakest claim there is.
+ *
+ * `pending` for anything unrecognised, and the same answer for every caller.
+ * It used to depend on who was asking: a child fell back to `running` and a
+ * checklist item to `pending`, which are two different wrong answers to one
+ * question. `running` is the worse of them — it draws a spinner that turns for
+ * the rest of the run, because a status nobody understands never arrives again
+ * to settle it.
+ *
+ * `pending` claims nothing has happened yet, which is the least this can assert
+ * while still drawing a row, and it self-corrects: the whole timeline is
+ * re-sent every tick, so a step that really is running says so on the next one.
+ */
+function safeStepStatus(value: unknown): ChannelPlanStepStatus {
   return typeof value === 'string' && STEP_STATUSES.has(value)
     ? value as ChannelPlanStepStatus
-    : fallback;
+    : 'pending';
 }
 
 /**
@@ -1578,30 +1985,32 @@ function safeStepStatus(value: unknown, fallback: ChannelPlanStepStatus): Channe
 function safeProgressDetail(event: Record<string, unknown>): RunProgressDetail {
   const rawChildren = event['children'];
   const children = Array.isArray(rawChildren)
-    ? rawChildren.slice(0, MAX_PROGRESS_CHILDREN).flatMap((entry): RunProgressChild[] => {
+    ? rawChildren.slice(0, PROGRESS_LIST_LIMITS.children).flatMap((entry): RunProgressChild[] => {
         const row = entry as Record<string, unknown> | null;
-        const label = safeProgressString(row?.['label'], 80);
+        const label = boundProgressText(row?.['label'], 'label');
         if (!label) return [];
-        const detail = safeProgressString(row?.['detail'], 80);
+        const detail = boundProgressText(row?.['detail'], 'detail');
+        const elapsed = boundProgressText(row?.['elapsed'], 'elapsed');
         return [{
           label,
-          status: safeStepStatus(row?.['status'], 'running'),
+          status: safeStepStatus(row?.['status']),
           ...(detail ? { detail } : {}),
+          ...(elapsed ? { elapsed } : {}),
         }];
       })
     : [];
 
   const rawTodos = event['todos'];
   const todos = Array.isArray(rawTodos)
-    ? rawTodos.slice(0, MAX_PROGRESS_TODOS).flatMap((entry): RunProgressTodo[] => {
+    ? rawTodos.slice(0, PROGRESS_LIST_LIMITS.todos).flatMap((entry): RunProgressTodo[] => {
         const row = entry as Record<string, unknown> | null;
-        const title = safeProgressString(row?.['title'], 80);
+        const title = boundProgressText(row?.['title'], 'label');
         if (!title) return [];
-        return [{ title, status: safeStepStatus(row?.['status'], 'pending') }];
+        return [{ title, status: safeStepStatus(row?.['status']) }];
       })
     : [];
 
-  const detail = safeProgressString(event['detail'], 64);
+  const detail = boundProgressText(event['detail'], 'detail');
 
   return {
     ...(children.length > 0 ? { children } : {}),
@@ -1641,7 +2050,7 @@ export function parseProgressEvent(value: unknown): RunProgressEvent | undefined
   }
   if (type === 'starting') {
     const stage = event['stage'];
-    const label = safeProgressString(event['label']);
+    const label = boundProgressText(event['label'], 'label');
     if ((stage === 'workspace' || stage === 'container') && label) {
       return { type, stage, label };
     }
@@ -1651,11 +2060,13 @@ export function parseProgressEvent(value: unknown): RunProgressEvent | undefined
   // every other string crossing this boundary is — the container is trusted to
   // run the work, not to decide how much of a chat card it may occupy.
   if (type === 'say' || type === 'thought') {
-    /* Reasoning is a paragraph, not a sentence, and it is not on a card — so it
-       keeps the container's own larger bound. Capping it at a `say`'s 200 here
-       would undo that on the way in and freeze the row at its first two
-       sentences, which is the failure this pair of numbers exists to avoid. */
-    const text = safeProgressString(event['text'], type === 'thought' ? 1_200 : 200);
+    /* Which end of a thought survives is the bound's own property, not a
+       decision made here: a thought keeps its end and everything else keeps its
+       beginning, written down once in `progress-limits.ts` for both sides of
+       the wire. The container has already applied the same rule, so this
+       normally cuts nothing — it matters on the day the two copies of that
+       table disagree, and the parity test exists so that day is loud. */
+    const text = boundProgressText(event['text'], type === 'thought' ? 'thought' : 'say');
     if (!text) return undefined;
     const rawIndex = event['index'];
     return {
@@ -1669,7 +2080,7 @@ export function parseProgressEvent(value: unknown): RunProgressEvent | undefined
   if (type === 'tool_start') {
     const callId = safeProgressString(event['callId'], 100);
     const toolName = safeProgressString(event['toolName'], 80);
-    const detail = safeProgressString(event['detail'], 64);
+    const detail = boundProgressText(event['detail'], 'detail');
     if (!callId || !toolName) return undefined;
     // A governed call is identified by the tool it ran. The container sends the
     // id explicitly only when its arguments carry one; typed tools do not, and
@@ -1701,6 +2112,25 @@ export function parseProgressEvent(value: unknown): RunProgressEvent | undefined
       type, callId, toolName,
       isError: event['isError'] === true,
       ...safeProgressDetail(event),
+    };
+  }
+  if (type === 'artifact') {
+    // The address of a stored document, not the document. Every field is
+    // bounded the same way the rest of this boundary bounds them, and an id
+    // that would not survive a URL is dropped rather than repaired — a repaired
+    // id points at nothing, which is worse than no frame at all.
+    const artifactId = safeProgressString(event['artifactId'], 120);
+    const title = safeProgressString(event['title'], 160);
+    const mime = safeProgressString(event['mime'], 60);
+    const version = event['version'];
+    if (!artifactId || !title || !mime) return undefined;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(artifactId)) return undefined;
+    return {
+      type,
+      artifactId,
+      title,
+      mime,
+      version: typeof version === 'number' && Number.isInteger(version) && version > 0 ? version : 1,
     };
   }
   return undefined;

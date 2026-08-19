@@ -25,6 +25,7 @@ import type {
   LarkApprovalCardHandler,
   LarkAuthenticatedCardActor,
 } from './lark-approval-card.handler';
+import type { LarkDecisionCardHandler } from './lark-decision-card.handler';
 import {
   isWorkbookConversionCardAction,
   type LarkWorkbookConversionCardHandler,
@@ -169,6 +170,8 @@ export interface LarkWebhookDeps {
   env: TypedEnv;
   approvalGate?: ApprovalGateService;
   approvalCardHandler?: LarkApprovalCardHandler;
+  /** Answers every question asked through the decision module. */
+  decisionCardHandler?: LarkDecisionCardHandler;
   workbookConversionCardHandler?: LarkWorkbookConversionCardHandler;
   knowledgeReviewService?: LarkKnowledgeReviewService;
   larkOAuthService?: LarkOAuthService;
@@ -329,6 +332,21 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
             res.status(200).json({
               toast: { type: 'error', content: 'Could not verify this Lark action.' },
             });
+            return;
+          }
+
+          // Every question Divo asks through the decision module comes back
+          // here, under one kind. It claims only its own presses, so it can sit
+          // ahead of the older per-feature handlers without shadowing them —
+          // and as each of those migrates, its branch below simply goes away.
+          if (deps.decisionCardHandler?.claims(cardEvent)) {
+            const result = await deps.decisionCardHandler.handle(cardEvent, {
+              openId: actor.openId,
+              userId: actor.userId,
+              companyId: actor.companyId,
+              ...(actor.displayName ? { displayName: actor.displayName } : {}),
+            });
+            res.status(200).json(result.responseBody);
             return;
           }
 
@@ -864,7 +882,6 @@ export async function processAcceptedLarkReceipt(
           kind: 'status',
           terminal: false,
           timeline: {
-            phase: 'Queued',
             state: 'queued',
             liveLabel: QUEUED_REQUEST_TEXT,
           },
@@ -1364,18 +1381,28 @@ export function quotedImageAttachments(
  * from racing a second into a duplicate card.
  */
 export function createCoalescedPublisher(
-  publish: () => Promise<void>,
+  publish: (urgent: boolean) => Promise<void>,
   onError: (error: unknown) => void,
-): { readonly queue: () => void; readonly settle: () => Promise<void> } {
+): { readonly queue: (urgent?: boolean) => void; readonly settle: () => Promise<void> } {
   let inFlight: Promise<void> | null = null;
   let pending = false;
+  /* Sticky until it is spent. A publish coalesces several queued frames into
+     one, and if any of them was urgent the frame that actually goes out is
+     carrying that change — so the urgency belongs to it. Dropping it because a
+     later ordinary frame arrived first is how the signal gets lost. */
+  let urgent = false;
+  const takeUrgent = (): boolean => {
+    const was = urgent;
+    urgent = false;
+    return was;
+  };
 
   const drain = async (): Promise<void> => {
     try {
-      await publish();
+      await publish(takeUrgent());
       while (pending) {
         pending = false;
-        await publish();
+        await publish(takeUrgent());
       }
     } catch (error) {
       onError(error);
@@ -1393,7 +1420,8 @@ export function createCoalescedPublisher(
   };
 
   return {
-    queue: () => {
+    queue: (isUrgent = false) => {
+      if (isUrgent) urgent = true;
       if (inFlight) {
         pending = true;
         return;
@@ -1446,11 +1474,12 @@ export async function runPiAndDeliver(input: {
   const run = createRunTimelineReducer({ startedAtMs });
   let statusHandle: StatusHandle | null = null;
 
-  const publishStatus = async (): Promise<void> => {
+  const publishStatus = async (urgent = false): Promise<void> => {
     const update = {
       kind: 'status' as const,
       terminal: false,
       timeline: run.timeline(),
+      ...(urgent ? { urgent: true } : {}),
     };
     const result = statusHandle
       ? await deps.adapter.editStatus(statusHandle, update)
@@ -1483,7 +1512,11 @@ export async function runPiAndDeliver(input: {
     // edits.
     if (event.type === 'answer_delta' || event.type === 'answer_reset') return;
     if (run.apply(event) === 'immediate') {
-      queueStatus();
+      /* The reducer is the only thing that knows a frame changed something the
+         reader is looking straight at. It says so here, and the flag now travels
+         all the way to the channel — it used to buy past this publisher's own
+         one-second gate and then wait out the card's 1.5s floor anyway. */
+      queueStatus(true);
       return;
     }
     const now = Date.now();

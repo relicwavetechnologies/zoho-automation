@@ -14,7 +14,7 @@ WORKDIR /app
 # Every module `divo/local-rpc-server.mjs` can reach, plus the trusted runtime
 # manifest. `divo/test/controller-image-packaging.test.mjs` recomputes that
 # import closure and fails if this list drifts from it.
-COPY divo/approval-responder.mjs divo/run-result.mjs divo/runtime-rpc.mjs divo/auth.mjs divo/local-profile.mjs divo/local-rpc-controller.mjs divo/local-rpc-server.mjs divo/native-skills.mjs divo/ndjson-stream-writer.mjs divo/run-terminal.mjs divo/runtime-attachment-staging.mjs divo/runtime-attachments.mjs divo/runtime-channels.mjs divo/runtime-docker.mjs divo/runtime-identity.mjs divo/runtime-manifest.json divo/runtime-models.mjs divo/runtime-progress.mjs divo/runtime-turn-phases.mjs divo/runtime-warm-process.mjs ./divo/
+COPY divo/approval-responder.mjs divo/run-result.mjs divo/runtime-rpc.mjs divo/auth.mjs divo/local-profile.mjs divo/local-rpc-controller.mjs divo/local-rpc-server.mjs divo/native-skills.mjs divo/ndjson-stream-writer.mjs divo/run-terminal.mjs divo/runtime-attachment-staging.mjs divo/runtime-attachments.mjs divo/runtime-channels.mjs divo/runtime-docker.mjs divo/runtime-identity.mjs divo/runtime-manifest.json divo/runtime-models.mjs divo/runtime-progress.mjs divo/runtime-progress-limits.mjs divo/runtime-turn-phases.mjs divo/runtime-warm-process.mjs ./divo/
 
 ENTRYPOINT ["/usr/bin/dumb-init", "--"]
 CMD ["node", "divo/local-rpc-server.mjs"]

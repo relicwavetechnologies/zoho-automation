@@ -31,7 +31,8 @@ import {
   type Candidate, type DeptRole, type MemberActionState, type RoleActionState, type ToolScopeSnapshot,
 } from './data/use-team'
 import { dayLabel, summarizeSpend, USAGE_DAYS, USAGE_WEEKS } from './data/use-my-activity'
-import { useApprovals, expiryLabel } from './data/use-approvals'
+import { useDecisions } from './data/use-decisions'
+import { answerAt, expiryLabel } from './decisions/decision'
 
 type Props = { replay: number; toast: Toast; go: (screen: string) => void }
 
@@ -281,7 +282,7 @@ export function TeamHome({ replay, go }: Props) {
   // zero that means "nobody spent anything".
   const { usage, loading: usageLoading } = useTeamUsage(dept?.id)
   const { coverage } = useDepartmentMatrix(dept?.id)
-  const { awaitingMe } = useApprovals()
+  const { awaitingMe } = useDecisions()
 
   if (!dept) return <NoTeam />
   // Being removed as manager mid-session is the case this catches: the scope
@@ -294,14 +295,19 @@ export function TeamHome({ replay, go }: Props) {
   const exceptions = coverage?.tools.reduce((n, t) => n + t.exceptionCount, 0) ?? 0
 
   const attention = [
-    ...awaitingMe.map((a) => ({
-      tone: 'act' as const,
-      title: a.description.summary,
-      body: `${a.requestedByName} is waiting. ${a.description.detail ?? ''}`.trim(),
-      meta: [expiryLabel(a.expiresAt)?.text].filter((m): m is string => Boolean(m)),
-      cta: 'Review',
-      onClick: () => go('approvals'),
-    })),
+    ...awaitingMe.map((decision) => {
+      const at = answerAt(decision)
+      return {
+        tone: 'act' as const,
+        title: decision.title,
+        body: `${decision.source} is waiting. ${decision.detail ?? ''}`.trim(),
+        meta: [
+          expiryLabel(decision.expiresAt)?.text,
+          at ? undefined : 'Answer this on the Lark card',
+        ].filter((m): m is string => Boolean(m)),
+        ...(at ? { cta: 'Open the chat', onClick: () => go(at) } : {}),
+      }
+    }),
     ...(idle.length
       ? [{
           tone: 'warn' as const,
@@ -360,7 +366,9 @@ export function TeamHome({ replay, go }: Props) {
                       <p>{a.body}</p>
                       <div className="ws-attn-meta">{a.meta.map((m) => <span key={m}>{m}</span>)}</div>
                     </div>
-                    <button type="button" className="btn" onClick={a.onClick}>{a.cta}</button>
+                    {a.cta ? (
+                      <button type="button" className="btn" onClick={a.onClick}>{a.cta}</button>
+                    ) : null}
                   </div>
                 ))}
               </div>
@@ -1829,7 +1837,7 @@ export function TeamUsage({ replay }: Props) {
                     </div>
                     <Bar
                       pct={usage.spendUsd > 0 ? (p.spendUsd / usage.spendUsd) * 100 : 0}
-                      tone={top && p.userId === top.userId && p.spendUsd > 0 ? 'brand' : undefined}
+                      tone={top && p.userId === top.userId && p.spendUsd > 0 ? 'mark' : undefined}
                     />
                   </div>
                 ))}

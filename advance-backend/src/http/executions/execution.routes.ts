@@ -8,6 +8,7 @@
  *   GET /executions               — list recent runs (paginated)
  *   GET /executions/:id           — single run detail
  *   GET /executions/:id/events    — ordered event stream for a run
+ *   GET /executions/:id/latency   — critical-path latency attribution
  *
  * Query params:
  *   ?limit=N    (max 200)
@@ -123,6 +124,30 @@ export function createExecutionRoutes(deps: ExecutionRoutesDeps): Router {
       res.json({ success: true, data: events, total: events.length });
     } catch (e) {
       logger.error('execution.routes.events.failed', { error: String(e), id: req.params['id'] });
+      res.status(500).json({ success: false, message: 'internal_error' });
+    }
+  });
+
+  // ── GET /executions/:id/latency ─────────────────────────────────────────
+  router.get('/:id/latency', async (req: Request, res: Response): Promise<void> => {
+    const { companyId } = getAuth(res);
+    if (!companyId) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+
+    try {
+      const summary = await executionQueryService.getLatencySummary({
+        executionId: req.params['id']!,
+        companyId,
+      });
+      if (!summary) {
+        res.status(404).json({ success: false, message: 'not_found' });
+        return;
+      }
+      res.json({ success: true, data: summary });
+    } catch (e) {
+      logger.error('execution.routes.latency.failed', { error: String(e), id: req.params['id'] });
       res.status(500).json({ success: false, message: 'internal_error' });
     }
   });

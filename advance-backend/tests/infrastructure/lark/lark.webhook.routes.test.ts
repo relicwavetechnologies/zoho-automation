@@ -1138,6 +1138,9 @@ describe('Lark webhook admission', () => {
     // The ledger accumulates, so the settled last frame carries the finished
     // tool whether or not its "running" frame ever made it out.
     assert.deepEqual(adapter.__statusUpdates.at(-1).timeline.ledger, [{
+      // The call's own id, so a surface redrawing from the next snapshot can
+      // tell this row from the one it drew a moment ago.
+      id: 'call-1',
       kind: 'tool',
       // The tool table's name, not a vendor guessed from the id's prefix: the
       // run used Drive, and "Google" was as close as the old regex could get.
@@ -1203,9 +1206,11 @@ describe('Lark webhook admission', () => {
     const last = adapter.__statusUpdates.at(-1).timeline;
 
     const subagentRow = last.ledger.find((row: any) => row.label === 'Subagents');
+    // No `count`: an agent is not a tool call, and the three fields it does
+    // have are the three it has ever had.
     assert.deepEqual(subagentRow.children, [
-      { label: 'scout', count: 1, status: 'running', outcome: 'reading the export' },
-      { label: 'reviewer', count: 1, status: 'done', outcome: 'checked totals' },
+      { label: 'scout', status: 'running', outcome: 'reading the export' },
+      { label: 'reviewer', status: 'done', outcome: 'checked totals' },
     ]);
 
     // The checklist belongs to the run, not to the call that declared it, so it

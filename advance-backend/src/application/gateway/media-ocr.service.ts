@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import type { TypedEnv } from '../../config/env';
 import type { Logger } from '../../shared/logger';
+import { redactLikelySecrets } from './redact-secrets';
 import {
   extractImageTextWithVision,
   type VisionOcrResult as ImageOcrResult,
@@ -139,10 +140,3 @@ function decodeImageBase64(value: string): Buffer {
   return Buffer.from(compact, 'base64');
 }
 
-function redactLikelySecrets(value: string): string {
-  return value
-    .replace(/\b(sk-(?:or-v1-)?[a-z0-9_-]{16,})\b/gi, '[REDACTED_API_KEY]')
-    .replace(/\b(gsk_[a-z0-9]{20,})\b/gi, '[REDACTED_API_KEY]')
-    .replace(/\b(AIza[0-9A-Za-z_-]{20,})\b/g, '[REDACTED_API_KEY]')
-    .replace(/\b([A-Za-z0-9+/]{40,}={0,2})\b/g, '[REDACTED_SECRET]');
-}

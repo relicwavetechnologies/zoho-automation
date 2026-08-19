@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { withStartedThreads, type StartedThread, type ThreadSummary } from './threads'
+import {
+  startedThreads, threadRenamed, threadSettled, threadStarted, withStartedThreads,
+  type StartedThread, type ThreadSummary,
+} from './threads'
 
 const server = (threadId: string, over: Partial<ThreadSummary> = {}): ThreadSummary => ({
   threadId,
@@ -59,5 +62,42 @@ describe('a chat that exists before the server knows it', () => {
     const [row] = withStartedThreads([], [claim('web_new', Date.parse('2026-08-12T10:30:00.000Z'))])
     assert.equal(row!.createdAt, '2026-08-12T10:30:00.000Z')
     assert.equal(row!.updatedAt, '2026-08-12T10:30:00.000Z')
+  })
+})
+
+/*
+ * One chat, one name, in both places that show it.
+ *
+ * A claim is named with the raw ask, because at the moment it is made that is
+ * all anybody knows. A moment later a small model writes a real name, the
+ * header switches to it, and the rail used to go on showing the sentence until
+ * the renamed server row came back — one chat under two names, a centimetre
+ * apart, for the length of a round trip.
+ */
+describe('renaming a chat the server does not know about yet', () => {
+  it('renames the claim the rail is drawing', () => {
+    threadStarted('web_a', 'check the recent orders from Manode and tell me which are late')
+    threadRenamed('web_a', 'Late Manode orders')
+    const [row] = withStartedThreads([], startedThreads())
+    assert.equal(row!.title, 'Late Manode orders')
+    threadSettled('web_a')
+  })
+
+  /* The ordinary case. Once a real row exists it answers for the thread on its
+     own, so a late rename has nothing to correct and must not resurrect a claim
+     that has already been dropped. */
+  it('does nothing for a thread that has no claim', () => {
+    threadRenamed('web_b', 'A name for nothing')
+    assert.deepEqual(startedThreads(), [])
+  })
+
+  it('leaves the claim otherwise as it was', () => {
+    threadStarted('web_c', 'the ask')
+    const before = startedThreads().find(t => t.threadId === 'web_c')!
+    threadRenamed('web_c', 'The name')
+    const after = startedThreads().find(t => t.threadId === 'web_c')!
+    assert.equal(after.startedAt, before.startedAt)
+    assert.equal(after.threadId, 'web_c')
+    threadSettled('web_c')
   })
 })

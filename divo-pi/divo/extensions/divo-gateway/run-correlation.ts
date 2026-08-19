@@ -1,7 +1,10 @@
-import { readFile } from "node:fs/promises";
 import { normalizeRuntimeChannel } from "../../runtime-channels.mjs";
+import {
+	DIVO_RUN_CONTEXT_PATH_ENV,
+	readRuntimeRunContext,
+} from "../../runtime-run-context.mjs";
 
-export const DIVO_RUN_CONTEXT_PATH_ENV = "DIVO_RUN_CONTEXT_PATH";
+export { DIVO_RUN_CONTEXT_PATH_ENV };
 
 /** See `divo/runtime-channels.mjs` — absent means a desktop-local run. */
 export type DivoRuntimeChannel = "lark" | "web";
@@ -14,46 +17,24 @@ export interface DivoRunCorrelationV1 {
 	departmentId?: string;
 }
 
-const MAX_IDENTIFIER_LENGTH = 200;
-
-function identifier(value: unknown, field: string): string {
-	if (typeof value !== "string" || !value.trim()) {
-		throw new Error(`Divo run correlation ${field} is missing`);
-	}
-	const result = value.trim();
-	if (result.length > MAX_IDENTIFIER_LENGTH) {
-		throw new Error(`Divo run correlation ${field} is too long`);
-	}
-	return result;
-}
-
-/** Read the exact runtime owner for this Pi process. Never cache. */
+/**
+ * Read the exact runtime owner for this Pi process. Never cache.
+ *
+ * The file read and its bounds live at the runtime root, where every extension
+ * that needs the run's identity can reach them. What this adds is the gateway's
+ * own view of the result: a channel narrowed to one the runtime actually drives,
+ * so a value nobody recognises cannot travel further as though it were a surface.
+ */
 export async function readDivoRunCorrelation(
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<DivoRunCorrelationV1> {
-	const path = env[DIVO_RUN_CONTEXT_PATH_ENV]?.trim();
-	if (!path) throw new Error("Divo run correlation is unavailable");
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(await readFile(path, "utf8"));
-	} catch {
-		throw new Error("Divo run correlation could not be read");
-	}
-	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-		throw new Error("Divo run correlation is malformed");
-	}
-	const record = parsed as Record<string, unknown>;
-	if (record.version !== 1) {
-		throw new Error("Divo run correlation version is unsupported");
-	}
-	const channel = normalizeRuntimeChannel(record.channel);
+	const context = await readRuntimeRunContext(env);
+	const channel = normalizeRuntimeChannel(context.channel);
 	return {
 		version: 1,
-		threadId: identifier(record.threadId, "threadId"),
-		runId: identifier(record.runId, "runId"),
+		threadId: context.threadId,
+		runId: context.runId,
 		...(channel ? { channel } : {}),
-		...(typeof record.departmentId === "string"
-			? { departmentId: identifier(record.departmentId, "departmentId") }
-			: {}),
+		...(context.departmentId ? { departmentId: context.departmentId } : {}),
 	};
 }

@@ -44,6 +44,20 @@ export function canReusePiProcess({
 		&& sessionScope === "thread" && lifecycle === undefined;
 }
 
+/**
+ * Everything fixed at the moment Pi is launched.
+ *
+ * A warm process may serve the next turn only when every one of these is
+ * unchanged, because none of them can be changed afterwards — the extension
+ * list, the tool allowlist, the skill directories and the model are all command
+ * line arguments, decided once and then frozen for the life of the process.
+ *
+ * So the rule for adding a field is exactly that: **if it is an input to how Pi
+ * is launched, it belongs here.** `channel` was added to `scopedManifest` and not
+ * to this record, and the result was a container launched for one surface
+ * serving another surface's turns with the first one's tools — silently, because
+ * a missing tool is not an error, it is an absence the model works around.
+ */
 export function piProcessBinding({
 	profile,
 	thread,
@@ -51,6 +65,7 @@ export function piProcessBinding({
 	departmentId,
 	selectedModel,
 	nativeSkillDigest,
+	channel,
 }) {
 	return {
 		profile,
@@ -59,7 +74,9 @@ export function piProcessBinding({
 		departmentId: departmentId ?? "",
 		provider: selectedModel?.provider ?? "",
 		model: selectedModel?.model ?? "",
+		thinkingLevel: selectedModel?.thinkingLevel ?? "",
 		nativeSkillDigest: nativeSkillDigest ?? "",
+		channel: channel ?? "",
 	};
 }
 
@@ -71,7 +88,9 @@ export function piProcessBindingMatches(current, next) {
 		&& current.departmentId === next.departmentId
 		&& current.provider === next.provider
 		&& current.model === next.model
-		&& current.nativeSkillDigest === next.nativeSkillDigest;
+		&& current.thinkingLevel === next.thinkingLevel
+		&& current.nativeSkillDigest === next.nativeSkillDigest
+		&& current.channel === next.channel;
 }
 
 export function piProcessBindingMismatchReason(current, next) {
@@ -83,7 +102,9 @@ export function piProcessBindingMismatchReason(current, next) {
 	if (current.departmentId !== next.departmentId) return "department_changed";
 	if (current.provider !== next.provider) return "provider_changed";
 	if (current.model !== next.model) return "model_changed";
+	if (current.thinkingLevel !== next.thinkingLevel) return "thinking_level_changed";
 	if (current.nativeSkillDigest !== next.nativeSkillDigest) return "native_skill_digest_changed";
+	if (current.channel !== next.channel) return "channel_changed";
 	return "none";
 }
 

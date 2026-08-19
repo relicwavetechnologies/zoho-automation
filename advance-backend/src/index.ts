@@ -14,6 +14,25 @@ const main = async () => {
     container.logger.info('server.started', { port: env.PORT, env: env.NODE_ENV });
   });
 
+  /*
+   * Long enough for a recording to arrive.
+   *
+   * Node cuts a request body off after five minutes by default, which is fine
+   * for every JSON call here and wrong for the two routes that stream video: a
+   * large upload on an ordinary connection takes longer, and the member sees a
+   * dropped connection rather than a limit. Matched to the 1800s the proxy
+   * allows those routes, so whichever gives up first gives up for the reason.
+   *
+   * Global, because Node has no per-route body timeout. That widens the window
+   * for a slow-body client on *every* route — acceptable here only because this
+   * process binds loopback and nginx buffers request bodies everywhere except
+   * the two streaming locations, so such a client is cut off at the proxy
+   * before it reaches this. If the backend is ever exposed directly, this
+   * becomes a real slowloris surface and wants a per-handler `setTimeout`
+   * instead.
+   */
+  server.requestTimeout = 1_800_000;
+
   let shuttingDown = false;
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;

@@ -2,14 +2,23 @@ import {
   AIRTABLE_RECORD_READ_MAX_ROWS,
   type ResolveAirtableMcpConnection,
 } from '../tools/families/airtable-mcp.tool';
+import {
+  AIRTABLE_PRODUCTS,
+  type AirtableProductDefinition,
+} from '../airtable/airtable-mcp-manifest';
 import type {
+  WorkContractBootstrapMode,
   WorkContractBootstrapPort,
   WorkContractBootstrapResult,
-  WorkNativeContract,
 } from './work-contract-bootstrap.port';
+import { loadWorkNativeContracts } from './work-contract-bootstrap-concurrency';
 
 /** Product tools whose work is reading and writing records, not base structure. */
 const RECORD_TOOL_IDS = new Set(['airtableBase', 'airtableRecords']);
+const PRODUCT_BY_TOOL_ID = new Map<string, AirtableProductDefinition>(
+  AIRTABLE_PRODUCTS.map(product => [product.toolId, product]),
+);
+const LOCAL_SYNTHETIC_CONTRACTS = new Set(['list_fields_for_table']);
 
 /**
  * Discovery and read contracts every record run needs. `list_records_for_table`
@@ -57,7 +66,11 @@ export class AirtableContractBootstrapService implements WorkContractBootstrapPo
 
   async load(input: Parameters<WorkContractBootstrapPort['load']>[0]): Promise<WorkContractBootstrapResult> {
     input.abortSignal?.throwIfAborted();
-    const requested = suggestedAirtableNativeTools(input.query, input.toolIds);
+    const requested = airtableNativeToolsForMode(
+      input.query,
+      input.toolIds,
+      input.contractMode ?? 'suggested',
+    );
     if (requested.length === 0) {
       return { contracts: [], unavailableNativeTools: [] };
     }
@@ -85,31 +98,17 @@ export class AirtableContractBootstrapService implements WorkContractBootstrapPo
       return { contracts: [], unavailableNativeTools: requested.map(item => item.nativeTool) };
     }
 
-    const contracts: WorkNativeContract[] = [];
-    const unavailableNativeTools: string[] = [];
-    for (const item of requested) {
-      let description;
-      try {
-        description = await resolution.connection.client.describeTool(item.nativeTool);
-        input.abortSignal?.throwIfAborted();
-      } catch {
-        input.abortSignal?.throwIfAborted();
-        unavailableNativeTools.push(item.nativeTool);
-        continue;
-      }
-      if (!description) {
-        unavailableNativeTools.push(item.nativeTool);
-        continue;
-      }
+    return loadWorkNativeContracts(requested, async item => {
+      const description = await resolution.connection.client.describeTool(item.nativeTool);
+      if (!description) return null;
       const boundedDescription = contractDescription(description.name, description.description);
-      contracts.push({
+      return {
         toolId: item.toolId,
         nativeTool: description.name,
         ...(boundedDescription ? { description: boundedDescription } : {}),
         inputSchema: boundedRecordReadSchema(description.name, description.inputSchema),
-      });
-    }
-    return { contracts, unavailableNativeTools };
+      };
+    }, input.abortSignal);
   }
 }
 
@@ -149,6 +148,15 @@ export function suggestedAirtableNativeTools(
   query: string,
   toolIds: readonly string[],
 ): Array<{ toolId: string; nativeTool: string }> {
+  return airtableNativeToolsForMode(query, toolIds, 'suggested');
+}
+
+export function airtableNativeToolsForMode(
+  query: string,
+  toolIds: readonly string[],
+  contractMode: WorkContractBootstrapMode,
+): Array<{ toolId: string; nativeTool: string }> {
+  if (contractMode === 'complete') return completeAirtableNativeTools(toolIds);
   const normalized = query.toLowerCase();
   const suggestions: Array<{ toolId: string; nativeTool: string }> = [];
 
@@ -161,6 +169,21 @@ export function suggestedAirtableNativeTools(
       nativeTools.push('create_records_for_table', 'update_records_for_table');
     }
     for (const nativeTool of nativeTools) suggestions.push({ toolId, nativeTool });
+  }
+  return suggestions;
+}
+
+function completeAirtableNativeTools(
+  toolIds: readonly string[],
+): Array<{ toolId: string; nativeTool: string }> {
+  const suggestions: Array<{ toolId: string; nativeTool: string }> = [];
+  for (const toolId of new Set(toolIds)) {
+    const product = PRODUCT_BY_TOOL_ID.get(toolId);
+    if (!product) continue;
+    for (const operation of product.operations) {
+      if (LOCAL_SYNTHETIC_CONTRACTS.has(operation.nativeTool)) continue;
+      suggestions.push({ toolId, nativeTool: operation.nativeTool });
+    }
   }
   return suggestions;
 }

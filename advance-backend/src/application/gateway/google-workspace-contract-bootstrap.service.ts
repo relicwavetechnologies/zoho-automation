@@ -4,10 +4,11 @@ import {
 } from '../google/google-workspace-mcp-manifest';
 import type { ResolveGoogleWorkspaceMcpConnection } from '../tools/families/google-workspace-mcp.tool';
 import type {
+  WorkContractBootstrapMode,
   WorkContractBootstrapPort,
   WorkContractBootstrapResult,
-  WorkNativeContract,
 } from './work-contract-bootstrap.port';
+import { loadWorkNativeContracts } from './work-contract-bootstrap-concurrency';
 
 const PRODUCT_BY_TOOL_ID = new Map<string, GoogleWorkspaceProductDefinition>(
   GOOGLE_WORKSPACE_PRODUCTS.map(product => [product.toolId, product]),
@@ -25,7 +26,11 @@ export class GoogleWorkspaceContractBootstrapService implements WorkContractBoot
 
   async load(input: Parameters<WorkContractBootstrapPort['load']>[0]): Promise<WorkContractBootstrapResult> {
     input.abortSignal?.throwIfAborted();
-    const requested = suggestedGoogleWorkspaceNativeTools(input.query, input.toolIds);
+    const requested = googleWorkspaceNativeToolsForMode(
+      input.query,
+      input.toolIds,
+      input.contractMode ?? 'suggested',
+    );
     if (requested.length === 0) {
       return { contracts: [], unavailableNativeTools: [] };
     }
@@ -66,33 +71,19 @@ export class GoogleWorkspaceContractBootstrapService implements WorkContractBoot
       };
     }
 
-    const contracts: WorkNativeContract[] = [];
-    const unavailableNativeTools: string[] = [];
-    for (const item of requested) {
-      let description;
-      try {
-        description = await resolution.connection.client.describeTool(
-          item.nativeTool,
-          input.abortSignal,
-        );
-        input.abortSignal?.throwIfAborted();
-      } catch {
-        input.abortSignal?.throwIfAborted();
-        unavailableNativeTools.push(item.nativeTool);
-        continue;
-      }
-      if (!description) {
-        unavailableNativeTools.push(item.nativeTool);
-        continue;
-      }
-      contracts.push({
+    return loadWorkNativeContracts(requested, async item => {
+      const description = await resolution.connection.client.describeTool(
+        item.nativeTool,
+        input.abortSignal,
+      );
+      if (!description) return null;
+      return {
         toolId: item.toolId,
         nativeTool: description.name,
         ...(description.description ? { description: description.description } : {}),
         inputSchema: description.inputSchema,
-      });
-    }
-    return { contracts, unavailableNativeTools };
+      };
+    }, input.abortSignal);
   }
 }
 
@@ -100,6 +91,15 @@ export function suggestedGoogleWorkspaceNativeTools(
   query: string,
   toolIds: readonly string[],
 ): Array<{ toolId: string; nativeTool: string }> {
+  return googleWorkspaceNativeToolsForMode(query, toolIds, 'suggested');
+}
+
+export function googleWorkspaceNativeToolsForMode(
+  query: string,
+  toolIds: readonly string[],
+  contractMode: WorkContractBootstrapMode,
+): Array<{ toolId: string; nativeTool: string }> {
+  if (contractMode === 'complete') return completeGoogleWorkspaceNativeTools(toolIds);
   const normalized = query.toLowerCase();
   const selected = new Set(toolIds);
   const suggestions: Array<{ toolId: string; nativeTool: string }> = [];
@@ -110,6 +110,18 @@ export function suggestedGoogleWorkspaceNativeTools(
     for (const nativeTool of suggestedProductOperations(product, normalized)) {
       suggestions.push({ toolId, nativeTool });
     }
+  }
+  return suggestions;
+}
+
+function completeGoogleWorkspaceNativeTools(
+  toolIds: readonly string[],
+): Array<{ toolId: string; nativeTool: string }> {
+  const suggestions: Array<{ toolId: string; nativeTool: string }> = [];
+  for (const toolId of new Set(toolIds)) {
+    const product = PRODUCT_BY_TOOL_ID.get(toolId);
+    if (!product) continue;
+    for (const nativeTool of product.tools) suggestions.push({ toolId, nativeTool });
   }
   return suggestions;
 }

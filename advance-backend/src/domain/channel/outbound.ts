@@ -29,6 +29,31 @@ export type ChannelPlanStepStatus = 'pending' | 'running' | 'done' | 'failed' | 
  * `children` is one level deep, for work a step farms out: a subagent's tasks
  * sit under the `divo_subagents` row rather than becoming peers of it.
  */
+
+/**
+ * One agent working under a step that farmed work out.
+ *
+ * It has its own shape rather than being another `ChannelLedgerRow`, because it
+ * is not one and never was: it has no count, no vendor, no children of its own,
+ * and it is not a tool call — it is an agent, with a role, a task, and a clock.
+ * Typed as a row, every surface drawing one had to carry fields that could not
+ * mean anything here and reach past them for the three that could.
+ */
+export interface ChannelLedgerChild {
+  /** The agent's role. This is what names it on screen. */
+  readonly label:    string;
+  /** What it was asked to do. */
+  readonly outcome?: string;
+  readonly status:   ChannelPlanStepStatus;
+  /**
+   * How long it has been working, while it still is.
+   *
+   * Deliberately outside every redraw fingerprint downstream: it changes once a
+   * second by design, and a card that repaints because a number ticked is a
+   * card that repaints for no reader.
+   */
+  readonly elapsed?: string;
+}
 /**
  * One entry in the run's log, in the order it happened.
  *
@@ -45,11 +70,32 @@ export type ChannelPlanStepStatus = 'pending' | 'running' | 'done' | 'failed' | 
 export interface ChannelLedgerRow {
   /** Defaults to `tool`; rows written before this field existed are tool rows. */
   readonly kind?:     'tool' | 'say' | 'thought';
+  /**
+   * What this row is, for as long as the run remembers it.
+   *
+   * A surface draws a list, and a list needs to know which entry is which one
+   * from last time. Without this the only thing to key off is position, and
+   * position is not identity: a sentence that gets reclassified, or a row that
+   * appears above another, renumbers everything after it and the renderer tears
+   * down rows that never changed. The reducer already had this — it keys its own
+   * map by it — and was dropping it on the way out.
+   */
+  readonly id?:       string;
+  /**
+   * For a `say` row: the model went on to do something after saying it, so the
+   * sentence was an aside rather than the reply it landed on.
+   *
+   * The reply has its own place on every surface, so this is what tells a work
+   * log which sentences are its to draw. It is deliberately absent — not
+   * `false` — while the turn is still open: nothing has followed the sentence
+   * *yet*, and a run that ends right here ended on it.
+   */
+  readonly aside?:    true;
   readonly label:     string;
   readonly count:     number;
   readonly outcome?:  string;
   readonly status:    ChannelPlanStepStatus;
-  readonly children?: ReadonlyArray<ChannelLedgerRow>;
+  readonly children?: ReadonlyArray<ChannelLedgerChild>;
   /**
    * Who was called, in the wire's own words rather than the reader's.
    *
@@ -98,21 +144,21 @@ export type ChannelRunState =
   | 'done'
   | 'blocked';
 
+/**
+ * What a run looks like from outside, in terms no channel owns.
+ *
+ * Every field here is filled by the reducer and read by at least one renderer.
+ * That is the rule this shape is kept to, and it is not decorative: an optional
+ * field nobody fills reads to the next author as a fact the run knows, and they
+ * build on it. Six such fields were removed at once — a narration array with no
+ * producer and no reader, an active-sentence field two renderers checked and
+ * always fell through, a subject that was never set, and three progress
+ * counters that were computed on every snapshot and drawn by nothing. Between
+ * them they described a status card this product does not have.
+ */
 export interface ChannelTimeline {
-  /**
-   * Short restatement of what the user asked for. Titles the status card so a
-   * chat with several Divo cards stays scannable — the bot's own name is already
-   * printed above every card by the client.
-   */
-  readonly subject?:       string;
-  /** Header subtitle, e.g. "Executing · 2/5" */
-  readonly phase?:         string;
   /** Coarse run state — drives the status card title. */
   readonly state?:         ChannelRunState;
-  /** 0–100 for progress chart */
-  readonly progressPct?:   number;
-  readonly completedSteps?: number;
-  readonly totalSteps?:     number;
   /** Tool calls performed so far. Counts up; never used as a denominator. */
   readonly actionCount?:   number;
   /**
@@ -125,11 +171,8 @@ export interface ChannelTimeline {
   readonly declared?:      ChannelDeclaredPlan;
   /** Full run ledger, grouped by tool family. */
   readonly ledger?:        ReadonlyArray<ChannelLedgerRow>;
+  /** What the run says it is doing right now, in its own words. */
   readonly liveLabel?:      string;
-  /** Rolling live sentences from model stream (max 3 committed). */
-  readonly narration?:      ReadonlyArray<string>;
-  /** In-progress sentence not yet committed to a line. */
-  readonly narrationActive?: string;
 }
 
 export interface StatusUpdate {
@@ -138,6 +181,22 @@ export interface StatusUpdate {
   readonly branding?: ChannelBranding;
   readonly timeline?: ChannelTimeline;
   readonly terminal:  boolean;
+  /**
+   * A change the reader is looking straight at, which should not wait for the
+   * next rate-limited redraw.
+   *
+   * The reducer is the only thing that can tell — it knows what a frame meant,
+   * where the caller only knows one arrived — and it has always said so. This
+   * field is where that answer had nowhere to go: it was honoured by the
+   * publisher's own one-second gate and then dropped, because a status update
+   * had no way to carry it the rest of the way to the channel. A sentence that
+   * has just stopped being the reply stayed drawn as the reply for up to a
+   * second and a half after it stopped being one.
+   *
+   * It buys past the *interval*, never past the deduplicator. A card that says
+   * the same thing is not worth repainting however urgent the reason.
+   */
+  readonly urgent?:   boolean;
 }
 
 export interface FinalReply {

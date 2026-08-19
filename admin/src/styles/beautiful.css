@@ -1,114 +1,18 @@
 /*
-  Chat surface token bridge.
+  The chat surface's own CSS: motion, the loaders, the answer's table and
+  document type. No colour is decided here.
 
-  The `/chat` primitives are ported from the Beautiful UI component set, which
-  ships its own `--ink / --surface / --line` palette. **None of those values
-  are used here.** Every token below is an alias onto a `--cur-*` token that
-  `cursor.css` already defines, so the chat surface is not themed at all — it
-  inherits the workspace's theme in both light and dark, and re-skinning the
-  admin re-skins the chat for free.
+  It used to open with a sixty-line token bridge aliasing every `--bui-*` name
+  onto a `--cur-*` value, because the workspace owned the greys and the chat had
+  to borrow them. `palette.css` now owns them and both surfaces read from it, so
+  the bridge is gone rather than reversed — there is no longer a direction for
+  it to point in.
 
-  Three wrong turns on the way here, all worth recording because each looked
-  reasonable at the time.
-
-  Copying the library's greys in verbatim made the chat a cool-grey island
-  inside the admin — the same product in two colour temperatures depending on
-  the route.
-
-  Rebuilding those greys by hand was worse: hand-picked warm greys read as
-  brown at 12px, and with Cursor Orange promoted to a general accent, every
-  chip, dot and chart line picked up a tint until the surface looked sepia.
-
-  Aliasing onto the shadcn tokens in `global.css` looked like the fix and was
-  not. Those are the WARM set, kept for pages that were never designed. The
-  workspace runs on `--cur-*`, which `cursor.css` deliberately makes true
-  neutral grey — "so the one warm thing on screen is the brand". Pointing at
-  `--background` put a brown chat surface next to a `#0d0d0d` sidebar.
-
-  So: the scale is the library's — three ink weights and two hairlines, finer
-  than the shadcn set, which is what a dense trace needs. Every value is the
-  workspace's.
-
-  One rule on top: orange is the brand and it stays scarce. It is not the
-  accent here. Nothing in the chat surface is orange, because on this screen
-  every step, chip and dot would qualify and none of them are the brand.
+  Worth keeping from that block, because the reasoning outlived it: the chat's
+  accent is ink, not the brand. On this screen every step, chip and dot would
+  qualify as "the important one" and none of them is Divo. Orange marks the
+  product; blue marks the one thing on a line that is clickable.
 */
-
-.cur {
-  /* Surfaces — the workspace's own planes, canvas → soft → surface. */
-  --bui-page: var(--cur-canvas);
-  --bui-canvas: var(--cur-canvas);
-  --bui-surface: var(--cur-surface);
-  --bui-inset: var(--cur-canvas-soft);
-  --bui-hover: var(--cur-canvas-soft);
-  --bui-hover-2: var(--cur-surface-strong);
-  --bui-field: var(--cur-surface-strong);
-
-  /* Ink. The app already defines four weights; the trace uses three of them,
-     so nothing here is a colour someone picked for this screen. */
-  --bui-ink: var(--cur-ink);
-  --bui-ink-2: var(--cur-body);
-  --bui-ink-3: var(--cur-muted);
-
-  --bui-line: var(--cur-hairline);
-  --bui-line-strong: var(--cur-hairline-strong);
-
-  /* Semantic, straight off the app's tokens. */
-  --bui-green: var(--cur-success);
-  --bui-red: var(--cur-error);
-  /* Warnings borrow the timeline's amber. It is the one warm token in the set
-     that is not the brand, which is exactly what a "look at this" dot wants. */
-  --bui-orange: var(--cur-tl-done);
-
-  /* The accent is ink, not the brand — see the note above. */
-  --bui-accent-tint: var(--cur-surface-strong);
-  --bui-accent-ink: var(--cur-ink);
-
-  /* A link is the one thing on this surface that has to look clickable before
-     it is read, so it is the one thing that takes the app's blue accent rather
-     than an ink weight. Not a new colour: `--cur-accent` is what the sidebar's
-     active rail already uses, and `cursor.css` defines it in both themes. The
-     scarcity rule above is about orange, the brand — which this is not. */
-  --bui-link: var(--cur-accent);
-  /* The resting underline. A token rather than an opacity modifier on the class:
-     Tailwind cannot compute alpha over a CSS variable, so `.../35` compiled to
-     nothing at all and the underline quietly stayed at full strength. */
-  --bui-link-soft: color-mix(in oklab, var(--cur-accent) 42%, transparent);
-
-  /* Tooltips invert onto the app's CTA ink. */
-  --bui-tip-bg: var(--cur-cta);
-  --bui-tip-fg: var(--cur-on-cta);
-  --bui-tip-muted: var(--cur-muted-soft);
-
-  /* Depth is hairline-first, like the rest of the workspace: a ring, plus at
-     most a hint of lift.
-
-     `--cur-shadow-card` cannot be composed into these directly. It is `none`
-     in dark, and `none` inside a comma-separated `box-shadow` list makes the
-     WHOLE declaration invalid — which silently deleted every card ring on the
-     chat surface in dark mode. `--bui-lift` carries the same intent through a
-     value that is always a legal shadow. */
-  --bui-lift: 0 1px 2px rgb(38 37 30 / 0.045);
-  --bui-shadow-hairline: 0 0 0 1px var(--bui-line);
-  --bui-shadow-btn: 0 0 0 1px var(--bui-line-strong), var(--bui-lift);
-  --bui-shadow-card: 0 0 0 1px var(--bui-line), var(--bui-lift);
-  --bui-shadow-raised: 0 0 0 1px var(--bui-line-strong), var(--bui-lift);
-  --bui-shadow-overlay: 0 0 0 1px var(--bui-line-strong), var(--shadow-elevated);
-}
-
-/* The one value dark has to restate. In dark the workspace separates planes by
-   value rather than by shadow (`--cur-shadow-card: none`), so the lift goes
-   away — but as a transparent shadow, which keeps the rings above valid. */
-.dark .cur {
-  --bui-lift: 0 0 transparent;
-}
-
-/* Everything else resolves through a `--cur-*` variable that `cursor.css`
-   already flips under `.dark .cur`, so dark mode follows the app with nothing
-   to keep in sync.
-
-   Scoped to `.cur` rather than `:root` for the same reason: the `--cur-*`
-   values only exist inside it, and the chat surface always renders there. */
 
 /* ── Motion ───────────────────────────────────────────────
    The chat surface says "I am working" with movement, not with a spinner
@@ -117,12 +21,6 @@
 @keyframes bui-shimmer-text {
   0% { background-position: 150%; }
   100% { background-position: -50%; }
-}
-
-@keyframes bui-pixel-on {
-  0%, 100% { opacity: 0.15; }
-  18%, 42% { opacity: 1; }
-  62% { opacity: 0.15; }
 }
 
 @keyframes bui-fade-up {
@@ -154,24 +52,51 @@
   100% { transform: scaleY(1); }
 }
 
-/* The pixel loader. Written here rather than as Tailwind arbitrary values:
-   `grid-cols-[repeat(3,4px)]` and `gap-[1.5px]` do not survive the v3 JIT, and
-   what came out was a 3×3 of dots spread across forty pixels instead of a 14px
-   mark. Fixed sizes, one rule, no ambiguity. */
+/* The pixel loader — the mark for "Divo itself is working".
+
+   The grid is the constant and the cells never move; a pattern is only which
+   cell lights when, which is why the two live side by side here rather than as
+   two glyphs. `loader.tsx` owns the delay tables and picks the pattern per
+   call site; this file owns the cell, the cycle, and the one cell orbit sits
+   out.
+
+   Written here rather than as Tailwind arbitrary values: `grid-cols-[repeat(3,
+   4px)]` and `gap-[1.5px]` do not survive the v3 JIT, and what came out was a
+   3×3 spread across forty pixels instead of a 15px mark. Fixed sizes, one rule,
+   no ambiguity. */
 .bui-pixels {
   display: grid;
-  grid-template-columns: repeat(3, 3px);
+  grid-template-columns: repeat(3, 4px);
   gap: 1.5px;
   flex-shrink: 0;
 }
 
 .bui-pixels i {
-  width: 3px;
-  height: 3px;
+  width: 4px;
+  height: 4px;
   border-radius: 1px;
   background: var(--bui-ink);
   opacity: 0.15;
   animation: bui-pixel-on 650ms ease-in-out infinite;
+}
+
+/* A lap is a longer journey than a sweep across three columns, so the cycle
+   stretches to match. At 650ms the comet reads as a flicker going round. */
+.bui-pixels[data-pattern='orbit'] i {
+  animation-duration: 950ms;
+}
+
+/* The centre, off orbit's path. Dimmer than a waiting cell rather than equal to
+   one, so the ring reads as a ring even in the instant no cell is lit. */
+.bui-pixels[data-pattern='orbit'] i:nth-child(5) {
+  opacity: 0.07;
+  animation: none;
+}
+
+@keyframes bui-pixel-on {
+  0%, 100% { opacity: 0.15; }
+  18%, 42% { opacity: 1; }
+  62% { opacity: 0.15; }
 }
 
 /* The composer's focus belongs to the box, not the field inside it. `.cur
@@ -202,12 +127,34 @@
   animation: bui-dot-wave 1.05s ease-in-out infinite;
 }
 
+/* The busier rhythm, for a row that is a whole agent working. THREE of the six
+   dots are lit at any instant and which three keeps changing, so the cluster
+   looks alive rather than like a single travelling pixel.
+
+   Exactly three, not roughly three: each dot is lit for half the cycle and the
+   six phases are spread evenly at 1/6 intervals, so the count is invariant —
+   one dot switches off exactly as another switches on. The scattered LOOK comes
+   from which grid cell gets which phase (see `DELAYS` in `loader.tsx`), not
+   from randomness, which CSS cannot do and which would flicker anyway. */
+@keyframes bui-dot-scatter {
+  0%,  44%  { opacity: 1;    transform: scale(1.1); }
+  50%, 94%  { opacity: 0.12; transform: scale(1); }
+  100%      { opacity: 1;    transform: scale(1.1); }
+}
+
+.bui-dot-scatter {
+  animation: bui-dot-scatter 1.8s ease-in-out infinite;
+}
+
 /* Held mid-sweep rather than stopped: someone who has asked for less motion
    still needs to see that the row is live, and a frozen dot grid is
    indistinguishable from a settled one. */
 @media (prefers-reduced-motion: reduce) {
-  .bui-dot { animation: none; opacity: 0.65; }
-  .bui-pixels i { animation: none; opacity: 0.65; }
+  .bui-dot, .bui-dot-scatter { animation: none; opacity: 0.65; }
+  /* The grid freezes to its dim state. Unlike the dot loaders above it is not
+     held part-lit: the elapsed timer beside it keeps ticking, so the row still
+     says it is working without anything on screen moving to say it. */
+  .bui-pixels i { animation: none; }
 }
 
 /* One word of an answer, resolving out of blur as it lands.
@@ -220,8 +167,22 @@
 }
 
 /* Where the text has got to. Steady rather than blinking: it is already moving
-   several times a second, and a blink on top reads as two things happening. */
-.bui-caret {
+   several times a second, and a blink on top reads as two things happening.
+
+   Drawn on the last word rather than parked after the answer, so it sits where
+   the text actually stops instead of alone on a line under the final block. It
+   is an `::after` on that word, which is why nothing in React has to know which
+   word is last — the plugin marks it while it is already walking the tree.
+
+   Scoped to `.bui-stream`, so it appears only while the answer is arriving. A
+   settled answer is not still being written and a caret on it would say it was.
+
+   This spent a while not rendering at all: it used to be a component gated on
+   the last word's index matching a count taken by splitting the markdown source
+   on whitespace, and that count all but always ran ahead of the tree's own
+   numbering. See `words.ts` for why that whole mechanism is gone. */
+.bui-stream [data-tail]::after {
+  content: '';
   display: inline-block;
   width: 2px;
   height: 0.85em;
@@ -230,20 +191,6 @@
   border-radius: 1px;
   background: currentColor;
   animation: bui-fade-in 150ms ease-out both;
-}
-
-/* A block nobody has reached yet is not drawn at all.
-   Unrevealed words render as nothing, so a heading whose turn has not come
-   would otherwise stand there as a blank line — the document's furniture
-   arriving before any of its content. `:has` asks the only question that
-   matters: is there a revealed word in here yet.
-
-   A table answers that question about itself. It is drawn from its own data
-   rather than out of words, so it carries one index on the element instead of
-   many inside it, and a rule that only looked at descendants would hide the
-   very blocks that had arrived. */
-.bui-stream > *:not([data-word]):not(:has([data-word])) {
-  display: none;
 }
 
 /* ── The answer's data table ──────────────────────────────
@@ -294,9 +241,54 @@
   animation: bui-shimmer-text 1.4s linear infinite;
 }
 
+/* The step being worked on, in the plan panel.
+
+   A ring with one quarter lit, turning. The only spinner on the surface, and it
+   is allowed here for the reason it is banned elsewhere: everywhere else a
+   running thing has a name and a mark of its own to shimmer, and this is a
+   checklist row whose text is the plan's wording rather than a live label. */
+.bui-spinner {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  border: 1.5px solid var(--bui-line-strong);
+  border-top-color: var(--bui-ink);
+  animation: bui-spin 700ms linear infinite;
+}
+
+/* A finished step, struck through as it finishes.
+
+   `line-through` rather than a line drawn over the row, and the reason is the
+   text: a step title runs to 80 characters, which wraps to two or three lines in
+   a 300px panel. An overlay line has to be told how wide the words are, and a
+   pseudo-element stretched across the row crosses the empty space after a short
+   title as well — a rule through the whole panel rather than through a step.
+   Text decoration follows the glyphs, on every line, at no cost.
+
+   The colour is what animates, so the line still *arrives* rather than being
+   there on the frame the step settles. It runs once, when React adds this class
+   to a row already on screen.
+
+   The row stays legible underneath. A plan is what was promised, and a step that
+   vanishes when it completes takes the promise with it. */
+.bui-strike {
+  text-decoration-line: line-through;
+  text-decoration-thickness: 1px;
+  text-decoration-color: transparent;
+  animation: bui-strike 320ms ease-out forwards;
+}
+
+@keyframes bui-strike {
+  100% { text-decoration-color: currentColor; }
+}
+
 /* Reduced motion keeps every state legible — the grid freezes dim, labels
    stop sweeping, rows appear rather than rise. Nothing disappears. */
 @media (prefers-reduced-motion: reduce) {
+  /* The struck step keeps its line; only the drawing of it goes. */
+  .bui-strike::after { animation: none; }
+  .bui-spinner { animation: none; }
   .bui-shimmer {
     animation: none;
     background: none;
@@ -334,18 +326,8 @@ svg.bui-mark {
 }
 
 /* ── Chart chrome ─────────────────────────────────────────
-   The charts are hand-drawn SVG rather than a charting dependency, so their
-   only shared furniture is the hover cursor and the tooltip. */
-.bui-chart-cursor {
-  position: absolute;
-  top: 0;
-  bottom: 22px;
-  width: 1px;
-  background: var(--bui-line-strong);
-  pointer-events: none;
-  transform: translateX(-0.5px);
-}
-
+   The chart an answer draws is hand-drawn SVG rather than a charting
+   dependency, so its only shared furniture is the tooltip. */
 .bui-chart-tip {
   position: absolute;
   top: 8px;
@@ -355,17 +337,10 @@ svg.bui-mark {
   min-width: 118px;
   padding: 6px 8px;
   border-radius: 8px;
-  background: var(--bui-tip-bg);
-  color: var(--bui-tip-fg);
+  background: var(--bui-tooltip-bg);
+  color: var(--bui-tooltip-fg);
   box-shadow: var(--bui-shadow-overlay);
   animation: bui-fade-in 120ms ease-out both;
-}
-
-.bui-chart-tip-time {
-  display: block;
-  margin-bottom: 4px;
-  font-size: 10.5px;
-  color: var(--bui-tip-muted);
 }
 
 .bui-chart-tip-row {
@@ -391,3 +366,42 @@ svg.bui-mark {
   vertical-align: middle;
 }
 
+
+/* ── Document ─────────────────────────────────────────────
+   The same markdown renderer as a chat answer, at a document's scale.
+
+   The chat's heading sizes are correct for a chat: a `##` there labels the
+   paragraph under it and sits one notch below body weight, because an answer is
+   a few hundred words inside a bubble. A report is not — it is read on its own,
+   scanned before it is read, and its headings have to be findable from six
+   inches away. Same components, same links, same tables; only the type scale
+   differs, because only the reading does.
+
+   Declared here rather than as a second component map so there is still exactly
+   one place that decides what a link or a table looks like. */
+.bui-doc h3 {
+  margin-top: 26px;
+  margin-bottom: 8px;
+  font-size: 15px;
+  line-height: 1.35;
+  letter-spacing: -0.012em;
+}
+
+.bui-doc h4 {
+  margin-top: 20px;
+  margin-bottom: 6px;
+  font-size: 13.5px;
+}
+
+/* The report's own title, which the model writes as `#`. Set apart from the
+   section headings under it — without this a document opens with three
+   identical-looking lines and no way to tell the title from the first section. */
+.bui-doc > h3:first-child {
+  margin-top: 0;
+  font-size: 19px;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+}
+
+.bui-doc p { margin-top: 10px; margin-bottom: 10px; }
+.bui-doc ul, .bui-doc ol { margin-top: 10px; margin-bottom: 10px; }

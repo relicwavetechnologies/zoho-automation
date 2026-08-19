@@ -29,6 +29,7 @@ import {
 	ensureRuntime,
 	buildBootstrapWriteArgs,
 	buildContainerCreateArgs,
+	buildDeepSeekToolSurfaceEnvArgs,
 	buildContainerPrepareArgs,
 	buildContainerRecordInterruptionArgs,
 	buildContainerRunArgs,
@@ -54,6 +55,7 @@ import {
 	canReusePiProcess,
 	createIdleContainerScheduler,
 	finalizeRuntimeLifecycle,
+	piProcessBinding,
 	piProcessBindingMatches,
 	piProcessBindingMismatchReason,
 	trackRuntimeReclamation,
@@ -398,7 +400,7 @@ test("a running owned container receives bootstrap through docker exec", () => {
 
 test("a warm runtime can prepare the cached Pi process through docker exec", () => {
 	assert.deepEqual(
-		buildContainerPrepareArgs("divo-pi-local-abhishek"),
+		buildContainerPrepareArgs("divo-pi-local-abhishek", null),
 		[
 			"exec",
 			"--interactive",
@@ -411,7 +413,7 @@ test("a warm runtime can prepare the cached Pi process through docker exec", () 
 		],
 	);
 	assert.deepEqual(
-		buildContainerRunArgs("divo-pi-local-abhishek"),
+		buildContainerRunArgs("divo-pi-local-abhishek", null),
 		[
 			"exec",
 			"--interactive",
@@ -419,6 +421,23 @@ test("a warm runtime can prepare the cached Pi process through docker exec", () 
 			"node",
 			"divo/container-entry.mjs",
 		],
+	);
+});
+
+test("DeepSeek tool retrieval reaches both cold and warm Pi processes", () => {
+	assert.deepEqual(buildDeepSeekToolSurfaceEnvArgs(" ON "), [
+		"--env",
+		"DIVO_DEEPSEEK_TOOL_SURFACE=on",
+	]);
+	assert.deepEqual(buildDeepSeekToolSurfaceEnvArgs(null), []);
+	assert.throws(() => buildDeepSeekToolSurfaceEnvArgs("maybe"), /must be "on" or "off"/);
+	assert.deepEqual(
+		buildContainerRunArgs("divo-pi-local-abhishek", "on").slice(0, 5),
+		["exec", "--interactive", "--env", "DIVO_DEEPSEEK_TOOL_SURFACE=on", "divo-pi-local-abhishek"],
+	);
+	assert.deepEqual(
+		buildContainerPrepareArgs("divo-pi-local-abhishek", "off").slice(0, 6),
+		["exec", "--interactive", "--env", "DIVO_DEEPSEEK_TOOL_SURFACE=off", "--user", "10001:10001"],
 	);
 });
 
@@ -507,12 +526,15 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 		departmentId: "dep-1",
 		provider: "deepseek",
 		model: "deepseek-v4-flash",
+		thinkingLevel: "high",
 		nativeSkillDigest: "a".repeat(64),
+		channel: "lark",
 	};
 	assert.equal(piProcessBindingMatches(binding, { ...binding }), true);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, thread: "lark-2" }), false);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, departmentId: "dep-2" }), false);
 	assert.equal(piProcessBindingMatches(binding, { ...binding, model: "gpt-5.6-luna" }), false);
+	assert.equal(piProcessBindingMatches(binding, { ...binding, thinkingLevel: "xhigh" }), false);
 	assert.equal(piProcessBindingMatches(binding, {
 		...binding,
 		nativeSkillDigest: "b".repeat(64),
@@ -524,11 +546,36 @@ test("Pi process reuse is limited to compatible private thread runs", () => {
 		"thread_changed",
 	);
 	assert.equal(
+		piProcessBindingMismatchReason(binding, { ...binding, thinkingLevel: "xhigh" }),
+		"thinking_level_changed",
+	);
+	assert.equal(
 		piProcessBindingMismatchReason(binding, {
 			...binding,
 			nativeSkillDigest: "b".repeat(64),
 		}),
 		"native_skill_digest_changed",
+	);
+
+	// A container is keyed by profile, so one member's Lark turns and web turns
+	// reach the same one — and the surface decides which tools Pi is launched
+	// with. Reusing across a surface change served the second surface with the
+	// first one's tools, which fails as an absence rather than an error: the
+	// model simply works around a tool it cannot see.
+	assert.equal(piProcessBindingMatches(binding, { ...binding, channel: "web" }), false);
+	assert.equal(
+		piProcessBindingMismatchReason(binding, { ...binding, channel: "web" }),
+		"channel_changed",
+	);
+	// Every launch-time input is in the record. A field added to `scopedManifest`
+	// or to the Pi launch arguments and not to this one is the same bug again.
+	assert.deepEqual(
+		Object.keys(piProcessBinding({
+			profile: "p", thread: "t", backendUrl: "b", departmentId: "d",
+			selectedModel: { provider: "deepseek", model: "m", thinkingLevel: "high" },
+			nativeSkillDigest: "x", channel: "web",
+		})).sort(),
+		["backendUrl", "channel", "departmentId", "model", "nativeSkillDigest", "profile", "provider", "thinkingLevel", "thread"],
 	);
 });
 
@@ -630,6 +677,72 @@ test("a run's context and its skills arrive together, in one authenticated reque
 	assert.match(requests[0].url, /nativeSkills=1/);
 	assert.match(requests[0].url, /departmentId=department-1/);
 	assert.deepEqual(requests[0].options.headers, { Authorization: "Bearer member-token" });
+});
+
+test("a warm run reuses only a matching scope-bound native skill bundle", async () => {
+	const binding = "a".repeat(64);
+	const bootstrap = {
+		registryRevision: 4,
+		skills: [{
+			id: "skill-binding-1",
+			slug: "binding-safe-skill",
+			name: "Binding safe skill",
+			description: "Safe description",
+			instructions: "Use governed tools.",
+			revision: 1,
+		}],
+	};
+	const scope = {
+		companyId: "company-binding",
+		userId: "user-binding",
+		departmentId: "department-binding",
+		channel: "lark",
+	};
+	const headers = [];
+	const fetchImpl = async (_url, options) => {
+		headers.push(options.headers);
+		const unchanged = options.headers["x-divo-native-skill-binding"] === binding;
+		return {
+			ok: true,
+			status: 200,
+			json: async () => ({ success: true, data: {
+				departmentId: scope.departmentId,
+				nativeSkillBinding: binding,
+				...(unchanged
+					? { nativeSkillsUnchanged: true }
+					: { nativeSkillBootstrap: bootstrap }),
+			} }),
+		};
+	};
+
+	const first = await fetchRunContext({
+		backendUrl: "https://binding.divo.example.com",
+		token: "member-token",
+		departmentId: scope.departmentId,
+		scope,
+		fetchImpl,
+	});
+	const warm = await fetchRunContext({
+		backendUrl: "https://binding.divo.example.com",
+		token: "rotated-member-token",
+		departmentId: scope.departmentId,
+		scope,
+		fetchImpl,
+	});
+
+	assert.deepEqual(first.nativeSkills, bootstrap);
+	assert.deepEqual(warm.nativeSkills, bootstrap);
+	assert.equal(headers[0]["x-divo-native-skill-binding"], undefined);
+	assert.equal(headers[1]["x-divo-native-skill-binding"], binding);
+
+	await fetchRunContext({
+		backendUrl: "https://binding.divo.example.com",
+		token: "member-token",
+		departmentId: scope.departmentId,
+		scope: { ...scope, userId: "other-user" },
+		fetchImpl,
+	});
+	assert.equal(headers[2]["x-divo-native-skill-binding"], undefined);
 });
 
 test("a catalogue that will not answer costs the skills, not the turn", async () => {
@@ -1297,8 +1410,8 @@ test("reasoning is read only from a reasoning block", () => {
 	assert.equal(assistantThinkingText(said.assistantMessageEvent), undefined);
 });
 
-/* Reasoning is accumulated from the start and truncated from the front, so a
-   bound meant for a one-line `say` would freeze a thought at its first two
+/* Reasoning is accumulated from the start and re-sent in full on every delta,
+   so a bound meant for a one-line `say` would freeze a thought at its first two
    sentences and never move again — a window built to let you watch the model
    think, showing two static lines for the length of the run. */
 test("a long thought keeps growing past a sentence's worth", () => {
@@ -1318,6 +1431,46 @@ test("a long thought keeps growing past a sentence's worth", () => {
 	assert.equal(long.type, "thought");
 	assert.ok(long.text.length > short.text.length, "a longer thought must say more");
 	assert.ok(long.text.length > 200, "200 is a say's bound, not a thought's");
+});
+
+/* The freeze this used to have, and the reason raising the bound never fixed
+   it. Reasoning arrives accumulated from the start, so truncating from the
+   front pins the value to the opening paragraph the moment it passes the
+   bound — a model that reasons for 80 seconds publishes the same text eighty
+   times and the run looks hung. The end is the part still moving. */
+test("a thought past its bound keeps moving instead of freezing", () => {
+	const thinking = (text) => projectRuntimeProgress({
+		type: "message_update",
+		assistantMessageEvent: {
+			type: "thinking_delta",
+			contentIndex: 0,
+			partial: { content: [{ type: "thinking", thinking: text }] },
+		},
+	});
+
+	// Each sentence is distinct, so the window's contents can be checked rather
+	// than just its length.
+	const upTo = (n) => Array.from({ length: n }, (_, i) => `Sentence ${i} of the reasoning.`).join(" ");
+
+	const early = thinking(upTo(40));
+	const later = thinking(upTo(400));
+	const latest = thinking(upTo(800));
+
+	for (const [name, value] of [["early", early], ["later", later], ["latest", latest]]) {
+		assert.equal(value.type, "thought", name);
+		assert.ok(value.text.length <= 1200, `${name} must stay within the bound`);
+	}
+
+	// The whole bug in one assertion: these were identical.
+	assert.notEqual(later.text, latest.text, "a thought that grew must not publish the same text");
+	assert.ok(latest.text.includes("Sentence 799"), "the newest sentence must be in the window");
+	assert.ok(!latest.text.includes("Sentence 0 "), "the opening must have scrolled out of it");
+	assert.ok(latest.text.startsWith("…"), "a partial window must say it is one");
+	// Cut on a word boundary — a window opening mid-word reads as corrupted.
+	assert.ok(/^…[A-Za-z]/.test(latest.text), latest.text.slice(0, 40));
+
+	// Short enough to fit is sent whole, with nothing to say it was cut.
+	assert.ok(!early.text.startsWith("…"));
 });
 
 test("the provider's exact answer delta leaves on a separate live stream", () => {

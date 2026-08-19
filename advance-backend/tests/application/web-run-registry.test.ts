@@ -35,8 +35,11 @@ function controlled() {
   return { events, push, end };
 }
 
-function timeline(phase: string): WebRunEvent {
-  return { type: 'timeline', timeline: { phase } };
+/* `liveLabel` is the marker because it is a field the timeline actually has.
+   This used to build `{ phase }`, which the neutral shape stopped carrying —
+   and the compiler could not say so, because `tsconfig.json` excludes `tests`. */
+function timeline(liveLabel: string): WebRunEvent {
+  return { type: 'timeline', timeline: { liveLabel } };
 }
 
 async function collect(

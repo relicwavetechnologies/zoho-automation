@@ -1,28 +1,22 @@
-import { createHash } from 'node:crypto';
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import {
-  GOOGLE_WORKSPACE_MCP_AUTH_CONTRACT,
-  GOOGLE_WORKSPACE_MCP_SOURCE,
   GOOGLE_WORKSPACE_PRODUCTS,
   type GoogleWorkspaceProductDefinition,
 } from '../google/google-workspace-mcp-manifest';
-import { recordSkillRegistryMutation } from './skill-registry-versioning';
 import {
   GOVERNED_DIRECT_ACTION_CRITERION,
   GOVERNED_LOCAL_AVAILABLE_RUNTIME,
   GOVERNED_LOCAL_WORKFLOW_CRITERION,
 } from './governed-local-routing';
+import type { DivoProductivitySystemSkillDefinition } from './divo-productivity-system-skills';
+import {
+  buildSystemSkill,
+  ensureSystemSkillFolder,
+  provisionSystemSkill,
+  type SystemSkillStore,
+} from './system-skill-provisioner';
 
-export interface GoogleWorkspaceSystemSkillDefinition {
-  readonly slug: string;
-  readonly name: string;
-  readonly summary: string;
-  readonly markdown: string;
-  readonly toolIds: readonly string[];
-  readonly tags: readonly string[];
-  readonly aliases: readonly string[];
-  readonly sortOrder: number;
-}
+export type GoogleWorkspaceSystemSkillDefinition = DivoProductivitySystemSkillDefinition;
 
 const GOOGLE_SKILL_ALIASES: Record<GoogleWorkspaceProductDefinition['service'], readonly string[]> = {
   gmail: ['google email', 'inbox', 'mail'],
@@ -51,130 +45,40 @@ export const GOOGLE_WORKSPACE_SYSTEM_SKILLS: readonly GoogleWorkspaceSystemSkill
   }));
 
 const GOOGLE_FOLDER = {
+  key: 'folder:google-workspace',
   name: 'Google Workspace',
   slug: 'google-workspace',
-  departmentId: null,
-  parentId: null,
-  status: 'active',
   sortOrder: 30,
 } as const;
 
-type GoogleSkillStore = Pick<
-  Prisma.TransactionClient,
-  'skillFolder' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant' | 'skillAlias'
->;
-
-type ExistingSkill = {
-  id: string;
-  slug: string;
-  companyId: string;
-  departmentId: string | null;
-  folderId: string | null;
-  scope: string;
-  name: string;
-  summary: string;
-  markdown: string;
-  toolIds: string[];
-  tags: string[];
-  status: string;
-  isSystem: boolean;
-  sortOrder: number;
-  revision: number;
-  createdBy: string | null;
-  updatedBy: string | null;
-  aliases?: { alias: string }[];
-};
-
-const EXISTING_SKILL_SELECT = {
-  id: true,
-  slug: true,
-  companyId: true,
-  departmentId: true,
-  folderId: true,
-  scope: true,
-  name: true,
-  summary: true,
-  markdown: true,
-  toolIds: true,
-  tags: true,
-  status: true,
-  isSystem: true,
-  sortOrder: true,
-  revision: true,
-  createdBy: true,
-  updatedBy: true,
-  aliases: { select: { alias: true }, orderBy: { alias: 'asc' as const } },
-} as const;
+const COMPANY_PLACEMENT = (companyId: string, folderId: string) => ({
+  folderId,
+  departmentId: null,
+  scope: 'company' as const,
+  granteeType: 'company' as const,
+  granteeId: companyId,
+});
 
 export async function provisionGoogleWorkspaceSystemSkills(
-  db: GoogleSkillStore,
+  db: SystemSkillStore,
   companyId: string,
 ): Promise<{ folderId: string; created: number; updated: number; existing: number; skipped: number }> {
-  const folderId = await ensureFolder(db, companyId);
-  let created = 0;
-  let updated = 0;
-  let existing = 0;
-  let skipped = 0;
-
+  const folderId = await ensureSystemSkillFolder(db, companyId, GOOGLE_FOLDER);
+  const totals = { folderId, created: 0, updated: 0, existing: 0, skipped: 0 };
   for (const definition of GOOGLE_WORKSPACE_SYSTEM_SKILLS) {
-    const current = await db.skill.findFirst({
-      where: { companyId, slug: definition.slug, status: { not: 'archived' } },
-      select: EXISTING_SKILL_SELECT,
-    }) as ExistingSkill | null;
-
-    if (current && !current.isSystem) {
-      skipped += 1;
-      continue;
-    }
-
-    let skill: ExistingSkill;
-    if (!current) {
-      skill = await db.skill.create({
-        data: buildGoogleWorkspaceSystemSkill(companyId, folderId, definition),
-      }) as ExistingSkill;
-      await recordSkillRegistryMutation(db, skill, 'system');
-      created += 1;
-    } else if (matchesDefinition(current, folderId, definition)) {
-      skill = current;
-      existing += 1;
-    } else {
-      skill = await db.skill.update({
-        where: { id: current.id },
-        data: {
-          ...definitionFields(folderId, definition),
-          toolIds: [...definition.toolIds],
-          tags: [...definition.tags],
-          revision: { increment: 1 },
-        },
-      }) as ExistingSkill;
-      await recordSkillRegistryMutation(db, skill, 'system');
-      updated += 1;
-    }
-
-    await db.skillAccessGrant.upsert({
-      where: {
-        skillId_granteeType_granteeId: {
-          skillId: skill.id,
-          granteeType: 'company',
-          granteeId: companyId,
-        },
-      },
-      create: {
-        companyId,
-        skillId: skill.id,
-        granteeType: 'company',
-        granteeId: companyId,
-      },
-      update: {},
-    });
-    await syncAliases(db, skill.id, definition.aliases);
+    const result = await provisionSystemSkill(
+      db,
+      companyId,
+      definition,
+      COMPANY_PLACEMENT(companyId, folderId),
+    );
+    totals[result.outcome] += 1;
   }
-
-  return { folderId, created, updated, existing, skipped };
+  return totals;
 }
 
 export async function provisionGoogleWorkspaceSkillsForExistingCompanies(
-  db: Pick<PrismaClient, 'company' | 'skillFolder' | 'skill' | 'skillVersion' | 'skillRegistryRevision' | 'skillAccessGrant' | 'skillAlias'>,
+  db: Pick<PrismaClient, 'company'> & SystemSkillStore,
 ): Promise<{ companies: number; created: number; updated: number; existing: number; skipped: number }> {
   const companies = await db.company.findMany({ select: { id: true } });
   const totals = { companies: companies.length, created: 0, updated: 0, existing: 0, skipped: 0 };
@@ -193,13 +97,7 @@ export function buildGoogleWorkspaceSystemSkill(
   folderId: string,
   definition: GoogleWorkspaceSystemSkillDefinition,
 ): Prisma.SkillUncheckedCreateInput & { id: string } {
-  return {
-    id: deterministicId(companyId, `skill:${definition.slug}`),
-    companyId,
-    ...definitionFields(folderId, definition),
-    toolIds: [...definition.toolIds],
-    tags: [...definition.tags],
-  };
+  return buildSystemSkill(companyId, definition, COMPANY_PLACEMENT(companyId, folderId));
 }
 
 function buildProductSkillMarkdown(product: GoogleWorkspaceProductDefinition): string {
@@ -456,86 +354,4 @@ Return the exact resolved contact identity and the requested fields, while omitt
     default:
       return '';
   }
-}
-
-async function syncAliases(
-  db: GoogleSkillStore,
-  skillId: string,
-  aliases: readonly string[],
-): Promise<void> {
-  await db.skillAlias.deleteMany({
-    where: { skillId, alias: { notIn: [...aliases] } },
-  });
-  if (aliases.length === 0) return;
-  await db.skillAlias.createMany({
-    data: aliases.map((alias) => ({ skillId, alias })),
-    skipDuplicates: true,
-  });
-}
-
-async function ensureFolder(db: GoogleSkillStore, companyId: string): Promise<string> {
-  const existing = await db.skillFolder.findFirst({
-    where: {
-      companyId,
-      departmentId: null,
-      parentId: null,
-      slug: GOOGLE_FOLDER.slug,
-      status: 'active',
-    },
-    select: { id: true },
-  });
-  if (existing) return existing.id;
-
-  const id = deterministicId(companyId, 'folder:google-workspace');
-  const folder = await db.skillFolder.upsert({
-    where: { id },
-    create: { id, companyId, ...GOOGLE_FOLDER },
-    update: { ...GOOGLE_FOLDER },
-    select: { id: true },
-  });
-  return folder.id;
-}
-
-function definitionFields(folderId: string, definition: GoogleWorkspaceSystemSkillDefinition) {
-  return {
-    departmentId: null,
-    folderId,
-    scope: 'company',
-    name: definition.name,
-    slug: definition.slug,
-    summary: definition.summary,
-    markdown: definition.markdown,
-    status: 'active',
-    isSystem: true,
-    sortOrder: definition.sortOrder,
-  } as const;
-}
-
-function matchesDefinition(
-  current: ExistingSkill,
-  folderId: string,
-  definition: GoogleWorkspaceSystemSkillDefinition,
-): boolean {
-  return current.departmentId === null
-    && current.folderId === folderId
-    && current.scope === 'company'
-    && current.slug === definition.slug
-    && current.name === definition.name
-    && current.summary === definition.summary
-    && current.markdown === definition.markdown
-    && current.status === 'active'
-    && current.isSystem
-    && current.sortOrder === definition.sortOrder
-    && arraysEqual(current.toolIds, definition.toolIds)
-    && arraysEqual(current.tags, definition.tags)
-    && arraysEqual((current.aliases ?? []).map((item) => item.alias), [...definition.aliases].sort());
-}
-
-function arraysEqual(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-
-function deterministicId(companyId: string, key: string): string {
-  const hex = createHash('md5').update(`${companyId}:${key}`).digest('hex');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }

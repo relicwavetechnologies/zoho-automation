@@ -52,6 +52,10 @@ export function nativeContractQuery(query: string): string | undefined {
 	return bounded.length >= 3 ? bounded : undefined;
 }
 
+export interface NativeContractBootstrapOptions {
+	readonly contractMode?: "suggested" | "complete";
+}
+
 /**
  * Fetch prompt-relevant provider-native input schemas and run account context.
  *
@@ -64,6 +68,7 @@ export async function fetchNativeContractBootstrap(
 	toolIds: string[],
 	toolCallId: string,
 	query: string,
+	options: NativeContractBootstrapOptions = {},
 ): Promise<{ bootstrap?: WorkBootstrap; failed: Array<{ toolId: string; reason: string }> }> {
 	const resolved = resolveDivoGatewayConfig();
 	if ("error" in resolved) {
@@ -80,6 +85,7 @@ export async function fetchNativeContractBootstrap(
 				payload: {
 					toolIds,
 					...(boundedQuery ? { query: boundedQuery } : {}),
+					...(options.contractMode ? { contractMode: options.contractMode } : {}),
 				},
 				execution: {
 					version: 1,

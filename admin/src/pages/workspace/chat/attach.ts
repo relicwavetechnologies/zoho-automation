@@ -9,13 +9,16 @@
  * told the same thing in a paragraph.
  *
  * So the rules below are deliberately the *short, stable* half of the server's
- * policy — video and opaque binaries, which is the set the container has no
- * skill for and is not going to grow. Anything the browser is unsure about is
- * accepted and sent, because the classifier on the other side is the one that
- * knows, and a guess made here would refuse files that work.
+ * policy — opaque binaries, and the video containers the server has not
+ * committed to reading. Anything the browser is unsure about is accepted and
+ * sent, because the classifier on the other side is the one that knows, and a
+ * guess made here would refuse files that work.
  *
- * Audio is accepted on purpose. It is not staged as a file: the backend
- * transcribes it and hands the run the words, exactly as a Lark voice note.
+ * Audio and video are accepted on purpose, and neither is staged as a file.
+ * Audio is transcribed and the run is handed the words, exactly as a Lark voice
+ * note. Video goes to its own streaming endpoint, is watched, and the run is
+ * handed what was seen and said — which is why it is measured against a much
+ * larger ceiling than everything else here.
  */
 
 /**
@@ -37,9 +40,29 @@ export const MAX_FILE_BYTES = 24 * 1_024 * 1_024
 
 /** What no container skill can open. The same set `container-media` refuses. */
 const UNREADABLE_EXTENSIONS = new Set([
-  'mp4', 'mov', 'avi', 'mkv', 'webm', 'wmv', 'flv', 'm4v', '3gp',
+  'avi', 'mkv', 'wmv', 'flv', 'm4v', '3gp',
   'exe', 'dll', 'so', 'dylib', 'bin', 'dmg', 'iso', 'img', 'apk', 'msi',
 ])
+
+/**
+ * The three containers Divo reads.
+ *
+ * Narrower than what ffmpeg could decode, and deliberately: each one here is a
+ * format the server has committed to, and the server refuses the rest by name
+ * rather than accepting a file it will fail on later. `.avi` and `.mkv` stay in
+ * the unreadable set above for exactly that reason.
+ */
+const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'webm'])
+
+/**
+ * Far larger than `MAX_FILE_BYTES`, because a video does not take that path.
+ *
+ * An ordinary attachment rides the multipart ask and is held in memory server
+ * side; a recording is streamed to its own endpoint and never is. This mirrors
+ * `CONVERSATION_VIDEO_MAX_MB` — generous here costs a round trip at worst,
+ * since the server counts the bytes as they arrive and stops on its own.
+ */
+export const MAX_VIDEO_BYTES = 2_047 * 1_024 * 1_024
 
 const AUDIO_EXTENSIONS = new Set([
   'mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'wma', 'amr',
@@ -51,17 +74,109 @@ export function extensionOf(name: string): string {
 }
 
 /** How the chip draws itself. Not a claim about what the agent will do with it. */
-export type FileKind = 'image' | 'audio' | 'doc'
+export type FileKind = 'image' | 'audio' | 'video' | 'doc'
 
-export function kindOf(file: File): FileKind {
+/**
+ * Enough of a file to name it. A `File` already is one.
+ *
+ * Widened from `File` on purpose: the same chip is drawn twice over — once for
+ * a file the composer is holding, and once for one the thread is reading back
+ * out of a message sent last week, where the bytes are long gone and only the
+ * description survives. Two shapes here would have meant two chips, and two
+ * chips drift.
+ */
+export type Named = { readonly name: string; readonly type: string }
+
+/**
+ * A file that already went, as the transcript knows it.
+ *
+ * `outcome` is the server's word, not a guess made here: audio was heard and
+ * folded into the words rather than staged, and a refused format never reached
+ * the container at all. Both are still things the person attached, which is why
+ * the message shows them.
+ */
+export type SentFile = {
+  name: string
+  /** The browser's mime type as it was sent. Empty when the browser had none. */
+  mime: string
+  bytes: number
+  outcome: 'file' | 'audio' | 'refused' | 'video'
+  /**
+   * The bytes, while this tab still has them.
+   *
+   * Present only for a message sent in this session, which is exactly when a
+   * real thumbnail is possible: reload the page and the transcript comes back
+   * from the server with names and sizes and no content. Carried rather than a
+   * pre-made object URL so the card that draws it also owns revoking it —
+   * a URL minted here would outlive every card that ever showed it.
+   */
+  file?: File
+}
+
+export function kindOf(file: Named): FileKind {
   if (file.type.startsWith('image/')) return 'image'
   if (file.type.startsWith('audio/') || AUDIO_EXTENSIONS.has(extensionOf(file.name))) return 'audio'
+  if (isVideo(file)) return 'video'
   return 'doc'
 }
 
-/** Video and binaries only — see the note at the top about not out-guessing the server. */
+/** A recording Divo will watch, as opposed to a file it will open. */
+export function isVideo(file: Named): boolean {
+  return VIDEO_EXTENSIONS.has(extensionOf(file.name))
+    || (file.type.toLowerCase().startsWith('video/') && videoMimeIsRead(file.type))
+}
+
+function videoMimeIsRead(mime: string): boolean {
+  const type = mime.toLowerCase().split(';')[0]?.trim()
+  return type === 'video/mp4' || type === 'video/quicktime' || type === 'video/webm'
+}
+
+/**
+ * The content type to send a recording under.
+ *
+ * Taken from the extension when the browser offers nothing usable — a `.mov`
+ * dragged from some file managers arrives with an empty type, and the upload
+ * route reads the type from the header rather than the name.
+ */
+export function videoMimeFor(file: Named): string {
+  if (videoMimeIsRead(file.type)) return file.type.toLowerCase().split(';')[0]!.trim()
+  const extension = extensionOf(file.name)
+  if (extension === 'mov') return 'video/quicktime'
+  if (extension === 'webm') return 'video/webm'
+  return 'video/mp4'
+}
+
+/** The same reading, for a file the browser no longer holds. */
+export function kindOfSent(sent: SentFile): FileKind {
+  return kindOf({ name: sent.name, type: sent.mime })
+}
+
+/** What the composer is holding, described the way the thread will read it back. */
+export function sentFrom(file: File): SentFile {
+  return {
+    name: file.name,
+    mime: file.type,
+    bytes: file.size,
+    file,
+    /* Optimistic, and knowingly so. The server decides what an upload really
+       became and the thread shows that answer on reload; this is the same
+       message a moment earlier, when the only honest thing to say is that the
+       file went. Guessing `refused` here would flash a refusal at somebody
+       whose file is about to be read perfectly well. */
+    outcome: isVideo(file) ? 'video' : 'file',
+  }
+}
+
+/**
+ * Formats nothing on the far side can read.
+ *
+ * Video used to be the whole of this rule. It is now the opposite — a recording
+ * is watched — so what remains here is opaque binaries and the video containers
+ * the server has not committed to.
+ */
 export function isUnopenable(file: File): boolean {
   if (kindOf(file) === 'audio') return false
+  if (isVideo(file)) return false
   if (file.type.toLowerCase().startsWith('video/')) return true
   return UNREADABLE_EXTENSIONS.has(extensionOf(file.name))
 }
@@ -105,8 +220,12 @@ export function acceptFiles(current: readonly File[], incoming: readonly File[])
       rejected.push({ name: file.name, reason: 'Divo has no skill that can open this format' })
       continue
     }
-    if (file.size > MAX_FILE_BYTES) {
-      rejected.push({ name: file.name, reason: `larger than ${formatBytes(MAX_FILE_BYTES)}` })
+    /* A recording is measured against its own ceiling: it is streamed to a
+       different endpoint and never held in memory, so the limit that protects
+       the multipart path does not apply to it. */
+    const ceiling = isVideo(file) ? MAX_VIDEO_BYTES : MAX_FILE_BYTES
+    if (file.size > ceiling) {
+      rejected.push({ name: file.name, reason: `larger than ${formatBytes(ceiling)}` })
       continue
     }
     /* Checked per file rather than once up front, so the ones that fit are all

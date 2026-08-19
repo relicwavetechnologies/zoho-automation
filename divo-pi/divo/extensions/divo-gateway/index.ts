@@ -38,11 +38,21 @@ import { registerTypedPlatformTools } from "./typed-platform-tools.ts";
 import { registerDivoLlmProviders } from "../divo-llm/index.ts";
 import { registerLocalDivoBroker, localCliAvailable } from "./local-broker.ts";
 import {
-	enrichGeneratedNativeToolCatalogue,
+	bindNativeContractsToCatalogue,
+	cacheNativeContracts,
+	markCompleteNativeContractCoverage,
+	missingCompleteNativeContractToolIds,
 	providerNativeContractToolIds,
 	registerGeneratedNativeToolCatalogue,
 	type NativeContractCache,
+	type NativeContractCoverage,
 } from "./native-tools/catalogue.ts";
+import { tierNativeContracts } from "./native-tools/contract-tiering.ts";
+import {
+	registerDeepSeekToolSurface,
+	toolIdsForDeepSeekPreload,
+	type DeepSeekToolSurfaceSelection,
+} from "./native-tools/deepseek-tool-surface.ts";
 import { registerNativeSemrushTool } from "./native-tools/semrush.ts";
 import {
 	formatSkillResolveResult,
@@ -96,7 +106,6 @@ const DIVO_SKILL_RESOLVE_PARAMS = Type.Object({
 
 
 const typedToolInvoker = createGatewayTypedToolInvoker();
-const nativeContractCache: NativeContractCache = new Map();
 
 function reportInactiveNativeTools(pi: ExtensionAPI, registered: readonly string[]): void {
 	const activeNames = new Set(pi.getActiveTools());
@@ -107,6 +116,8 @@ function reportInactiveNativeTools(pi: ExtensionAPI, registered: readonly string
 }
 
 export default function divoGatewayExtension(pi: ExtensionAPI) {
+	const nativeContractCache: NativeContractCache = new Map();
+	const completeNativeContractCoverage: NativeContractCoverage = new Set();
 	registerApprovalGate(pi);
 	registerLocalDivoBroker(pi);
 	registerMemoryRecallTool(pi);
@@ -119,6 +130,7 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	const semrushToolName = registerNativeSemrushTool(pi, typedToolInvoker);
 	const nativeCatalogue = registerGeneratedNativeToolCatalogue(pi, typedToolInvoker);
 	const nativeToolNames = [semrushToolName, ...nativeCatalogue.registered];
+	const deepseekToolSurface = registerDeepSeekToolSurface(pi);
 	// Capabilities that are not a governed tool call and would otherwise vanish
 	// with the mega-tool: connected accounts, and reading an attached image.
 	registerTypedPlatformTools(pi, createGatewayPlatformInvoker());
@@ -156,15 +168,27 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			// Outer tools are permanent Pi source. A work resolution may add exact
 			// provider-native input schemas to Google/Airtable wrapper branches.
 			if (result.bootstrap) {
-				const refreshed = enrichGeneratedNativeToolCatalogue(
+				cacheNativeContracts(result.bootstrap.nativeContracts, nativeContractCache);
+				// A resolution already asked the backend for this workflow's operations,
+				// so its contracts are the turn's selection rather than a whole family.
+				const refreshed = bindNativeContractsToCatalogue(
 					pi,
 					typedToolInvoker,
 					result.bootstrap.nativeContracts,
-					nativeContractCache,
 				);
 				if (refreshed.length > 0) {
 					console.error(`[divo-native-tools] enriched ${refreshed.join(",")}`);
 				}
+			}
+			const resolvedToolIds = [
+				...result.results.flatMap((skill) => skill.toolIds ?? []),
+				...(result.bootstrap?.tools.map((tool) => tool.id) ?? []),
+				...result.results.flatMap((skill) =>
+					skill.orchestrationPlan?.phases.map((phase) => phase.toolId) ?? []),
+			];
+			const activated = deepseekToolSurface.activateToolIds(resolvedToolIds);
+			if (activated.length > 0) {
+				console.error(`[divo-deepseek-tools] skill activation ${activated.join(",")}`);
 			}
 			return {
 				content: [{ type: "text", text: formatSkillResolveResult(result) }],
@@ -173,54 +197,134 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		},
 	});
 
+	const preparationTrace = registerTraceCapture(pi);
 
-	pi.on("before_agent_start", async (event, ctx) => {
-		refreshDivoRuntime(pi);
-		const correlation = await readDivoRunCorrelation().catch(() => undefined);
-		reportInactiveNativeTools(pi, nativeToolNames);
-		// The complete outer catalogue is already live. Fetch only to preload
-		// prompt-relevant provider-native input schemas for reachable Google and
-		// Airtable tools; failure leaves their safe describe-then-call contract.
-		const departmentContext = await readDepartmentPersonaContext();
+	/**
+	 * Load provider-native contracts the turn's selection can actually reach.
+	 *
+	 * Binding registers Pi tools, and registration re-expands Pi's active tool
+	 * set — so this runs while the surface is still being decided, never after it
+	 * is applied. A complete bundle is fetched once per backend tool and reused;
+	 * failure is recoverable, leaving the safe describe-then-call contract.
+	 */
+	async function preloadNativeContracts(
+		prompt: string,
+		permittedToolIds: readonly string[],
+		selection: DeepSeekToolSurfaceSelection,
+	): Promise<void> {
 		const reachableToolIds = providerNativeContractToolIds(
-			departmentContext?.capabilityBootstrap?.availableTools
-				?.map((tool) => tool.toolId) ?? [],
+			toolIdsForDeepSeekPreload(permittedToolIds, selection),
 		);
-		if (reachableToolIds.length > 0) {
-			try {
-				const fetched = await fetchNativeContractBootstrap(
-					reachableToolIds,
-					"native-inputs-eager",
-					event.prompt,
-				);
-				const refreshed = fetched.bootstrap
-					? enrichGeneratedNativeToolCatalogue(
+		const missingContractToolIds = missingCompleteNativeContractToolIds(
+			reachableToolIds,
+			completeNativeContractCoverage,
+		);
+		if (reachableToolIds.length > 0 && missingContractToolIds.length === 0) {
+			console.error(`[divo-native-tools] complete contract preload already cached for ${reachableToolIds.length} tools`);
+		}
+		if (missingContractToolIds.length === 0) return;
+		try {
+			const { covered, fetched, refreshed, tiered } = await preparationTrace.measure(
+				"pi.prepare.contracts",
+				"gateway",
+				async () => {
+					const fetched = await fetchNativeContractBootstrap(
+						missingContractToolIds,
+						"native-inputs-eager",
+						prompt,
+						{ contractMode: "complete" },
+					);
+					if (fetched.bootstrap) {
+						cacheNativeContracts(fetched.bootstrap.nativeContracts, nativeContractCache);
+					}
+					const tiered = tierNativeContracts({
+						cache: nativeContractCache,
+						visibleToolIds: reachableToolIds,
+						query: prompt,
+					});
+					const refreshed = bindNativeContractsToCatalogue(
 						pi,
 						typedToolInvoker,
-						fetched.bootstrap.nativeContracts,
-						nativeContractCache,
-					)
-					: [];
-				console.error(`[divo-native-tools] ${JSON.stringify({
-					refreshed: refreshed.length,
-					failed: fetched.failed,
-				})}`);
-			} catch (error) {
-				// An absent nested preload is recoverable: describe remains available
-				// and the backend still validates the native input before execution.
-				console.error(`[divo-native-tools] input enrichment failed: ${String(error)}`);
-			}
+						tiered.bound,
+					);
+					const hasUnavailableContract = fetched.bootstrap?.advisories
+						.some(advisory => advisory.code === "native_contracts_unavailable") ?? false;
+					const covered = fetched.bootstrap && !hasUnavailableContract
+						? markCompleteNativeContractCoverage(
+							fetched.bootstrap.nativeContracts,
+							completeNativeContractCoverage,
+						)
+						: [];
+					return { covered, fetched, refreshed, tiered };
+				},
+			);
+			console.error(`[divo-native-tools] ${JSON.stringify({
+				refreshed: refreshed.length,
+				failed: fetched.failed,
+				covered,
+				boundContracts: tiered.bound.length,
+				boundContractBytes: tiered.boundBytes,
+				deferredContracts: tiered.deferred.length,
+				deferredContractBytes: tiered.deferredBytes,
+				completeCoverage: [...completeNativeContractCoverage],
+			})}`);
+		} catch (error) {
+			console.error(`[divo-native-tools] contract preload failed: ${String(error)}`);
 		}
-		const { systemPrompt, skillSummary } = composeRunSystemPrompt({
-			// Eager registration refreshes Pi's base prompt with each new tool's
-			// guidelines. The event snapshot predates that refresh.
-			basePrompt: ctx.getSystemPrompt(),
+	}
+	let preparedDepartmentContext: Awaited<ReturnType<typeof readDepartmentPersonaContext>> | undefined;
+	pi.on("input", async (event, ctx) => {
+		// A queued steer/follow-up belongs to the currently running agent loop.
+		// Do not replace its tool surface mid-call; the search tool remains the
+		// safe recovery path if that queued message needs a different capability.
+		if (event.streamingBehavior !== undefined) return { action: "continue" };
+		preparationTrace.startPreparation();
+		return preparationTrace.measure("pi.prepare.input", "persistence", async () => {
+			preparedDepartmentContext = await readDepartmentPersonaContext();
+			const availableTools = preparedDepartmentContext?.capabilityBootstrap?.availableTools;
+			const permittedToolIds = availableTools?.map((tool) => tool.toolId) ?? [];
+			const selection = deepseekToolSurface.prepareTurn({
+				prompt: event.text,
+				model: ctx.model,
+				...(availableTools ? { allowedToolIds: permittedToolIds } : {}),
+			});
+			// Decide, then bind, then apply. Binding registers tools and registration
+			// re-expands Pi's active set, so applying first would silently discard the
+			// narrower surface this turn just chose.
+			await preloadNativeContracts(event.text, permittedToolIds, selection);
+			deepseekToolSurface.applyTurn();
+			return { action: "continue" as const };
+		});
+	});
+
+	pi.on("before_agent_start", async (event) => {
+		const toolSurfaceSelection = deepseekToolSurface.currentSelection();
+		const correlation = await preparationTrace.measure("pi.prepare.runtime", "runtime", async () => {
+			refreshDivoRuntime(pi);
+			const value = await readDivoRunCorrelation().catch(() => undefined);
+			if (toolSurfaceSelection.mode === "eager") {
+				reportInactiveNativeTools(pi, nativeToolNames);
+			} else {
+				reportInactiveNativeTools(pi, toolSurfaceSelection.selectedToolNames);
+			}
+			return value;
+		});
+		const departmentContext = await preparationTrace.measure(
+			"pi.prepare.context",
+			"persistence",
+			() => preparedDepartmentContext ?? readDepartmentPersonaContext(),
+		);
+		preparedDepartmentContext = undefined;
+		const { systemPrompt, skillSummary, promptLedger } = await preparationTrace.measure("pi.prepare.prompt", "runtime", () => composeRunSystemPrompt({
+			// Input-time tool retrieval happens before this base-prompt snapshot,
+			// so it contains guidance only for the exact active DeepSeek surface.
+			basePrompt: event.systemPrompt,
 			departmentContext,
 			skills: event.systemPromptOptions.skills,
 			cliAvailable: localCliAvailable(),
 			threadId: correlation?.threadId,
 			environment: process.env,
-		});
+		}));
 		// The Pi-prompt strip is string matching against upstream code: if a marker
 		// stops matching it does nothing, and does it silently. Anything other
 		// than all-zero here means an upgrade moved the text.
@@ -231,6 +335,10 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		if (skillSummary.native > 0) {
 			console.error(`[divo-skills] ${JSON.stringify(skillSummary)}`);
 		}
+		console.error(`[divo-prompt-ledger] ${JSON.stringify({
+			totalBytes: Buffer.byteLength(systemPrompt),
+			sections: promptLedger,
+		})}`);
 		if (systemPrompt === event.systemPrompt) {
 			return undefined;
 		}
@@ -238,10 +346,6 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 			systemPrompt,
 		};
 	});
-
-	// Capture a detailed trace of every desktop run (tool + model calls) and
-	// stream it to the backend. Fire-and-forget; adds no user-facing latency.
-	registerTraceCapture(pi);
 
 	pi.on("session_start", (_event, ctx) => {
 		const resolved = resolveDivoGatewayConfig();

@@ -1,38 +1,37 @@
 /**
  * "Company" scope — the admin surface.
  *
- * The four list screens here (overview, AI Ops, activity, connections) are the
- * layer that decides what an admin looks at. They used to be flat lists sitting
- * above very detailed drill-ins, which is backwards: you could study one run
- * closely but had no way to find the run worth studying. They now filter,
- * summarise and explain, and every row leads into the detail screens.
+ * The list screens here (overview, AI Ops, activity) are the layer that decides
+ * what an admin looks at. They used to be flat lists sitting above very
+ * detailed drill-ins, which is backwards: you could study one run closely but
+ * had no way to find the run worth studying. They now filter, summarise and
+ * explain, and every row leads into the detail screens.
  *
- * The company ceiling also finally sits visibly above the team grants that it
- * silently clamps, in the same shell as the member and manager views.
+ * Two screens have left. The company ceiling editor is gone — the ceiling is
+ * still enforced and still explained wherever it locks something, but nothing
+ * here edits it. The company connections page is gone too: its coverage panels
+ * asked a question nobody was answering, and the three connections the company
+ * actually holds moved to Connected apps, where the rest of what Divo can reach
+ * is already read.
  */
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import {
-  Brain, Building2, Check, ChevronRight, CircleAlert, Clock, Copy, Info, KeyRound, Link2, Lock, Plus,
-  Search, ShieldCheck, Sparkles, Trash2, TriangleAlert, Users,
+  Building2, ChevronRight, Clock, Info, KeyRound, Lock,
+  Search, ShieldCheck, TriangleAlert, Users,
 } from 'lucide-react'
-import { notify } from '@/lib/notify'
 import {
-  Bar, ClickRow, DataNote, Empty, Fade, NoAccess, PageHeader, Panel, Prompt, ProviderMark, Seg, Skel,
+  Bar, ClickRow, Empty, Fade, PageHeader, Panel, Prompt, Seg, Skel,
   SkelRows, Switch, compact, money, useStaged,
 } from './ui'
 import type { Toast } from './ui'
-import type { Provider } from './fixtures'
-import { useConnections, type ProviderStatus } from './data/use-connections'
-import { useTokenConnect, type AirtableAccessMode } from './data/use-company-connections'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import {
   ROLE_LABEL, ago, displayName, durationLabel, initialsOf,
-  useAuditLog, useCompanyCeiling, useCompanyDepartments, useDepartmentSpend, useOverview, useRuns,
-  type CeilingAction, type CeilingTool, type Run,
+  useAuditLog, useCompanyDepartments, useDepartmentSpend, useOverview, useRuns,
+  type Run,
 } from './data/use-company'
 import {
   useCompanyDaily, useCompanyScope, useDirectory, useSpendByModel, useSpendMembers,
-  type DirectoryMember,
 } from '@/cursor/use-spend'
 import { KEY_PROVIDERS, useProxyStatus, useSaveProxyKey, type KeyScope } from '@/cursor/use-proxy'
 import { useCompanyForwards } from './data/use-mail-governance'
@@ -315,7 +314,7 @@ export function CompanyHome({ replay, go }: Props) {
                           <b>{d.name}</b>
                           <p>{d.memberCount} people · {d.managerCount ? `${d.managerCount} manager${d.managerCount > 1 ? 's' : ''}` : 'no manager'}</p>
                           <div style={{ marginTop: 9, maxWidth: 300 }}>
-                            <Bar pct={share} tone={share > 40 ? 'brand' : undefined} />
+                            <Bar pct={share} tone={share > 40 ? 'mark' : undefined} />
                           </div>
                         </div>
                         <span className="ws-sub">{money(spent)}</span>
@@ -349,155 +348,6 @@ export function CompanyHome({ replay, go }: Props) {
             )}
           </Panel>
         </div>
-      </div>
-    </>
-  )
-}
-
-/* ══ The company ceiling ═══════════════════════════════
-   The one screen that explains the whole permission model: this is the
-   ceiling, teams grant beneath it, and a team grant above it silently does
-   nothing. Placing it in the same app as the team matrix is the point. */
-export function CompanyPolicy({ replay, toast }: Props) {
-  const { session } = useAdminAuth()
-  const [r1] = useStaged([300], replay)
-  const [role, setRole] = useState<string | null>(null)
-  const [saving, setSaving] = useState<string | null>(null)
-  const { tools, loading, refused, failed, refresh, setCeiling } = useCompanyCeiling()
-
-  // Roles come from the snapshot rather than a hardcoded pair, because a
-  // company can define its own and a missing column is a permission nobody
-  // can see they granted.
-  const roles = tools[0]?.roles.map((r) => r.role) ?? []
-  const selected = role && roles.includes(role) ? role : roles[0] ?? null
-  const columns = useMemo(() => {
-    const seen: string[] = []
-    for (const t of tools) for (const a of t.supportedActions) if (!seen.includes(a)) seen.push(a)
-    return seen
-  }, [tools])
-
-  const cellFor = (tool: CeilingTool, action: string) =>
-    tool.roles.find((r) => r.role === selected)?.actions.find((a) => a.actionGroup === action)
-
-  const toggle = async (tool: CeilingTool, action: string, current: CeilingAction) => {
-    if (!selected) return
-    const key = `${tool.tool.toolId}:${action}`
-    setSaving(key)
-    try {
-      await setCeiling(tool.tool.toolId, selected, action, !current.storedAllowed)
-      toast(current.storedAllowed
-        ? `No team may grant ${tool.actionLabels[action] ?? action} now`
-        : `Teams may grant ${tool.actionLabels[action] ?? action}`)
-    } catch {
-      toast('Could not change the ceiling', 'error')
-    } finally {
-      setSaving(null)
-    }
-  }
-
-  return (
-    <>
-      <PageHeader
-        eyebrow={session?.companyName ?? 'Company'}
-        title="Company ceiling"
-        description="The highest anything can go. A department manager grants within this — never above it."
-      />
-      <div className="ws-stack">
-        <div className="ws-ceiling">
-          <TriangleAlert size={14} />
-          <div>
-            <b>Turning something off here overrides every team.</b>{' '}
-            A manager who has already granted it will see the permission go quiet rather than disappear — which is
-            why the team screens show a lock and explain it, instead of failing later.
-          </div>
-        </div>
-
-        {roles.length > 1 ? (
-          <div className="filters">
-            <Seg
-              value={selected ?? ''}
-              onChange={setRole}
-              options={roles.map((r) => ({ value: r, label: ROLE_LABEL[r] ?? r }))}
-            />
-          </div>
-        ) : null}
-
-        <Panel title="What may be granted at all" source="permissions">
-          {!r1 || loading ? <SkelRows n={6} icon={false} /> : refused ? (
-            <NoAccess
-              what="the company ceiling"
-              who="Only a company admin can set what departments are allowed to grant. A manager sets grants within it, from their own team."
-            />
-          ) : failed ? (
-            <Empty
-              icon={TriangleAlert}
-              title="Could not read the ceiling"
-              body="The per-tool reads did not come back, so there is nothing to show. This is not a statement that the company grants nothing."
-              action={<button type="button" className="btn" onClick={() => void refresh()}>Try again</button>}
-            />
-          ) : tools.length === 0 ? (
-            <Empty title="No configurable tools" />
-          ) : (
-            <Fade>
-              <div style={{ overflowX: 'auto' }}>
-                <table className="ws-matrix">
-                  <thead>
-                    <tr>
-                      <th>Tool</th>
-                      {columns.map((a) => <th key={a} className="act">{a}</th>)}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tools.map((tool) => (
-                      <tr key={tool.tool.toolId}>
-                        <td>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                            <span style={{ fontWeight: 500 }}>{tool.tool.name}</span>
-                          </div>
-                        </td>
-                        {columns.map((action) => {
-                          if (!tool.supportedActions.includes(action)) {
-                            return <td key={action} className="act"><span className="ws-cell-na">·</span></td>
-                          }
-                          const cell = cellFor(tool, action)
-                          if (!cell) return <td key={action} className="act"><span className="ws-cell-na">·</span></td>
-                          // The whole tool being off for this role outranks the
-                          // action row, so the action can read "allow" and mean
-                          // nothing. Show the clamp rather than the lie.
-                          const clamped = cell.clampReason !== null
-                          const key = `${tool.tool.toolId}:${action}`
-                          return (
-                            <td key={action} className="act">
-                              <button
-                                type="button"
-                                className="ws-cell"
-                                data-on={cell.effectiveAllowed}
-                                data-locked={clamped}
-                                disabled={saving === key}
-                                title={
-                                  clamped
-                                    ? `The whole tool is switched off for ${ROLE_LABEL[selected ?? ''] ?? selected}, so this action does nothing`
-                                    : `${cell.effectiveAllowed ? 'Teams may grant' : 'No team may grant'} ${tool.actionLabels[action] ?? action}`
-                                      + (cell.storedProvenance === 'override' ? ' — set here' : ' — company default')
-                                }
-                                onClick={() => void toggle(tool, action, cell)}
-                              >
-                                {clamped ? <Lock size={11} /> : cell.effectiveAllowed ? <Check size={13} /> : null}
-                              </button>
-                            </td>
-                          )
-                        })}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </Fade>
-          )}
-          <div className="ws-panel-foot">
-            An action with no stored row is allowed by default — the ceiling only ever narrows what the tool itself permits.
-          </div>
-        </Panel>
       </div>
     </>
   )
@@ -637,382 +487,6 @@ export function CompanyDepartments({ replay, toast, go }: Props) {
         />
       ) : null}
     </>
-  )
-}
-
-/* ══ Company connections ═══════════════════════════════
-   Two different questions, kept apart. "What has the company connected" is a
-   config list. "Who is about to break" is coverage — and it is the one that
-   costs a day of failed runs when nobody looks at it. */
-
-/**
- * The people a provider is missing, in a form somebody can act on.
- *
- * This was a flat two-column dump cut off at twenty with "and 93 more" under
- * it. Three things were wrong with that, and only the third is cosmetic: the
- * ninety-three were unreachable, so the list could not answer "is so-and-so
- * connected"; there was nothing to *do* with it, though the only reason to open
- * it is to go and chase people; and it was a wall of text.
- *
- * Grouped by department, because that is who chases them. An admin does not
- * email a hundred people individually — they ask each manager about their own,
- * and the grouping is that conversation already sorted. Everyone with no
- * department falls into one group at the end rather than being dropped.
- */
-function MissingRoster({ people, provider }: {
-  people: readonly DirectoryMember[]
-  provider: string
-}) {
-  const [query, setQuery] = useState('')
-  /*
-   * The addresses, shown for manual copying when the clipboard refuses.
-   *
-   * `navigator.clipboard` is not always available to a page that is doing
-   * nothing wrong: browsers deny it to a backgrounded or unfocused document,
-   * and embedded views can withhold it entirely. A button whose whole job is to
-   * hand you a list should not end in an apology, so the fallback puts the list
-   * where it can be selected and copied by hand.
-   */
-  const [manual, setManual] = useState<string | null>(null)
-  const manualBox = useRef<HTMLTextAreaElement | null>(null)
-
-  // Selected on arrival: the point of the fallback is that one ⌘C finishes it.
-  useEffect(() => {
-    if (manual && manualBox.current) {
-      manualBox.current.focus()
-      manualBox.current.select()
-    }
-  }, [manual])
-
-  const groups = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    const matches = q
-      ? people.filter((p) =>
-        (p.name ?? '').toLowerCase().includes(q) || p.email.toLowerCase().includes(q))
-      : people
-
-    const by = new Map<string, DirectoryMember[]>()
-    for (const p of matches) {
-      // Somebody in two departments is a real person in both, and either
-      // manager may be the one who gets them connected. Listing them under each
-      // beats picking one and hiding the other route.
-      const names = p.departmentNames.length ? p.departmentNames : ['No department']
-      for (const name of names) {
-        const list = by.get(name)
-        if (list) list.push(p); else by.set(name, [p])
-      }
-    }
-    return [...by.entries()]
-      .map(([name, list]) => ({ name, list }))
-      // Biggest first — that is where the effort goes. "No department" last
-      // whatever its size: it is a gap in the org chart, not a team to ask.
-      .sort((a, b) =>
-        (a.name === 'No department' ? 1 : 0) - (b.name === 'No department' ? 1 : 0)
-        || b.list.length - a.list.length)
-  }, [people, query])
-
-  const shown = groups.reduce((n, g) => n + g.list.length, 0)
-
-  const copyAll = async () => {
-    const emails = people.map((p) => p.email).join(', ')
-    try {
-      await navigator.clipboard.writeText(emails)
-      setManual(null)
-      notify.done(`Copied ${people.length} address${people.length === 1 ? '' : 'es'}`, `Everyone still missing ${provider}.`)
-    } catch {
-      // Not a failure to report and walk away from — the addresses are right
-      // here, so they get shown instead.
-      setManual(emails)
-      notify.heads('Copy them by hand', 'Your browser blocked the clipboard, so the addresses are selected below.')
-    }
-  }
-
-  return (
-    <div className="ws-roster">
-      <div className="ws-roster-top">
-        <div className="search">
-          <Search size={13} />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={`Search ${people.length} people`}
-          />
-        </div>
-        <button type="button" className="btn" onClick={() => void copyAll()}>
-          <Copy size={12} /> Copy all
-        </button>
-      </div>
-
-      {manual ? (
-        <textarea
-          ref={manualBox}
-          className="ws-roster-manual"
-          readOnly
-          rows={3}
-          value={manual}
-          onBlur={() => setManual(null)}
-        />
-      ) : null}
-
-      {shown === 0 ? (
-        <p className="ws-sub ws-roster-none">Nobody here matches “{query.trim()}”.</p>
-      ) : (
-        <div className="ws-roster-list">
-          {groups.map((g) => (
-            <div className="ws-roster-grp" key={g.name}>
-              <div className="ws-roster-head">
-                <b>{g.name}</b><span>{g.list.length}</span>
-              </div>
-              {g.list.map((p) => (
-                <div className="ws-roster-row" key={`${g.name}:${p.userId}`}>
-                  <span className="n">{displayName(p.name, p.email)}</span>
-                  <span className="e">{p.email}</span>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-export function CompanyConnections({ replay, toast, go }: Props) {
-  const { session } = useAdminAuth()
-  const [r1, r2] = useStaged([280, 540], replay)
-  const [open, setOpen] = useState<string | null>(null)
-  // Which provider's key dialog is open, if any.
-  const [tokenFor, setTokenFor] = useState<'airtable' | 'aitable' | null>(null)
-  const [airtableMode, setAirtableMode] = useState<AirtableAccessMode>('read_write')
-  const { token, companyId } = useAdminScope()
-  const { data: directoryData, isLoading: loading } = useDirectory(token, companyId)
-  const directory = directoryData ?? []
-  const { byProvider, refresh: refreshConnections } = useConnections()
-  const tokenConnect = useTokenConnect()
-
-  /**
-   * Coverage for the two providers the directory actually reports.
-   *
-   * There is no company-wide connection route — only per-member — so anything
-   * beyond Lark and Google would mean one request per person on page load.
-   * Two real rows beat six invented ones, and the gap is stated rather than
-   * filled in.
-   */
-  const coverage = [
-    {
-      key: 'lark',
-      name: 'Lark',
-      connected: directory.filter((p) => p.larkLinked),
-      missing: directory.filter((p) => !p.larkLinked),
-      consequence: 'Divo in Lark cannot recognise them — it answers as if they were a stranger.',
-    },
-    {
-      key: 'google_workspace',
-      name: 'Google Workspace',
-      connected: directory.filter((p) => p.googleConnected),
-      missing: directory.filter((p) => !p.googleConnected),
-      consequence: 'Every Gmail, Drive, Sheets or Calendar step fails for them, mid-task.',
-    },
-  ]
-
-  return (
-    <>
-      <PageHeader
-        eyebrow={session?.companyName ?? 'Company'}
-        title="Connections"
-        description="What Divo can reach on your people's behalf. A permission without a connection does nothing."
-      />
-      <div className="ws-stack">
-        <Panel title="Coverage" description="Who is connected, and what breaks for whoever is not" source="connections">
-          {!r1 || loading ? <SkelRows n={2} /> : (
-            <Fade>
-              <div className="ws-rows">
-                {coverage.map((row) => {
-                  const pct = directory.length ? Math.round((row.connected.length / directory.length) * 100) : 0
-                  const isOpen = open === row.key
-                  return (
-                    <div className="ws-row" key={row.key} style={{ alignItems: 'flex-start' }}>
-                      <span className="ws-ic" data-tone={row.missing.length ? 'warn' : 'ok'}><Link2 size={14} /></span>
-                      <div className="ws-row-main">
-                        <b>{row.name}<span className="ws-tag">{pct}%</span></b>
-                        <p>
-                          {row.connected.length} of {directory.length} connected
-                          {row.missing.length ? ` · ${row.consequence}` : ' · nobody is missing'}
-                        </p>
-                        <div style={{ marginTop: 9, maxWidth: 320 }}>
-                          <Bar pct={pct} tone={pct < 60 ? 'brand' : undefined} />
-                        </div>
-                        {isOpen && row.missing.length ? (
-                          <MissingRoster people={row.missing} provider={row.name} />
-                        ) : null}
-                        {row.missing.length ? (
-                          <div style={{ marginTop: 9 }}>
-                            <button type="button" className="ws-more" data-open={isOpen} onClick={() => setOpen(isOpen ? null : row.key)}>
-                              <ChevronRight size={13} />{isOpen ? 'Hide' : `Who is missing · ${row.missing.length}`}
-                            </button>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </Fade>
-          )}
-          <div className="ws-panel-foot">
-            <DataNote source="connectionCoverage" />
-            Only Lark and Google are reported company-wide. The rest are visible one person at a time.
-          </div>
-        </Panel>
-
-        <Panel title="Company-held connections" description="Connected once by an admin and shared, rather than per person">
-          {!r2 ? <SkelRows n={2} /> : (
-            <Fade>
-              <div className="ws-rows">
-                <ClickRow onOpen={() => go('co-web-search')}>
-                  <span className="ws-ic"><Search size={14} /></span>
-                  <div className="ws-row-main">
-                    <b>Web search</b>
-                    <p>A company-wide search key with its own credit budget — the one shared connection that exists today</p>
-                  </div>
-                  <span className="ws-sub">Manage</span>
-                </ClickRow>
-
-                {/* Airtable and AITable are the two providers a key connects
-                    rather than a sign-in, and both routes admit company admins
-                    only — the connection they make belongs to the company, so
-                    it is not a decision one member gets to take for everybody.
-                    Neither had any path at all in this app before. */}
-                <TokenProviderRow
-                  provider="airtable"
-                  name="Airtable"
-                  blurb="A personal access token, if you would rather not sign in through Airtable's OAuth."
-                  action="Connect with a token"
-                  status={byProvider.get('airtable')}
-                  onOpen={() => setTokenFor('airtable')}
-                />
-                <TokenProviderRow
-                  provider="aitable"
-                  name="AITable"
-                  blurb="Connected with an API key. There is no sign-in flow for AITable."
-                  action="Connect with a key"
-                  status={byProvider.get('aitable')}
-                  onOpen={() => setTokenFor('aitable')}
-                />
-              </div>
-            </Fade>
-          )}
-          <div className="ws-panel-foot">
-            <ShieldCheck size={13} />
-            Tokens and credentials never leave the backend — this shows that a connection exists, never what is in it
-          </div>
-        </Panel>
-
-        <Panel title="Per-person connections">
-          <div className="ws-panel-body">
-            <p className="ws-sub" style={{ lineHeight: 1.6 }}>
-              Everything else is connected by each person from their own <b>Connected apps</b> page, and governed from
-              their profile. Open anyone in <b>Everyone</b> to see what they have linked and set policy on it.
-            </p>
-            <div style={{ marginTop: 14 }}>
-              <button type="button" className="btn" onClick={() => go('co-people')}>Open the directory</button>
-            </div>
-          </div>
-        </Panel>
-      </div>
-
-      {/* The value is typed here, posted, and never held: neither route returns
-          the token it was given, and nothing on this page reads one back. */}
-      {tokenFor === 'airtable' ? (
-        <Prompt
-          title="Connect Airtable with a token"
-          description="Make a personal access token in Airtable with access to the bases Divo should work in. It goes straight to the backend and is never shown again."
-          label="Personal access token"
-          placeholder="pat…"
-          confirm="Connect"
-          secret
-          extra={
-            <>
-              <div className="ws-lbl">What Divo may do with it</div>
-              <div style={{ marginTop: 8 }}>
-                <Seg
-                  value={airtableMode}
-                  onChange={setAirtableMode}
-                  options={[
-                    { value: 'read_write', label: 'Read and write' },
-                    { value: 'read_only', label: 'Read only' },
-                  ]}
-                />
-              </div>
-              <p className="ws-sentence-note">
-                This caps what Divo will attempt. The token's own scopes still apply on top — the narrower of the two wins.
-              </p>
-            </>
-          }
-          onClose={() => setTokenFor(null)}
-          onConfirm={async (value) => {
-            try {
-              await tokenConnect.connectAirtable(value, { accessMode: airtableMode })
-              await refreshConnections()
-              toast('Airtable connected for the company')
-            } catch (e) {
-              toast(e instanceof Error ? e.message : 'Could not connect Airtable', 'error')
-            }
-          }}
-        />
-      ) : null}
-
-      {tokenFor === 'aitable' ? (
-        <Prompt
-          title="Connect AITable with a key"
-          description="Divo checks the key against AITable and stores which spaces it can reach. It goes straight to the backend and is never shown again."
-          label="API key"
-          placeholder="usk…"
-          confirm="Connect"
-          secret
-          onClose={() => setTokenFor(null)}
-          onConfirm={async (value) => {
-            try {
-              await tokenConnect.connectAitable(value)
-              await refreshConnections()
-              toast('AITable connected for the company')
-            } catch (e) {
-              toast(e instanceof Error ? e.message : 'Could not connect AITable', 'error')
-            }
-          }}
-        />
-      ) : null}
-    </>
-  )
-}
-
-/** A provider connected by key rather than by sign-in. */
-function TokenProviderRow({ provider, name, blurb, action, status, onOpen }: {
-  provider: Provider
-  name: string
-  blurb: string
-  action: string
-  status?: ProviderStatus
-  onOpen: () => void
-}) {
-  const accounts = status?.connections ?? []
-  return (
-    <div className="ws-row" style={{ alignItems: 'flex-start' }}>
-      <ProviderMark provider={provider} />
-      <div className="ws-row-main">
-        <b>
-          {name}
-          {accounts.length ? <span className="ws-tag">{accounts.length} connected</span> : null}
-        </b>
-        <p>{status?.error ?? blurb}</p>
-        {accounts.length ? (
-          <div className="ws-attn-meta" style={{ marginTop: 7 }}>
-            {accounts.map((c) => <span key={c.connectionId}>{c.accountEmail ?? c.label}</span>)}
-          </div>
-        ) : null}
-      </div>
-      <button type="button" className="btn" onClick={onOpen}>{action}</button>
-    </div>
   )
 }
 
@@ -1481,7 +955,7 @@ export function CompanyAiOps({ replay, go }: Props) {
                       </div>
                       <Bar
                         pct={totalModel > 0 ? (m.costUsd / totalModel) * 100 : 0}
-                        tone={totalModel > 0 && m.costUsd / totalModel > 0.4 ? 'brand' : undefined}
+                        tone={totalModel > 0 && m.costUsd / totalModel > 0.4 ? 'mark' : undefined}
                       />
                     </div>
                   ))}
@@ -1689,7 +1163,7 @@ export function CompanyGuardrails({ replay, toast }: Props) {
                         </p>
                         {budget !== null ? (
                           <div style={{ marginTop: 8, maxWidth: 260 }}>
-                            <Bar pct={(m.spend30d / budget) * 100} tone={m.spend30d / budget > 0.8 ? 'brand' : undefined} />
+                            <Bar pct={(m.spend30d / budget) * 100} tone={m.spend30d / budget > 0.8 ? 'mark' : undefined} />
                           </div>
                         ) : null}
                       </div>

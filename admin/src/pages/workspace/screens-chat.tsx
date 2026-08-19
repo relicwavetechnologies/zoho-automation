@@ -23,24 +23,34 @@
  * in the open, governed tools apply the same backend policy, and what comes
  * back is an answer rather than a wall of rows.
  */
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { FileText } from 'lucide-react'
 import { Navigate, useParams } from 'react-router-dom'
-import { Chart } from './chat/charts'
-import { Artifact, Composer, Preview, Say } from './chat/parts'
-import { splitTrace } from './chat/lifecycle'
+import { notify } from '@/lib/notify'
+import { Composer } from './chat/composer'
+import { useDecisions } from './data/use-decisions'
+import { firstOpen } from './decisions/decision'
+import { DecisionCard } from './decisions/decision.view'
+import { Say } from './chat/answer/answer.view'
 import { PiTraceTimeline } from './chat/trace'
 import { PinSpacer } from './chat/pin'
-import { DropVeil, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
+import { DropVeil, SentChips, useAttachments, useDropGuard, useFileDrop } from './chat/attach.view'
 import { CopyButton } from './chat/copy'
 import { clearHandoff, peekHandoff } from './chat/handoff'
 import { useThreadRun, type Exchange } from './chat/live'
+import { PlanPanel } from './chat/plan.view'
+import { LoadEarlier, ThreadSkeleton } from './chat/loading.view'
 import {
-  isThreadId, newThreadId, renameThread, threadStarted, threadsChanged,
+  isThreadId, newThreadId, renameThread, threadRenamed, threadStarted, threadsChanged,
 } from './chat/threads'
 import { generateThreadTitle } from './chat/title'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
-import { TRANSCRIPTS } from './chat/transcripts'
+import { ArtifactWorkspace } from './artifacts/panel'
+import { restoreThreadArtifacts } from './artifacts/open'
+import { setOpen, useArtifacts } from './artifacts/store'
+import { EXAMPLES } from './chat/examples'
 import { ToolMark } from './chat/tools'
+import { reconcileModelSelection, useChatModelChoice, type ModelSelection } from './chat/model-choice'
 import '@/styles/beautiful.css'
 
 /**
@@ -84,11 +94,18 @@ export function WorkspaceChat() {
 function ChatThread({ threadId }: { threadId: string }) {
   const handoff = useMemo(peekHandoff, [])
   const { token } = useAdminAuth()
+  const modelChoice = useChatModelChoice()
+  /* What this conversation produced before today. Restored into the panel's
+     tabs but not shown: a reader opening last week's thread came back for the
+     conversation, and a panel that springs out at them is answering a question
+     they did not ask. The header's control is how they ask it. */
+  useEffect(() => { void restoreThreadArtifacts(threadId, token) }, [threadId, token])
   const [draft, setDraft] = useState('')
   /* Whether the thread has been scrolled at all — the header's hairline is
      drawn only when something is genuinely passing under it. */
   const [scrolled, setScrolled] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
+
   const column = useRef<HTMLDivElement>(null)
 
   /* Files waiting to go with the next message, wherever they came from. Held by
@@ -99,6 +116,59 @@ function ChatThread({ threadId }: { threadId: string }) {
   useDropGuard()
 
   const live = useThreadRun({ threadId, token })
+
+  /* What Divo is waiting to hear from this person.
+     
+     Polled rather than pushed. A decision always ends the turn that raised it —
+     the tool returns "waiting on somebody" and the model wraps up — so the
+     moment worth catching is a run finishing, and a poll catches that within a
+     few seconds without a second event channel to keep honest. It also catches
+     the case a push never would: the same question being answered on a Lark
+     card while this thread sits open, which has to make the card here go away. */
+  const decisions = useDecisions({ poll: 15_000 })
+  /* Only what this thread raised. `awaitingMe` is everything in the company
+     waiting on this person, which for a manager is mostly other people's Lark
+     approvals — showing those here replaced the composer of every thread they
+     opened, and there was no way to type until each was dismissed. */
+  const asking = firstOpen(decisions.awaitingMe, threadId)
+  const [deferred, setDeferred] = useDeferredDecisions()
+  const open = asking && !deferred.includes(asking.id) ? asking : null
+  /* A run that has just stopped is the likeliest moment for a new question. */
+  useEffect(() => { if (!live.running) void decisions.refresh() }, [live.running])
+  /**
+   * Reading upward, without the page moving underneath.
+   *
+   * Prepending an earlier page adds height above whatever the reader is looking
+   * at, and a scroller left alone keeps its *offset* rather than its content —
+   * so the line being read jumps down by however much arrived. The height
+   * before the page lands is recorded here and the difference added back once
+   * it has, in a layout effect so it happens before anything is painted.
+   */
+  /* Whether the reader is parked at the newest message. Read by the follow
+     below, and cleared by hand when they ask to look at older ones. */
+  const atBottom = useRef(true)
+  const anchor = useRef<number | null>(null)
+  const readEarlier = () => {
+    anchor.current = scroller.current?.scrollHeight ?? 0
+    /* Stop following the bottom. Three things move this scroller — the pin on
+       send, the follow-the-bottom observer, and this restore — and the observer
+       is the one that would win: it fires after layout, when the column has
+       grown by a whole page. A reader at the bottom of a short thread who asked
+       to read upward would be thrown straight back down.
+
+       Cleared rather than suspended, because it is also just true: somebody who
+       has asked for older messages is not reading the newest one. The scroll
+       handler recomputes it the moment they move. */
+    atBottom.current = false
+    void live.loadEarlier()
+  }
+  useLayoutEffect(() => {
+    const node = scroller.current
+    if (anchor.current === null || !node) return
+    node.scrollTop += node.scrollHeight - anchor.current
+    anchor.current = null
+  })
+
   /* `send` is rebuilt whenever the run's state changes, so depending on it
      directly would re-run the handoff effect on every frame of a live run. */
   const sendRef = useRef(live.send)
@@ -144,6 +214,11 @@ function ChatThread({ threadId }: { threadId: string }) {
       .then(title => {
         if (!title || controller.signal.aborted) return
         setNamed(title)
+        /* The rail is told directly rather than waiting for the renamed row to
+           come back. Both places show a chat's name at once, and until this the
+           header switched to the real name while the rail went on showing the
+           raw ask for the length of the round trip. */
+        threadRenamed(threadId, title)
         /* Written through to the server so the name outlives this tab, and
            announced so the rail stops showing the truncated one. A failed write
            costs the stored name, not the one on screen. */
@@ -155,13 +230,17 @@ function ChatThread({ threadId }: { threadId: string }) {
      because the handoff carries its own: they arrive with the prompt from Home
      and were never in this screen's attachment state, so reading that state
      here would send the message without them. */
-  const begin = (text: string, files: readonly File[] = attach.files) => {
+  const begin = (
+    text: string,
+    files: readonly File[] = attach.files,
+    selected: ModelSelection | null = modelChoice.selection,
+  ) => {
     const trimmed = text.trim()
-    if (!trimmed) return
+    if (!trimmed || !selected) return
     // Armed only if a run genuinely started. A send declined because one is
     // already open would otherwise leave the pin armed, to fire against
     // whatever exchange happens to appear next.
-    const started = sendRef.current(trimmed, files)
+    const started = sendRef.current(trimmed, files, selected)
     pinNext.current = started
     if (!started) return
     // Only once the run is real. Clearing on the attempt would throw away the
@@ -180,13 +259,26 @@ function ChatThread({ threadId }: { threadId: string }) {
   const handedOff = useRef(false)
   useEffect(() => {
     if (handedOff.current || !handoff.prompt || !token || live.loading) return
+    // Home already fetched and staged an allowed pair. Do not put the same
+    // model-options request on this route change's critical path; the runtime
+    // and proxy still re-check the pair before inference. An older handoff with
+    // no pair waits for this screen's catalogue and takes its reconciled choice.
+    const selected = handoff.modelSelection ?? reconcileModelSelection(
+      modelChoice.models,
+      modelChoice.selection,
+    )
+    if (!selected && modelChoice.loading) return
+    if (!selected) return
     handedOff.current = true
     clearHandoff()
     /* Through the same door as a send typed here, so a message carried over from
        Home pins exactly as it would have if it had been typed on this page. */
-    begin(handoff.prompt, handoff.files)
+    begin(handoff.prompt, handoff.files, selected)
+    // `begin` intentionally stays outside the dependency list; the handoff is
+    // one-shot, while the catalogue fields are the values that can unblock an
+    // older handoff which carried no model pair.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [handoff, token, live.loading])
+  }, [handoff, token, live.loading, modelChoice.loading, modelChoice.models, modelChoice.selection])
 
   const start = (text: string) => {
     if (!text.trim()) return
@@ -216,7 +308,6 @@ function ChatThread({ threadId }: { threadId: string }) {
      down several times a second and the thread felt stuck to its own bottom.
      A ResizeObserver fires when there is genuinely more to see, which is the
      only moment following is wanted. */
-  const atBottom = useRef(true)
   useEffect(() => {
     const node = scroller.current
     const list = column.current
@@ -235,11 +326,23 @@ function ChatThread({ threadId }: { threadId: string }) {
   const empty = !live.loading && live.exchanges.length === 0
 
   return (
-    /* The drop target is the whole conversation, composer included. A file is
-       being given to Divo rather than typed into a field, so anywhere you can
-       see the chat is somewhere you can let go of it. */
-    <div className="bui-scope relative flex h-full min-h-0 flex-col bg-page" {...dropProps}>
+    /* The split wraps the conversation rather than the app, because a document
+       is beside *this* conversation. The panel is empty and takes no width until
+       a run files something, so an ordinary chat is laid out exactly as before. */
+    <ArtifactWorkspace>
+    {/* The drop target is the whole conversation, composer included. A file is
+        being given to Divo rather than typed into a field, so anywhere you can
+        see the chat is somewhere you can let go of it. */}
+    <div className="bui-scope relative flex h-full min-h-0 flex-col bg-canvas" {...dropProps}>
       <DropVeil visible={over} />
+      {/* Over the conversation, not in it. The work log answers "what has it
+          done"; this answers "how far through is it", and an answer that
+          scrolls away with the thread is one you have to go looking for.
+
+          Rendered only while there is a plan, which is only while a run that
+          declared one is going — so most conversations never see it, which is
+          the point. `live.plan` is null the rest of the time. */}
+      {live.plan && <PlanPanel plan={live.plan} />}
       <div
         ref={scroller}
         className="min-h-0 flex-1 overflow-y-auto"
@@ -251,20 +354,30 @@ function ChatThread({ threadId }: { threadId: string }) {
       >
         <Header title={title} scrolled={scrolled} />
         <div ref={column} className="mx-auto flex w-full max-w-[720px] flex-col gap-8 px-5 pb-6">
-          {empty ? (
+          {/* Three states, not two. A thread being read is not an empty one,
+              and drawing nothing for it made a slow read look like a chat with
+              nothing in it — see `loading.view.tsx`. */}
+          {live.loading && live.exchanges.length === 0 ? (
+            <ThreadSkeleton />
+          ) : empty ? (
             <Welcome onPick={start} />
           ) : (
-            live.exchanges.map((exchange) => (
-              <Exchanged
-                key={exchange.id}
-                exchange={exchange}
-                /* Only the exchange that is still running has any use for it,
-                   and handing the same changing string to every exchange in the
-                   thread would defeat the memo on all of them — a new label per
-                   tool call would redraw the entire conversation. */
-                liveLabel={exchange.state.finished ? null : live.liveLabel}
-              />
-            ))
+            <>
+              {live.hasEarlier && (
+                <LoadEarlier loading={live.loadingEarlier} onLoad={readEarlier} />
+              )}
+              {live.exchanges.map((exchange) => (
+                <Exchanged
+                  key={exchange.id}
+                  exchange={exchange}
+                  /* Only the exchange that is still running has any use for it,
+                     and handing the same changing string to every exchange in
+                     the thread would defeat the memo on all of them — a new
+                     label per tool call would redraw the whole conversation. */
+                  liveLabel={exchange.state.finished ? null : live.liveLabel}
+                />
+              ))}
+            </>
           )}
         </div>
         {/* After the column, not in it — see `pin.tsx`. */}
@@ -276,8 +389,37 @@ function ChatThread({ threadId }: { threadId: string }) {
         />
       </div>
 
-      <div className="shrink-0 bg-page">
+      <div className="shrink-0 bg-canvas">
         <div className="mx-auto w-full max-w-[720px] px-5 py-3">
+          {/* The composer's place, taken by the question.
+
+              Swapped rather than stacked above it, and that is the point: a
+              banner over a live text box says "when you get a minute", and this
+              says the true thing — nothing else is going to happen here until
+              you answer. Putting it aside is still allowed, and the request
+              stays open on the Approvals page either way. */}
+          {open ? (
+            <DecisionCard
+              /* Keyed, so a second decision arriving in this slot is a new card
+                 rather than the last one with its answer still in it. Every
+                 legacy approval projects to the same question id and the same
+                 yes/no values, so an un-keyed card would have shown the next
+                 request with Approve already selected and its send control
+                 live — one click from approving something unread. */
+              key={open.id}
+              decision={open}
+              sending={decisions.sending === open.id}
+              onDismiss={() => setDeferred(open.id)}
+              onSend={(answer) => void decisions.settle(open.id, answer).then((outcome) => {
+                /* Said out loud, because every refusal here looks exactly like
+                   success otherwise: the card disappears either way. A request
+                   answered on a Lark card two seconds earlier comes back 409,
+                   the row leaves `awaitingMe`, the composer returns — and the
+                   reader has no way to tell that from their own answer landing. */
+                if (!outcome.ok) notify.refused('That could not be recorded', outcome.message)
+              })}
+            />
+          ) : (
           <Composer
             value={draft}
             onChange={setDraft}
@@ -286,14 +428,21 @@ function ChatThread({ threadId }: { threadId: string }) {
             autoFocus={empty}
             running={live.running}
             onStop={live.stopRun}
+            models={modelChoice.models}
+            modelSelection={modelChoice.selection}
+            onModelChange={modelChoice.selectModel}
+            onReasoningEffortChange={modelChoice.selectReasoningEffort}
+            modelLoading={modelChoice.loading}
             files={attach.files}
             rejected={attach.rejected}
             onAttach={attach.add}
             onRemoveFile={attach.remove}
           />
+          )}
         </div>
       </div>
     </div>
+    </ArtifactWorkspace>
   )
 }
 
@@ -328,9 +477,10 @@ function ChatThread({ threadId }: { threadId: string }) {
    one of the things you can do to a chat among several, and where the chat is
    an object rather than the place you are standing. */
 function Header({ title, scrolled }: { title: string; scrolled: boolean }) {
+  const { tabs, open } = useArtifacts()
   return (
     <header
-      className={`ws-chat-head sticky top-0 z-10 shrink-0 bg-page/70 backdrop-blur-md transition-[border-color] duration-200 ${
+      className={`ws-chat-head sticky top-0 z-10 shrink-0 bg-veil backdrop-blur-md transition-[border-color] duration-200 ${
         scrolled ? 'border-b border-line' : 'border-b border-transparent'
       }`}
     >
@@ -351,6 +501,20 @@ function Header({ title, scrolled }: { title: string; scrolled: boolean }) {
         >
           {title}
         </span>
+        {/* The only way back to a document once the panel has been closed, and
+            the only sign that a thread produced one at all. Absent when there is
+            nothing to show, so an ordinary conversation carries no control for a
+            thing it never made. */}
+        {tabs.length > 0 && !open && (
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            className="ml-auto flex shrink-0 items-center gap-1.5 rounded-control px-2 py-1 text-[12px] text-ink-3 transition-colors hover:bg-fill hover:text-ink"
+          >
+            <FileText size={13} />
+            {tabs.length === 1 ? '1 document' : `${tabs.length} documents`}
+          </button>
+        )}
       </div>
     </header>
   )
@@ -374,7 +538,7 @@ function Welcome({ onPick }: { onPick: (prompt: string) => void }) {
       </div>
 
       <div className="flex flex-col gap-1.5">
-        {TRANSCRIPTS.map((item, i) => (
+        {EXAMPLES.map((item, i) => (
           <button
             key={item.id}
             type="button"
@@ -421,10 +585,7 @@ const Exchanged = memo(function Exchanged({
   /** What the run says it is doing. Null once it has settled. */
   liveLabel?: string | null
 }) {
-  const { prompt, beats, state } = exchange
-  /* Everything that happened on the way is the trace; everything else stays in
-     the conversation, in the order the run put it there. */
-  const { trace, rest } = splitTrace(beats)
+  const { prompt, trace, answer, state } = exchange
 
   return (
     /* The id is what a just-sent prompt is pinned by. It has to sit on a direct
@@ -435,6 +596,10 @@ const Exchanged = memo(function Exchanged({
            your own message offers the copy — aiming at a 24px target that only
            appears once you are already on it is a worse trade than it sounds. */
         <div className="group flex flex-col items-end gap-0.5 pl-16">
+          {/* Above the words, where the composer had them. A file attached to a
+              question is context for it, and a reader scanning back for "the
+              message I sent the contract with" is looking for the file. */}
+          {exchange.attachments && <SentChips files={exchange.attachments} />}
           <p className="rounded-card bg-field px-3 py-2 text-[13.5px] leading-[1.5] text-ink">
             {prompt}
           </p>
@@ -451,24 +616,7 @@ const Exchanged = memo(function Exchanged({
           liveLabel={liveLabel}
         />
 
-        {rest.map(({ beat, index }) => {
-          if (beat.t === 'say') {
-            return (
-              <Say
-                key={index}
-                text={beat.text}
-                streaming={!state.finished && beat.narration !== true}
-              />
-            )
-          }
-          if (beat.t === 'block') {
-            const { block } = beat
-            if (block.kind === 'table') return <Preview key={index} block={block} />
-            if (block.kind === 'artifact') return <Artifact key={index} block={block} />
-            return <Chart key={index} block={block} />
-          }
-          return null
-        })}
+        {answer && <Say text={answer} streaming={!state.finished} />}
 
         {exchange.error && (
           <p className="text-[13px] text-rose-600 dark:text-rose-400">{exchange.error}</p>
@@ -477,3 +625,34 @@ const Exchanged = memo(function Exchanged({
     </div>
   )
 })
+
+/**
+ * Decisions the reader has put aside, for as long as the tab is open.
+ *
+ * In `sessionStorage` rather than component state because `ChatThread` is keyed
+ * on the thread id: leaving a conversation and coming back remounts it, and a
+ * dismissal held in `useState` came straight back with it. Not `localStorage` —
+ * putting a question aside is a "not this minute", not a decision that should
+ * still be in force next week.
+ */
+const DEFERRED_KEY = 'divo.decisions.deferred'
+
+function useDeferredDecisions(): [string[], (id: string) => void] {
+  const [ids, setIds] = useState<string[]>(() => {
+    try {
+      const raw = window.sessionStorage.getItem(DEFERRED_KEY)
+      return raw ? (JSON.parse(raw) as string[]) : []
+    } catch {
+      return []
+    }
+  })
+  const defer = useCallback((id: string) => {
+    setIds((prev) => {
+      if (prev.includes(id)) return prev
+      const next = [...prev, id]
+      try { window.sessionStorage.setItem(DEFERRED_KEY, JSON.stringify(next)) } catch { /* private mode */ }
+      return next
+    })
+  }, [])
+  return [ids, defer]
+}

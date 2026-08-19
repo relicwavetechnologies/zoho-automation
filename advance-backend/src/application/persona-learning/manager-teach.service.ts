@@ -1,9 +1,10 @@
-import { readFile, rm, stat, unlink } from 'node:fs/promises';
+import { readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
-import { ManagerTeachMediaProcessor } from './manager-teach-media.processor';
+import type { VideoUnderstanding } from '../video-understanding/video-understanding.types';
+import { VideoUnderstandingService } from '../video-understanding/video-understanding.service';
 import { ManagerTeachPersonaProcessor } from './manager-teach-persona.processor';
 import type { ManagerTeachLearningPatch } from './manager-teach-persona.types';
 import { ManagerTeachQueue } from './manager-teach.queue';
@@ -16,6 +17,16 @@ import { ManagerTeachQueue } from './manager-teach.queue';
 const STALLED_INGESTION_AFTER_MS = 10 * 60_000;
 /** Claims of the same session before Teach stops trying and says so. */
 const MAX_INGESTION_ATTEMPTS = 4;
+
+/**
+ * Where reading the video sits on a Teach session's own progress bar.
+ *
+ * The floor is where the session already is once the recording has landed and
+ * been claimed; the ceiling leaves the last few points for writing the evidence
+ * out. Reading reports 0–100 of itself and this maps it in.
+ */
+const INGESTION_READING_FLOOR = 30;
+const INGESTION_READING_CEILING = 95;
 
 export type ManagerTeachSourceInput = 'recording' | 'upload';
 
@@ -148,7 +159,7 @@ export interface ManagerTeachServiceDeps {
   readonly prisma: PrismaClient;
   readonly queue: ManagerTeachQueue;
   readonly logger: Logger;
-  readonly mediaProcessor: ManagerTeachMediaProcessor;
+  readonly understanding: VideoUnderstandingService;
   readonly personaProcessor: ManagerTeachPersonaProcessor;
   readonly maxVideoBytes: number;
   readonly rawRetentionHours: number;
@@ -646,22 +657,23 @@ export class ManagerTeachService {
       }
 
       let lastProgress = 30;
-      const result = await this.deps.mediaProcessor.process({
-        teachSessionId: session.id,
-        companyId: session.companyId,
-        departmentId: session.departmentId,
-        managerId: session.managerId,
-        source: session.source,
-        originalFileName: session.originalFileName,
+      const evidenceDir = join(dirname(artifact.storageKey), 'evidence');
+      const understanding = await this.deps.understanding.understand({
         videoPath: artifact.storageKey,
-        evidenceDir: join(dirname(artifact.storageKey), 'evidence'),
+        workDir: evidenceDir,
         assertActive: () => this.assertIngestionActive(sessionId),
-        onProgress: async progress => {
-          if (progress < 95 && progress - lastProgress < 3) return;
+        // Reading reports its own completeness; a Teach session's bar runs from
+        // 30 to 95 across it, and doing the arithmetic here is what lets the
+        // same reading drive a differently-shaped bar for a chat attachment.
+        onProgress: async percent => {
+          const progress = INGESTION_READING_FLOOR
+            + Math.floor((percent / 100) * (INGESTION_READING_CEILING - INGESTION_READING_FLOOR));
+          if (progress < INGESTION_READING_CEILING && progress - lastProgress < 3) return;
           lastProgress = progress;
           await this.updateIngestionProgress(sessionId, progress);
         },
       });
+      const result = await this.writeEvidenceManifest(session, evidenceDir, understanding);
 
       const expiresAt = new Date(Date.now() + this.deps.rawRetentionHours * 3_600_000);
       const persisted = await this.deps.prisma.$transaction(async tx => {
@@ -714,6 +726,60 @@ export class ManagerTeachService {
       });
       throw error;
     }
+  }
+
+  /**
+   * The reading, written down as this session's evidence.
+   *
+   * Teach owns this file rather than the reader, because the `source` block is
+   * the only part of it the reader could not have produced: who recorded this,
+   * for which department, under which session. Written to a temporary name and
+   * renamed, so a crash halfway through leaves no half-file for the agent to
+   * parse as evidence.
+   */
+  private async writeEvidenceManifest(
+    session: { id: string; companyId: string; departmentId: string; managerId: string;
+      source: ManagerTeachSourceInput; originalFileName: string | null },
+    evidenceDir: string,
+    understanding: VideoUnderstanding,
+  ): Promise<{ manifestPath: string; sizeBytes: number; frameCount: number; warningCount: number }> {
+    const manifest = {
+      schemaVersion: 1 as const,
+      createdAt: new Date().toISOString(),
+      source: {
+        teachSessionId: session.id,
+        companyId: session.companyId,
+        departmentId: session.departmentId,
+        managerId: session.managerId,
+        kind: session.source,
+        originalFileName: session.originalFileName,
+      },
+      video: understanding.video,
+      extraction: understanding.extraction,
+      // `ocr` on disk, `reading` in the reader. The manifest is a stored format
+      // that older sessions and the persona processor's schema already speak,
+      // so the rename stops at this boundary rather than migrating files.
+      frames: understanding.frames.map(frame => ({
+        sequence: frame.sequence,
+        path: frame.path,
+        bytes: frame.bytes,
+        ocr: frame.reading,
+      })),
+      transcript: understanding.transcript,
+      warnings: understanding.warnings,
+    };
+
+    const manifestPath = join(evidenceDir, 'evidence-manifest.json');
+    const temporaryPath = `${manifestPath}.tmp`;
+    await writeFile(temporaryPath, JSON.stringify(manifest, null, 2), { encoding: 'utf8', mode: 0o600 });
+    await rename(temporaryPath, manifestPath);
+    const metadata = await stat(manifestPath);
+    return {
+      manifestPath,
+      sizeBytes: metadata.size,
+      frameCount: manifest.frames.length,
+      warningCount: manifest.warnings.length,
+    };
   }
 
   async markFailed(sessionId: string, error: unknown): Promise<void> {

@@ -1,7 +1,7 @@
 # Feature: Admin UI Redesign
 
 > **Status:** `in-progress`
-> **Last updated:** 2026-05-06 by codex
+> **Last updated:** 2026-08-17 by codex
 
 ---
 
@@ -93,6 +93,11 @@ Order by visibility:
 <!-- AI: overwrite this entire section every session. Do not append. -->
 
 **What is working:**
+- **Third-party logo rendering now has one deep module**:
+  - `BrandMark` owns Logo.dev lookup URLs, sizing, loading, accessibility, and local/monogram fallbacks.
+  - Workspace providers, tool traces, mail surfaces, previews, and known citation vendors all use the same catalogue.
+  - Unknown citation domains remain behind Divo's cached favicon proxy so research targets are not disclosed to Logo.dev.
+  - The publishable key is injected at container startup from the backend-owned environment file; local Vite reads that same source.
 - Theme, floor/mat/card surface system, dark mode toggle, and redesigned shell remain in place from earlier sessions.
 - `OverviewPage` and `AgentsPage` keep the newer visual language and still build cleanly.
 - **Admin data fetching now has a shared React Query cache layer**:
@@ -162,6 +167,8 @@ Order by visibility:
 | Token-driven recolour, never hardcoded | Future palette swaps stay one-file changes |
 | Light theme is default | All reference screenshots are light-first; dark mode stays supported but secondary |
 | Department config uses JSON editors for `zohoRateLimit` and `managerApproval` | The `advance-backend` contract stores these as arbitrary JSON blobs, not simple booleans; exposing toggles would hide real backend behavior |
+| One `BrandMark` boundary for third-party identity | Callers choose a semantic brand and placement; URL policy, fallbacks, and vendor assets cannot drift between screens |
+| Keep arbitrary citation favicons on Divo's proxy | Logo.dev is appropriate for the known app catalogue, but should not receive every domain found in private company research |
 
 ---
 
@@ -188,6 +195,12 @@ Order by visibility:
 ---
 
 ## Progress Log
+
+### 2026-08-17 — codex
+- Added the centralized Logo.dev-backed `BrandMark` catalogue and migrated workspace provider tiles, tool traces, mail/auth marks, previews, and known citation vendors to it.
+- Preserved local assets/SVGs as immediate loading and network-failure fallbacks, and preserved the backend favicon adapter for unknown citation domains.
+- Added runtime config injection for the static nginx admin, local Vite loading from `advance-backend/.env`, compose environment wiring, deployment-secret injection, and public Logo.dev attribution.
+- Verification: all 319 admin unit tests pass, the production admin build passes, and 18 of 21 configured Logo.dev lookups returned PNGs; the other three correctly use bundled product fallbacks.
 
 ### 2026-05-06 — codex
 - Implemented the department management surface in `admin/` against the existing `advance-backend` API: typed `departmentsApi`, `useDepartmentData`, `CreateDepartmentDialog`, `DepartmentDrawer`, and the five drawer tabs (`Overview`, `Roles`, `Members`, `Permissions`, `Config`).

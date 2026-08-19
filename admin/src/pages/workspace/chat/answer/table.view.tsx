@@ -1,15 +1,19 @@
 /**
  * A table the model wrote, drawn as data.
  *
- * Almost none of what makes this readable is the chart. It is that figures sit
- * under each other in tabular figures instead of ragging, that a long result
- * folds instead of becoming a wall, and that a magnitude carries a hairline you
- * can compare down the column without reading a single number. The chart is
- * offered last and only when the shape is unambiguous — the table is the
- * answer, and a chart is a second way to look at it.
+ * **The chart leads when there is one.** `plotOf` only returns a plot for a
+ * shape that is unambiguous — a labelled first column, a bounded row count,
+ * positive numerics on comparable scales — so wherever a chart exists at all it
+ * is the faster read, and the table is one press away underneath it.
+ *
+ * The rest of what makes this readable has nothing to do with the chart: that
+ * figures sit under each other in tabular figures instead of ragging, that a
+ * long result folds instead of becoming a wall, and that a magnitude carries a
+ * hairline you can compare down the column without reading a single number.
+ * That still matters, because most results never qualify for a plot and land on
+ * the table regardless of this default.
  */
 import { useMemo, useState } from 'react'
-import { useRevealed } from '../reveal'
 import { PlotView } from './chart'
 import { plotOf, readColumns, type Column, type ParsedTable } from './table'
 import { SourceLink } from './links.view'
@@ -18,21 +22,16 @@ import { SourceLink } from './links.view'
 const FOLD_AT = 14
 const FOLDED = 10
 
-export function DataTable({
-  table,
-  properties,
-}: {
-  table: ParsedTable
-  properties?: Record<string, unknown>
-}) {
-  const revealed = useRevealed(properties)
+export function DataTable({ table }: { table: ParsedTable }) {
   const [open, setOpen] = useState(false)
-  const [charted, setCharted] = useState(false)
+  /* Safe as a default because the render falls back on its own: with no plot to
+     draw, `charted` is true and the table renders anyway, and the toggle that
+     would contradict it is not shown. So this is "chart when there is one",
+     not "chart even when there isn't". */
+  const [charted, setCharted] = useState(true)
 
   const columns = useMemo(() => readColumns(table.columns, table.rows), [table])
   const plot = useMemo(() => plotOf(columns, table.rows), [columns, table.rows])
-
-  if (!revealed) return null
 
   const folded = table.rows.length > FOLD_AT && !open
   const rows = folded ? table.rows.slice(0, FOLDED) : table.rows
@@ -40,9 +39,6 @@ export function DataTable({
 
   return (
     <figure
-      /* Carries the reveal index so the container can tell a block that has
-         arrived from one whose turn has not come. */
-      data-word={properties?.['data-word'] as string | undefined}
       className="my-3 overflow-hidden rounded-control bg-surface shadow-hairline"
       style={{ animation: 'bui-fade-up 380ms cubic-bezier(0.23,1,0.32,1) both' }}
     >

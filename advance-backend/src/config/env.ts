@@ -192,6 +192,8 @@ export const EnvSchema = z.object({
   // independent key rotation for OMS.
   OMS_CONNECTION_ENCRYPTION_KEY: z.string().optional(),
   OMS_SITE_DATA_API_KEY:      z.string().optional(),
+  // Vendor Fetch is a separate OMS webhook/key from Site Data Read.
+  OMS_VENDOR_FETCH_API_KEY:   z.string().optional(),
   OMS_SITE_DATA_TIMEOUT_MS:      positiveInt(15_000),
   CONTEXT_SEARCH_TIMEOUT_ENABLED: booleanStr.default('true'),
   CONTEXT_SEARCH_TIMEOUT_MS:     positiveInt(8_000),
@@ -334,6 +336,28 @@ export const EnvSchema = z.object({
   MANAGER_TEACH_WORKER_CONCURRENCY: positiveInt(1),
   /** Raw videos are streamed here; never buffer them in Express memory. */
   MANAGER_TEACH_UPLOAD_DIR: z.string().default('.data/manager-teach'),
+  /** Where conversation video is held while it is being read. */
+  CONVERSATION_VIDEO_DIR: z.string().default('.data/conversation-video'),
+  /** Matches the Teach ceiling; a screen recording is the same object either way. */
+  CONVERSATION_VIDEO_MAX_MB: positiveInt(2_047),
+  /**
+   * How long the on-disk artefacts live: the extracted stills and the stored
+   * reading. The recording itself goes sooner — the moment it has been read.
+   *
+   * Not the lifetime of what Divo remembers. The excerpt folded into the ask is
+   * part of the conversation turn and lives as long as the thread, because the
+   * answer above it stops making sense otherwise. Said plainly here, because a
+   * retention review will read this line and believe it.
+   */
+  CONVERSATION_VIDEO_RETENTION_HOURS: positiveInt(24),
+  /** Videos read at once, across everybody. Teach's worker concurrency, by hand. */
+  CONVERSATION_VIDEO_READ_CONCURRENCY: positiveInt(2),
+  /** Unread video one company may be holding at once, across all its members. */
+  CONVERSATION_VIDEO_COMPANY_BUDGET_MB: positiveInt(8_192),
+  /** Readings one company may start per hour. Bounds spend, which bytes do not. */
+  CONVERSATION_VIDEO_READS_PER_HOUR: positiveInt(60),
+  /** Unread video the whole deployment may hold. Bounds the sum of all tenants. */
+  CONVERSATION_VIDEO_TOTAL_BUDGET_MB: positiveInt(32_768),
   MANAGER_TEACH_MAX_VIDEO_MB: positiveInt(2_047),
   MANAGER_TEACH_RAW_RETENTION_HOURS: positiveInt(24),
   MANAGER_TEACH_MAX_FRAMES: positiveInt(40),

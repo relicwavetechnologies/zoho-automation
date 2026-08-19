@@ -10,7 +10,9 @@
  * So an id is minted once, put in the URL, and everything else — history,
  * reconnection, the list in the sidebar — hangs off it.
  */
-import { API_BASE_URL, type LedgerRow } from './stream'
+import type { SentFile } from './attach'
+import type { LedgerRow } from './stream'
+import { API_BASE_URL } from '@/lib/api-base'
 
 /** What a run left behind, read back rather than watched live. */
 export type ThreadRunRecord = {
@@ -21,11 +23,15 @@ export type ThreadRunRecord = {
 
 export type ThreadTurn = {
   id: string
+  /** Where this turn sits in the thread. The cursor an earlier page is asked for by. */
+  sequence: number
   role: 'user' | 'assistant'
   text: string
   at: string
   /** Present on an answer that came from a run with a work log. */
   run?: ThreadRunRecord
+  /** Present on an ask that carried files. */
+  attachments?: SentFile[]
 }
 
 export type ThreadSummary = {
@@ -39,7 +45,12 @@ export type ThreadSummary = {
   running?: boolean
 }
 
-export type ThreadDetail = ThreadSummary & { turns: ThreadTurn[] }
+export type ThreadDetail = ThreadSummary & {
+  /** The most recent turns, oldest first — not the whole conversation. */
+  turns: ThreadTurn[]
+  /** There is older conversation above the first turn here. */
+  hasEarlier: boolean
+}
 
 /**
  * A new conversation's id.
@@ -110,6 +121,25 @@ export function threadStarted(threadId: string, title: string): void {
   threadsChanged()
 }
 
+/**
+ * The chat got its real name before the server row carrying it arrived.
+ *
+ * A claim is named with the raw ask, because at the moment it is made that is
+ * the only thing anybody knows. A moment later a small model writes an actual
+ * name and the header starts showing it — and until the renamed server row came
+ * back, the rail went on showing the sentence. One chat, two names, a
+ * centimetre apart, for exactly as long as the round trip took.
+ *
+ * A no-op once the server row exists, which is the ordinary case: `withStarted
+ * Threads` drops the claim the moment a real row can answer for it.
+ */
+export function threadRenamed(threadId: string, title: string): void {
+  const claim = startedHere.get(threadId)
+  if (!claim) return
+  startedHere.set(threadId, { ...claim, title })
+  threadsChanged()
+}
+
 /** The run ended, so the server has the thread and everything about it. */
 export function threadSettled(threadId: string): void {
   startedHere.delete(threadId)
@@ -170,9 +200,26 @@ async function call<T>(
   return await response.json().catch(() => null) as T | null
 }
 
-export async function listThreads(token: string): Promise<ThreadSummary[]> {
-  const body = await call<{ threads: ThreadSummary[] }>('/threads', token)
-  return body?.threads ?? []
+/** How many chats the rail shows before asking, and how many each ask adds. */
+export const THREAD_PAGE = 25
+
+/**
+ * The newest `limit` chats, and whether older ones exist.
+ *
+ * A window rather than a cursor. The rail is live — a chat renamed, deleted or
+ * answered reorders the list under the reader — and a cursor followed through
+ * a reorder shows one chat twice and skips another. Re-asking for the window
+ * the reader is looking at is one query and cannot drift.
+ */
+export async function listThreads(
+  token: string,
+  limit = THREAD_PAGE,
+): Promise<{ threads: ThreadSummary[]; hasMore: boolean }> {
+  const body = await call<{ threads: ThreadSummary[]; hasMore?: boolean }>(
+    `/threads?limit=${limit}`,
+    token,
+  )
+  return { threads: body?.threads ?? [], hasMore: body?.hasMore ?? false }
 }
 
 /**
@@ -181,12 +228,26 @@ export async function listThreads(token: string): Promise<ThreadSummary[]> {
  * `running` comes back when a run on this thread is still going, so the reader
  * who opens it can be shown the live view rather than a settled transcript that
  * happens to be missing its last answer.
+ *
+ * Cancellable, and the caller passes a signal because it knows something this
+ * cannot: that the reader has moved to a different conversation. It used to
+ * take no signal at all, so switching threads discarded the result of a read
+ * that carried on running to completion — a whole transcript fetched, parsed
+ * and thrown away, while the thread the reader is actually looking at waits
+ * behind it.
  */
 export async function getThread(
   threadId: string,
   token: string,
-): Promise<{ thread: ThreadDetail; running?: { runId: string; prompt: string; startedAt: number } } | null> {
-  return await call(`/threads/${encodeURIComponent(threadId)}`, token)
+  signal?: AbortSignal,
+  /** The oldest turn already held. Omit for the newest page. */
+  before?: number,
+): Promise<{
+  thread: ThreadDetail
+  running?: { runId: string; prompt: string; attachments?: SentFile[]; startedAt: number }
+} | null> {
+  const cursor = before === undefined ? '' : `?before=${before}`
+  return await call(`/threads/${encodeURIComponent(threadId)}${cursor}`, token, { signal })
 }
 
 export async function renameThread(

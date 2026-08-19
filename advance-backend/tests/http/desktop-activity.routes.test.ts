@@ -106,22 +106,22 @@ describe('a member reads their own activity', () => {
       locals, query: { days: '100000' },
     });
 
-    // 112, not 90: the ceiling is sixteen weeks because that is what the Home
-    // calendar is drawn over — sixteen columns of seven. The number moved; the
-    // guard this test exists for did not.
-    assert.equal(result.body.data.days, 112);
+    // A year, because the profile page draws a year's contribution calendar and
+    // counts a streak across it. The number has moved twice now; the guard this
+    // test exists for has not.
+    assert.equal(result.body.data.days, 365);
   });
 
-  it('serves the full sixteen weeks the Home calendar asks for', async () => {
+  it('serves the full year the profile calendar asks for', async () => {
     const { prisma } = spyPrisma();
     const result = await callRoute(createDesktopActivityRoutes(deps(prisma)), 'GET', '/usage', {
-      locals, query: { days: '112' },
+      locals, query: { days: '365' },
     });
 
-    // Silently clamped to 90 this drew thirteen columns and a ragged
-    // fourteenth, which reads as missing data rather than a shorter window.
-    assert.equal(result.body.data.days, 112);
-    assert.equal(result.body.data.series.length, 112);
+    // Silently clamped, this drew a partial year, which reads as missing data
+    // rather than as a shorter window.
+    assert.equal(result.body.data.days, 365);
+    assert.equal(result.body.data.series.length, 365);
   });
 
   it('ignores a userId supplied by the caller', async () => {
