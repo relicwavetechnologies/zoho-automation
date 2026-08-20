@@ -253,7 +253,7 @@ export const TOOL_DEFAULT_PERMISSIONS: Readonly<Record<CanonicalToolId, BuiltInR
 // Permission policy includes the department-inheritance table, which is a
 // separate authority from the canonical tool definitions above. Bump this
 // epoch when that table changes so a live cache cannot retain the old overlay.
-const TOOL_PERMISSION_POLICY_EPOCH = 'connect-app-inherited-v1';
+const TOOL_PERMISSION_POLICY_EPOCH = 'artifact-publish-inherited-v1';
 
 /** Every canonical tool ID in one family, in stable catalogue order. */
 export function toolIdsForFamily(family: ToolFamily): CanonicalToolId[] {

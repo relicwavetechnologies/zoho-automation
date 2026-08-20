@@ -75,6 +75,10 @@ export const DEPARTMENT_GRANT_ONLY_TOOLS: readonly CanonicalToolId[] = [
 export const DEPARTMENT_COMPANY_INHERITED_TOOLS: readonly CanonicalToolId[] = [
   'connectApp',
   'knowledge',
+  // Publishing is ownership-scoped by [companyId, userId, artifactId], so the
+  // company-level capability can flow into a department without exposing
+  // another member's documents.
+  'artifactPublish',
 ];
 
 export function isDepartmentGrantOnlyTool(toolId: string): boolean {
