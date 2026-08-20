@@ -41,14 +41,15 @@ import {
  *
  * WHAT IS AND IS NOT MIGRATED. Every existing approval is *read* and *settled*
  * through here: the projection turns any stored row into questions, so the web
- * card, the Approvals page and the Desktop route all come through this module
- * today. What has not moved is the *asking*. `ask` has no caller yet — the
- * seven older paths still write their own rows and draw their own Lark cards,
- * and the branches for them are still in the webhook. So the Lark half of this
- * module (the courier, the decision card, `answerOne`, `responseJson`) is
- * proven by its tests and carries no production traffic until the first of
- * those is migrated. Said plainly here because a module that reads as finished
- * is one the next author will not finish.
+ * card, the Approvals page, the Desktop route, and the compatibility handler for
+ * old Lark approval cards all come through this module. What has not moved is
+ * the *asking*. `ask` has no caller yet — the seven older paths still write
+ * their own rows and draw their own Lark cards, and the branches for them are
+ * still in the webhook. So the Lark half of this module (the courier, the
+ * decision card, `answerOne`, `responseJson`) is proven by its tests and still
+ * carries no production traffic until the first producer is migrated. Said
+ * plainly here because a module that reads as finished is one the next author
+ * will not finish.
  *
  * Three things are true of every question that comes through here, and each one
  * used to be re-established per feature:
@@ -74,6 +75,14 @@ export interface DecisionActor {
   readonly userId: string;
   readonly companyId: string;
   readonly displayName?: string;
+  /**
+   * The authenticated Lark card identity, when settlement came from Lark.
+   *
+   * This stays optional so web and Desktop callers keep their existing member
+   * identity contract. When present, the row's manager open id and tenant key
+   * are checked here, at the same seam that checks the user and company.
+   */
+  readonly lark?: { readonly openId: string; readonly tenantKey: string };
   /**
    * The signed-in member, when the caller has one.
    *
@@ -135,6 +144,12 @@ export type SettleOutcome =
       readonly decision: Decision;
       /** What was said, in the labels the person read. */
       readonly summary: string;
+      /**
+       * What the settled row expects next. The old Lark adapter uses this to
+       * keep its existing toast without deciding whether a gateway request
+       * resumes or waits for the requester to retry.
+       */
+      readonly followUp: 'resumed' | 'retry' | 'none';
       /** Present when settling ran something: the requester-confirmation path. */
       readonly execution?: unknown;
     }
@@ -386,8 +401,8 @@ export class DecisionService {
       this.deps.logger.error('decision.answer_not_stored', { decisionId, error: stored.error.message });
     }
 
-    await this.updateDeliveredCard(row, projected, verdict, summary, actor);
-    this.continue(row, projected.continuation, verdict);
+    this.updateDeliveredCard(row, projected, verdict, summary, actor);
+    const followUp = this.continue(row, projected.continuation, verdict);
 
     this.deps.audit?.record({
       actorId: actor.userId,
@@ -398,7 +413,7 @@ export class DecisionService {
     });
     this.deps.logger.info('decision.settled', { decisionId, verdict, kind: row.kind });
 
-    return { ok: true, verdict, decision: projected.decision, summary };
+    return { ok: true, verdict, decision: projected.decision, summary, followUp };
   }
 
   /**
@@ -471,6 +486,7 @@ export class DecisionService {
     }
     const row = found.value;
     const projected = projectDecision(row);
+    const metadata = asRecord(row.metadataJson);
 
     // `dispatching` is live for the same reason the card handler accepts it: a
     // request can be delivered before its message id is stored.
@@ -486,11 +502,32 @@ export class DecisionService {
         outcome: { ok: false, reason: 'expired', message: 'This request expired. Ask for it again.' },
       };
     }
+    const larkIdentity = actor.lark;
+    const resolvedManagerOpenId = readString(metadata['resolvedManagerOpenId']);
+    const larkMetadataMissing = Boolean(larkIdentity)
+      && (
+        !resolvedManagerOpenId
+        || !projected.approverUserId
+        || !row.companyId
+      );
+    const larkIdentityMismatch = Boolean(larkIdentity)
+      && !larkMetadataMissing
+      && (
+        resolvedManagerOpenId !== larkIdentity!.openId
+        || (
+          readString(metadata['tenantKey'])
+          && readString(metadata['tenantKey']) !== larkIdentity!.tenantKey
+        )
+      );
+
     if (
-      !projected.approverUserId
+      larkMetadataMissing
+      || larkIdentityMismatch
+      || !projected.approverUserId
       || row.companyId !== actor.companyId
       || projected.approverUserId !== actor.userId
     ) {
+      const missingLarkMetadata = larkMetadataMissing;
       // Persisted rather than only logged: somebody answering a decision that
       // was not theirs to make is a security event an admin must be able to
       // query, and it is the same event whichever surface it arrives on.
@@ -499,12 +536,29 @@ export class DecisionService {
         companyId: row.companyId ?? actor.companyId,
         action: 'decision.unauthorized_actor',
         outcome: 'failure',
-        metadata: { decisionId, expectedApproverUserId: projected.approverUserId, actorCompanyId: actor.companyId },
+        metadata: {
+          decisionId,
+          expectedApproverUserId: projected.approverUserId,
+          expectedApproverOpenId: resolvedManagerOpenId,
+          actorCompanyId: actor.companyId,
+          ...(larkIdentity ? {
+            actorOpenId: larkIdentity.openId,
+            actorTenantKey: larkIdentity.tenantKey,
+          } : {}),
+        },
       });
       this.deps.logger.warn('decision.unauthorized_actor', { decisionId, actorUserId: actor.userId });
       return {
         ok: false,
-        outcome: { ok: false, reason: 'forbidden', message: 'This request is waiting on someone else.' },
+        outcome: {
+          ok: false,
+          reason: 'forbidden',
+          message: missingLarkMetadata
+            ? 'Approval metadata is missing. Please ask the requester to try again.'
+            : larkIdentity
+              ? 'You are not authorized to approve this request.'
+              : 'This request is waiting on someone else.',
+        },
       };
     }
     return { ok: true, row, projected };
@@ -540,21 +594,28 @@ export class DecisionService {
       kind: 'business_action',
       status: outcome.response.status,
     });
-    return { ok: true, verdict, decision: projected.decision, summary, execution: outcome.response };
+    return {
+      ok: true,
+      verdict,
+      decision: projected.decision,
+      summary,
+      followUp: 'none',
+      execution: outcome.response,
+    };
   }
 
-  private async updateDeliveredCard(
+  private updateDeliveredCard(
     row: RuntimeApprovalRow,
     projected: ProjectedDecision,
     verdict: DecisionVerdict,
     summary: string,
     actor: DecisionActor,
-  ): Promise<void> {
+  ): void {
     if (!row.decisionMessageId || !this.deps.onResolvedCard) return;
     const meta = asRecord(row.metadataJson);
     const payload = asRecord(row.payloadJson);
     const authority = meta['approvalAuthority'];
-    await this.deps.onResolvedCard({
+    void this.deps.onResolvedCard({
       messageId: row.decisionMessageId,
       verdict,
       byName: actor.displayName ?? actor.userId,
@@ -582,16 +643,21 @@ export class DecisionService {
    * immediate answer — Lark gives a card callback three seconds — and the work
    * that follows can take minutes.
    */
-  private continue(row: RuntimeApprovalRow, continuation: DecisionContinuation, verdict: DecisionVerdict): void {
-    if (continuation.kind !== 'run') return;
+  private continue(
+    row: RuntimeApprovalRow,
+    continuation: DecisionContinuation,
+    verdict: DecisionVerdict,
+  ): 'resumed' | 'retry' | 'none' {
+    if (continuation.kind !== 'run') return 'none';
     const meta = asRecord(row.metadataJson);
     /* A gateway request is normally retried by the requester rather than
        resumed for them; resuming it would execute an action nobody re-issued.
        Unless the asker said otherwise — a request made from a form has no
        requester left to re-issue it, and a yes that did nothing is worse. */
-    if (isGatewayApprovalMetadata(meta) && !approvalResumesAutomatically(meta)) return;
+    if (isGatewayApprovalMetadata(meta) && !approvalResumesAutomatically(meta)) return 'retry';
     void this.deps.resumer.resume(row.id, verdict)
       .catch(error => this.deps.logger.error('decision.resume_failed', { id: row.id, error: String(error) }));
+    return 'resumed';
   }
 }
 

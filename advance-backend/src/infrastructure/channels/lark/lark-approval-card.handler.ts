@@ -1,16 +1,7 @@
 import type { Logger } from '../../../shared/logger';
-import type { RuntimeApprovalRepository } from '../../persistence/runtime-approval.repository';
-import type { ApprovalResumerService } from '../../../application/approval/approval-resumer.service';
-import type { LarkChannelAdapter } from './lark.adapter';
-import {
-  buildApprovalResolutionCard,
-  buildApprovalResolutionCardData,
-} from '../../../application/approval/approval-card-builder';
-import {
-  approvalResumesAutomatically,
-  isGatewayApprovalMetadata,
-} from '../../../application/approval/approval-origin';
-import type { AuditService } from '../../../application/observability/audit.service';
+import type { DecisionService } from '../../../application/decision/decision.service';
+import { confirmAnswer } from '../../../domain/decision/decision';
+import { buildApprovalResolutionCardData } from '../../../application/approval/approval-card-builder';
 
 interface CardActionPayload {
   kind:       string;
@@ -48,20 +39,19 @@ interface CardActionTriggerEvent {
 
 /**
  * Handles `card.action.trigger` webhook events from Lark.
- * Only processes events with kind='approval_decision' in the button value.
+ * Only processes old events with kind='approval_decision' in the button value.
  *
- * Returns a Lark card update response, or null if not handled.
+ * This is a compatibility adapter for cards already delivered before manager
+ * approvals move to `decision_answer`. It parses the old value, lets
+ * `DecisionService` authorize and settle the row, and keeps the old callback
+ * card and toast shape for the client that is still holding that card.
  */
 export class LarkApprovalCardHandler {
   private readonly log: Logger;
 
   constructor(
-    private readonly approvalRepo: RuntimeApprovalRepository,
-    private readonly resumer:      ApprovalResumerService,
-    private readonly larkAdapter:  LarkChannelAdapter,
+    private readonly decisions: DecisionService,
     logger: Logger,
-    /** Optional so existing wiring keeps working; absent means log-only. */
-    private readonly audit?: Pick<AuditService, 'record'>,
   ) {
     this.log = logger.child({ handler: 'lark-approval-card' });
   }
@@ -121,198 +111,76 @@ export class LarkApprovalCardHandler {
       return { handled: false };
     }
 
-    // Load approval and authorize actor
-    const approvalResult = await this.approvalRepo.findById(approvalId);
-    if (!approvalResult.ok || !approvalResult.value) {
-      this.log.warn('approval_card.not_found', { approvalId });
-      return { handled: true, responseBody: { toast: { type: 'error', content: 'Approval request not found.' } } };
-    }
-
-    const approval = approvalResult.value;
-    // A card can be delivered even when persisting its Lark message ID fails.
-    // That row deliberately remains `dispatching` as a duplicate-delivery
-    // barrier, but the approval ID embedded in the delivered card is still
-    // authoritative and atomicResolve accepts either live delivery state.
-    if (!['dispatching', 'pending'].includes(approval.status)) {
-      this.log.info('approval_card.already_resolved', { approvalId, status: approval.status });
-      return {
-        handled: true,
-        responseBody: {
-          toast: { type: 'info', content: `Already ${approval.status}.` },
-        },
-      };
-    }
-
-    if (approval.expiresAt && approval.expiresAt.getTime() <= Date.now()) {
-      this.log.warn('approval_card.expired', { approvalId, expiresAt: approval.expiresAt.toISOString() });
-      return {
-        handled: true,
-        responseBody: {
-          toast: { type: 'error', content: 'This approval request has expired. Please ask the requester to try again.' },
-        },
-      };
-    }
-
-    const meta = approval.metadataJson;
-    const resolvedManagerOpenId = isRecord(meta) ? meta['resolvedManagerOpenId'] : undefined;
-    const resolvedManagerUserId = isRecord(meta) ? meta['resolvedManagerUserId'] : undefined;
-    const requesterTenantKey = isRecord(meta) ? meta['tenantKey'] : undefined;
-
-    if (
-      typeof resolvedManagerOpenId !== 'string'
-      || resolvedManagerOpenId.length === 0
-      || typeof resolvedManagerUserId !== 'string'
-      || resolvedManagerUserId.length === 0
-      || typeof approval.companyId !== 'string'
-      || approval.companyId.length === 0
-    ) {
-      this.log.error('approval_card.missing_manager_metadata', { approvalId });
-      return {
-        handled: true,
-        responseBody: {
-          toast: { type: 'error', content: 'Approval metadata is missing. Please ask the requester to try again.' },
-        },
-      };
-    }
-
-    const tenantMatches = typeof requesterTenantKey !== 'string'
-      || requesterTenantKey.length === 0
-      || requesterTenantKey === actor.tenantKey;
-    if (
-      actor.openId !== resolvedManagerOpenId
-      || actor.userId !== resolvedManagerUserId
-      || actor.companyId !== approval.companyId
-      || !tenantMatches
-    ) {
-      this.log.warn('approval_card.unauthorized_actor', {
-        approvalId,
-        actorOpenId: actor.openId,
-        actorUserId: actor.userId,
-        actorCompanyId: actor.companyId,
-        actorTenantKey: actor.tenantKey,
-      });
-      // Persisted, not just logged. Someone pressing approve on a decision that
-      // was not theirs to make is a security event, and it needs to survive in
-      // a place an admin can query rather than only in process telemetry.
-      // Attributed to the approval's company so it appears in that company's
-      // audit trail even when the actor came from somewhere else.
-      this.audit?.record({
-        actorId: actor.userId,
-        companyId: approval.companyId,
-        action: 'approval.card.unauthorized_actor',
-        outcome: 'failure',
-        metadata: {
-          approvalId,
-          decision,
-          actorOpenId: actor.openId,
-          actorCompanyId: actor.companyId,
-          actorTenantKey: actor.tenantKey,
-          expectedApproverUserId: resolvedManagerUserId,
-          expectedApproverOpenId: resolvedManagerOpenId,
-        },
-      });
-      return {
-        handled: true,
-        responseBody: {
-          toast: { type: 'error', content: 'You are not authorized to approve this request.' },
-        },
-      };
-    }
-
-    // Atomically resolve
-    const resolveResult = await this.approvalRepo.atomicResolve(
-      approvalId,
-      decision as 'approved' | 'rejected',
-      actor.userId,
-    );
-
-    if (!resolveResult.ok || !resolveResult.value) {
-      this.log.warn('approval_card.resolve_failed', { approvalId });
-      return {
-        handled: true,
-        responseBody: {
-          toast: { type: 'error', content: 'Failed to record decision. Please try again.' },
-        },
-      };
-    }
-
-    const resolvedAt    = new Date();
     const resolvedByName = actor.displayName
       ?? event.operator?.name
       ?? event.user_name
       ?? actor.openId;
 
-    // Feishu requires the callback response within 3 seconds. Return the
-    // resolved raw card immediately so the clicked card loses its buttons.
-    const resolvedDecision = decision as 'approved' | 'rejected';
-    const updatedCard = buildApprovalResolutionCard(
-      resolvedDecision,
-      resolvedByName,
-      resolvedAt,
+    const outcome = await this.decisions.settle(
+      {
+        userId: actor.userId,
+        companyId: actor.companyId,
+        ...(actor.displayName ? { displayName: actor.displayName } : {}),
+        lark: { openId: actor.openId, tenantKey: actor.tenantKey },
+      },
+      approvalId,
+      confirmAnswer(decision as 'approved' | 'rejected'),
     );
+
+    if (!outcome.ok) {
+      this.log.info('approval_card.refused', { approvalId, reason: outcome.reason });
+      return {
+        handled: true,
+        responseBody: { toast: failureToast(outcome) },
+      };
+    }
+
     const callbackCard = buildApprovalResolutionCardData(
-      resolvedDecision,
+      outcome.verdict,
       resolvedByName,
-      resolvedAt,
+      new Date(),
     );
-
-    // Keep a non-blocking PATCH as recovery for clients that fail to apply the
-    // callback card. It must not delay the callback response.
-    if (approval.decisionMessageId) {
-      setImmediate(() => {
-        void this.larkAdapter.updateMessageById(approval.decisionMessageId!, updatedCard)
-          .then(result => {
-            if (!result.ok) {
-              this.log.warn('approval_card.update_failed', {
-                approvalId,
-                error: result.error.message,
-              });
-            }
-          })
-          .catch(e => this.log.warn('approval_card.update_failed', {
-            approvalId,
-            error: String(e),
-          }));
-      });
-    }
-
-    // A gateway request normally waits for its requester to retry. One that
-    // says it resumes has no requester to wait for — the form that asked is
-    // closed, and not resuming would leave a yes that did nothing.
-    const isGatewayApproval = isGatewayApprovalMetadata(approval.metadataJson)
-      && !approvalResumesAutomatically(approval.metadataJson);
-    if (!isGatewayApproval) {
-      // Kick off engine resume asynchronously (must not block the HTTP response).
-      void this.resumer.resume(approvalId, decision as 'approved' | 'rejected')
-        .catch(e => this.log.error('approval_card.resume_failed', { approvalId, error: String(e) }));
-    } else {
-      this.log.info('approval_card.gateway_no_auto_resume', { approvalId, decision });
-    }
-
-    this.log.info('approval_card.handled', { approvalId, decision, isGatewayApproval });
-
-    // Return a toast notification to the manager
-    const toastContent = isGatewayApproval
-      ? (decision === 'approved'
+    const toastContent = outcome.followUp === 'retry'
+      ? (outcome.verdict === 'approved'
           ? 'Approved — the requester can now retry the exact desktop action.'
           : 'Rejected — the exact desktop action will remain blocked.')
-      : (decision === 'approved'
+      : (outcome.verdict === 'approved'
           ? '✅ Approved — the action will now be executed.'
           : '❌ Rejected — the requester will be notified.');
+
+    this.log.info('approval_card.handled', {
+      approvalId,
+      decision,
+      followUp: outcome.followUp,
+    });
 
     return {
       handled: true,
       responseBody: {
         toast: { type: 'success', content: toastContent },
-        card: {
-          type: 'raw',
-          data: callbackCard,
-        },
+        card: { type: 'raw', data: callbackCard },
       },
     };
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+function failureToast(
+  outcome: Extract<Awaited<ReturnType<DecisionService['settle']>>, { ok: false }>,
+): { readonly type: 'error' | 'info'; readonly content: string } {
+  if (outcome.reason === 'already_resolved') {
+    return {
+      type: 'info',
+      content: outcome.message.replace(/^This request was already /, 'Already '),
+    };
+  }
+  if (outcome.reason === 'not_found') {
+    return { type: 'error', content: 'Approval request not found.' };
+  }
+  if (outcome.reason === 'expired') {
+    return { type: 'error', content: 'This approval request has expired. Please ask the requester to try again.' };
+  }
+  if (outcome.reason === 'failed') {
+    return { type: 'error', content: 'Failed to record decision. Please try again.' };
+  }
+  return { type: 'error', content: outcome.message };
 }

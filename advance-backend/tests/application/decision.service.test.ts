@@ -10,6 +10,12 @@ const logger: Logger = {
 } as never;
 
 const APPROVER = { userId: 'user-manager', companyId: 'comp-1', displayName: 'Priya Nair' };
+const LARK_APPROVAL_METADATA = {
+  resolvedManagerUserId: 'user-manager',
+  resolvedManagerName: 'Priya Nair',
+  resolvedManagerOpenId: 'ou_manager',
+  tenantKey: 'tenant-1',
+};
 
 /** A manager approval written by the gate — the shape that predates this module. */
 function toolActionRow(overrides: Record<string, unknown> = {}) {
@@ -215,6 +221,40 @@ describe('decisions — settling', () => {
     );
 
     assert.equal(outcome.ok === false && outcome.reason, 'forbidden');
+    assert.equal(calls.resolved.length, 0);
+  });
+
+  it('refuses a Lark card from a different open id', async () => {
+    const { service, calls } = makeService(toolActionRow({ metadataJson: LARK_APPROVAL_METADATA }));
+    const outcome = await service.settle(
+      {
+        ...APPROVER,
+        lark: { openId: 'ou_someone_else', tenantKey: 'tenant-1' },
+      },
+      'approval-1',
+      confirmAnswer('approved'),
+    );
+
+    assert.equal(outcome.ok === false && outcome.reason, 'forbidden');
+    assert.equal(outcome.ok === false && outcome.message, 'You are not authorized to approve this request.');
+    assert.equal(calls.resolved.length, 0);
+    assert.equal(calls.audit[0].action, 'decision.unauthorized_actor');
+    assert.equal(calls.audit[0].metadata.expectedApproverOpenId, 'ou_manager');
+  });
+
+  it('refuses a Lark card from a different tenant', async () => {
+    const { service, calls } = makeService(toolActionRow({ metadataJson: LARK_APPROVAL_METADATA }));
+    const outcome = await service.settle(
+      {
+        ...APPROVER,
+        lark: { openId: 'ou_manager', tenantKey: 'tenant-other' },
+      },
+      'approval-1',
+      confirmAnswer('approved'),
+    );
+
+    assert.equal(outcome.ok === false && outcome.reason, 'forbidden');
+    assert.equal(outcome.ok === false && outcome.message, 'You are not authorized to approve this request.');
     assert.equal(calls.resolved.length, 0);
   });
 

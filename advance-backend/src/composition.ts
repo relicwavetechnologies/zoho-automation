@@ -2666,13 +2666,6 @@ export async function buildContainer(
     webTranscript: conversationRepo,
     logger: logger.child({ service: 'approval-resumer' }),
   });
-  const approvalCardHandler = new LarkApprovalCardHandler(
-    approvalRepo,
-    approvalResumer,
-    larkAdapter,
-    logger.child({ service: 'approval-card-handler' }),
-    auditService,
-  );
   const workbookConversionCardHandler = new LarkWorkbookConversionCardHandler(
     new WorkbookConversionConfirmationService({
       offers: runEffectReceipts,
@@ -2812,6 +2805,10 @@ export async function buildContainer(
     },
   });
   const decisionCardHandler = new LarkDecisionCardHandler(decisions, logger, env.APP_BASE_URL);
+  const approvalCardHandler = new LarkApprovalCardHandler(
+    decisions,
+    logger.child({ service: 'approval-card-handler' }),
+  );
   const automationPlanService = new AutomationPlanService({
     toolExecutor: gatewayToolExecutor,
     permissions,

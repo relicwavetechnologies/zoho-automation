@@ -19,6 +19,8 @@ import assert from 'node:assert/strict';
 import { ok, err } from '../../src/shared/result.ts';
 import { checkApprovalPolicy, computeArgsHash, computeIdempotencyKey } from '../../src/application/approval/approval-policy.ts';
 import { ApprovalGateService } from '../../src/application/approval/approval-gate.service.ts';
+import { buildApprovalResolutionCard } from '../../src/application/approval/approval-card-builder.ts';
+import { DecisionService } from '../../src/application/decision/decision.service.ts';
 import { LarkApprovalCardHandler } from '../../src/infrastructure/channels/lark/lark-approval-card.handler.ts';
 import type { RuntimeApprovalRow } from '../../src/infrastructure/persistence/runtime-approval.repository.ts';
 import type { PermissionResult } from '../../src/application/permissions/permission.types.ts';
@@ -233,6 +235,11 @@ function makeApprovalRepo() {
       else row.rejectedAt = new Date();
       return ok(row);
     },
+    persistAnswer: async (id: string, answer: unknown) => {
+      const row = store.get(id);
+      if (row) row.responseJson = answer;
+      return ok(undefined);
+    },
     persistResult: async (id: string, json: unknown) => {
       const row = store.get(id);
       if (row) row.executionResultJson = json;
@@ -348,6 +355,24 @@ function makeLarkAdapter() {
     getStatusMessageId: (_traceId: string) => undefined,
     restoreStatusCoordinator: () => {},
   };
+}
+
+function makeApprovalCardHandler(
+  repo: ReturnType<typeof makeApprovalRepo>,
+  resumer: { resume: (id: string, decision: string) => Promise<void> },
+  lark: ReturnType<typeof makeLarkAdapter>,
+  audit?: { record: (input: unknown) => void },
+) {
+  const decisions = new DecisionService({
+    approvals: repo as never,
+    resumer: resumer as never,
+    logger: makeLogger(),
+    ...(audit ? { audit: audit as never } : {}),
+    onResolvedCard: async ({ messageId, verdict, byName }) => {
+      await lark.updateMessageById(messageId, buildApprovalResolutionCard(verdict, byName, new Date()));
+    },
+  });
+  return new LarkApprovalCardHandler(decisions, makeLogger());
 }
 
 // ── Mock resolver ────────────────────────────────────────────────────────────
@@ -1405,7 +1430,7 @@ describe('LarkApprovalCardHandler', () => {
     created.value.status = 'dispatching';
     created.value.decisionMessageId = null;
 
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
     const result = await handler.handle({
       action: {
         value: { kind: 'approval_decision', approvalId: created.value.id, decision: 'approved' },
@@ -1449,7 +1474,7 @@ describe('LarkApprovalCardHandler', () => {
     created.value.status = 'dispatching';
     created.value.decisionMessageId = null;
 
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
     const result = await handler.handle({
       action: {
         value: { kind: 'approval_decision', approvalId: created.value.id, decision: 'rejected' },
@@ -1504,12 +1529,7 @@ describe('LarkApprovalCardHandler', () => {
     assert.ok(created.ok);
     created.value.status = 'dispatching';
 
-    const handler = new LarkApprovalCardHandler(
-      repo as any,
-      resumer as any,
-      lark as any,
-      makeLogger(),
-    );
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
     const result = await handler.handle({
       action: {
         value: {
@@ -1559,7 +1579,7 @@ describe('LarkApprovalCardHandler', () => {
     assert.ok(approval);
     await repo.setDecisionMessageId(approval.id, 'msg-decision-1');
 
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
 
     const result = await handler.handle({
       action: {
@@ -1596,6 +1616,44 @@ describe('LarkApprovalCardHandler', () => {
     assert.equal(resumeDecision, 'approved');
   });
 
+  it('returns the legacy callback while card recovery is still pending', async () => {
+    const repo = makeApprovalRepo();
+    const lark = makeLarkAdapter();
+    lark.updateMessageById = async () => new Promise<never>(() => {});
+    const resumer = { resume: async () => {} };
+
+    await repo.create({
+      chatId: CHAT_ID,
+      companyId: String(COMPANY_ID),
+      toolId: String(TOOL_ID),
+      actionGroup: 'send',
+      kind: 'tool_action',
+      summary: 'test',
+      payloadJson: {},
+      metadataJson: makeManagerMetadata(),
+      channel: 'lark',
+      idempotencyKey: 'idem-callback-deadline',
+      expiresAt: new Date(Date.now() + 86400_000),
+    });
+    await repo.setDecisionMessageId('approval-1', 'msg-pending-recovery');
+
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
+    const result = await Promise.race([
+      handler.handle({
+        action: {
+          value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
+          tag: 'button',
+        },
+        operator: { open_id: MANAGER_OID },
+      }, makeManagerActor()),
+      new Promise<'timed_out'>(resolve => setTimeout(() => resolve('timed_out'), 50)),
+    ]);
+
+    assert.notEqual(result, 'timed_out');
+    assert.equal((result as any).handled, true);
+    assert.equal(repo.store.get('approval-1')!.status, 'approved');
+  });
+
   it('rejects unauthorized actor', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
@@ -1615,7 +1673,7 @@ describe('LarkApprovalCardHandler', () => {
       expiresAt: new Date(Date.now() + 86400_000),
     });
 
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
 
     const result = await handler.handle({
       action: {
@@ -1656,11 +1714,10 @@ describe('LarkApprovalCardHandler', () => {
         idempotencyKey: `idem-scope-${Object.keys(mismatch)[0]}`,
         expiresAt: new Date(Date.now() + 86400_000),
       });
-      const handler = new LarkApprovalCardHandler(
-        repo as any,
-        { resume: async () => {} } as any,
-        makeLarkAdapter() as any,
-        makeLogger(),
+      const handler = makeApprovalCardHandler(
+        repo,
+        { resume: async () => {} },
+        makeLarkAdapter(),
       );
 
       const result = await handler.handle({
@@ -1695,7 +1752,7 @@ describe('LarkApprovalCardHandler', () => {
       expiresAt: new Date(Date.now() + 86400_000),
     });
 
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
 
     const result = await handler.handle({
       action: {
@@ -1730,7 +1787,7 @@ describe('LarkApprovalCardHandler', () => {
       expiresAt: new Date(Date.now() - 1_000),
     });
 
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
 
     const result = await handler.handle({
       action: {
@@ -1768,7 +1825,7 @@ describe('LarkApprovalCardHandler', () => {
     // Resolve it first
     await repo.atomicResolve('approval-1', 'approved', MANAGER_OID);
 
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
 
     const result = await handler.handle({
       action: {
@@ -1804,7 +1861,7 @@ describe('LarkApprovalCardHandler', () => {
     });
     await repo.setDecisionMessageId('approval-1', 'msg-d-1');
 
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
 
     const result = await handler.handle({
       action: {
@@ -1850,7 +1907,7 @@ describe('LarkApprovalCardHandler', () => {
     });
     await repo.setDecisionMessageId('approval-1', 'msg-gateway-1');
 
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
 
     const result = await handler.handle({
       action: {
@@ -1889,7 +1946,7 @@ describe('LarkApprovalCardHandler', () => {
       expiresAt: new Date(Date.now() + 86400_000),
     });
 
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
 
     // Double-encoded: Lark sometimes re-stringifies the value
     const doubleEncoded = JSON.stringify(
@@ -1909,7 +1966,7 @@ describe('LarkApprovalCardHandler', () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
     const resumer = { resume: async () => {} };
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
+    const handler = makeApprovalCardHandler(repo, resumer, lark);
 
     const result = await handler.handle({
       action: {
@@ -1969,9 +2026,11 @@ describe('LarkApprovalCardHandler audit trail', () => {
       expiresAt: new Date(Date.now() + 86400_000),
     });
 
-    const handler = new LarkApprovalCardHandler(
-      repo as any, resumer as any, lark as any, makeLogger(),
-      { record: (input: unknown) => { audited.push(input); } } as any,
+    const handler = makeApprovalCardHandler(
+      repo,
+      resumer,
+      lark,
+      { record: (input: unknown) => { audited.push(input); } },
     );
 
     const result = await handler.handle({
@@ -1990,16 +2049,15 @@ describe('LarkApprovalCardHandler audit trail', () => {
     // not only in process telemetry that rotates away.
     assert.equal(audited.length, 1, 'the attempt was recorded');
     const entry = audited[0] as any;
-    assert.equal(entry.action, 'approval.card.unauthorized_actor');
+    assert.equal(entry.action, 'decision.unauthorized_actor');
     assert.equal(entry.outcome, 'failure');
     assert.equal(entry.companyId, String(COMPANY_ID), 'filed under the approval"s company');
-    assert.equal(entry.metadata.approvalId, 'approval-1');
-    assert.equal(entry.metadata.decision, 'approved');
+    assert.equal(entry.metadata.decisionId, 'approval-1');
     assert.equal(entry.metadata.actorOpenId, 'ou_intruder');
     assert.ok(entry.metadata.expectedApproverOpenId, 'records who it should have been');
   });
 
-  it('records nothing when the rightful approver acts', async () => {
+  it('records the settled decision through the Decision module', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
     const resumer = { resume: async () => {} };
@@ -2019,9 +2077,11 @@ describe('LarkApprovalCardHandler audit trail', () => {
       expiresAt: new Date(Date.now() + 86400_000),
     });
 
-    const handler = new LarkApprovalCardHandler(
-      repo as any, resumer as any, lark as any, makeLogger(),
-      { record: (input: unknown) => { audited.push(input); } } as any,
+    const handler = makeApprovalCardHandler(
+      repo,
+      resumer,
+      lark,
+      { record: (input: unknown) => { audited.push(input); } },
     );
 
     await handler.handle({
@@ -2032,8 +2092,9 @@ describe('LarkApprovalCardHandler audit trail', () => {
       operator: { open_id: 'ou_manager' },
     }, makeManagerActor());
 
-    // A security log that fires on the happy path teaches admins to ignore it.
-    assert.deepEqual(audited, []);
+    assert.equal(audited.length, 1);
+    assert.equal((audited[0] as any).action, 'decision.settled');
+    assert.equal((audited[0] as any).metadata.decisionId, 'approval-1');
   });
 });
 
