@@ -302,6 +302,16 @@ export type ThreadRun = {
   error: string | null
 }
 
+/**
+ * How often an idle thread asks whether a run has begun without it.
+ *
+ * Six seconds because the thing being waited for is a person coming back from
+ * an OAuth consent screen, where a few seconds of nothing reads as broken. It
+ * costs one request per interval and only while a thread is open, idle, and
+ * visible.
+ */
+const IDLE_RUN_POLL_MS = 6_000
+
 export function useThreadRun(input: {
   threadId: string
   token: string | null
@@ -480,6 +490,70 @@ export function useThreadRun(input: {
 
     return () => controller.abort()
   }, [input.threadId, input.token, consume])
+
+  /*
+   * Finding a run this reader did not start.
+   *
+   * The effect above joins whatever is running when the thread opens, and then
+   * it is done: it only re-runs when the thread or the token changes. That is
+   * correct for the ordinary case, where every run in a thread began with
+   * somebody typing in it, and the stream that answers is the one they opened.
+   *
+   * It is wrong the moment a run can begin somewhere else. A Google connect ask
+   * ends its own run when the card goes out, so by the time OAuth completes in
+   * another tab this hook is idle. The continuation starts a *new* run, writes
+   * its answer into this very conversation, and nothing here is listening — the
+   * answer sits in the thread until the reader happens to reload. Scheduled work
+   * and Lark-initiated runs have the same blind spot.
+   *
+   * So: while nothing is running, ask the server every few seconds whether
+   * something is. `getThread` already reports a live run, and joining one is the
+   * same `consume(watch(...))` the other two paths use, which is the whole
+   * reason this is short.
+   *
+   * Two things keep it cheap. It does not run at all while a run is open, which
+   * is when the stream is already doing this job. And it skips while the tab is
+   * hidden, with an immediate check when it comes back — which is exactly the
+   * moment that matters here, because the reader was last seen leaving for
+   * Google's consent screen.
+   */
+  useEffect(() => {
+    if (!input.token || running) return
+    const threadId = input.threadId
+    const token = input.token
+    let stopped = false
+
+    const joinAnyRun = async (): Promise<void> => {
+      if (stopped || document.hidden) return
+      const controller = new AbortController()
+      const found = await getThread(threadId, token, controller.signal).catch(() => null)
+      // Every reason to walk away: the reader left, switched threads, or started
+      // their own run while this request was in flight.
+      if (stopped || !found?.running || currentThread.current !== threadId) return
+
+      abort.current?.abort()
+      abort.current = controller
+      startedAt.current = found.running.startedAt
+      setPrompt(found.running.prompt)
+      setSent(found.running.attachments ?? [])
+      setTimeline(null)
+      setWatching(null)
+      setLiveAnswer('')
+      setFinal(null)
+      setError(null)
+      setRunning(true)
+      await consume(watch({ threadId, token, signal: controller.signal }), controller)
+    }
+
+    const timer = window.setInterval(() => { void joinAnyRun() }, IDLE_RUN_POLL_MS)
+    const onVisible = (): void => { if (!document.hidden) void joinAnyRun() }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      stopped = true
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [input.threadId, input.token, running, consume])
 
   /* A run started here keeps its own controller, which the effect above never
      sees. Without this, leaving the page leaves that reader open — the run is

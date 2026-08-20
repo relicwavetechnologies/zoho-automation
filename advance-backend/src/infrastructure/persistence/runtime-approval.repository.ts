@@ -258,6 +258,43 @@ export class RuntimeApprovalRepository {
     }
   }
 
+  /**
+   * Close an ask nobody needs answered any more.
+   *
+   * Distinct from `markFailed`, which says the request broke. A withdrawn ask
+   * succeeded and was then made moot by something else: the Connect card whose
+   * OAuth completed in a browser tab is the case this exists for, and calling
+   * that "failed" would be a lie told to whoever reads the row later.
+   *
+   * `withdrawn` is outside both the inbox filter (`dispatching`/`pending`) and
+   * the exactly-once durable set (`executing`/`awaiting_governance`/
+   * `consumed`), so a withdrawn row disappears from the reader's screen without
+   * standing in for a completed action.
+   *
+   * Scoped to still-open rows so this can never overwrite a real answer that
+   * landed first.
+   */
+  async withdrawByIdempotencyKey(
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<Result<number, Error>> {
+    try {
+      const updated = await this.prisma.runtimeApproval.updateMany({
+        where: {
+          idempotencyKey,
+          status: { in: ['dispatching', 'pending'] },
+        },
+        data: {
+          status: 'withdrawn',
+          resolutionReason: reason,
+        },
+      });
+      return ok(updated.count);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.withdrawByIdempotencyKey', e));
+    }
+  }
+
   async markFailed(id: string, reason: string): Promise<Result<void, Error>> {
     try {
       await this.prisma.runtimeApproval.update({

@@ -192,6 +192,8 @@ export const createServer = (c: Container): DivoServerApplication => {
         return finalText;
       },
       runOrigins: c.runOrigins,
+      // Closes the web Connect card once OAuth has made it moot.
+      decisions: c.decisions,
       channelAdapter: c.larkAdapter,
       laneLeaseHolder: c.laneLeaseHolder,
       logger: c.logger,

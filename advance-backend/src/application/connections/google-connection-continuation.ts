@@ -130,6 +130,14 @@ export interface GoogleConnectionContinuationWorkerDeps {
   /** Web uses the same durable intent and queue, but its existing web runtime owns delivery. */
   runWeb?: (input: GoogleConnectionContinuationWebRunInput) => Promise<string | null>;
   runOrigins?: Pick<RunOriginStore, 'recall'>;
+  /**
+   * Closes the Connect ask once OAuth has made it moot.
+   *
+   * Optional because Lark delivers its own card rather than a decision row, and
+   * because every test that predates the web surface builds this worker without
+   * one. Absent, the card simply expires on its own.
+   */
+  decisions?: { withdraw(input: { idempotencyKey: string; reason: string }): Promise<number> };
   channelAdapter: LarkChannelAdapter;
   laneLeaseHolder?: LaneLeaseHolder;
   logger: Logger;
@@ -356,6 +364,21 @@ export class GoogleConnectionContinuationWorker {
       outcome,
     );
     if (!finished.ok) throw finished.error;
+
+    /*
+     * The Connect card is moot the moment the connection exists, which is
+     * strictly before this line: nothing reaches `finish` until OAuth has
+     * completed. So this runs on the delivery-failure path too, deliberately.
+     * A member who has already connected should never be looking at a button
+     * asking them to connect, whatever happened to the run afterwards.
+     *
+     * The decision was opened with the intent id as its idempotency key
+     * (`web.courier.ts`), which is what makes it findable from here.
+     */
+    await this.deps.decisions?.withdraw({
+      idempotencyKey: intent.intentId,
+      reason: 'google_connected',
+    });
   }
 }
 

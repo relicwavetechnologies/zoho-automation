@@ -1017,6 +1017,63 @@ from `## Next action`.
 
 ## 11. Build log
 
+**2026-08-21. First live web run, and the two defects it found.** Abhishek ran
+the real thing: asked for Drive and Sheets, got the Connect card with the Google
+mark and the right two scopes, connected, and then nothing appeared to happen.
+
+The backend was blameless. The conversation held all of it, in order: the ask,
+the card, the Phase 7 continuation context at sequence 5, and Divo's answer at
+sequence 6 saying the connection was live with Drive and Sheets. The intent row
+read `connected` / `completed` with no failure code. The work was done and
+delivered into the thread. Nobody was looking.
+
+**Defect 1: nothing closed the Connect ask.** `RuntimeApproval b9d3491d` was
+still `pending` long after OAuth completed, so the card sat on screen offering
+to connect an account that was already connected, until its own 10-minute TTL
+expired. D5 says the link option settles nothing *when pressed*, which is still
+right; what was missing is that nobody gave OAuth completion the job of taking
+the question back.
+
+Fixed by giving the Decision module the verb it lacked. `withdraw` closes a
+still-open ask by idempotency key, which is the handle the caller actually holds
+because the web courier opened the row with the intent id. New status
+`withdrawn`, deliberately outside both the inbox filter (`dispatching`/
+`pending`) and the exactly-once durable set (`executing`/`awaiting_governance`/
+`consumed`), so a withdrawn row leaves the screen without standing in for a
+completed action. `markFailed` was the wrong tool: this ask succeeded and was
+then made moot, and calling that "failed" lies to whoever reads the row later.
+
+The continuation calls it from `finish`, so it runs on the delivery-failure path
+too. That is on purpose. The member connected either way, and a button asking
+them to connect is wrong whatever became of the run.
+
+**Defect 2: a web thread cannot see a run it did not start.** `live.ts` joined
+whatever was running when the thread opened and then went idle, re-running only
+on a thread or token change. A connect ask ends its own run when the card goes
+out, so by the time OAuth finished, the hook had been asleep for 20 seconds. The
+continuation's new run wrote into the same conversation with nothing listening.
+The only poll on that screen was `useDecisions`, which polls decisions.
+
+This is the D7 risk arriving from the far side. The worry was that a run
+restarting on its own would read as a ghost. The truth was the opposite: it
+restarts and the browser never finds out.
+
+Fixed with a poll, at Abhishek's call. While a thread is idle and visible it asks
+`getThread` every 6 seconds whether a run has begun, and joins it through the
+same `consume(watch(...))` both other paths use. It also checks immediately when
+the tab becomes visible, which is the moment that actually matters here: the
+reader was last seen leaving for Google's consent screen. Scheduled work and
+Lark-initiated runs had the same blindness and now benefit from the same fix.
+
+Gate: `pnpm typecheck` clean both sides; `pnpm test` **3993 tests, 3963 pass, 0
+fail**; admin `pnpm test:unit` **443 pass**. Three new tests cover the withdraw,
+including that it still fires when delivery failed and that a worker built
+without a decision service keeps working, which is how every Lark run builds it.
+
+**Still unproven:** the full loop end to end after these two fixes. Abhishek runs
+that.
+
+
 **2026-08-21. Phase 7 follow-up: one failing test and three type errors, fixed.**
 The suite was left red at `0ab1978f5`. `google-connection-flow.test.ts`,
 "records a visible Pi delivery failure without reporting completion", expected

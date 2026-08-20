@@ -566,6 +566,49 @@ export class DecisionService {
    * them exactly what the approver is looking at. Only one half can be settled,
    * and `settle` decides that rather than this.
    */
+  /**
+   * Take back a question that answered itself.
+   *
+   * A connect ask is the case this exists for. Its option opens a URL and
+   * settles nothing (D5 of the connect plan), so pressing it never resolves the
+   * row — and when OAuth completes elsewhere the card is left offering to
+   * connect an account that is already connected. Somebody has to close it, and
+   * this module is the only one that should know how.
+   *
+   * Keyed by `idempotencyKey` rather than decision id because the caller that
+   * learns the ask is moot is the one holding the authorization intent, not the
+   * one that opened the row. Withdrawing something already answered, expired,
+   * or absent is a no-op that returns 0, so this is safe to call on every
+   * completion without asking first.
+   */
+  async withdraw(input: {
+    readonly idempotencyKey: string;
+    readonly reason: string;
+  }): Promise<number> {
+    const withdrawn = await this.deps.approvals.withdrawByIdempotencyKey(
+      input.idempotencyKey,
+      input.reason,
+    );
+    if (!withdrawn.ok) {
+      // Never fatal to the caller. The ask expires on its own within minutes,
+      // and failing a completed OAuth continuation because a card outlived it
+      // would trade a cosmetic problem for a real one.
+      this.deps.logger.warn('decision.withdraw_failed', {
+        idempotencyKey: input.idempotencyKey,
+        error: withdrawn.error.message,
+      });
+      return 0;
+    }
+    if (withdrawn.value > 0) {
+      this.deps.logger.info('decision.withdrawn', {
+        idempotencyKey: input.idempotencyKey,
+        reason: input.reason,
+        count: withdrawn.value,
+      });
+    }
+    return withdrawn.value;
+  }
+
   async open(actor: DecisionActor): Promise<DecisionInbox> {
     const rows = await this.openRows(actor);
     return {
