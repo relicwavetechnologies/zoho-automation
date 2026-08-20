@@ -1244,11 +1244,13 @@ export class GatewayDispatcher {
         connected: true,
         provider: outcome.provider,
         grantedScopeGroups: outcome.grantedScopeGroups,
+        /* Names the field rather than saying "above". The model reads this as
+           JSON, where there is no above, and a pointer to nothing is how a run
+           ends up guessing which scopes it has. */
         message:
-          'Google Workspace is now connected for this member. The scope groups listed above are '
-          + 'the ones Google actually returned; treat anything absent from that list as not granted. '
-          + 'Continue the request you were working on, and say in your reply that the connection is '
-          + 'now in place.',
+          'Google Workspace is now connected for this member. grantedScopeGroups lists exactly what '
+          + 'Google returned; treat any group absent from it as not granted. Continue the request you '
+          + 'were working on, and say in your reply that the connection is now in place.',
       });
     }
     /* Named causes, not one refusal. Each of these leaves the member in a
