@@ -1,0 +1,119 @@
+/*
+ * Apps, drawn inside the box you type in.
+ *
+ * A textarea holds characters and nothing else, so the marks are painted on a
+ * mirror sitting exactly behind it: same font, same padding, same wrapping,
+ * same width. The textarea keeps the caret, the selection and every keystroke;
+ * it just stops drawing its own letters.
+ *
+ * That arrangement has one rule, and everything below obeys it. **Nothing here
+ * may change the width of a single character.** The mirror and the real text
+ * must wrap at the same points and advance at the same rate, or the caret walks
+ * away from the letters underneath it. So the pebble is a `box-shadow` rather
+ * than padding, and the mark is absolutely positioned rather than inserted.
+ */
+
+/* The two layers, stacked and identical. `inset-0` on the mirror pins it to the
+   textarea's own box, which is the one being resized in script. */
+.cmp-field { position: relative; }
+
+.cmp-mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--bui-ink);
+}
+
+/* The letters live on the mirror now. The caret and the selection do not, so
+   both are given back explicitly — a composer whose caret you cannot find is
+   worse than one with no marks in it. */
+.cmp-input {
+  color: transparent;
+  caret-color: var(--bui-ink);
+}
+
+/* Selection paints on the textarea, which sits above the mirror, so an opaque
+   highlight would black out the very text being selected. Tinted instead, so
+   the words show through it. */
+.cmp-input::selection {
+  background: color-mix(in oklab, var(--bui-ink) 22%, transparent);
+  color: transparent;
+}
+
+/* ── One app ──────────────────────────────────────────── */
+
+.cmp-mention {
+  position: relative;
+  border-radius: 5px;
+  background: var(--cmp-pebble);
+  /* Vertical padding is free: on an inline element it paints outside the line
+     box without moving anything. Horizontal padding is not free — it would
+     widen the run and slide every character after it out from under the caret
+     — so the sides get a spread shadow instead, kept narrow enough that two
+     mentions one space apart do not touch. */
+  padding: 2px 0;
+  /* 1px, because the only thing between two mentions is one space. At 2px they
+     met in the middle and read as a single long pebble with a logo in it. */
+  box-shadow: 0 0 0 1px var(--cmp-pebble);
+  --cmp-pebble: color-mix(in oklab, var(--bui-ink) 11%, transparent);
+}
+
+/*
+ * Each app in its own colour.
+ *
+ * `--cmp-brand` is set per mention from `tintFor`, and mixed here rather than
+ * there because the amount depends on the theme: 18% of Gmail red over a light
+ * canvas is a tint, and the same 18% over a dark one is nearly invisible.
+ *
+ * A single shared accent was the first attempt and it was worse than no colour
+ * at all — four orange pebbles in a row look like one control that has been
+ * repeated, where red, green and blue read instantly as three different
+ * services.
+ */
+.cmp-mention[data-marked='true'] {
+  --cmp-pebble: color-mix(in oklab, var(--cmp-brand, var(--bui-brand)) 18%, transparent);
+}
+
+/* `.dark` on the root element, which is what `use-theme` actually sets — and
+   the only thing worth keying off. A `prefers-color-scheme` query would boost
+   the tint for somebody who chose light mode on a dark machine, which is the
+   one reader who has said out loud that they do not want it. */
+.dark .cmp-mention[data-marked='true'] {
+  --cmp-pebble: color-mix(in oklab, var(--cmp-brand, var(--bui-brand)) 26%, transparent);
+}
+
+/*
+ * The mark stands where the `@` is.
+ *
+ * The `@` keeps its place in the line and gives up its ink, so the mark costs
+ * exactly one character of width — the width that character was always going to
+ * take. Take the mark out of flow and the sentence does not move.
+ */
+.cmp-mention-at { color: transparent; }
+
+.cmp-mention-mark {
+  position: absolute;
+  /* Centred inside the width the `@` was always going to occupy, and a shade
+     smaller than it, so there is daylight between the mark and the first
+     letter of the name. Sized in `em` because the field's font-size is a
+     function of how far Home has been scrolled. */
+  left: 0.09em;
+  top: 50%;
+  width: 0.8em;
+  height: 0.8em;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+}
+
+.cmp-mention-mark > * {
+  width: 100%;
+  height: 100%;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .cmp-mention { transition: background-color .12s ease, box-shadow .12s ease; }
+}

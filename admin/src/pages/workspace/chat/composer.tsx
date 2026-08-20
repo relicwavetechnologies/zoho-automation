@@ -10,6 +10,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, ArrowUpRight, Check, ChevronDown, Plus } from 'lucide-react'
 import { ToolMark, tool, type ToolKey } from './tools'
+import { splitMentions, tintFor } from './mentions'
+import './mentions.css'
 import { FileChips, RejectionNote } from './attach.view'
 import { namedForClipboard, type Rejection } from './attach'
 import {
@@ -126,6 +128,7 @@ export function Composer({
   const input = useRef<HTMLTextAreaElement>(null)
   const controls = useRef<HTMLDivElement>(null)
   const measure = useRef<HTMLSpanElement>(null)
+  const mirror = useRef<HTMLDivElement>(null)
   const modelBtn = useRef<HTMLButtonElement>(null)
   const modelMenu = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -148,6 +151,7 @@ export function Composer({
   const ready = value.trim().length > 0
   const canSend = ready && (modelSelection !== null || !picksModel)
   const model = models.find(candidate => candidate.id === modelSelection?.model)
+  const runs = useMemo(() => splitMentions(value), [value])
   const token = tokenAt(value)
   const rows = useMemo(() => {
     const q = (token?.query ?? '').toLowerCase()
@@ -215,9 +219,13 @@ export function Composer({
   useLayoutEffect(() => {
     const el = input.current
     const bar = controls.current
-    const mirror = measure.current
-    const picker = modelBtn.current
-    if (!el || !bar || !mirror || !picker) return
+    const gauge = measure.current
+    /* The model picker is not required, and treating it as required was a real
+       bug: a composer with `picksModel` off draws no picker, so this bailed on
+       every pass and the field never got a height at all. It stayed at one CSS
+       line while the text scrolled inside it. Its width is a term in the
+       measurement, so it contributes nothing when it is not there. */
+    if (!el || !bar || !gauge) return
 
     /* Nothing has been laid out yet, so every number below would be a
        fabrication. Bailing leaves the field at its CSS `min-height`, which is
@@ -226,7 +234,7 @@ export function Composer({
        because the deps had not changed by the time layout was real. */
     if (bar.clientWidth === 0) return
 
-    const fixed = 28 * 2 + picker.offsetWidth
+    const fixed = 28 * 2 + (modelBtn.current?.offsetWidth ?? 0)
     const gaps = 4 * 3
     const inline = bar.clientWidth - fixed - gaps
 
@@ -241,7 +249,7 @@ export function Composer({
        latches: the composer opened two-rows-tall and stayed there forever. */
     const needsRow =
       value.length > 0
-      && (value.includes('\n') || (inline > 0 && mirror.offsetWidth + 8 > inline))
+      && (value.includes('\n') || (inline > 0 && gauge.offsetWidth + 8 > inline))
     if (needsRow !== measured) setMeasured(needsRow)
 
     /* The landing field is tall before anything is typed — an empty box the
@@ -398,7 +406,59 @@ export function Composer({
             <Plus size={16} />
           </button>
 
-          <textarea
+          {/*
+            The box you type in, and the marks drawn behind it.
+
+            Two elements at one position: a mirror that draws the draft with an
+            app's logo where its `@` is, and the real textarea on top of it with
+            its own letters turned transparent. Every keystroke, the caret and
+            the selection stay with the textarea — only the drawing moves. See
+            `mentions.css` for why nothing here may change a character's width.
+          */}
+          <div
+            className={`cmp-field min-w-0 self-start ${
+              expanded ? 'col-span-full col-start-1 row-start-1' : 'col-start-2 row-start-1'
+            }`}
+          >
+            <div
+              ref={mirror}
+              aria-hidden
+              className={`cmp-mirror px-1 py-[5px] leading-[18px] ${
+                hero === undefined ? 'text-[13px]' : ''
+              }`}
+              style={hero === undefined ? undefined : { fontSize: `${13 + 1.5 * hero}px` }}
+            >
+              {runs.map((run, index) => (
+                run.kind === 'text' ? (
+                  <span key={index}>{run.text}</span>
+                ) : (
+                  <span
+                    key={index}
+                    className="cmp-mention"
+                    data-marked={run.key ? 'true' : undefined}
+                    /* The app's own colour, handed to CSS rather than mixed
+                       here: the tint has to be blended against whichever theme
+                       is on, and `color-mix` in the stylesheet knows that and
+                       this does not. */
+                    style={tintFor(run.key) ? { ['--cmp-brand' as string]: tintFor(run.key) } : undefined}
+                  >
+                    {run.key ? (
+                      <span className="cmp-mention-mark">
+                        <ToolMark name={run.key} size={14} />
+                      </span>
+                    ) : null}
+                    <span className={run.key ? 'cmp-mention-at' : undefined}>@</span>
+                    {run.text.slice(1)}
+                  </span>
+                )
+              ))}
+              {/* A draft ending in a newline leaves the mirror a line short:
+                  a trailing line break collapses in flow, and the textarea's
+                  does not. */}
+              {value.endsWith('\n') ? '\u00a0' : null}
+            </div>
+
+            <textarea
             ref={input}
             rows={1}
             value={value}
@@ -436,13 +496,16 @@ export function Composer({
               ? `Ask about the attached file${files.length === 1 ? '' : 's'}`
               : placeholder}
             aria-label="Message Divo"
-            className={`min-h-7 w-full min-w-0 resize-none bg-transparent px-1 py-[5px] leading-[18px] text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 ${
+            onScroll={(event) => {
+              /* The mirror has no scrollbar of its own; it follows. */
+              if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop
+            }}
+            className={`cmp-input relative min-h-7 w-full min-w-0 resize-none bg-transparent px-1 py-[5px] leading-[18px] outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 ${
               hero === undefined ? 'text-[13px]' : ''
-            } ${
-              expanded ? 'col-span-full col-start-1 row-start-1' : 'col-start-2 row-start-1'
             }`}
             style={hero === undefined ? undefined : { fontSize: `${13 + 1.5 * hero}px` }}
           />
+          </div>
 
           {/* Left out entirely when there is no model to choose; see `picksModel`. */}
           {picksModel ? (
