@@ -174,11 +174,11 @@ export interface PublishedDocumentPort {
 
 **Steps.**
 
-- [ ] Re-read the Vercel reference linked in section 5 and confirm the request shape has not moved
-- [ ] Add the three env vars as `z.string().optional()`, following `SERPER_API_KEY` at `env.ts:175`
-- [ ] Write the port, then the adapter: one `fetch`, `files: [{ file: 'index.html', data: html }]`, `projectSettings: { framework: null }`, `target: 'production'`
-- [ ] Map failures through the cause-not-shape rule: a missing token is `not_configured` and names the env var, a 4xx from Vercel carries Vercel's own message, a 5xx is retryable
-- [ ] Unit-test the adapter against a stubbed `fetch` — request shape, and each failure mapping
+- [x] Re-read the Vercel reference linked in section 5 and confirm the request shape has not moved
+- [x] Add the three env vars as `z.string().optional()`, following `SERPER_API_KEY` at `env.ts:175`
+- [x] Write the port, then the adapter: one `fetch`, `files: [{ file: 'index.html', data: html }]`, `projectSettings: { framework: null }`, `target: 'production'`
+- [x] Map failures through the cause-not-shape rule: a missing token is `not_configured` and names the env var, a 4xx from Vercel carries Vercel's own message, a 5xx is retryable
+- [x] Unit-test the adapter against a stubbed `fetch` — request shape, and each failure mapping
 
 **Do not.** Do not add a retry loop. The gateway already has one, and a deploy that half-succeeded twice is worse than one that failed once. Do not log the token, and do not put it in an error message; `not_configured` names the *variable*, never the value.
 
@@ -393,6 +393,12 @@ from `## Next action`.
 - The implementation stayed byte-for-byte for the existing panel path; only the required import and signature/placeholder additions differ. No parked files were opened or changed.
 - Gate: `node --import tsx --test 'tests/domain/artifact-*.test.ts'` passed with 24 tests. The required one-space mutation made the parity gate fail (exit 1), then restoring it returned the gate to 24 passing tests (exit 0).
 
+### 2026-08-21 — Phase 2 in progress
+
+- Added `PublishedDocumentPort`, `VercelPublisher`, and the three optional `VERCEL_*` env fields. The adapter sends one `POST /v13/deployments` with an inline `index.html`, `projectSettings: { framework: null }`, `target: 'production'`, the artifact slug as `name`, and the configured project as `project`; `teamId` is present only when configured. The response is normalized to an HTTPS URL and deployment id.
+- Re-read the deployment contract on 2026-08-21. The direct docs page returned an unsupported content type in the web reader, so I cross-checked the current official [Vercel SDK deployment reference](https://github.com/vercel/sdk/blob/main/docs/sdks/deployments/README.md), which still documents inline small files, `project`, `projectSettings`, `target`, and optional `teamId`.
+- Focused gate: `node --import tsx --test 'tests/infrastructure/vercel-publisher.test.ts'` passed with 8 tests. The real-token smoke gate is not run because Q2 is still unanswered. `pnpm typecheck` remains red only at the byte-identical Phase 1 chart copy's unchecked indexed accesses (`chart-geometry.ts:118-119,144`) under backend strictness; changing that port would violate the Phase 1 byte gate.
+
 ## 12. Next action
 
-Start Phase 2. Re-read the Vercel deployment reference, then implement and unit-test the backend publishing port and adapter; the real-token gate stops for Q2 if the Vercel account details are still unanswered.
+Answer Q2: confirm whether `divo@emiactech.com` has a Vercel account and whether it is personal or a team, then run Phase 2's real-token smoke gate with the matching `teamId` choice.
