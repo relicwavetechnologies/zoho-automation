@@ -68,7 +68,7 @@ function tokenAt(draft: string) {
 
 export function Composer({
   value, onChange, onSubmit, placeholder, autoFocus, running, onStop,
-  models, modelSelection, onModelChange, onReasoningEffortChange, modelLoading,
+  models, modelSelection, onModelChange, onReasoningEffortChange, modelLoading, picksModel = true,
   files = NO_FILES, rejected = NO_REJECTIONS, onAttach, onRemoveFile,
   hero, actions,
 }: {
@@ -96,6 +96,17 @@ export function Composer({
   onModelChange: (model: string) => void
   onReasoningEffortChange: (effort: ModelSelection['reasoningEffort']) => void
   modelLoading?: boolean
+  /**
+   * Whether this composer chooses a model.
+   *
+   * Off for the signed-out landing, which has no session to read a model list
+   * from. The picker would be a permanently disabled control reading
+   * "Unavailable", and — worse — send is gated on having a model pair, so the
+   * one control the page exists for would be dead. Sending there opens
+   * onboarding rather than starting a run, so there is nothing for a model to
+   * be chosen *for* until somebody is signed in.
+   */
+  picksModel?: boolean
   placeholder: string
   autoFocus?: boolean
   /** A run is going. The send control becomes the way to end it. */
@@ -135,7 +146,7 @@ export function Composer({
   const [active, setActive] = useState(0)
 
   const ready = value.trim().length > 0
-  const canSend = ready && modelSelection !== null
+  const canSend = ready && (modelSelection !== null || !picksModel)
   const model = models.find(candidate => candidate.id === modelSelection?.model)
   const token = tokenAt(value)
   const rows = useMemo(() => {
@@ -433,93 +444,96 @@ export function Composer({
             style={hero === undefined ? undefined : { fontSize: `${13 + 1.5 * hero}px` }}
           />
 
-          {/* The menu lives in the toggle's own cell and grows up from it, so
-              it opens where the click was. Anchored to the composer's edge it
-              drifted: the landing box is tall and wears a tray, so "above the
-              composer" was half a screen from the control that opened it. */}
-          <div
-            className={`relative ${expanded ? 'col-start-2 row-start-2' : 'col-start-3 row-start-1'}`}
-          >
-            <button
-              ref={modelBtn}
-              type="button"
-              aria-expanded={modelOpen}
-              aria-label="Choose model"
-              disabled={running || modelLoading || models.length === 0}
-              onClick={() => { setSourceDismissed(true); setModelOpen((v) => !v) }}
-              className="flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[12px] font-medium text-ink-2 transition-colors duration-150 enabled:hover:bg-fill enabled:hover:text-ink disabled:opacity-60"
+          {/* Left out entirely when there is no model to choose; see `picksModel`. */}
+          {picksModel ? (
+            /* The menu lives in the toggle's own cell and grows up from it, so
+               it opens where the click was. Anchored to the composer's edge it
+               drifted: the landing box is tall and wears a tray, so "above the
+               composer" was half a screen from the control that opened it. */
+            <div
+              className={`relative ${expanded ? 'col-start-2 row-start-2' : 'col-start-3 row-start-1'}`}
             >
-              {model?.label ?? (modelLoading ? 'Loading…' : 'Unavailable')}
-              {modelSelection && (
-                <span className="font-normal text-ink-3">
-                  · {reasoningEffortLabel(modelSelection.reasoningEffort)}
-                </span>
-              )}
-              <ChevronDown size={11} className="text-ink-3" />
-            </button>
-
-            {modelOpen && (
-              <div
-                ref={modelMenu}
-                className="absolute right-0 bottom-full z-10 mb-2 w-56 rounded-card bg-surface p-1 shadow-overlay"
-                style={{ animation: 'bui-pop-in 180ms cubic-bezier(0.23,1,0.32,1) both', transformOrigin: 'bottom right' }}
+              <button
+                ref={modelBtn}
+                type="button"
+                aria-expanded={modelOpen}
+                aria-label="Choose model"
+                disabled={running || modelLoading || models.length === 0}
+                onClick={() => { setSourceDismissed(true); setModelOpen((v) => !v) }}
+                className="flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[12px] font-medium text-ink-2 transition-colors duration-150 enabled:hover:bg-fill enabled:hover:text-ink disabled:opacity-60"
               >
-                <p className="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-3">
-                  Model
-                </p>
-                {models.map((candidate) => (
-                  <button
-                    key={candidate.id}
-                    type="button"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => { onModelChange(candidate.id); input.current?.focus() }}
-                    className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
-                  >
-                    <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{candidate.label}</span>
-                    <span className="shrink-0 text-[11px] text-ink-3">
-                      {candidate.provider === 'deepseek'
-                        ? 'DeepSeek'
-                        : candidate.provider === 'openai'
-                          ? 'OpenAI'
-                          : candidate.provider}
-                    </span>
-                    <Check size={13} className={`shrink-0 text-ink ${candidate.id === model?.id ? '' : 'invisible'}`} />
-                  </button>
-                ))}
-                {model && modelSelection && (
-                  <>
-                    <p className="mx-1 mt-1 border-t border-line px-1 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-3">
-                      Reasoning effort
-                    </p>
-                    {model.reasoningEfforts.map((effort) => (
-                      <button
-                        key={effort}
-                        type="button"
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => {
-                          onReasoningEffortChange(effort)
-                          setModelOpen(false)
-                          input.current?.focus()
-                        }}
-                        className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
-                      >
-                        <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
-                          {reasoningEffortLabel(effort)}
-                        </span>
-                        <span className="shrink-0 text-[11px] text-ink-3">
-                          {reasoningEffortHint(effort)}
-                        </span>
-                        <Check
-                          size={13}
-                          className={`shrink-0 text-ink ${effort === modelSelection.reasoningEffort ? '' : 'invisible'}`}
-                        />
-                      </button>
-                    ))}
-                  </>
+                {model?.label ?? (modelLoading ? 'Loading…' : 'Unavailable')}
+                {modelSelection && (
+                  <span className="font-normal text-ink-3">
+                    · {reasoningEffortLabel(modelSelection.reasoningEffort)}
+                  </span>
                 )}
-              </div>
-            )}
-          </div>
+                <ChevronDown size={11} className="text-ink-3" />
+              </button>
+
+              {modelOpen && (
+                <div
+                  ref={modelMenu}
+                  className="absolute right-0 bottom-full z-10 mb-2 w-56 rounded-card bg-surface p-1 shadow-overlay"
+                  style={{ animation: 'bui-pop-in 180ms cubic-bezier(0.23,1,0.32,1) both', transformOrigin: 'bottom right' }}
+                >
+                  <p className="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-3">
+                    Model
+                  </p>
+                  {models.map((candidate) => (
+                    <button
+                      key={candidate.id}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => { onModelChange(candidate.id); input.current?.focus() }}
+                      className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{candidate.label}</span>
+                      <span className="shrink-0 text-[11px] text-ink-3">
+                        {candidate.provider === 'deepseek'
+                          ? 'DeepSeek'
+                          : candidate.provider === 'openai'
+                            ? 'OpenAI'
+                            : candidate.provider}
+                      </span>
+                      <Check size={13} className={`shrink-0 text-ink ${candidate.id === model?.id ? '' : 'invisible'}`} />
+                    </button>
+                  ))}
+                  {model && modelSelection && (
+                    <>
+                      <p className="mx-1 mt-1 border-t border-line px-1 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-3">
+                        Reasoning effort
+                      </p>
+                      {model.reasoningEfforts.map((effort) => (
+                        <button
+                          key={effort}
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => {
+                            onReasoningEffortChange(effort)
+                            setModelOpen(false)
+                            input.current?.focus()
+                          }}
+                          className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
+                        >
+                          <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
+                            {reasoningEffortLabel(effort)}
+                          </span>
+                          <span className="shrink-0 text-[11px] text-ink-3">
+                            {reasoningEffortHint(effort)}
+                          </span>
+                          <Check
+                            size={13}
+                            className={`shrink-0 text-ink ${effort === modelSelection.reasoningEffort ? '' : 'invisible'}`}
+                          />
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : null}
 
           {/*
             One control, two jobs — send, then stop. A recorder works this way

@@ -100,10 +100,20 @@ const NAV: Record<ScopeKind, NavGroup[]> = {
   ],
 }
 
+/*
+ * Which scope a path belongs to.
+ *
+ * `/` is the You scope and has to be tested for exactly, not by prefix — every
+ * path in the app starts with it, so `startsWith('/')` would answer "you" for
+ * the company audit log. It reads as a special case because it is one: Home
+ * moved up to the root and the root is not a prefix of anything.
+ */
 const scopeOfPath = (pathname: string): ScopeKind =>
-  pathname.startsWith('/me') || pathname.startsWith('/chat') ? 'you' : pathname.startsWith('/team') ? 'team' : 'company'
+  pathname === '/' || pathname.startsWith('/me') || pathname.startsWith('/chat')
+    ? 'you'
+    : pathname.startsWith('/team') ? 'team' : 'company'
 
-const HOME: Record<ScopeKind, string> = { you: '/me', team: '/team', company: '/home' }
+const HOME: Record<ScopeKind, string> = { you: '/', team: '/team', company: '/home' }
 
 export function WorkspaceShell() {
   const { session, scopes, logout } = useAdminAuth()
@@ -317,7 +327,7 @@ export function WorkspaceShell() {
 
           {/* Home, because Home is the composer — landing on the empty chat
               screen asked you to start over on a page with nothing on it. */}
-          <button type="button" className="ws-new-chat" onClick={() => navigate('/me')}>
+          <button type="button" className="ws-new-chat" onClick={() => navigate('/')}>
             <span>New chat</span>
             <span className="ws-new-chat-plus" aria-hidden="true"><Plus size={10} /></span>
           </button>
@@ -395,7 +405,7 @@ export function WorkspaceShell() {
             duller one. Only the landing itself — everything under `/me/…` is an
             ordinary page and keeps its name.
           */}
-          {location.pathname.startsWith('/chat') || location.pathname === '/me' ? null : (
+          {location.pathname.startsWith('/chat') || location.pathname === '/' ? null : (
             <header className="topbar">
               <b className="ws-crumb-now">
                 {groups.flatMap((g) => g.items).find((i) => i.to === location.pathname)?.label ?? active.label}
@@ -678,7 +688,7 @@ function ChatRow({
     // them an empty thread under a name that is gone. Home rather than the bare
     // chat screen: it is where a new question is asked, and it is the same place
     // New chat goes.
-    if (location.pathname === `/chat/${chat.threadId}`) navigate('/me', { replace: true })
+    if (location.pathname === `/chat/${chat.threadId}`) navigate('/', { replace: true })
   }
 
   return (

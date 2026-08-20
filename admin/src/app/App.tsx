@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useState } from "react"
-import { Link, Navigate, Route, Routes, useParams } from "react-router-dom"
+import { Link, Navigate, Route, Routes, useLocation, useParams } from "react-router-dom"
 import { Toaster } from "@/components/ui/sonner"
 import { WorkspaceShell } from "@/components/admin/workspace-shell"
 import { MailShell } from "@/components/admin/mail-shell"
@@ -7,6 +7,7 @@ import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { isMailSurface } from "@/auth/surface"
 import type { ScopeKind } from "@/auth/types"
 import { CompanyAdminSignupPage } from "@/pages/CompanyAdminSignupPage"
+import { Landing } from "@/pages/landing/landing"
 import { LoginPage } from "@/pages/LoginPage"
 import { MemberInviteAcceptPage } from "@/pages/MemberInviteAcceptPage"
 import { ConnectionGovernancePage } from "@/pages/ConnectionGovernancePage"
@@ -16,6 +17,9 @@ import { MemoriesPage } from "@/pages/MemoriesPage"
 import { CompanySkills } from "@/pages/workspace/screens-company-skills"
 import { LinkLarkPage } from "@/pages/LinkLarkPage"
 import { MailPreview } from "@/pages/preview/MailPreview"
+import { DecisionsPreview } from "@/pages/workspace/decisions/preview"
+import { ApprovalForecastPreview } from "@/pages/workspace/approvals/preview"
+import { ApprovalsScreen } from "@/pages/workspace/approvals/screen"
 import { routed } from "@/pages/workspace/routes"
 import { SettingsShell } from "@/components/admin/settings-shell"
 import { SettingsPreferences } from "@/pages/workspace/screens-settings"
@@ -32,7 +36,7 @@ import { MailSettings } from "@/pages/workspace/screens-mail-settings"
 import { MailCaught } from "@/pages/workspace/screens-mail-caught"
 import { MailHome } from "@/pages/workspace/screens-mail-home"
 import {
-  TeamApprovalPolicy, TeamHome, TeamPeople, TeamRoles, TeamUsage,
+  TeamHome, TeamPeople, TeamRoles, TeamUsage,
 } from "@/pages/workspace/screens-team"
 import {
   CompanyAiOps, CompanyAudit, CompanyDepartments, CompanyGuardrails,
@@ -170,14 +174,34 @@ const AppShell = () => {
 }
 
 /**
- * Where "/" lands. Everyone has a You scope, so that is the honest default —
- * an admin gets the Company scope from the switcher rather than being dropped
- * into it, because the first thing most people want is their own workspace.
- * A member's own workspace *is* mail, so they land there directly.
+ * `/` is the one route in this app that has to mean something to a stranger.
+ *
+ * Everything else can reasonably answer "sign in first". The front door cannot:
+ * it used to bounce anybody without a session straight to `/login`, so the
+ * first thing Divo ever showed a new person was a password field. A product
+ * whose whole proposition is "ask it in words" opening on a form contradicts
+ * itself before it has said anything.
+ *
+ * So the gate sits here rather than inside `<Protected>`, and only for the
+ * index path. `/me`, `/chat`, `/team` and the rest are as protected as they
+ * ever were — a stranger who deep-links into one still gets `/login`, which is
+ * right, because there is nothing on those pages to show somebody with no
+ * account.
+ *
+ * `loading` and `unreachable` both fall through to `<Protected>` on purpose.
+ * Being unable to reach Divo is not being signed out, and neither is a session
+ * that has not finished restoring; showing either person a signup landing would
+ * be the app forgetting who they are and then inviting them to register.
  */
-const DefaultProtectedRoute = () => {
-  const { scopes } = useAdminAuth()
-  return <Navigate to={isMailSurface(scopes) ? "/me/mail" : "/me"} replace />
+const RootGate = () => {
+  const { session, loading, unreachable } = useAdminAuth()
+  const { pathname } = useLocation()
+  if (!session && !loading && !unreachable && pathname === "/") return <Landing />
+  return (
+    <Protected>
+      <AppShell />
+    </Protected>
+  )
 }
 
 /**
@@ -188,7 +212,7 @@ const DefaultProtectedRoute = () => {
  * to one should be told that rather than bounced somewhere else. A silent
  * redirect from a URL a colleague sent them reads as the app being broken.
  *
- * `/me` itself is the exception and is a redirect rather than a refusal: it
+ * `/` itself is the exception and is a redirect rather than a refusal: it
  * means "your workspace", and for a member their workspace is their mail.
  */
 const RequireWorkspace = ({ children }: { children: JSX.Element }) => {
@@ -245,7 +269,7 @@ const RedirectDepartment = () => {
  * Guards a scope this person may not have.
  *
  * Deep links matter here: someone forwards a `/team/people` URL to a colleague
- * who leads nothing, and silently redirecting to `/me` reads like the app is
+ * who leads nothing, and silently redirecting to `/` reads like the app is
  * broken. It says what happened instead.
  */
 const RequireScope = ({ kind, children }: { kind: ScopeKind; children: JSX.Element }) => {
@@ -259,7 +283,7 @@ const RequireScope = ({ kind, children }: { kind: ScopeKind; children: JSX.Eleme
         who={kind === "team"
           ? "This is a manager's view of a department, and you do not lead one. Whoever holds the Manager role in a team can see it."
           : "This is the company-wide view, limited to company admins. Your own workspace and any team you lead are still yours."}
-        action={<Link className="btn" to="/me">Go to your workspace</Link>}
+        action={<Link className="btn" to="/">Go to your workspace</Link>}
       />
     </div>
   )
@@ -283,7 +307,6 @@ const MeUsage = routed(YouUsage)
 const TeamOverview = routed(TeamHome)
 const TeamPeopleRoute = routed(TeamPeople)
 const TeamRolesRoute = routed(TeamRoles)
-const TeamApprovalsRoute = routed(TeamApprovalPolicy)
 const TeamUsageRoute = routed(TeamUsage)
 const CompanyHomeRoute = routed(CompanyHome)
 const CompanyPeopleRoute = routed(CompanyPeople)
@@ -332,20 +355,35 @@ export function App() {
           <Route path="/preview/mail/*" element={<MailPreview />} />
         ) : null}
 
-        <Route
-          path="/"
-          element={
-            <Protected>
-              <AppShell />
-            </Protected>
-          }
-        >
-          <Route index element={<DefaultProtectedRoute />} />
+        {/* Every decision variant, side by side, with no run needed to raise one.
+            Development only for the same reason as the mail preview above: it
+            sits outside `<Protected>`, and its fixtures read like real customer
+            work because that is the only way the layout tells the truth. */}
+        {import.meta.env.DEV ? (
+          <Route path="/preview/decisions" element={<DecisionsPreview />} />
+        ) : null}
+
+        {/* One policy seen by three people, because the confusion is not what
+            the policy says — it is that the same policy produces three
+            different lived experiences and nothing said so. */}
+        {import.meta.env.DEV ? (
+          <Route path="/preview/approvals" element={<ApprovalForecastPreview />} />
+        ) : null}
+
+        <Route path="/" element={<RootGate />}>
+          {/* Home is the composer, and the composer is the front page. It used
+              to be one redirect further in, at `/me`, which made the address of
+              the thing everybody opens Divo to do a private-looking sub-path
+              and left `/` as a bounce with nothing on it. */}
+          <Route index element={<MeHomeEntry />} />
 
           {/* ── You — the work surface only ─────────────────
               Everything you *configure* moved to /settings. What stays is what
               you came here to do: ask, decide, and read what came back. */}
-          <Route path="me" element={<MeHomeEntry />} />
+          {/* `/me` was here. Its children were never nested under it — they are
+              siblings below, `me/mail` and the rest — so moving Home up to `/`
+              retires this one path and leaves them exactly where they were. */}
+          <Route path="me" element={<Navigate to="/" replace />} />
           {/* `/chat` mints a thread id and redirects onto it, so every
               conversation is somewhere you can be sent, reload into, and keep
               open in a second tab beside another one. */}
@@ -376,22 +414,22 @@ export function App() {
               raised from Lark carries no thread at all, and the Lark card it
               was already sent to is where it is answered. Home still lists
               everything waiting on you either way. */}
-          <Route path="me/approvals" element={<Navigate to="/me" replace />} />
+          <Route path="me/approvals" element={<Navigate to="/" replace />} />
           {/* "Things Divo made" is retired. It was a hardcoded list of four
               invented documents standing in front of a real feature: a run
               genuinely writes an artifact, `GET /api/artifacts` lists them, and
               two surfaces already show the real ones — the panel beside the
               chat and the "Made" band on Home. A fake index of a real thing is
               worse than no index. */}
-          <Route path="me/artifacts" element={<Navigate to="/me" replace />} />
+          <Route path="me/artifacts" element={<Navigate to="/" replace />} />
           {/* Automations is retired: a complete backend domain with no door
               facing a browser. No HTTP route reaches
               `ScheduledWorkflowControlService`, and its `create()` refuses any
               channel that is not desktop or lark — so the page showed four
               invented rows above controls that were every one of them
               disabled. It comes back when a route does. */}
-          <Route path="me/automations" element={<Navigate to="/me" replace />} />
-          <Route path="me/automations/:automationId" element={<Navigate to="/me" replace />} />
+          <Route path="me/automations" element={<Navigate to="/" replace />} />
+          <Route path="me/automations/:automationId" element={<Navigate to="/" replace />} />
 
           {/* Where the configuration pages used to live. Kept as redirects
               rather than deleted: these paths are in people's history and in
@@ -415,7 +453,7 @@ export function App() {
           <Route path="team" element={<RequireScope kind="team"><TeamOverview /></RequireScope>} />
           <Route path="team/people" element={<Navigate to="/settings/team/people" replace />} />
           <Route path="team/roles" element={<Navigate to="/settings/team/roles" replace />} />
-          <Route path="team/approvals" element={<Navigate to="/settings/team/approvals" replace />} />
+          <Route path="team/approvals" element={<Navigate to="/settings/approvals" replace />} />
           <Route path="team/usage" element={<Navigate to="/settings/team/usage" replace />} />
 
           {/* ── Company ─────────────────────────────────────
@@ -484,7 +522,11 @@ export function App() {
 
           <Route path="team/people" element={<RequireScope kind="team"><TeamPeopleRoute /></RequireScope>} />
           <Route path="team/roles" element={<RequireScope kind="team"><TeamRolesRoute /></RequireScope>} />
-          <Route path="team/approvals" element={<RequireScope kind="team"><TeamApprovalsRoute /></RequireScope>} />
+          {/* Remapped, not duplicated. This was manager-only and showed switches
+              with no consequence; the page it points at shows the consequence to
+              everyone and carries the switches for whoever may flip them. */}
+          <Route path="team/approvals" element={<Navigate to="/settings/approvals" replace />} />
+          <Route path="approvals" element={<ApprovalsScreen />} />
           <Route path="team/usage" element={<RequireScope kind="team"><TeamUsageRoute /></RequireScope>} />
 
           <Route path="company/people" element={<RequireScope kind="company"><CompanyPeopleRoute /></RequireScope>} />

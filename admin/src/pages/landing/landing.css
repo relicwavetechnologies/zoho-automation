@@ -1,0 +1,432 @@
+/*
+ * The signed-out front door, and the onboarding that opens over it.
+ *
+ * Its own stylesheet rather than more lines in `workspace.css`: nothing here is
+ * reachable once somebody is signed in, so it has no business loading with the
+ * app shell, and keeping it separate means the two can be changed without
+ * reading each other.
+ *
+ * Everything is scoped under `.cur` and spends only `--cur-*` tokens, so light
+ * and dark come for free from the same place the rest of the app gets them.
+ */
+
+/* ── The page ─────────────────────────────────────────── */
+
+.cur.lp {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--cur-canvas);
+  color: var(--cur-ink);
+}
+
+.cur .lp-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 22px;
+  flex: 0 0 auto;
+}
+
+.cur .lp-top-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cur .lp-signin {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--cur-body);
+  padding: 7px 13px;
+  border-radius: var(--cur-r-cta);
+  border: 1px solid var(--cur-hairline);
+  text-decoration: none;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+}
+
+.cur .lp-signin:hover {
+  background: var(--cur-canvas-soft);
+  border-color: var(--cur-hairline-hover);
+  color: var(--cur-ink);
+}
+
+.cur .lp-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--cur-muted);
+  cursor: pointer;
+  transition: background-color .15s ease, color .15s ease;
+}
+
+.cur .lp-icon-btn:hover:not(:disabled) {
+  background: var(--cur-canvas-soft);
+  color: var(--cur-ink);
+}
+
+.cur .lp-icon-btn:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+/*
+ * The composer sits above centre, not on it.
+ *
+ * Dead centre puts it level with the eye and leaves the page bottom-heavy with
+ * nothing in it. A little above reads as the top of a conversation, which is
+ * what it is about to become.
+ */
+.cur .lp-main {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 22px 8vh;
+}
+
+.cur .lp-centre {
+  width: 100%;
+  max-width: 720px;
+}
+
+.cur .lp-centre h1 {
+  font-size: 30px;
+  font-weight: 500;
+  letter-spacing: -0.022em;
+  line-height: 1.16;
+  color: var(--cur-ink);
+}
+
+.cur .lp-lede {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--cur-muted);
+  max-width: 560px;
+}
+
+.cur .lp-comp {
+  margin-top: 26px;
+}
+
+.cur .lp-foot {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--cur-muted);
+}
+
+/* ── The onboarding takeover ──────────────────────────── */
+
+.cur .lp-modal-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 62;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: none;
+}
+
+/* Big on purpose. This is the only thing between a typed sentence and an
+   answer, so it takes the screen rather than perching on it as a dialog. */
+.cur .lp-modal {
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  width: min(70vw, 1040px);
+  height: min(70vh, 720px);
+  min-height: 540px;
+  background: var(--cur-surface);
+  border: 1px solid var(--cur-hairline);
+  border-radius: var(--cur-r-card);
+  box-shadow: var(--cur-shadow-card);
+  overflow: hidden;
+  animation: lp-rise .2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes lp-rise {
+  from { opacity: 0; transform: translateY(8px) scale(.99); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cur .lp-modal { animation: none; }
+}
+
+.cur .lp-modal-top {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.cur .lp-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.cur .lp-dots span {
+  width: 22px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--cur-hairline-strong);
+  transition: background-color .22s ease;
+}
+
+.cur .lp-dots span[data-on] {
+  background: var(--cur-ink);
+}
+
+/*
+ * Their sentence, kept in view.
+ *
+ * The single most important element on the modal and it is not a control. It is
+ * the difference between "sign up to continue" and "we still have what you
+ * asked for".
+ */
+.cur .lp-held {
+  flex: 0 0 auto;
+  margin: 0 auto;
+  width: min(560px, 100%);
+  padding: 0 24px;
+}
+
+.cur .lp-held-tag {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--cur-muted);
+}
+
+.cur .lp-held p {
+  margin-top: 5px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--cur-primary);
+  background: var(--cur-canvas-soft);
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--cur-body);
+  /* Long asks are common and a modal that grows with one is a modal that
+     jumps. Three lines, then it stops. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/*
+ * Centred when it fits, scrolled from the top when it does not.
+ *
+ * `safe center` rather than `center`, and the difference is a real bug: the
+ * role card is the tallest of the four, and plain centring on an overflowing
+ * flex column pushes the first line off the top edge where no amount of
+ * scrolling reaches it. The heading disappeared under the held prompt and the
+ * second choice was cut off at the bottom, both at once.
+ */
+.cur .lp-card {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  justify-content: safe center;
+  margin: 0 auto;
+  width: min(560px, 100%);
+  padding: 24px;
+}
+
+.cur .lp-card h2 {
+  font-size: 21px;
+  font-weight: 500;
+  letter-spacing: -0.018em;
+  color: var(--cur-ink);
+}
+
+.cur .lp-sub {
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--cur-muted);
+}
+
+.cur .lp-sub + .lp-sub {
+  margin-top: 10px;
+}
+
+.cur .lp-lbl {
+  display: block;
+  margin-top: 18px;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--cur-body);
+}
+
+.cur .lp-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  font-size: 13.5px;
+  color: var(--cur-ink);
+  background: var(--cur-canvas);
+  border: 1px solid var(--cur-hairline-strong);
+  border-radius: var(--cur-r-cta);
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.cur .lp-card h2 + .lp-sub + .lp-input,
+.cur .lp-sub + .lp-input {
+  margin-top: 18px;
+}
+
+.cur .lp-input::placeholder { color: var(--cur-muted); }
+
+.cur .lp-input:focus {
+  border-color: var(--cur-ink);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--cur-ink) 10%, transparent);
+}
+
+/* ── The role fork ────────────────────────────────────── */
+
+.cur .lp-choices {
+  margin-top: 18px;
+  display: grid;
+  gap: 10px;
+}
+
+.cur .lp-choice {
+  display: block;
+  text-align: left;
+  padding: 14px 16px;
+  border: 1px solid var(--cur-hairline-strong);
+  border-radius: var(--cur-r-card);
+  background: var(--cur-canvas);
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+
+.cur .lp-choice:hover { border-color: var(--cur-hairline-hover); }
+
+.cur .lp-choice[data-on] {
+  border-color: var(--cur-ink);
+  background: var(--cur-canvas-soft);
+}
+
+.cur .lp-choice-t {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--cur-ink);
+}
+
+.cur .lp-choice-b {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--cur-muted);
+}
+
+.cur .lp-stop-ic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 14px;
+  border-radius: 9px;
+  background: var(--cur-canvas-soft);
+  color: var(--cur-muted);
+}
+
+/* ── What went wrong ──────────────────────────────────── */
+
+/* A note is guidance and a failure is a refusal, so they do not look alike. */
+.cur .lp-note {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--cur-muted);
+}
+
+.cur .lp-fail {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--cur-error-ink);
+}
+
+/* ── Footer ───────────────────────────────────────────── */
+
+.cur .lp-modal-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 24px 24px;
+  border-top: 1px solid var(--cur-hairline);
+}
+
+.cur .lp-go {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 200px;
+  height: 38px;
+  padding: 0 18px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--cur-on-cta);
+  background: var(--cur-cta);
+  border: 0;
+  border-radius: var(--cur-r-cta);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color .15s ease, opacity .15s ease;
+}
+
+.cur .lp-go:hover:not(:disabled) { background: var(--cur-cta-hover); }
+
+.cur .lp-go:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.cur .lp-foot-note {
+  font-size: 11.5px;
+  color: var(--cur-muted);
+}
+
+.cur .lp-foot-note a {
+  color: var(--cur-ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--cur-hairline-strong);
+}
+
+/* ── Small screens ────────────────────────────────────── */
+
+@media (max-width: 720px) {
+  .cur .lp-centre h1 { font-size: 24px; }
+  .cur .lp-modal {
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+    border: 0;
+  }
+  .cur .lp-modal-wrap { padding: 0; }
+}
