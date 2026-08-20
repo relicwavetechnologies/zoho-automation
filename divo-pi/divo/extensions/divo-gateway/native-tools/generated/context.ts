@@ -9,7 +9,7 @@ export const CONTEXT_NATIVE_TOOLS = [
     "name": "divo_publish",
     "family": "context",
     "label": "Divo Artifact Publish",
-    "description": "Publish an HTML artifact as a password-gated link.",
+    "description": "Publish an HTML artifact as an unprotected link.",
     "promptSnippet": "Use divo_publish for governed context work. The backend remains authoritative for access, connections, approvals, and execution.",
     "promptGuidelines": [
       "artifactId: The existing HTML artifact id to publish"

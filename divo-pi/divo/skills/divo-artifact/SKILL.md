@@ -32,10 +32,10 @@ structure would be decoration.
 ## Delivering a link
 
 When the surface descriptor says `artifacts: 'link'`, call `divo_publish` with the
-stored `artifactId` after `divo_artifact` succeeds. Speak the returned URL and the
-one-time password in the reply. The password keeps a forwarded link from being readable
-by whoever receives it; it is a latch, not security. When the descriptor says
-`artifacts: 'inline'`, the panel is enough unless the reader asks for a link.
+stored `artifactId` after `divo_artifact` succeeds. Speak the returned URL in the reply.
+Published links are unprotected for now: anyone who receives the URL can read the
+document, so do not promise access control. When the descriptor says `artifacts: 'inline'`,
+the panel is enough unless the reader asks for a link.
 
 Revise with `edit` and call `divo_artifact` again on the same path. The stored document is
 updated in place and its version advances. On the web the panel keeps its scroll position;

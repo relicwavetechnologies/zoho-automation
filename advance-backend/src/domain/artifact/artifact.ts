@@ -73,11 +73,11 @@ export interface ArtifactWrite {
   readonly executionRunId?: string;
 }
 
-/** Publication state written after a deployment succeeds. The gate hash never leaves the repository seam. */
+/** Publication state written after a deployment succeeds. The gate hash remains write-only and is null for unprotected D8 links. */
 export interface ArtifactPublicationWrite {
   readonly publishedUrl: string;
   readonly publishedAt: string;
-  readonly publishGateHash: string;
+  readonly publishGateHash: string | null;
   readonly publishDeploymentId: string;
 }
 

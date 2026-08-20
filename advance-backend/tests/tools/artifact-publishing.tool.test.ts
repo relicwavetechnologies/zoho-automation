@@ -2,7 +2,6 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createArtifactPublishingTool } from '../../src/application/tools/families/artifact-publishing.tool.ts';
-import { hashOf } from '../../src/domain/artifact/gate.ts';
 import { err, ok } from '../../src/shared/result.ts';
 import { InfraError, ToolError } from '../../src/shared/errors.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
@@ -56,20 +55,20 @@ describe('artifact publishing tool', () => {
     assert.equal(tool.argsSchema.safeParse({ artifactId: 'reports/q4', title: 'new title' }).success, false);
   });
 
-  it('publishes owned HTML, persists the gate, and returns the password once', async () => {
+  it('publishes owned HTML without a gate and returns only the URL', async () => {
     const { tool, calls } = makeTool();
     const result = await tool.execute({ artifactId: 'reports/q4' }, makeCtx('artifactPublish', ['create'], { channel: 'web' }));
 
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.value.url, 'https://published.example/');
-    assert.match(result.value.password, /^[A-HJKMNP-Za-hjkmnp-z2-9]+$/u);
+    assert.deepEqual(result.value, { url: 'https://published.example/' });
     assert.equal(calls.publish.slug, 'divo-artifact-reports-q4');
     assert.equal(calls.publish.title, 'Q4 report');
-    assert.doesNotMatch(calls.publish.html, /<p>Q4 report body only<\/p>/);
+    assert.match(calls.publish.html, /<p>Q4 report body only<\/p>/);
     assert.equal(calls.mark.publishedUrl, result.value.url);
     assert.equal(calls.mark.publishDeploymentId, 'dpl-1');
-    assert.equal(calls.mark.publishGateHash, hashOf(result.value.password));
+    assert.equal(calls.mark.publishGateHash, null);
     assert.equal(tool.resultSchema.safeParse(result.value).success, true);
   });
 

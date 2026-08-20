@@ -8,7 +8,6 @@ import type { ArtifactRepoPort } from '../../../infrastructure/persistence/artif
 import { ARTIFACT_LIMITS } from '../../../domain/artifact/artifact';
 import type { PublishedDocumentPort } from '../../publishing/published-document.port';
 import { buildDocument } from '../../../domain/artifact/document';
-import { hashOf, newPassword } from '../../../domain/artifact/gate';
 
 const TOOL_ID = 'artifactPublish' as const;
 
@@ -18,7 +17,6 @@ const ArgsSchema = z.object({
 
 const ResultSchema = z.object({
   url: z.string().url(),
-  password: z.string().min(1),
 }).strict();
 
 type Args = z.infer<typeof ArgsSchema>;
@@ -38,7 +36,7 @@ export function createArtifactPublishingTool(
     actionGroups: new Set(['create']),
     argsSchema: ArgsSchema,
     resultSchema: ResultSchema,
-    description: 'Publish an HTML artifact as a password-gated link.',
+    description: 'Publish an HTML artifact as an unprotected link.',
     parameterDocs: '- artifactId: The existing HTML artifact id to publish',
     permissionCheck(_args, perm) {
       const allowed = perm.allowedActionsByTool.get(asToolId(TOOL_ID))?.has('create') ?? false;
@@ -74,14 +72,11 @@ export function createArtifactPublishingTool(
         }));
       }
 
-      const password = newPassword();
-      const gateHash = hashOf(password);
       const published = await deps.publisher.publish({
         slug: slugFor(found.value.artifactId),
         title: found.value.title,
         html: buildDocument(found.value.body, 'light', 'standalone', {
           title: found.value.title,
-          gateHash,
         }),
       });
       if (!published.ok) return err(infraFailure(published.error));
@@ -89,7 +84,7 @@ export function createArtifactPublishingTool(
       const saved = await deps.artifacts.markPublished(scope, {
         publishedUrl: published.value.url,
         publishedAt: ctx.clock.now().toISOString(),
-        publishGateHash: gateHash,
+        publishGateHash: null,
         publishDeploymentId: published.value.deploymentId,
       });
       if (!saved.ok) {
@@ -101,7 +96,7 @@ export function createArtifactPublishingTool(
         }));
       }
 
-      return ok({ url: published.value.url, password });
+      return ok({ url: published.value.url });
     },
   };
 }

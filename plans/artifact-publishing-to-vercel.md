@@ -12,7 +12,7 @@
 
 ## 1. Outcome
 
-Divo can hand someone a link to a document it wrote. The document is deployed to Vercel as a standalone page, gated behind a short password Divo speaks in the conversation, and the URL comes back to the model as a tool result.
+Divo can hand someone a link to a document it wrote. The document is deployed to Vercel as an unprotected standalone page, and the URL comes back to the model as a tool result.
 
 The same capability exists on Lark and on the web, because it is one tool on one path. What differs is only how the reader meets it: the web already has a panel, so the document opens there and publishing is an extra thing you can ask for or click; Lark has no panel, so a document reaches a Lark reader as a link or not at all.
 
@@ -23,7 +23,7 @@ When this is finished, `divo_artifact` is no longer a web-only tool. Both surfac
 ### Included
 
 - A `PublishedDocumentPort` and a Vercel adapter behind it, in the backend.
-- A `divo_publish` tool, available on every channel, that takes an artifact this member already owns and returns a URL plus a password.
+- A `divo_publish` tool, available on web and direct-message Lark, that takes an artifact this member already owns and returns a URL.
 - A standalone variant of the document wrapper, so a published page carries the same design as the panel.
 - `divo_artifact` extended to Lark, and Lark's `artifacts` descriptor moved from `'none'` to `'link'`.
 - A publish control in the web artifact panel.
@@ -47,17 +47,19 @@ When this is finished, `divo_artifact` is no longer a web-only tool. Both surfac
 
 **D4 — The Vercel token lives in backend env and never reaches a container.** Reason: the container runs model-authored code. Every other credential in this system is held the same way, and `divo_publish` goes over the existing gateway like every other `divo_` tool, so nothing new is needed to keep it there.
 
-**D5 — The gate is client-side, injected into the page we generate, and is described honestly as a latch rather than a lock.** Reason: the user chose this over a paid Vercel plan, knowing that anyone who reads the page source can get past it. Do not present it in UI copy or in the skill as security. The words to use are that it keeps a link from being readable by whoever it gets forwarded to.
+~~**D5 — The gate is client-side, injected into the page we generate, and is described honestly as a latch rather than a lock.** Reason: the user chose this over a paid Vercel plan, knowing that anyone who reads the page source can get past it. Do not present it in UI copy or in the skill as security. The words to use are that it keeps a link from being readable by whoever it gets forwarded to.~~ **Superseded by D8, 2026-08-21.**
 
 **D6 — A published page ships its own CSP in a `<meta http-equiv>`, and the wrapper takes a `mode` parameter rather than being forked.** Reason: the panel's security model is a sandboxed iframe with no `allow-same-origin` (`admin/src/pages/workspace/artifacts/document.ts:50`), and a published page has neither an iframe nor an opaque origin. The same body now runs on a real origin, so the network denial that the frame gave for free has to be written into the page. One function with a mode keeps the design identical between the two; two functions would not stay identical.
 
-**D7 — The password is stored as a SHA-256 hash, never in plaintext, and is returned to the caller exactly once at publish time.** Reason: the backend has no reason to be able to read it back, and a plaintext column is a plaintext column.
+~~**D7 — The password is stored as a SHA-256 hash, never in plaintext, and is returned to the caller exactly once at publish time.** Reason: the backend has no reason to be able to read it back, and a plaintext column is a plaintext column.~~ **Superseded by D8, 2026-08-21.** The gate module and wrapper branch remain for a future decision; the active publish path passes no gate hash.
 
-**D8 — Lark gets `divo_artifact` and `divo_publish` in direct messages only, and `artifacts: 'link'` resolves per audience.** Reason: group-chat ownership is unsettled and `get` is keyed `[companyId, userId, artifactId]`, so a second member in the room cannot act on the document. Deferring costs nothing on Lark, where the descriptor is `'link'` and the room reads the published page rather than the panel. The descriptor takes the audience alongside the channel, so a shared turn is told it can return neither a document nor a link while the tools are absent.
+**D8 — Published links are unprotected for now. The publish path mints no password and passes no `gateHash`.** Reason: getting a working link on both surfaces is the thing being proven, and the gate was blocking that. Accepted consequence: anyone who receives the URL can read the document, and Lark links get forwarded. Revisit before this reaches a customer.
+
+**D9 — Lark gets `divo_artifact` and `divo_publish` in direct messages only, and `artifacts: 'link'` resolves per audience.** Reason: group-chat ownership is unsettled and `get` is keyed `[companyId, userId, artifactId]`, so a second member in the room cannot act on the document. Deferring costs nothing on Lark, where the descriptor is `'link'` and the room reads the published page rather than the panel. The descriptor takes the audience alongside the channel, so a shared turn is told it can return neither a document nor a link while the tools are absent.
 
 ## 4. Open questions
 
-~~**Q1 — Whose artifact is a document authored in a shared Lark group chat?**~~ **Resolved 2026-08-21 as D8.** Shared Lark group turns do not receive `divo_artifact` or `divo_publish`; private Lark messages use the sender-owned artifact key and receive link delivery. The shared descriptor remains `artifacts: 'none'`.
+~~**Q1 — Whose artifact is a document authored in a shared Lark group chat?**~~ **Resolved 2026-08-21 as D9.** Shared Lark group turns do not receive `divo_artifact` or `divo_publish`; private Lark messages use the sender-owned artifact key and receive link delivery. The shared descriptor remains `artifacts: 'none'`.
 
 ~~**Q2 — Does the `divo@emiactech.com` Vercel account exist yet, and is it a personal account or a team?**~~ **Resolved 2026-08-21.** The account exists and is personal, not a team. `advance-backend/.env` has `VERCEL_TOKEN` set, `VERCEL_PROJECT_NAME=divo-artifacts`, and an empty `VERCEL_TEAM_ID`; the adapter trims the value and omits the `teamId` query parameter entirely when it is empty.
 
@@ -102,7 +104,7 @@ export type DocumentMode = 'panel' | 'standalone';
 export interface StandaloneOptions {
   /** Shown in the tab and above the document. */
   readonly title: string;
-  /** SHA-256 hex of the gate password. Absent means no gate. */
+  /** SHA-256 hex of the optional gate password. Absent means no gate. */
   readonly gateHash?: string;
 }
 
@@ -203,9 +205,9 @@ export interface PublishedDocumentPort {
 - [x] Add the gate: the body ships base64-encoded, and a small script decodes and injects it only after `crypto.subtle.digest` of what was typed matches `gateHash`
 - [x] Test: a gated page's HTML does not contain the body as readable text; an ungated one does; the palettes and chart runtime are present in both modes
 
-**Do not.** Do not describe the gate as encryption anywhere — not in a comment, not in UI copy, not in the skill. It is base64 plus a hash check, and someone reading the source gets the document. That is D5 and it is the user's call, but it has to be written down honestly or the next person will trust it. Do not add a server-side check to "make it real"; that is a different plan and it needs a runtime, which a static deployment does not have.
+**Do not.** Do not delete the gate module or the absent-hash branch while D8 stands. The gate is a retained, tested option for a future decision; the active publish path is unprotected. Do not add a server-side check to "make it real"; that is a different plan and it needs a runtime, which a static deployment does not have.
 
-**Gate.** Publish a real stored artifact end to end with a throwaway script. Open the URL in a browser: it asks for a password, the right one shows the document with charts drawn and the theme intact, a wrong one does not. Note in the build log that view-source defeats it, so the record shows this was known.
+**Gate.** Publish a real stored artifact end to end with a throwaway script. Open the URL in a browser: the document loads directly with charts drawn and the theme intact. The gate-specific browser proof remains in the build log as a retained option, not as the active publish contract.
 
 ### Phase 4 — The tool, on both channels
 
@@ -225,15 +227,15 @@ export interface PublishedDocumentPort {
 
 - [x] Add `publishedUrl String?`, `publishedAt DateTime?`, `publishGateHash String?`, `publishDeploymentId String?` to `model Artifact`, then `pnpm prisma db push` — **this project has no `_prisma_migrations` table; never run `prisma migrate`**
 - [x] Add `artifactPublish: defineCapability('context', ['create'])` to `TOOL_CAPABILITY_DEFINITIONS`
-- [x] Write the tool on the `web-search.tool.ts` shape: args `{ artifactId }`, result `{ url, password }`. It loads the artifact through `ArtifactRepoPort.get` scoped to the caller, refuses a `text/markdown` artifact with a plain reason, wraps, publishes, persists the four columns
+- [x] Write the tool on the `web-search.tool.ts` shape: args `{ artifactId }`, result `{ url }`. It loads the artifact through `ArtifactRepoPort.get` scoped to the caller, refuses a `text/markdown` artifact with a plain reason, wraps without a gate hash, publishes, persists the four columns
 - [x] Register it in `composition.ts` beside the other tool registrations
 - [x] Flip Lark's private descriptor to `artifacts: 'link'`, resolve shared Lark to `artifacts: 'none'` from the audience, and update the descriptor comment
 - [x] Add `"lark"` to both `CHANNEL_ONLY_MODULES` and `CHANNEL_ONLY_TOOLS`, with direct-message-only filtering for both artifact tools; update `scopedManifest`'s tests in `divo-pi/divo/test/runtime.test.mjs`
-- [x] Rewrite the skill's "This skill exists on the web surface only" line, and add a short section: on a surface whose descriptor says `link`, publish and speak the URL and the password; on `inline`, the panel is enough unless asked
+- [x] Rewrite the skill's "This skill exists on the web surface only" line, and add a short section: on a surface whose descriptor says `link`, publish and speak the URL; state that the link is currently unprotected; on `inline`, the panel is enough unless asked
 
 **Do not.** Do not branch on channel anywhere in the tool or in the runtime beyond the two manifest tables. Do not build a second artifact-fetch path — `ArtifactRepoPort.get` exists and is already ownership-scoped. Do not let the tool accept a body, a title, or HTML; if a caller wants to change the document they call `divo_artifact` again, which already versions in place.
 
-**Gate.** Two runs, both recorded in the build log. On the web, ask Divo to write a short report and publish it: the panel fills and the reply carries a working URL and password. On Lark, ask the same thing in a direct message: the card carries a working URL and password, and no panel is implied anywhere in the wording. Then confirm the negative: `divo-pi` tests still pass, and a run on a channel that is neither still has no artifact tool.
+**Gate.** Two runs, both recorded in the build log. On the web, ask Divo to write a short report and publish it: the panel fills and the reply carries a working URL. On Lark, ask the same thing in a direct message: the card carries a working URL, and no panel is implied anywhere in the wording. Then confirm the negative: `divo-pi` tests still pass, and a shared/unknown run still has no artifact tools.
 
 ### Phase 5 — The publish control in the panel
 
@@ -249,12 +251,12 @@ export interface PublishedDocumentPort {
 
 - [ ] Add the route, calling the same application service the tool calls. **Both callers share one path**; the route is a second door, not a second implementation
 - [ ] `publish.ts`: the states this control moves through (idle, publishing, published, failed) and what each shows, as a plain function with a colocated test
-- [ ] Add the control to `ArtifactPanel`'s header, next to the existing copy and source controls. Published state shows the URL and the password with a copy button
+- [ ] Add the control to `ArtifactPanel`'s header, next to the existing copy and source controls. Published state shows only the URL with a copy button; it must not mention a password while D8 stands
 - [ ] Read `AGENTS.md:140` first — colours come from the token files, never a one-off
 
-**Do not.** Do not build a modal, a settings drawer, or a password field. The password is generated, not chosen; the control has one action. Do not touch `ArtifactWorkspace` or `Surface` — `panel.tsx`'s header comment sets out the three layers and this belongs to exactly one of them.
+**Do not.** Do not build a modal, a settings drawer, or a password field. D8 publishes an unprotected URL; the control has one action. Do not touch `ArtifactWorkspace` or `Surface` — `panel.tsx`'s header comment sets out the three layers and this belongs to exactly one of them.
 
-**Gate.** Click it in a browser against a real backend. A URL and a password appear, the URL opens the gated page, and the artifact row in Postgres has all four columns filled. Confirm the panel still renders an unpublished document exactly as before.
+**Gate.** Click it in a browser against a real backend. A URL appears, the URL opens directly, and the artifact row in Postgres has the URL, timestamp, null gate hash, and deployment id filled. Confirm the panel still renders an unpublished document exactly as before.
 
 ### Phase 6 — Retire the duplicate wrapper
 
@@ -407,18 +409,19 @@ from `## Next action`.
 - Added `gate.ts` with a 12-character unambiguous password alphabet and SHA-256 hashing. Standalone output carries a title, both palettes, the CSP, and the chart runtime. Gated output stores only base64 body data and a hash in the page source. The browser decodes and injects the body after a matching `crypto.subtle.digest` result, then starts the chart runtime.
 - Unit gate: `node --import tsx --test 'tests/domain/artifact-*.test.ts'` passed with 29 tests. The parity test still passes because it strips only the marked standalone additions and the mode branch, not the panel copy.
 - Browser gate: published a real dark-themed chart artifact at `https://divo-artifacts-1ubtsdsxh-divo-2600s-projects.vercel.app/`. The page asked for a password, refused a wrong password, and revealed the report with one rendered chart SVG after the correct password. The title and dark theme remained intact. View-source still exposes the base64 body and script, as D5 requires.
+- The gated publish shipped and was genuinely browser-proven above; D8 now switches that behavior off in the publisher while retaining `gate.ts`, the gate branch, and its tests for a future decision. The switching commit is recorded with the Phase 4 implementation update.
 
-### 2026-08-21 — Phase 4 in progress; Q1 resolved
+### 2026-08-21 — Phase 4 in progress; Q1 resolved; D8 unprotected publish
 
 - Added the four publication columns, kept `publishGateHash` inside the repository write path, and cleared all publication state when an artifact is revised. `prisma db push` synced Development `divo_dev` successfully and regenerated Prisma Client. No migration command was run.
-- Added the `artifactPublish` capability, human label, channel-neutral tool, Vercel wiring, and focused tests. The tool accepts only an owned `artifactId`, refuses Markdown, wraps HTML in the standalone gate, publishes, persists the four publication values, and returns the password exactly once. It contains no channel branch.
+- Added the `artifactPublish` capability, human label, channel-neutral tool, Vercel wiring, and focused tests. The tool accepts only an owned `artifactId`, refuses Markdown, wraps HTML without a gate hash under D8, publishes, persists the four publication values with a null gate hash, and returns only the URL. It contains no channel branch.
 - Focused gates: `node --import tsx --test 'tests/tools/artifact-publishing.tool.test.ts'` passed with 5 tests; `node --import tsx --test 'tests/domain/artifact-*.test.ts'` passed with 29 tests. `pnpm typecheck` reports only the known Phase 1 chart indexed-access errors.
-- D8 resolves Q1. The surface descriptor now carries `audience`: private Lark is `artifacts: 'link'`, shared Lark is `artifacts: 'none'`; the signed lease audience flows through `/runtime-context`. `divo_artifact` and `divo_publish` are admitted only to web and direct Lark runs; shared Lark is withheld by the direct-message manifest lists. The artifact extension reads the descriptor instead of branching on channel and does not imply a panel in link-mode wording. The skill now explains link delivery and the latch honestly.
+- D9 resolves Q1. The surface descriptor now carries `audience`: private Lark is `artifacts: 'link'`, shared Lark is `artifacts: 'none'`; the signed lease audience flows through `/runtime-context`. `divo_artifact` and `divo_publish` are admitted only to web and direct Lark runs; shared Lark is withheld by the direct-message manifest lists. The artifact extension reads the descriptor instead of branching on channel and does not imply a panel in link-mode wording. The skill now explains link delivery and its current unprotected consequence.
 - Added the canonical `divo_publish` Pi name, regenerated the native catalogue, and added the manifest allowlist entry. Focused backend and Pi tests pass, including direct-Lark filing, shared-audience descriptor resolution, generated catalogue parity, and the negative unknown/shared-surface manifest cases. The real two-surface run gate remains open.
 - Typecheck remains red only at the known Phase 1 byte-port chart indexed accesses (`chart-geometry.ts:118-119,144`); no Phase 4 type errors were introduced.
 - Classified `artifactPublish` as an ownership-scoped company-inherited capability and bumped the existing permission-policy epoch so live Redis snapshots cannot retain the pre-capability decision. The permission service and department-template tests pass.
-- The direct-Lark Cloud-Pi run reached `write` and `divo_artifact` successfully, then the first publish attempt exposed the stale permission snapshot. After the policy fix, the live run was intentionally stopped when the user said not to do password-protected links. No new password-protected URL was returned by that run, and Phase 4 is not closed.
+- The first direct-Lark Cloud-Pi run reached `write` and `divo_artifact` successfully, then exposed the stale permission snapshot. D8 now removes that blocked password mint; the next run must confirm a working unprotected URL in the Lark card. No group-chat run is authorized by D9.
 
 ## 12. Next action
 
-Clarify whether D5 is superseded by unprotected links, or whether the user meant to skip only the live password-link gate. The implementation and plan cannot close Phase 4 until that delivery contract is settled.
+Resume Phase 4 from the direct-Lark run: rerun the short report prompt, confirm the card carries a working unprotected URL with no panel wording, then prove the shared/unknown negative and the web run before closing Phase 4.
