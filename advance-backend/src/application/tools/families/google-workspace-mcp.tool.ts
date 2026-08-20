@@ -22,6 +22,11 @@ import {
   type GoogleDriveXlsxReferenceParseResult,
 } from '../../artifacts/google-drive-xlsx-resource-reference';
 import type { GoogleDriveXlsxResourceResolution } from '../../artifacts/google-drive-xlsx-resource-resolver';
+import {
+  classifyGoogleScopeGap,
+  CONNECTIONS_SKILL_POINTER,
+  googleScopeGapReasonText,
+} from '../../connections/connection-request/google-scope-gap';
 
 function createNativeArgsSchema(nativeTool: z.ZodType<string>) {
   return z.discriminatedUnion('op', [
@@ -526,6 +531,16 @@ function createProductTool(
           ...(delivery ? { delivery } : {}),
         });
       } catch (cause) {
+        const gap = classifyGoogleScopeGap(product.toolId, cause);
+        if (gap) {
+          return err(new ToolError({
+            toolId: product.toolId,
+            reason: 'permission_denied',
+            cause,
+            message: `${googleScopeGapReasonText(gap.reason)} [scope_gap:${gap.reason}] `
+              + `${CONNECTIONS_SKILL_POINTER}`,
+          }));
+        }
         return err(new ToolError({
           toolId: product.toolId,
           reason: 'upstream_failure',
