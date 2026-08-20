@@ -1017,6 +1017,47 @@ from `## Next action`.
 
 ## 11. Build log
 
+**2026-08-21. Phase 7 follow-up: one failing test and three type errors, fixed.**
+The suite was left red at `0ab1978f5`. `google-connection-flow.test.ts`,
+"records a visible Pi delivery failure without reporting completion", expected
+`continuation_delivery_failed` and got `continuation_failed`.
+
+Cause, and it is worth stating because it is this plan's own subject matter
+turned back on itself. Phase 7 made the continuation read the connection's
+granted scopes. The test's connection fixture had no `scopes` field, so
+`grantedGoogleScopeGroups` threw a `TypeError` reading `.map` off `undefined`.
+`classifyContinuationFailure` matches on words in the message, that message
+contains none of them, so it fell through to the catch-all `continuation_failed`
+— and the specific "Pi would not take the delivery" signal was replaced by a
+generic one. A delivery failure reported as a generic failure is exactly the
+substitution the rest of this plan exists to stop.
+
+Two fixes, one on each side of the line:
+
+- `grantedGoogleScopeGroups` now takes `readonly string[] | undefined` and reads
+  an absent list as "granted nothing" rather than throwing. A connection whose
+  scopes cannot be read is a connection that has granted nothing, which is both
+  true and safe; throwing there can only ever be misfiled.
+- The fixture now sets `scopes: []`. It was building a value the repository
+  cannot return, which is the failure mode `tsconfig.tests.json` was added to
+  catch.
+
+Also narrowed the three `issued.authorizeUrl` reads in the same file. Phase 2
+made `issue()` return `IssuedGoogleAuthorization | ExistingGoogleAuthorization`,
+and `already_pending` carries no URL, so the test was reading a property off a
+shape the service can return. One `assert.ok(issued.outcome === 'issued')`
+narrows it and asserts something real at the same time.
+
+Gate: `pnpm typecheck` clean; `pnpm test` **3990 tests, 3956 pass, 0 fail**,
+exit 0. `pnpm typecheck:tests` still carries its documented pre-existing backlog
+(649 errors, none in this work's files, down from the 676 recorded in that
+config's own comment).
+
+**Still unproven, and it is the whole point:** the Gmail-only scope-gap live
+case. No unit test can fire Phase 1's classifier against a real Google 403.
+Live testing is Abhishek's to run.
+
+
 The first build entry is below the refresh note.
 
 **2026-08-21. Phase 1 complete.** Added the domain `ScopeGap` value and the

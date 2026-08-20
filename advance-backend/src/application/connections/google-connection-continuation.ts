@@ -507,9 +507,17 @@ function continuationText(
 
 function grantedGoogleScopeGroups(
   requestedToolIds: readonly string[],
-  grantedScopes: readonly string[],
+  grantedScopes: readonly string[] | undefined,
 ): readonly string[] {
-  const granted = new Set(grantedScopes.map(normalizeScope));
+  /*
+   * A connection with no scope list is treated as having granted nothing, not
+   * as an error. Reading `.map` off an absent list throws a TypeError whose
+   * message names no cause, and `classifyContinuationFailure` can only file
+   * that under the catch-all `continuation_failed` — so a delivery failure
+   * downstream would be reported as a generic one, which is the exact
+   * substitution this whole path exists to stop making.
+   */
+  const granted = new Set((grantedScopes ?? []).map(normalizeScope));
   return googleScopeGroupsForToolIds(requestedToolIds).map(group => {
     const actual = group
       .filter(scope => granted.has(normalizeScope(scope)))

@@ -91,6 +91,10 @@ describe('GoogleConnectionAuthorizationService', () => {
 
     const issued = await service.issue(TARGET);
 
+    /* Narrowed rather than cast: `already_pending` carries no URL, and a test
+       that reads one off it would be asserting against a shape the service
+       cannot return. */
+    assert.ok(issued.outcome === 'issued', 'expected a freshly issued authorization');
     assert.equal(issued.authorizeUrl, 'https://accounts.google.test/auth?state=opaque-state');
     assert.deepEqual(authorizeInput, {
       state: 'opaque-state',
@@ -589,6 +593,7 @@ describe('Google connection continuation', () => {
             connectionId: 'connection-1',
             ownerType: 'user',
             ownerUserId: 'user-1',
+            scopes: [],
           }],
         }),
       } as any,
