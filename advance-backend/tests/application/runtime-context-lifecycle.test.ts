@@ -174,4 +174,18 @@ describe('RuntimeContextLifecycle', () => {
     assert.equal(calls.permission, 0);
     assert.equal(calls.catalogue, 0);
   });
+
+  it('carries the trusted shared audience into the surface descriptor', async () => {
+    const { lifecycle } = fixture();
+    const result = await lifecycle.load({
+      ...nativeInput,
+      audience: 'shared',
+    });
+
+    assert.equal(result.kind, 'ready');
+    if (result.kind !== 'ready') return;
+    assert.equal(result.snapshot.surface.key, 'lark');
+    assert.equal(result.snapshot.surface.audience, 'shared');
+    assert.equal(result.snapshot.surface.artifacts, 'none');
+  });
 });

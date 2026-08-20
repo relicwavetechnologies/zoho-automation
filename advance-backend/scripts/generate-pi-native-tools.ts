@@ -24,6 +24,7 @@ import { createScheduledWorkflowsTool } from '../src/application/tools/families/
 import { createSemrushTool } from '../src/application/tools/families/semrush.tool';
 import { createShopifyTools } from '../src/application/tools/families/shopify.tool';
 import { createWebSearchTool } from '../src/application/tools/families/web-search.tool';
+import { createArtifactPublishingTool } from '../src/application/tools/families/artifact-publishing.tool';
 import { createZohoBooksTool } from '../src/application/tools/families/zoho-books.tool';
 import { createZohoCrmTool } from '../src/application/tools/families/zoho-crm.tool';
 import { serializeToolArgsSchema } from '../src/application/gateway/work-bootstrap.service';
@@ -85,6 +86,7 @@ export function buildCanonicalToolContracts(): ReadonlyArray<Tool<unknown, unkno
     createSemrushTool(inert),
     createOmsSiteDataTool(inert),
     createMenhoodDataTool(inert),
+    createArtifactPublishingTool({ artifacts: inert, publisher: inert }),
   ];
   return tools as ReadonlyArray<Tool<unknown, unknown>>;
 }

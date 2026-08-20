@@ -1,15 +1,17 @@
 ---
 name: divo-artifact
-description: Use when a deliverable is worth presenting rather than pasting — a report, comparison, analysis, plan, or anything with tables, figures, or several sections. Covers writing the document as HTML and badging it into the panel beside the chat.
+description: Use when a deliverable is worth presenting rather than pasting — a report, comparison, analysis, plan, or anything with tables, figures, or several sections. Covers writing the document as HTML and filing it for the current surface.
 ---
 
 # Divo Documents
 
-A document opens in a panel beside the conversation. It is for work the reader will come
-back to: a report, an analysis, a comparison, a plan, a set of findings. Short answers,
-status updates, confirmations, and a single next step stay in the chat.
+A document is for work the reader will come back to: a report, an analysis, a comparison,
+a plan, a set of findings. On the web it opens in a panel beside the conversation. On a
+direct Lark message it is filed for link delivery. Short answers, status updates,
+confirmations, and a single next step stay in the chat.
 
-This skill exists on the web surface only. If you are reading it, the panel is there.
+This skill exists on the web and direct-message Lark surfaces. Follow the current surface
+descriptor rather than guessing from the channel name.
 
 ## The two formats
 
@@ -22,20 +24,30 @@ structure would be decoration.
 ## Writing one
 
 1. Create the file with `write`, under `artifacts/` — `artifacts/q4-flavour-review.html`.
-2. Call `divo_artifact` with the path. That badges it into the panel; it does not write
-   content.
+2. Call `divo_artifact` with the path. That files the existing document for the current
+   surface; it does not write content.
 3. Reply in chat with a one or two sentence pointer. Never paste the document body into the
-   transcript — it is already on the reader's screen.
+   transcript — it is already available through the surface's delivery mode.
 
-Revise with `edit` and call `divo_artifact` again on the same path. The panel updates the
-document in place and bumps its version, so the reader keeps their scroll position and their
-tab. Do not write a second file for a second draft.
+## Delivering a link
+
+When the surface descriptor says `artifacts: 'link'`, call `divo_publish` with the
+stored `artifactId` after `divo_artifact` succeeds. Speak the returned URL and the
+one-time password in the reply. The password keeps a forwarded link from being readable
+by whoever receives it; it is a latch, not security. When the descriptor says
+`artifacts: 'inline'`, the panel is enough unless the reader asks for a link.
+
+Revise with `edit` and call `divo_artifact` again on the same path. The stored document is
+updated in place and its version advances. On the web the panel keeps its scroll position;
+for a link surface, publish the updated artifact again. Do not write a second file for a
+second draft.
 
 ## What goes in the file
 
-**Body markup only.** No `<!doctype>`, no `<html>`, no `<head>`, no `<body>`. The runtime
-wraps the file at render time and supplies the design tokens and the chart function. A
-document that ships its own wrapper is a document that cannot follow the reader's theme.
+**Body markup only.** No `<!doctype>`, no `<html>`, no `<head>`, no `<body>`. The document
+renderer wraps the file at delivery time and supplies the design tokens and the chart
+function. A document that ships its own wrapper is a document that cannot follow the
+reader's theme.
 
 Put the document's own CSS in a single `<style>` block at the top of the file, and any
 interaction in a `<script>` at the end.

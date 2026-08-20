@@ -13,6 +13,23 @@ import extension, {
 	titleFromPath,
 } from "./index.ts";
 
+const WEB_SURFACE = {
+	key: "web",
+	audience: "private",
+	artifacts: "inline",
+	charts: false,
+	tables: { maxRows: 15, maxPerMessage: 3 },
+	maxBlockChars: 1_200,
+	maxMessageBytes: 18_000,
+	worklog: "streamed",
+	citations: "claim-level",
+	decisions: "form",
+	handoff: false,
+};
+
+const LARK_LINK_SURFACE = { ...WEB_SURFACE, key: "lark", artifacts: "link" };
+const SHARED_LARK_SURFACE = { ...LARK_LINK_SURFACE, audience: "shared", artifacts: "none" };
+
 test("registers divo_artifact as a path badge with write/edit guidelines", () => {
 	const tools: Array<{
 		name?: string;
@@ -29,7 +46,7 @@ test("registers divo_artifact as a path badge with write/edit guidelines", () =>
 
 	assert.equal(tools.length, 1);
 	assert.equal(tools[0]?.name, DIVO_ARTIFACT_TOOL_NAME);
-	assert.match(tools[0]?.description ?? "", /badge/i);
+	assert.match(tools[0]?.description ?? "", /file/i);
 	assert.match(tools[0]?.promptSnippet ?? "", /write\/edit/i);
 	assert.ok(tools[0]?.promptGuidelines?.some((line) => /Prefer edit/i.test(line)));
 	assert.ok(tools[0]?.promptGuidelines?.some((line) => /Stay in chat/i.test(line)));
@@ -53,7 +70,10 @@ function toolExecute(): (
 }
 
 /** A workspace with one markdown file in it, and the run context beside it. */
-async function workspaceWithBrief(body = "# Findings\n\n- One\n"): Promise<string> {
+async function workspaceWithBrief(
+	body = "# Findings\n\n- One\n",
+	surface = WEB_SURFACE,
+): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "divo-artifact-"));
 	await mkdir(join(dir, "artifacts"), { recursive: true });
 	await writeFile(join(dir, "artifacts", "research-brief.md"), body, "utf8");
@@ -62,6 +82,7 @@ async function workspaceWithBrief(body = "# Findings\n\n- One\n"): Promise<strin
 		JSON.stringify({ version: 1, threadId: "web_thread-1", runId: "run-1", channel: "web" }),
 		"utf8",
 	);
+	await writeFile(join(dir, "runtime-context.json"), JSON.stringify({ surface }), "utf8");
 	return dir;
 }
 
@@ -76,6 +97,7 @@ test("stores the document's body and reports the version the reader will get", a
 		process.env.DIVO_BACKEND_URL = "https://divo.test/";
 		process.env.DIVO_MEMBER_TOKEN = "member-token";
 		process.env.DIVO_RUN_CONTEXT_PATH = join(dir, "run-context.json");
+		process.env.DIVO_RUNTIME_CONTEXT_PATH = join(dir, "runtime-context.json");
 		globalThis.fetch = (async (url: string, init: RequestInit) => {
 			calls.push({
 				url: String(url),
@@ -127,6 +149,42 @@ test("stores the document's body and reports the version the reader will get", a
 		delete process.env.DIVO_BACKEND_URL;
 		delete process.env.DIVO_MEMBER_TOKEN;
 		delete process.env.DIVO_RUN_CONTEXT_PATH;
+		delete process.env.DIVO_RUNTIME_CONTEXT_PATH;
+		process.chdir(previousCwd);
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("files a direct Lark document without implying a panel", async () => {
+	const dir = await workspaceWithBrief("# Findings\n", LARK_LINK_SURFACE);
+	const previousCwd = process.cwd();
+	const realFetch = globalThis.fetch;
+
+	try {
+		process.chdir(dir);
+		process.env.DIVO_BACKEND_URL = "https://divo.test";
+		process.env.DIVO_MEMBER_TOKEN = "member-token";
+		process.env.DIVO_RUN_CONTEXT_PATH = join(dir, "run-context.json");
+		process.env.DIVO_RUNTIME_CONTEXT_PATH = join(dir, "runtime-context.json");
+		globalThis.fetch = (async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({ ok: true, artifact: { version: 1 } }),
+		})) as never;
+
+		const result = await toolExecute()("lark-artifact-call", {
+			path: "artifacts/research-brief.md",
+		});
+
+		assert.equal(result?.isError, undefined);
+		assert.match(result?.content[0]?.text ?? "", /link delivery/);
+		assert.doesNotMatch(result?.content[0]?.text ?? "", /beside the conversation/);
+	} finally {
+		globalThis.fetch = realFetch;
+		delete process.env.DIVO_BACKEND_URL;
+		delete process.env.DIVO_MEMBER_TOKEN;
+		delete process.env.DIVO_RUN_CONTEXT_PATH;
+		delete process.env.DIVO_RUNTIME_CONTEXT_PATH;
 		process.chdir(previousCwd);
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -150,6 +208,7 @@ test("fails the call when the document could not be filed anywhere", async () =>
 		process.env.DIVO_BACKEND_URL = "https://divo.test";
 		process.env.DIVO_MEMBER_TOKEN = "member-token";
 		process.env.DIVO_RUN_CONTEXT_PATH = join(dir, "run-context.json");
+		process.env.DIVO_RUNTIME_CONTEXT_PATH = join(dir, "runtime-context.json");
 		globalThis.fetch = (async () => ({ ok: false, status: 503, json: async () => ({}) })) as never;
 
 		const refused = await toolExecute()("artifact-call", {
@@ -162,6 +221,7 @@ test("fails the call when the document could not be filed anywhere", async () =>
 		delete process.env.DIVO_BACKEND_URL;
 		delete process.env.DIVO_MEMBER_TOKEN;
 		delete process.env.DIVO_RUN_CONTEXT_PATH;
+		delete process.env.DIVO_RUNTIME_CONTEXT_PATH;
 		process.chdir(previousCwd);
 		await rm(dir, { recursive: true, force: true });
 	}
@@ -179,21 +239,21 @@ test("refuses a surface with nowhere to show a document", async () => {
 		process.env.DIVO_MEMBER_TOKEN = "member-token";
 		globalThis.fetch = (async () => { posted += 1; return { ok: true, status: 200, json: async () => ({}) }; }) as never;
 
-		// The manifest already withholds this extension from Lark, but that is read
-		// once when Pi is launched and one warm process serves many turns — so a
-		// container started for the web would otherwise carry this tool into a Lark
-		// turn. The run context is rewritten per prompt; this is the only check
-		// that is true of the turn actually running.
+		// The runtime descriptor is the authority for whether a document can be
+		// delivered. A shared Lark context has no artifact surface even though a
+		// private Lark context can return a link.
 		for (const channel of ["lark", "teams", undefined]) {
 			await writeFile(
 				join(dir, "run-context.json"),
 				JSON.stringify({ version: 1, threadId: "t", runId: "r", ...(channel ? { channel } : {}) }),
 				"utf8",
 			);
+			await writeFile(join(dir, "runtime-context.json"), JSON.stringify({ surface: SHARED_LARK_SURFACE }), "utf8");
 			process.env.DIVO_RUN_CONTEXT_PATH = join(dir, "run-context.json");
+			process.env.DIVO_RUNTIME_CONTEXT_PATH = join(dir, "runtime-context.json");
 			const refused = await toolExecute()("artifact-call", { path: "artifacts/research-brief.md" });
 			assert.equal(refused?.isError, true, `${channel ?? "no channel"} must be refused`);
-			assert.match(refused?.content[0]?.text ?? "", /nowhere to show/);
+			assert.match(refused?.content[0]?.text ?? "", /cannot receive/);
 		}
 
 		// And nothing was filed on the way to refusing.
@@ -203,6 +263,7 @@ test("refuses a surface with nowhere to show a document", async () => {
 		delete process.env.DIVO_BACKEND_URL;
 		delete process.env.DIVO_MEMBER_TOKEN;
 		delete process.env.DIVO_RUN_CONTEXT_PATH;
+		delete process.env.DIVO_RUNTIME_CONTEXT_PATH;
 		process.chdir(previousCwd);
 		await rm(dir, { recursive: true, force: true });
 	}

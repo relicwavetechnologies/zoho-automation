@@ -205,6 +205,7 @@ export const CANONICAL_TOOL_IDS = Object.freeze(
  * it — an inverted guess would confidently name a tool that does not exist.
  */
 export function typedToolNameFor(toolId: string): string {
+  if (toolId === 'artifactPublish') return 'divo_publish';
   const snake = toolId
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .replace(/[^a-zA-Z0-9]+/g, '_')

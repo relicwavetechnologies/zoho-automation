@@ -1914,6 +1914,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         companyId,
         companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
         channel: asChannelKey(res.locals['channel']),
+        audience: res.locals['runtimeContextAudience'] === 'shared' ? 'shared' : 'private',
         capabilityVersion: parsed.data.capabilityVersion === '3' ? 3 : 2,
         ...(departmentId ? { departmentId } : {}),
         ...(nativeSkillsRequested ? {

@@ -35,6 +35,7 @@
     "divo_subagents",
     "divo_todos",
     "divo_artifact",
+    "divo_publish",
     "divo_search_chats",
     "divo_read_chat",
     "divo_lark_messaging",

@@ -125,26 +125,32 @@ const DIRECT_MESSAGE_ONLY_TOOLS = [
 	"divo_memory",
 	"divo_search_chats",
 	"divo_read_chat",
+	"divo_artifact",
+	"divo_publish",
 ];
 
 /** The extension registering those tools and the skill teaching them share a name. */
-const DIRECT_MESSAGE_ONLY_MODULES = ["divo-chat-history"];
+const DIRECT_MESSAGE_ONLY_MODULES = ["divo-chat-history", "divo-artifact"];
 
 /**
  * Tools that only exist where something can render what they produce.
  *
- * The badge tool files a document for a reader with a panel beside their
- * conversation. A Lark card has no panel and no filesystem, so on Lark the
- * honest state is not "the tool exists but please don't use it" — it is that the
- * tool is not there. The surface descriptor tells the model the same thing in
- * words (`artifacts: 'none'`), and this is what makes those words true: a model
- * cannot be tempted by, or hallucinate the results of, a tool it was never given.
+ * The badge tool files a document for a reader with a panel or a link beside
+ * their conversation. A shared Lark turn has neither a private owner nor a
+ * document surface, so the honest state is not "the tool exists but please
+ * don't use it" — it is that the tool is not there. The surface descriptor
+ * tells the model the same thing in words (`artifacts: 'none'`), and this is
+ * what makes those words true: a model cannot be tempted by, or hallucinate
+ * the results of, a tool it was never given.
  *
  * Keyed by the channel that may have it, not by the channels that may not, so a
  * third surface arrives without the tool until someone decides otherwise.
  */
-const CHANNEL_ONLY_MODULES = { "divo-artifact": ["web"] };
-const CHANNEL_ONLY_TOOLS = { divo_artifact: ["web"] };
+const CHANNEL_ONLY_MODULES = { "divo-artifact": ["web", "lark"] };
+const CHANNEL_ONLY_TOOLS = {
+	divo_artifact: ["web", "lark"],
+	divo_publish: ["web", "lark"],
+};
 
 /** @param {Record<string, string[]>} table @param {string} name @param {string|undefined} channel */
 function allowedOnChannel(table, name, channel) {

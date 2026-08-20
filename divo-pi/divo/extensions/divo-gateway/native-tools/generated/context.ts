@@ -5,6 +5,32 @@ import type { NativeToolSpec } from "../catalogue-contract.ts";
 
 export const CONTEXT_NATIVE_TOOLS = [
   {
+    "toolId": "artifactPublish",
+    "name": "divo_publish",
+    "family": "context",
+    "label": "Divo Artifact Publish",
+    "description": "Publish an HTML artifact as a password-gated link.",
+    "promptSnippet": "Use divo_publish for governed context work. The backend remains authoritative for access, connections, approvals, and execution.",
+    "promptGuidelines": [
+      "artifactId: The existing HTML artifact id to publish"
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "artifactId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      },
+      "required": [
+        "artifactId"
+      ],
+      "additionalProperties": false
+    },
+    "executionMode": "sequential"
+  },
+  {
     "toolId": "webSearch",
     "name": "divo_web_search",
     "family": "context",

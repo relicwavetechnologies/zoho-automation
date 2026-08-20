@@ -170,28 +170,39 @@ describe("Divo Pi runtime boundary", () => {
 		assert.doesNotMatch(systemPrompt, /DIVO_ARTIFACTS_DIR|divo_artifact/i);
 	});
 
-	// The surface descriptor tells the model "this surface cannot hand a file
-	// back". These assertions are what make that sentence true rather than a rule
-	// the model is asked to remember: on Lark the tool is not there to be used,
-	// misremembered, or hallucinated a result for.
-	it("gives the document tool only to the surface that can show one", () => {
+	// The surface descriptor tells the model how a document reaches its reader.
+	// These assertions make the descriptor true rather than a rule the model is
+	// asked to remember: a direct Lark run can author and publish a link, while a
+	// shared Lark run has neither tool.
+	it("gives document authoring and publishing to web and direct Lark", () => {
 		const has = (channel) => {
 			const args = buildPiArguments({ ...values, ...(channel ? { channel } : {}) });
 			const loaded = args.some((argument) => argument.endsWith("/divo-artifact/index.ts"));
-			const allowed = args[args.indexOf("--tools") + 1].split(",").includes("divo_artifact");
+			const tools = args[args.indexOf("--tools") + 1].split(",");
+			const allowed = tools.includes("divo_artifact") && tools.includes("divo_publish");
 			// Loading the extension without allowing the tool, or the reverse, is a
 			// half-gate — so both halves are asserted together rather than apart.
-			assert.equal(loaded, allowed, `${channel ?? "local"}: extension and allowlist disagree`);
-			return loaded;
+			assert.equal(loaded, tools.includes("divo_artifact"), `${channel ?? "local"}: extension and allowlist disagree`);
+			return { loaded, allowed, tools };
 		};
 
-		assert.equal(has("web"), true);
-		assert.equal(has("lark"), false);
+		assert.equal(has("web").loaded, true);
+		assert.equal(has("web").allowed, true);
+		const directLark = has("lark");
+		assert.equal(directLark.loaded, true);
+		assert.equal(directLark.allowed, true);
+		const sharedArgs = buildPiArguments({ ...values, channel: "lark", isRunScoped: true });
+		const sharedTools = sharedArgs[sharedArgs.indexOf("--tools") + 1].split(",");
+		assert.ok(!sharedArgs.some((argument) => argument.endsWith("/divo-artifact/index.ts")));
+		assert.ok(!sharedTools.includes("divo_artifact"));
+		assert.ok(!sharedTools.includes("divo_publish"));
 		// A run nobody drives is a desktop-local one, which loads its own copy of
 		// the extension. Withheld here rather than granted by the absence of a
 		// channel: an unknown surface should arrive without the tool.
-		assert.equal(has(undefined), false);
-		assert.equal(has("teams"), false);
+		assert.equal(has(undefined).loaded, false);
+		assert.equal(has(undefined).allowed, false);
+		assert.equal(has("teams").loaded, false);
+		assert.equal(has("teams").allowed, false);
 	});
 
 	it("loads authenticated DB skills through Pi's native resource loader", () => {
