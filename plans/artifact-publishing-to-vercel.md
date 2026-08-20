@@ -184,7 +184,7 @@ export interface PublishedDocumentPort {
 
 **Gate.** With a real token in `.env`, a one-off script publishes `<h1>hello</h1>` and prints a URL that returns 200 with that markup in the body. Paste the URL and the status line into the build log. If Q2 is unanswered, this gate is where you stop and ask.
 
-### Phase 3 — The standalone wrapper and its gate
+### Phase 3 — The standalone wrapper and its gate ✅ *2026-08-21*
 
 **Goal.** A stored artifact becomes a complete, gated page.
 
@@ -196,10 +196,10 @@ export interface PublishedDocumentPort {
 
 **Steps.**
 
-- [ ] `gate.ts`: generate a password from an unambiguous alphabet (no `0`/`O`, no `1`/`l`), and hash with `crypto.createHash('sha256')`. Export `newPassword()`, `hashOf(password)`
-- [ ] Implement `'standalone'`: `<!doctype html>`, `<title>`, the CSP from `document.ts` as a `<meta http-equiv="Content-Security-Policy">`, both palettes, the chart runtime
-- [ ] Add the gate: the body ships base64-encoded, and a small script decodes and injects it only after `crypto.subtle.digest` of what was typed matches `gateHash`
-- [ ] Test: a gated page's HTML does not contain the body as readable text; an ungated one does; the palettes and chart runtime are present in both modes
+- [x] `gate.ts`: generate a password from an unambiguous alphabet (no `0`/`O`, no `1`/`l`), and hash with `crypto.createHash('sha256')`. Export `newPassword()`, `hashOf(password)`
+- [x] Implement `'standalone'`: `<!doctype html>`, `<title>`, the CSP from `document.ts` as a `<meta http-equiv="Content-Security-Policy">`, both palettes, the chart runtime
+- [x] Add the gate: the body ships base64-encoded, and a small script decodes and injects it only after `crypto.subtle.digest` of what was typed matches `gateHash`
+- [x] Test: a gated page's HTML does not contain the body as readable text; an ungated one does; the palettes and chart runtime are present in both modes
 
 **Do not.** Do not describe the gate as encryption anywhere — not in a comment, not in UI copy, not in the skill. It is base64 plus a hash check, and someone reading the source gets the document. That is D5 and it is the user's call, but it has to be written down honestly or the next person will trust it. Do not add a server-side check to "make it real"; that is a different plan and it needs a runtime, which a static deployment does not have.
 
@@ -400,6 +400,12 @@ from `## Next action`.
 - The first deployment used `projectSettings` and did not return a `missing_project_settings` error. Vercel returned `target: production`, `readyState: READY`, `readySubstate: PROMOTED`, `public: false`, and the generated deployment URL. The dedicated project had Vercel Authentication enabled, so that URL initially returned 302 to SSO; the project was updated through the documented project API with `ssoProtection: null`, after which the same deployment URL was publicly reachable.
 - Gate: URL `https://divo-artifacts-mrjdmhoak-divo-2600s-projects.vercel.app/`; `CURL_STATUS=200`; `<h1>hello</h1>` was present. Focused adapter gate `node --import tsx --test 'tests/infrastructure/vercel-publisher.test.ts'` passed with 9 tests, including the explicit empty-team query case. `pnpm typecheck` remains red only at the byte-identical Phase 1 chart copy's unchecked indexed accesses (`chart-geometry.ts:118-119,144`) under backend strictness; changing that port would violate the Phase 1 byte gate.
 
+### 2026-08-21 — Phase 3
+
+- Added `gate.ts` with a 12-character unambiguous password alphabet and SHA-256 hashing. Standalone output carries a title, both palettes, the CSP, and the chart runtime. Gated output stores only base64 body data and a hash in the page source. The browser decodes and injects the body after a matching `crypto.subtle.digest` result, then starts the chart runtime.
+- Unit gate: `node --import tsx --test 'tests/domain/artifact-*.test.ts'` passed with 29 tests. The parity test still passes because it strips only the marked standalone additions and the mode branch, not the panel copy.
+- Browser gate: published a real dark-themed chart artifact at `https://divo-artifacts-1ubtsdsxh-divo-2600s-projects.vercel.app/`. The page asked for a password, refused a wrong password, and revealed the report with one rendered chart SVG after the correct password. The title and dark theme remained intact. View-source still exposes the base64 body and script, as D5 requires.
+
 ## 12. Next action
 
-Start Phase 3. Implement the standalone document wrapper branch and the password gate, then run Phase 3's browser gate against a real stored artifact.
+Start Phase 4. Add the four `Artifact` publication columns with `prisma db push`, then implement and register the channel-neutral `divo_publish` tool before touching the Lark manifest or skill.

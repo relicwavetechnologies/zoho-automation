@@ -429,6 +429,140 @@ const CHART_STYLE = `
   .chart-legend i { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 `
 
+/* Standalone-only additions begin. */
+const STANDALONE_GATE_STYLE = `
+  .artifact-header { margin: 0 0 20px; }
+  .artifact-gate { max-width: 420px; background: var(--surface); border-radius: 12px;
+                   box-shadow: 0 0 0 1px var(--line); padding: 20px; }
+  .artifact-gate p { margin: 0 0 14px; }
+  .artifact-gate label { display: block; color: var(--ink); font-weight: 600; margin-bottom: 6px; }
+  .artifact-gate input { width: 100%; border: 1px solid var(--line-strong); border-radius: 7px;
+                         background: var(--field); color: var(--ink); padding: 9px 10px; }
+  .artifact-gate button { margin-top: 12px; border: 0; border-radius: 7px;
+                          background: var(--accent); color: var(--accent-ink); padding: 9px 13px;
+                          font: inherit; font-weight: 600; cursor: pointer; }
+  .artifact-gate button:disabled { opacity: 0.6; cursor: wait; }
+  .artifact-gate .error { color: var(--red); margin-top: 10px; }
+`
+
+const TITLE_ESCAPES: Readonly<Record<string, string>> = {
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}
+
+function escapeTitle(value: string): string {
+  return value.replace(/[&<>"']/g, character => TITLE_ESCAPES[character]!)
+}
+
+function standaloneGateScript(encodedBody: string, gateHash: string): string {
+  return `<script>
+(function () {
+  var encodedBody = ${JSON.stringify(encodedBody)};
+  var expectedHash = ${JSON.stringify(gateHash)};
+  var chartRuntime = ${JSON.stringify(CHART_RUNTIME)};
+  var gate = document.getElementById("divo-artifact-gate");
+  var form = document.getElementById("divo-artifact-gate-form");
+  var password = document.getElementById("divo-artifact-gate-password");
+  var submit = document.getElementById("divo-artifact-gate-submit");
+  var error = document.getElementById("divo-artifact-gate-error");
+  var content = document.getElementById("divo-artifact-content");
+
+  function decodeBody() {
+    var binary = atob(encodedBody);
+    var bytes = new Uint8Array(binary.length);
+    for (var index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+    return new TextDecoder().decode(bytes);
+  }
+
+  function hex(buffer) {
+    return Array.from(new Uint8Array(buffer), function (byte) {
+      return byte.toString(16).padStart(2, "0");
+    }).join("");
+  }
+
+  async function openDocument(event) {
+    event.preventDefault();
+    error.hidden = true;
+    submit.disabled = true;
+    try {
+      var digest = await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(password.value),
+      );
+      if (hex(digest) !== expectedHash) {
+        error.textContent = "That password did not match.";
+        error.hidden = false;
+        password.select();
+        return;
+      }
+      content.innerHTML = decodeBody();
+      gate.hidden = true;
+      var chart = document.createElement("script");
+      chart.textContent = chartRuntime;
+      document.body.appendChild(chart);
+    } catch (_error) {
+      error.textContent = "The document could not be opened.";
+      error.hidden = false;
+    } finally {
+      submit.disabled = false;
+    }
+  }
+
+  form.addEventListener("submit", openDocument);
+})();
+</script>`
+}
+
+function buildStandaloneDocument(
+  body: string,
+  theme: DocumentTheme,
+  options?: StandaloneOptions,
+): string {
+  const title = escapeTitle(options?.title ?? 'Divo document')
+  const gateHash = options?.gateHash?.trim()
+  const encodedBody = Buffer.from(body, 'utf8').toString('base64')
+  const main = gateHash
+    ? `<div id="divo-artifact-gate" class="artifact-gate">
+  <p>Enter the password Divo gave you to open this document.</p>
+  <form id="divo-artifact-gate-form">
+    <label for="divo-artifact-gate-password">Password</label>
+    <input id="divo-artifact-gate-password" type="password" autocomplete="off" autofocus>
+    <button id="divo-artifact-gate-submit" type="submit">Open document</button>
+    <p id="divo-artifact-gate-error" class="error" role="alert" hidden></p>
+  </form>
+</div>
+<main id="divo-artifact-content"></main>`
+    : `<main id="divo-artifact-content">
+${body}
+</main>`
+  const script = gateHash
+    ? standaloneGateScript(encodedBody, gateHash)
+    : `<script>${CHART_RUNTIME}</script>`
+
+  return `<!doctype html>
+<html lang="en" data-theme="${theme}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title}</title>
+<meta http-equiv="Content-Security-Policy" content="${POLICY}">
+<base target="_blank">
+<style>
+:root { ${LIGHT} ${CATEGORICAL} }
+html[data-theme="dark"] { ${DARK} }
+${BASE}
+${CHART_STYLE}
+${STANDALONE_GATE_STYLE}
+</style>
+</head>
+<body>
+<header class="artifact-header"><h1>${title}</h1></header>
+${main}
+${script}
+</body>
+</html>`
+}
+/* Standalone-only additions end. */
+
 /**
  * Build the full document a frame will render.
  *
@@ -445,7 +579,7 @@ export function buildDocument(
   standalone?: StandaloneOptions,
 ): string {
   if (mode === 'standalone') {
-    throw new Error('not implemented')
+    return buildStandaloneDocument(body, theme, standalone)
   }
   return `<!doctype html>
 <html lang="en" data-theme="${theme}">

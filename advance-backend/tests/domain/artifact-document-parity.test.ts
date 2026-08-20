@@ -59,7 +59,15 @@ export interface StandaloneOptions {
       '',
     )
     .replace(
+      /\/\* Standalone-only additions begin\. \*\/[\s\S]*?\/\* Standalone-only additions end\. \*\/\n\n/,
+      '',
+    )
+    .replace(
       "export function buildDocument(\n  body: string,\n  theme: DocumentTheme = 'light',\n  mode: DocumentMode = 'panel',\n  standalone?: StandaloneOptions,\n): string {\n  if (mode === 'standalone') {\n    throw new Error('not implemented')\n  }\n",
+      "export function buildDocument(body: string, theme: DocumentTheme = 'light'): string {\n",
+    )
+    .replace(
+      "export function buildDocument(\n  body: string,\n  theme: DocumentTheme = 'light',\n  mode: DocumentMode = 'panel',\n  standalone?: StandaloneOptions,\n): string {\n  if (mode === 'standalone') {\n    return buildStandaloneDocument(body, theme, standalone)\n  }\n",
       "export function buildDocument(body: string, theme: DocumentTheme = 'light'): string {\n",
     )
 }
