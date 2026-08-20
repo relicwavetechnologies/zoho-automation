@@ -392,6 +392,21 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
     const payload = signupCompanyAdminSchema.parse(req.body);
 
     try {
+      /*
+       * Twelve skill provisioners run inside this transaction, and Prisma's
+       * default interactive-transaction timeout is five seconds. Against the
+       * tunnelled development database they took 6.3s, the transaction expired
+       * mid-provision, and the rejection that followed took the whole backend
+       * process down — so the first person ever to sign up got "Divo server
+       * could not be reached", and so did everybody after them until somebody
+       * restarted it.
+       *
+       * The provisioning genuinely belongs in here: a company with a user and
+       * no skills is worse than no company at all, and rolling back is the only
+       * honest answer if it fails halfway. So the budget goes up rather than the
+       * work moving out. `maxWait` rises with it because a busy pool can spend a
+       * while just handing over a connection.
+       */
       const result = await deps.prisma.$transaction(async (tx) => {
         const user = await tx.user.create({
           data: {
@@ -436,7 +451,7 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
           role: 'COMPANY_ADMIN',
           companyId: company.id,
         });
-      });
+      }, { timeout: 60_000, maxWait: 15_000 });
 
     deps.auditService.record({
       actorId: result.session.userId,
