@@ -80,6 +80,7 @@ describe('web Google continuation', () => {
             connectionId: 'connection-1',
             ownerType: 'user',
             ownerUserId: 'user-1',
+            scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
           }],
         }),
       } as any,
@@ -103,7 +104,10 @@ describe('web Google continuation', () => {
     assert.equal(webInput.sessionId, 'session-1');
     assert.equal(webInput.runContext.channel, 'web');
     assert.equal(webInput.runContext.departmentId, 'department-1');
-    assert.equal(webInput.incomingText, intent.originalRequest);
+    assert.match(webInput.incomingText, /DIVO CONTINUATION CONTEXT/);
+    assert.match(webInput.incomingText, /group 1: spreadsheets/);
+    assert.match(webInput.incomingText, /group 2: none returned/);
+    assert.match(webInput.incomingText, /Export the Sheet/);
     assert.deepEqual(finishInput, [
       intent.intentId,
       { runId: intent.continuationIdempotencyKey },

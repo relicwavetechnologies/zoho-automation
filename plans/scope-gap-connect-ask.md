@@ -732,7 +732,7 @@ Google-tool, and Mail Ops tests passed (**107 pass, 0 fail**) with backend
 typecheck clean. The full suite and any live channel run were not requested;
 they remain for the later test pass.
 
-### Phase 7 — The resume tells the agent what changed
+### Phase 7 — The resume tells the agent what changed ✅ *2026-08-21*
 
 **Goal.** When the run comes back after OAuth, the agent knows why it is running
 and what it was granted, instead of being handed its own old question.
@@ -759,18 +759,18 @@ The wiring is most of the way there. This phase is the last hop.
 
 **Steps.**
 
-- [ ] Trace where `raw` goes on an ordinary turn and whether the runtime can
+- [x] Trace where `raw` goes on an ordinary turn and whether the runtime can
       already carry it to the model. Write down what you find; that answer
       decides this phase's shape and the plan does not know it.
-- [ ] Make the resumed run say three things to the agent: this is a
+- [x] Make the resumed run say three things to the agent: this is a
       continuation of a specific earlier ask, the connection is now present, and
       these exact scope groups were granted.
-- [ ] Grant the scopes actually returned by the exchange, not the scopes that
+- [x] Grant the scopes actually returned by the exchange, not the scopes that
       were requested. A member can approve a subset on Google's consent screen,
       and an agent told it has Drive when it does not will fail a second time
       with less excuse than the first.
-- [ ] Do the same for the web origin from Phase 4, so both channels resume alike.
-- [ ] Test: a resumed run carries the granted groups; a partial grant reports the
+- [x] Do the same for the web origin from Phase 4, so both channels resume alike.
+- [x] Test: a resumed run carries the granted groups; a partial grant reports the
       subset, not the request.
 
 **Do not.** Do not refactor the continuation service; it works and it is 376
@@ -781,6 +781,34 @@ from earlier in the conversation, which several skills explicitly forbid.
 **Gate.** A live Lark run: gap, button, connect, and the resumed run states which
 scopes it received before retrying. Quote the agent's own words in the build log.
 If a partial grant is testable, test it; if not, say so.
+
+**2026-08-21 build log.** The raw trace is settled before changing the resume:
+`IncomingMessage.raw` is carried through backend code and written onto the
+continuation object, but `LarkPiRuntimeService` sends Pi a controller body with
+only `message` (plus the lease/model/attachments). `webIncomingMessage` sets
+`raw: null`, and no runtime prompt or controller adapter reads raw. Therefore
+raw cannot reach the model in this build; adding fields to raw alone would have
+been invisible.
+
+The continuation now builds a bounded text envelope from the stored original
+ask and the actual `connection.scopes` returned by the authorization exchange.
+It tells the model that this is a continuation, that Google Workspace is now
+present, which requested scope groups actually have a returned scope, and that
+missing/requested groups must not be inferred. It also asks the model to make
+the continuation visible in its reply. The structured `raw` object retains the
+connection id, intent id, requested tool ids, returned scopes, and computed
+granted groups for backend diagnostics, but it is not the model interface.
+
+The same envelope is used by Lark's existing continuation input and by the web
+branch of that same intent/queue/worker. Web resumes through `WebRunService`
+under the session retained in the Phase 4 origin; the browser thread keeps the
+member's original ask as its user turn and receives the resumed assistant turn.
+The focused web continuation test covers a partial grant: a returned
+`spreadsheets.readonly` appears in the first Sheets group while the write group
+is reported as `none returned`, rather than repeating the requested write scope.
+
+The live Lark gate and quoted model wording were not run because the user asked
+to test later. No Pi core or Desktop code was changed.
 
 ### ~~Phase 8 — Shopify, which proves the seam~~ — CUT *2026-08-20*
 
@@ -1129,11 +1157,9 @@ from 48.
 
 ## 12. Next action
 
-Start **Phase 7**. Establish how an `IncomingMessage` reaches the model — raw
-does not currently cross the runtime request boundary — then make the OAuth
-resume tell the agent it is continuing the earlier ask, that the connection is
-present, and which exact scope groups Google actually granted. Apply the same
-context to the web resume.
+All seven build phases are complete. The remaining live web/Lark OAuth gates
+and the full application-suite pass are intentionally deferred to the user's
+later test run, as requested.
 
 The classifier is now grounded in Divo's existing Google fixtures and client
 error path. The pinned upstream repository did not expose the literal prose in

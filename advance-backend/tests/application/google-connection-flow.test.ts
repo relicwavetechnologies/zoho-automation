@@ -524,7 +524,10 @@ describe('Google connection continuation', () => {
 
     await worker.process({ id: 'job-1', data: { intentId: 'intent-1' } });
 
-    assert.equal(piInput.incoming.text, TARGET.originalRequest);
+    assert.match(piInput.incoming.text, /DIVO CONTINUATION CONTEXT/);
+    assert.match(piInput.incoming.text, /Google Workspace connection is now present/);
+    assert.match(piInput.incoming.text, /gmail.modify/);
+    assert.match(piInput.incoming.text, /Forward new OTP mail/);
     assert.equal(piInput.incoming.messageId, 'oauth-continuation-intent-1');
     assert.equal(piInput.incoming.raw.resumeReason, 'google_connected');
     assert.equal(piInput.incoming.raw.connectionId, 'connection-1');
@@ -536,6 +539,8 @@ describe('Google connection continuation', () => {
     // tool call in the fresh run resolves permissions the ordinary way, so the
     // field granted nothing and guarded nothing.
     assert.deepEqual(piInput.incoming.raw.requestedToolIds, ['mailAutomations']);
+    assert.ok(Array.isArray(piInput.incoming.raw.grantedScopes));
+    assert.ok(Array.isArray(piInput.incoming.raw.grantedScopeGroups));
     assert.equal('continuationToolIds' in piInput.runContext, false);
     assert.equal(piInput.conversation.chatId, 'oc_chat');
     assert.equal(piInput.conversation.replyToMessageId, 'om_original');

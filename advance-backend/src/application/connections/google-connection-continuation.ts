@@ -9,7 +9,10 @@ import type { LarkChannelAdapter } from '../../infrastructure/channels/lark/lark
 import { buildFinalCard } from '../../infrastructure/channels/lark/lark-card.builder';
 import { fenceFinalReplies } from '../../infrastructure/channels/lark/lark-lane-fence';
 import { buildLarkIngressLaneKey } from '../../infrastructure/channels/lark/lark-routing';
-import type { IntegrationConnectionRepository } from '../../infrastructure/persistence/integration-connection.repository';
+import type {
+  ConnectionSummary,
+  IntegrationConnectionRepository,
+} from '../../infrastructure/persistence/integration-connection.repository';
 import type {
   ConnectionAuthorizationRepository,
   ConnectionContinuationClaim,
@@ -27,6 +30,7 @@ import {
   asUserId,
 } from '../../shared/ids';
 import type { Logger } from '../../shared/logger';
+import { googleScopeGroupsForToolIds } from '../google/google-scope-request';
 
 export const GOOGLE_CONNECTION_CONTINUATION_QUEUE_NAME =
   'google-connection-continuation';
@@ -195,7 +199,10 @@ export class GoogleConnectionContinuationWorker {
       return;
     }
 
-    const laneKey = buildLarkIngressLaneKey(buildContinuationIncoming(pending.value));
+    const laneKey = buildLarkIngressLaneKey(buildContinuationIncoming(pending.value, {
+      connectionId: pending.value.connectionId,
+      scopes: [],
+    }));
     const outcome = await this.deps.laneLeaseHolder.withLane(
       laneKey,
       async (lease, signal) => this.runClaimed(
@@ -238,7 +245,7 @@ export class GoogleConnectionContinuationWorker {
         if (!origin || origin.channel !== 'web' || !origin.web.sessionId) {
           throw new Error('The web run origin for this Google continuation is no longer available.');
         }
-        const result = await this.deps.runWeb(buildWebContinuationInput(intent, identity, origin));
+        const result = await this.deps.runWeb(buildWebContinuationInput(intent, identity, origin, connection));
         if (result === null) {
           await this.finish(intent, { failureCode: 'continuation_delivery_failed' });
           this.log.error('google.continuation.web_delivery_failed', {
@@ -257,7 +264,7 @@ export class GoogleConnectionContinuationWorker {
         });
         return;
       }
-      const input = buildContinuationInput(intent, identity, channelAdapter);
+      const input = buildContinuationInput(intent, identity, channelAdapter, connection);
       const result = await this.deps.runPi({
         ...input,
         ...(abortSignal ? { abortSignal } : {}),
@@ -360,9 +367,10 @@ function buildWebContinuationInput(
     readonly email?: string;
   },
   origin: Extract<import('./run-origin.store').RunOrigin, { channel: 'web' }>,
+  connection: Pick<ConnectionSummary, 'scopes'>,
 ): GoogleConnectionContinuationWebRunInput {
   return {
-    incomingText: intent.originalRequest,
+    incomingText: continuationText(intent, connection),
     originalRequest: intent.originalRequest,
     threadId: origin.web.threadId,
     userExternalId: origin.web.userExternalId,
@@ -392,11 +400,12 @@ function buildContinuationInput(
     email?: string;
   },
   channelAdapter: LarkChannelAdapter,
+  connection: Pick<ConnectionSummary, 'connectionId' | 'scopes'>,
 ) {
   const traceId = asCorrelationId(intent.continuationIdempotencyKey);
   const chatId = asChatId(intent.chatId);
 
-  const incoming = buildContinuationIncoming(intent);
+  const incoming = buildContinuationIncoming(intent, connection);
 
   const runContext: RunContext = {
     companyId: asCompanyId(intent.companyId),
@@ -429,6 +438,7 @@ function buildContinuationInput(
 
 function buildContinuationIncoming(
   intent: ConnectionContinuationClaim,
+  connection: Pick<ConnectionSummary, 'connectionId' | 'scopes'>,
 ): IncomingMessage {
   if (intent.chatType !== 'p2p' && intent.chatType !== 'group') {
     throw new Error('Stored continuation chat type is invalid.');
@@ -437,6 +447,10 @@ function buildContinuationIncoming(
     ? 'inline'
     : 'threaded';
   const traceId = asCorrelationId(intent.continuationIdempotencyKey);
+  const grantedScopeGroups = grantedGoogleScopeGroups(
+    intent.requestedToolIds,
+    connection.scopes,
+  );
   return {
     channel: 'lark',
     messageId: asMessageId(`oauth-continuation-${intent.intentId}`),
@@ -444,7 +458,7 @@ function buildContinuationIncoming(
     chatType: intent.chatType,
     tenantKey: intent.larkTenantKey,
     userExternalId: intent.larkOpenId,
-    text: intent.originalRequest,
+    text: continuationText(intent, connection),
     attachments: [],
     timestamp: new Date().toISOString(),
     traceId,
@@ -460,8 +474,58 @@ function buildContinuationIncoming(
       connectionId: intent.connectionId,
       authorizationIntentId: intent.intentId,
       requestedToolIds: intent.requestedToolIds,
+      grantedScopes: connection.scopes,
+      grantedScopeGroups,
     },
   };
+}
+
+function continuationText(
+  intent: ConnectionContinuationClaim,
+  connection: Pick<ConnectionSummary, 'scopes'>,
+): string {
+  const grantedScopeGroups = grantedGoogleScopeGroups(
+    intent.requestedToolIds,
+    connection.scopes,
+  );
+  const groups = grantedScopeGroups.length > 0
+    ? grantedScopeGroups.map((group, index) => `- group ${index + 1}: ${group}`).join('\n')
+    : '- no requested Google scope groups were returned';
+  return [
+    '[DIVO CONTINUATION CONTEXT — trusted backend state]',
+    'This run continues the earlier request after Google Workspace OAuth completed.',
+    'The Google Workspace connection is now present for this member.',
+    'Scope groups actually returned by Google for this authorization are:',
+    groups,
+    'Treat only the groups listed above as granted. Do not infer a requested or missing group.',
+    'Make the continuation visible in your reply: say that Google Workspace is connected and that you are continuing the earlier request.',
+    'Earlier request:',
+    intent.originalRequest,
+    '[END DIVO CONTINUATION CONTEXT]',
+  ].join('\n');
+}
+
+function grantedGoogleScopeGroups(
+  requestedToolIds: readonly string[],
+  grantedScopes: readonly string[],
+): readonly string[] {
+  const granted = new Set(grantedScopes.map(normalizeScope));
+  return googleScopeGroupsForToolIds(requestedToolIds).map(group => {
+    const actual = group
+      .filter(scope => granted.has(normalizeScope(scope)))
+      .map(scope => shortScopeName(scope));
+    return actual.length > 0 ? actual.join(' or ') : 'none returned';
+  });
+}
+
+function normalizeScope(scope: string): string {
+  return scope.trim().toLowerCase().replace(/\/$/, '');
+}
+
+function shortScopeName(scope: string): string {
+  const normalized = normalizeScope(scope);
+  const marker = normalized.lastIndexOf('/');
+  return marker >= 0 ? normalized.slice(marker + 1) : normalized;
 }
 
 function classifyContinuationFailure(error: unknown): string {
