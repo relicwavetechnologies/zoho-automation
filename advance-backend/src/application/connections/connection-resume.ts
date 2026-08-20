@@ -110,6 +110,25 @@ export class ConnectionResumeService {
     };
   }
 
+  /**
+   * Nobody was waiting, so close the ask rather than leave it open.
+   *
+   * The worker this replaced used to sweep intents that reached `connected`
+   * with their continuation still pending. Without a sweeper, an ask whose run
+   * gave up first would sit pending for good, and the member would keep a card
+   * offering to connect an account they already connected.
+   *
+   * Returns false when there was nothing to close, which is the ordinary case
+   * for a callback that arrives after the run already resumed.
+   */
+  async abandon(askId: string, reason: string): Promise<boolean> {
+    const claimed = await this.deps.intentRepo.claimContinuation(askId);
+    if (!claimed.ok) throw claimed.error;
+    if (!claimed.value) return false;
+    await this.release(claimed.value.intentId, reason);
+    return true;
+  }
+
   /** The run carried on, so the intent is done and the card is moot. */
   private async settle(intentId: string): Promise<void> {
     const finished = await this.deps.intentRepo.finishContinuation(intentId, {

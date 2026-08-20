@@ -452,6 +452,11 @@ describe('Google connection card and callback route', () => {
           return 'answered' as const;
         },
       },
+      connectionResume: {
+        abandon: async () => {
+          throw new Error('a run that resumed must not also be abandoned');
+        },
+      },
       logger: noopLogger,
     });
 
@@ -472,6 +477,7 @@ describe('Google connection card and callback route', () => {
   it('says so plainly when the run had already stopped waiting', async () => {
     /* The connection is real either way. Telling the member it is continuing
        when nothing is would leave them watching a thread that never moves. */
+    const abandoned: Array<{ askId: string; reason: string }> = [];
     const router = createGoogleConnectionRoutes({
       authorization: {
         complete: async () => ({
@@ -483,6 +489,12 @@ describe('Google connection card and callback route', () => {
         }),
       } as any,
       askCourier: { answer: async () => 'no_pending_ask' as const },
+      connectionResume: {
+        abandon: async (askId: string, reason: string) => {
+          abandoned.push({ askId, reason });
+          return true;
+        },
+      },
       logger: noopLogger,
     });
 
@@ -494,6 +506,11 @@ describe('Google connection card and callback route', () => {
     assert.equal(response.status, 200);
     assert.match(String(response.body), /Google connected/);
     assert.match(String(response.body), /stopped waiting, so ask Divo again/);
+    /* Nothing sweeps intents any more, so the callback closes the one nobody
+       picked up. Left open it sits pending for good. */
+    assert.deepEqual(abandoned, [
+      { askId: 'intent-2', reason: 'resume_no_pending_ask' },
+    ]);
   });
 });
 

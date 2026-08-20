@@ -12,6 +12,8 @@
 #   scripts/dev-stack.sh status     what is up right now
 #   scripts/dev-stack.sh stop       stop everything this script can stop
 #   scripts/dev-stack.sh logs       tail every service log at once
+#   scripts/dev-stack.sh build      rebuild the Pi runtime image after editing
+#                                   anything under divo-pi/divo
 #
 # Safe to re-run. Anything already healthy is left alone rather than restarted,
 # so this doubles as a repair command when one service has died.
@@ -51,6 +53,62 @@ admin_healthy()      { [[ "$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://
 mcp_healthy()        { [[ -n "$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:18000/mcp 2>/dev/null | grep -E '^[1-5][0-9][0-9]$')" ]]; }
 tunnel_healthy()     { nc -z -w 2 127.0.0.1 15432 >/dev/null 2>&1; }
 redis_healthy()      { nc -z -w 2 127.0.0.1 6380 >/dev/null 2>&1 && nc -z -w 2 127.0.0.1 6381 >/dev/null 2>&1; }
+
+# ---------------------------------------------------------------- the image
+# The half of the runtime that restarting does not update.
+#
+# `divo-pi/Dockerfile` does `COPY . .`, so everything Pi runs inside the
+# container — the whole gateway extension included — is baked in at build time.
+# Restarting the controller reloads the host's own .mjs files and nothing else,
+# which makes a stale image the quietest failure in this stack: every service
+# reports healthy, the code you just wrote is simply not the code that runs.
+# So this is checked rather than assumed.
+
+PI_IMAGE="${DIVO_PI_IMAGE:-divo-pi-local:phase0}"
+
+image_built_epoch() {
+  local created
+  created=$(docker image inspect "$PI_IMAGE" --format '{{.Created}}' 2>/dev/null) || return 1
+  [[ -n "$created" ]] || return 1
+  # 2026-08-20T22:55:41.140068883Z — seconds are all this comparison needs.
+  date -j -u -f '%Y-%m-%dT%H:%M:%S' "${created%%.*}" +%s 2>/dev/null
+}
+
+# Only the sources the image carries. Editing the backend or the admin UI is no
+# reason to rebuild a container, and saying otherwise would train you to ignore
+# the warning that matters.
+newest_runtime_source_epoch() {
+  find "$ROOT/divo-pi/divo" \
+    \( -name node_modules -prune \) -o \
+    -type f \( -name '*.ts' -o -name '*.mjs' -o -name '*.json' \) -print0 2>/dev/null \
+    | xargs -0 stat -f '%m' 2>/dev/null | sort -rn | head -1
+}
+
+image_current() {
+  local built newest
+  built=$(image_built_epoch) || return 1
+  newest=$(newest_runtime_source_epoch)
+  [[ -n "$newest" ]] || return 0
+  (( built >= newest ))
+}
+
+report_image() {
+  local built newest
+  if ! built=$(image_built_epoch); then
+    down "Pi image      $PI_IMAGE (not built)"
+    warn "Build it before running anything through Pi: scripts/dev-stack.sh build"
+    return
+  fi
+  newest=$(newest_runtime_source_epoch)
+  if [[ -n "$newest" ]] && (( built < newest )); then
+    # Both stamped with the date. An image from last week shown as a bare
+    # clock time reads as newer than a source edited this morning.
+    down "Pi image      $PI_IMAGE (STALE — built $(date -r "$built" '+%b %d %H:%M'), sources changed $(date -r "$newest" '+%b %d %H:%M'))"
+    warn "Pi is running older code than this checkout. Rebuild: scripts/dev-stack.sh build"
+  else
+    ok "Pi image      $PI_IMAGE (built $(date -r "$built" '+%b %d %H:%M'))"
+  fi
+}
 
 # Wait for a health check, or fail loudly and say where to look. Never returns
 # success on a timeout — a stack reported as up when it is not costs more than
@@ -140,6 +198,36 @@ cmd_start() {
   echo -e "  ${DIM}Stop:${NC}  scripts/dev-stack.sh stop"
 }
 
+cmd_build() {
+  if ! docker info >/dev/null 2>&1; then
+    fail "Docker Desktop is not running."
+    exit 1
+  fi
+  log "Building $PI_IMAGE (this bakes divo-pi/divo into the runtime)..."
+  mkdir -p "$LOG_DIR"
+  if ! docker build -t "$PI_IMAGE" "$ROOT/divo-pi" > "$LOG_DIR/image.log" 2>&1; then
+    fail "Image build failed. Last 20 lines of $LOG_DIR/image.log:"
+    tail -20 "$LOG_DIR/image.log" >&2
+    exit 1
+  fi
+  log "Built $PI_IMAGE"
+
+  # A container started from the old image keeps running it. The controller
+  # replaces one whose image id has moved, but only on its next run, and a warm
+  # Pi process it is still holding never gets that far. Clearing them here means
+  # "built" and "running" cannot drift apart silently.
+  local stale
+  stale=$(docker ps -q --filter "ancestor=$PI_IMAGE" --filter "name=divo-pi" 2>/dev/null)
+  for name in $(docker ps --format '{{.Names}}' 2>/dev/null | grep '^divo-pi-local' || true); do
+    docker rm -f "$name" >/dev/null 2>&1 && warn "Removed runtime container $name (its session volume is untouched)"
+  done
+  [[ -n "$stale" ]] || true
+
+  if controller_healthy; then
+    warn "Restart the controller so it drops any warm Pi process: scripts/dev-stack.sh stop && scripts/dev-stack.sh start"
+  fi
+}
+
 cmd_status() {
   echo -e "${CYAN}Local stack${NC}"
   backend_healthy    && ok "backend        http://127.0.0.1:8000"      || down "backend        http://127.0.0.1:8000"
@@ -148,6 +236,7 @@ cmd_status() {
   mcp_healthy        && ok "Google MCP     http://127.0.0.1:18000/mcp" || down "Google MCP     http://127.0.0.1:18000/mcp"
   tunnel_healthy     && ok "Postgres       127.0.0.1:15432 (tunnel)"   || down "Postgres       127.0.0.1:15432 (tunnel)"
   redis_healthy      && ok "Redis          127.0.0.1:6380 / 6381"      || down "Redis          127.0.0.1:6380 / 6381"
+  docker info >/dev/null 2>&1 && report_image
 
   if controller_healthy; then
     local runs
@@ -191,8 +280,9 @@ case "${1:-start}" in
   status) cmd_status ;;
   stop)   cmd_stop ;;
   logs)   cmd_logs ;;
+  build)  cmd_build ;;
   *)
-    echo "usage: scripts/dev-stack.sh [start|status|stop|logs]" >&2
+    echo "usage: scripts/dev-stack.sh [start|status|stop|logs|build]" >&2
     exit 2
     ;;
 esac

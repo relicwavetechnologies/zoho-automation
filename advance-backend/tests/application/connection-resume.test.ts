@@ -135,6 +135,31 @@ describe('resuming a run that waited for a connection', () => {
     assert.equal(outcome.status, 'connection_missing');
   });
 
+  it('closes an ask nobody was waiting for', async () => {
+    /* The worker that used to sweep these is gone. Without this the intent sits
+       pending for good and the member keeps a card offering to connect an
+       account they already connected. */
+    const finished: any[] = [];
+    const withdrawn: any[] = [];
+    const closed = await build({
+      onFinish: (...args) => finished.push(args),
+      onWithdraw: input => withdrawn.push(input),
+    }).abandon('intent-1', 'resume_no_pending_ask');
+
+    assert.equal(closed, true);
+    assert.deepEqual(finished, [['intent-1', { failureCode: 'resume_no_pending_ask' }]]);
+    assert.deepEqual(withdrawn, [
+      { idempotencyKey: 'intent-1', reason: 'resume_no_pending_ask' },
+    ]);
+  });
+
+  it('reports nothing to close when the run already resumed', async () => {
+    assert.equal(
+      await build({ claim: null }).abandon('intent-1', 'resume_no_pending_ask'),
+      false,
+    );
+  });
+
   it('does not require a decision module', async () => {
     /* Lark delivers its own card rather than a decision row. */
     const service = new ConnectionResumeService({

@@ -1,12 +1,15 @@
 import { Router, type Request, type Response } from 'express';
 import type { GoogleConnectionAuthorizationService } from '../../application/connections/google-connection-authorization.service';
 import type { ConnectionAskCourier } from '../../application/connections/connection-ask-courier';
+import type { ConnectionResumeService } from '../../application/connections/connection-resume';
 import type { Logger } from '../../shared/logger';
 
 export function createGoogleConnectionRoutes(deps: {
   authorization: GoogleConnectionAuthorizationService;
   /** Answers the run that is standing still waiting for this callback. */
   askCourier: Pick<ConnectionAskCourier, 'answer'>;
+  /** Closes an ask whose run gave up before the member came back. */
+  connectionResume: Pick<ConnectionResumeService, 'abandon'>;
   logger: Logger;
 }): Router {
   const router = Router();
@@ -45,6 +48,17 @@ export function createGoogleConnectionRoutes(deps: {
            * inside the run the member was already watching.
            */
           const answered = await deps.askCourier.answer(completion.intentId, true);
+          if (answered !== 'answered') {
+            /* Nothing picked it up, so nothing will. Left open, the intent sits
+               pending for good and the member keeps a card asking them to
+               connect the account they just connected. */
+            await deps.connectionResume
+              .abandon(completion.intentId, `resume_${answered}`)
+              .catch(error => log.warn('google.connection.abandon_failed', {
+                intentId: completion.intentId,
+                error: String(error),
+              }));
+          }
           const where = completion.channel === 'web' ? 'the web thread' : 'Lark';
           res.status(200).send(resultHtml(
             true,

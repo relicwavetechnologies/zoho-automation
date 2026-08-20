@@ -497,6 +497,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     createGoogleConnectionRoutes({
       authorization: c.googleConnectionAuthorization,
       askCourier: c.connectionAskCourier,
+      connectionResume: c.connectionResume,
       logger: c.logger,
     }),
   );
