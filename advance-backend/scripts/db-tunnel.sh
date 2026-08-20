@@ -186,14 +186,48 @@ status_tunnel() {
   return 2
 }
 
+# Keep the tunnel up for as long as this runs.
+#
+# `ssh -fN` is one-shot. Combined with ServerAliveInterval=30 and
+# ServerAliveCountMax=3 above, ssh deliberately kills itself after roughly
+# ninety seconds of an unresponsive server — which is the right way to notice a
+# dead link, and useless on its own, because nothing then brings it back. A
+# single blip on the way to the host ends the tunnel for good, and the first
+# thing anybody sees is the backend answering `{"status":"degraded"}` some
+# minutes later with no clue why.
+#
+# So: poll the same readiness check `status` uses, and start the tunnel again
+# whenever it stops answering. No new dependency; autossh would do this better
+# but is not installed.
+watch_tunnel() {
+  local interval="${DB_TUNNEL_WATCH_INTERVAL:-15}"
+  log "Watching DB tunnel every ${interval}s. Ctrl-C to stop."
+  # Ensure there is something to watch before the first poll.
+  is_postgres_ready || start_tunnel
+  while true; do
+    sleep "$interval"
+    if ! is_postgres_ready; then
+      warn "DB tunnel stopped answering; restarting..."
+      # Clears a listener that survived its ssh session, which would otherwise
+      # make the port look taken and the restart fail.
+      stop_tunnel >/dev/null 2>&1 || true
+      start_tunnel || warn "Restart failed; will try again in ${interval}s"
+    fi
+  done
+}
+
 case "${1:-status}" in
   start)   start_tunnel ;;
   stop)    stop_tunnel ;;
   restart) stop_tunnel; start_tunnel ;;
   status)  status_tunnel ;;
+  watch)   watch_tunnel ;;
   *)
     cat <<EOF
-Usage: scripts/db-tunnel.sh <start|stop|restart|status>
+Usage: scripts/db-tunnel.sh <start|stop|restart|status|watch>
+
+  watch  keeps the tunnel up, restarting it whenever it stops answering.
+         Runs in the foreground; background it with & or a separate terminal.
 
 Optional env/.env keys:
   DB_TUNNEL_SSH_HOST        default: 103.172.92.187
