@@ -147,6 +147,7 @@ describe('RunOriginStore', () => {
       web: {
         threadId: 'thread-web-1',
         userExternalId: 'web-user-1',
+        sessionId: 'web-session-1',
         timestamp: live.timestamp,
       },
     };

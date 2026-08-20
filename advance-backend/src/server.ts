@@ -176,6 +176,22 @@ export const createServer = (c: Container): DivoServerApplication => {
         ...(input.abortSignal ? { signal: input.abortSignal } : {}),
         rethrowRuntimeFailureAfterDelivery: true,
       }))?.text ?? null,
+      runWeb: async input => {
+        let finalText: string | null = null;
+        for await (const event of c.webRuns.run({
+          runContext: input.runContext,
+          threadId: input.threadId,
+          text: input.incomingText,
+          userExternalId: input.userExternalId,
+          sessionId: input.sessionId,
+          ask: { text: input.originalRequest, attachments: [] },
+        })) {
+          if (event.type === 'final') finalText = event.text;
+          if (event.type === 'error') return null;
+        }
+        return finalText;
+      },
+      runOrigins: c.runOrigins,
       channelAdapter: c.larkAdapter,
       laneLeaseHolder: c.laneLeaseHolder,
       logger: c.logger,

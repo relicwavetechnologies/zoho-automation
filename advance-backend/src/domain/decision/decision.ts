@@ -39,6 +39,8 @@ export interface DecisionOption {
   readonly tone?: 'default' | 'primary' | 'danger';
   /** Choosing this ends the decision here, with this verdict. */
   readonly settles?: DecisionVerdict;
+  /** An option carrying this opens a URL and settles nothing. */
+  readonly href?: string;
 }
 
 /**

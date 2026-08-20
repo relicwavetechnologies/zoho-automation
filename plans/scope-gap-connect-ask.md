@@ -577,7 +577,7 @@ rather than a runtime undefined.
 tests. `node --import tsx --test tests/application/begin-google-authorization.test.ts`
 still passes, proving Lark is untouched.
 
-### Phase 5 — The connect ask on web
+### Phase 5 — The connect ask on web ✅ *2026-08-21*
 
 **Goal.** On web, a scope gap puts a Connect button in the composer band, through
 the decision card that is already there, and the run picks itself back up when
@@ -607,25 +607,25 @@ most literally branded decision in the product.
 
 **Steps.**
 
-- [ ] Add `href` to both `DecisionOption` types, with the same comment on both:
+- [x] Add `href` to both `DecisionOption` types, with the same comment on both:
       an option carrying it opens a URL and settles nothing.
-- [ ] Render it in `DecisionCard` as an anchor styled as a button. It must not
+- [x] Render it in `DecisionCard` as an anchor styled as a button. It must not
       post to `POST /api/web-chat/decisions/:decisionId`.
-- [ ] Server-side, refuse an `href` option that also carries `settles`. That
+- [x] Server-side, refuse an `href` option that also carries `settles`. That
       combination has no meaning and would leave a row half-answered.
-- [ ] Write the web courier: `DecisionService.ask` with one question, one
+- [x] Write the web courier: `DecisionService.ask` with one question, one
       `href` option labelled `Connect Google`, `continuation: { kind: 'none' }`,
       and an `idempotencyKey` of the intent id so a retry reuses the open row.
-- [ ] Route in `ConnectionRequestService.request`: Lark keeps the existing card,
+- [x] Route in `ConnectionRequestService.request`: Lark keeps the existing card,
       web gets the decision.
-- [ ] Wire the auto re-run, per D7. When OAuth completes for a web origin, the
+- [x] Wire the auto re-run, per D7. When OAuth completes for a web origin, the
       run replays through the existing connection-continuation path exactly as
       Lark's does. Do not build a second resume; find where Lark's replay is
       triggered and give it the web origin.
-- [ ] The replayed web run must be visibly a continuation, not a message from
+- [x] The replayed web run must be visibly a continuation, not a message from
       nowhere. Say in the build log what the thread actually shows when it
       restarts, in the words a member would read.
-- [ ] Per D8, a member who does not own the connection gets
+- [x] Per D8, a member who does not own the connection gets
       `SELF_SERVICE_CONNECT_HINT`, not a card. One branch, and a note in the
       build log about what that case looks like in practice.
 
@@ -648,6 +648,43 @@ band shows a Connect button carrying the Google mark; pressing it opens Google's
 consent screen with the narrow scope set; and on return the run continues on its
 own and answers the original ask. Record the scopes the consent screen actually
 listed, and quote what the thread showed when the run resumed.
+
+**2026-08-21 build log.** The web decision uses the existing `DecisionCard` and
+the existing `surfaceCapabilities(...).decisions === 'form'` value; no new
+surface capability or second card family was needed. `DecisionOption.href` is
+mirrored in the backend and browser trees. The browser renders it as an HTTPS
+anchor in the same branded card, with no answer POST and no settlement. The
+backend rejects both `href + settles` and non-HTTPS links before a decision row
+is written.
+
+The courier creates one Google-branded decision with human product labels in
+the access preview, a single `Connect Google` link, `{ kind: 'none' }`, and the
+authorization intent id as its idempotency key. The OAuth URL still comes from
+the existing narrow tool-id-to-scope mapping; the model never supplies scopes.
+Lark's existing final-action/card path remains unchanged.
+
+Web OAuth reuses the existing authorization intent, queue, exchange, and
+continuation worker. The intent table predates web delivery and has Lark-shaped
+address columns, so a web intent carries an explicit `chatType: 'web'` marker
+and the web thread/run address in those durable fields; the worker resolves the
+member by company/user, recalls the web origin, and invokes the existing
+`WebRunService` under the exact stored web session. The Phase 4 origin therefore
+also retains `sessionId`, which is required to replay an authenticated browser
+run. The callback now tells a web member that Divo is continuing in the web
+thread. The thread receives the original ask again through the web runtime and
+the resumed assistant turn is the visible continuation; Phase 7 adds the
+explicit grant context before that ask.
+
+The member-owned boundary remains deliberate. When the available Google
+connection is not owned by the member, this phase does not route a button to
+another person; the existing path stays on `SELF_SERVICE_CONNECT_HINT`, telling
+the member to connect Google in Connected apps and ask again. No owner courier
+was added.
+
+Focused web courier/continuation tests pass (**4 pass, 0 fail**) and backend
+typecheck is clean. The requested live web OAuth gate was not run; the user will
+test that flow later. The concurrent `brand-catalog.ts` and `brand-mark.tsx`
+files were read and not edited.
 
 ### Phase 6 — One result shape for the model
 
@@ -1075,10 +1112,9 @@ from 48.
 
 ## 12. Next action
 
-Start **Phase 5**. Add the web courier through the existing decision card, then
-wire OAuth completion to replay both Lark and web origins. Read the decision
-module and the concurrent brand files first. The link option must open Google,
-settle nothing, and carry the Google subject mark.
+Start **Phase 6**. Normalize every tool-family response after a connection ask
+to the one `connection_ask_sent` result shape, keep `SELF_SERVICE_CONNECT_HINT`
+for unreachable surfaces, and confirm no `authorization_pending` shape remains.
 
 The classifier is now grounded in Divo's existing Google fixtures and client
 error path. The pinned upstream repository did not expose the literal prose in

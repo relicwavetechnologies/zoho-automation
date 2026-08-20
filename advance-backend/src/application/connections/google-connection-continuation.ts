@@ -15,6 +15,10 @@ import type {
   ConnectionContinuationClaim,
 } from '../../infrastructure/persistence/connection-authorization.repository';
 import {
+  isWebConnectionAuthorization,
+} from './connection-authorization-intent';
+import type { RunOriginStore } from './run-origin.store';
+import {
   asChatId,
   asCompanyId,
   asCorrelationId,
@@ -102,6 +106,15 @@ export interface GoogleConnectionContinuationRunInput {
   abortSignal?: AbortSignal;
 }
 
+export interface GoogleConnectionContinuationWebRunInput {
+  readonly incomingText: string;
+  readonly originalRequest: string;
+  readonly threadId: string;
+  readonly userExternalId: string;
+  readonly sessionId: string;
+  readonly runContext: RunContext;
+}
+
 export interface GoogleConnectionContinuationWorkerDeps {
   redisUrl: string;
   queueName?: string;
@@ -110,6 +123,9 @@ export interface GoogleConnectionContinuationWorkerDeps {
   identityRepo: ChannelIdentityRepoPort;
   connectionRepo: GoogleConnectionRepo;
   runPi: (input: GoogleConnectionContinuationRunInput) => Promise<string | null>;
+  /** Web uses the same durable intent and queue, but its existing web runtime owns delivery. */
+  runWeb?: (input: GoogleConnectionContinuationWebRunInput) => Promise<string | null>;
+  runOrigins?: Pick<RunOriginStore, 'recall'>;
   channelAdapter: LarkChannelAdapter;
   laneLeaseHolder?: LaneLeaseHolder;
   logger: Logger;
@@ -169,6 +185,11 @@ export class GoogleConnectionContinuationWorker {
     if (!pending.ok) throw pending.error;
     if (!pending.value) return;
 
+    if (isWebConnectionAuthorization(pending.value)) {
+      await this.runClaimed(job.data.intentId, this.deps.channelAdapter);
+      return;
+    }
+
     if (!this.deps.laneLeaseHolder) {
       await this.runClaimed(job.data.intentId, this.deps.channelAdapter);
       return;
@@ -205,6 +226,37 @@ export class GoogleConnectionContinuationWorker {
     try {
       const identity = await this.resolveCurrentIdentity(intent);
       const connection = await this.resolveCurrentConnection(intent);
+      if (isWebConnectionAuthorization(intent)) {
+        if (!this.deps.runWeb || !this.deps.runOrigins) {
+          throw new Error('Web Google continuation is not configured.');
+        }
+        const origin = await this.deps.runOrigins.recall({
+          runId: intent.originalMessageId,
+          companyId: intent.companyId,
+          userId: intent.userId,
+        });
+        if (!origin || origin.channel !== 'web' || !origin.web.sessionId) {
+          throw new Error('The web run origin for this Google continuation is no longer available.');
+        }
+        const result = await this.deps.runWeb(buildWebContinuationInput(intent, identity, origin));
+        if (result === null) {
+          await this.finish(intent, { failureCode: 'continuation_delivery_failed' });
+          this.log.error('google.continuation.web_delivery_failed', {
+            intentId: intent.intentId,
+            connectionId: connection.connectionId,
+          });
+          return;
+        }
+        await this.finish(intent, {
+          runId: intent.continuationIdempotencyKey,
+        });
+        this.log.info('google.continuation.web_completed', {
+          intentId: intent.intentId,
+          connectionId: connection.connectionId,
+          runId: intent.continuationIdempotencyKey,
+        });
+        return;
+      }
       const input = buildContinuationInput(intent, identity, channelAdapter);
       const result = await this.deps.runPi({
         ...input,
@@ -241,6 +293,21 @@ export class GoogleConnectionContinuationWorker {
   }
 
   private async resolveCurrentIdentity(intent: ConnectionContinuationClaim) {
+    if (isWebConnectionAuthorization(intent)) {
+      const resolved = await this.deps.identityRepo.resolveByUserId(
+        intent.userId,
+        intent.companyId,
+      );
+      if (!resolved.ok) throw resolved.error;
+      if (
+        !resolved.value
+        || resolved.value.companyId !== intent.companyId
+        || resolved.value.userId !== intent.userId
+      ) {
+        throw new Error('The member is no longer active in this company.');
+      }
+      return resolved.value;
+    }
     const resolved = await this.deps.identityRepo.resolveByLarkTenantIdentity(
       intent.larkOpenId,
       intent.larkTenantKey,
@@ -283,6 +350,38 @@ export class GoogleConnectionContinuationWorker {
     );
     if (!finished.ok) throw finished.error;
   }
+}
+
+function buildWebContinuationInput(
+  intent: ConnectionContinuationClaim,
+  identity: {
+    readonly aiRole: string;
+    readonly activeDepartmentId?: string;
+    readonly email?: string;
+  },
+  origin: Extract<import('./run-origin.store').RunOrigin, { channel: 'web' }>,
+): GoogleConnectionContinuationWebRunInput {
+  return {
+    incomingText: intent.originalRequest,
+    originalRequest: intent.originalRequest,
+    threadId: origin.web.threadId,
+    userExternalId: origin.web.userExternalId,
+    sessionId: origin.web.sessionId,
+    runContext: {
+      companyId: asCompanyId(intent.companyId),
+      userId: asUserId(intent.userId),
+      companyRole: asCompanyRoleSlug(identity.aiRole),
+      channel: 'web',
+      traceId: intent.continuationIdempotencyKey,
+      requestId: intent.continuationIdempotencyKey,
+      userExternalId: origin.web.userExternalId,
+      chatId: origin.web.threadId,
+      ...(identity.activeDepartmentId
+        ? { departmentId: asDepartmentId(identity.activeDepartmentId) }
+        : {}),
+      ...(identity.email ? { requesterEmail: identity.email } : {}),
+    },
+  };
 }
 
 function buildContinuationInput(

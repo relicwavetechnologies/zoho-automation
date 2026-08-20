@@ -21,6 +21,7 @@ import {
   type MailBriefOnboardingResult,
 } from '../mail-ops/mail-brief-onboarding';
 import type { Result } from '../../shared/result';
+import { isWebConnectionAuthorization } from './connection-authorization-intent';
 
 export interface IssuedGoogleAuthorization {
   outcome: 'issued';
@@ -38,7 +39,13 @@ export interface ExistingGoogleAuthorization {
 }
 
 export type GoogleAuthorizationCompletion =
-  | { outcome: 'connected'; intentId: string; connectionId: string; accountName: string }
+  | {
+      outcome: 'connected';
+      intentId: string;
+      connectionId: string;
+      accountName: string;
+      channel?: 'web';
+    }
   | { outcome: 'denied' }
   | { outcome: 'invalid' }
   | { outcome: 'expired' }
@@ -299,6 +306,7 @@ export class GoogleConnectionAuthorizationService {
       accountName: saved.value.accountEmail
         ?? saved.value.accountName
         ?? 'Google Workspace',
+      ...(isWebConnectionAuthorization(intent) ? { channel: 'web' as const } : {}),
     };
   }
 

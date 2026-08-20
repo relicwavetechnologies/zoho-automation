@@ -23,6 +23,8 @@ export type DecisionOption = {
   tone?: 'default' | 'primary' | 'danger'
   /** Choosing this ends the whole decision, whatever comes after it. */
   settles?: 'approved' | 'rejected'
+  /** An option carrying this opens a URL and settles nothing. */
+  href?: string
 }
 
 export type DecisionQuestion =

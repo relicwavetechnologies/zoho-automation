@@ -775,6 +775,30 @@ describe('decisions — asking the same thing twice', () => {
     await service.ask({ ...base, questions: [FLAVOURS], idempotencyKey: 'mine' });
     assert.equal(calls.created[0].idempotencyKey, 'mine');
   });
+
+  it('refuses a link option that also claims to settle the decision', async () => {
+    const { service, calls } = makeService(null);
+    const outcome = await service.ask({
+      ...base,
+      questions: [{
+        id: 'connect',
+        ask: 'Connect Google',
+        pick: 'one',
+        options: [{
+          value: 'connect',
+          label: 'Connect',
+          href: 'https://accounts.google.com/',
+          settles: 'approved',
+        }],
+      }],
+    });
+    assert.deepEqual(outcome, {
+      ok: false,
+      reason: 'invalid',
+      message: 'A decision link cannot also settle the decision.',
+    });
+    assert.equal(calls.created.length, 0);
+  });
 });
 
 describe('decisions — a press that arrives too late', () => {

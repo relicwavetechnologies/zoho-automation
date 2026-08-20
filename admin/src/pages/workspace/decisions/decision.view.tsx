@@ -254,6 +254,27 @@ function Choices({
     <div className="mt-2 flex flex-col gap-0.5">
       {question.options.map((option) => {
         const on = response?.chose.includes(option.value) ?? false
+        if (option.href) {
+          return (
+            <a
+              key={option.value}
+              href={option.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="-mx-1.5 flex items-center gap-2 rounded-control px-1.5 py-1 text-left
+                         transition-colors hover:bg-fill"
+            >
+              <span
+                className="grid size-4 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-white"
+                style={{ background: markColour(option.tone ?? 'primary', accent) }}
+                aria-hidden
+              >
+                ↗
+              </span>
+              <span className="text-[13px] text-ink-2">{option.label}</span>
+            </a>
+          )
+        }
         return (
           <button
             key={option.value}

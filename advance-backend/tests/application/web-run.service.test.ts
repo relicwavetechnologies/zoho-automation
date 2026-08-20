@@ -50,6 +50,7 @@ const ask = {
   threadId: 'web:thread-1',
   text: 'How much did we invoice in March?',
   userExternalId: 'user-1',
+  sessionId: 'session-1',
 };
 
 describe('web run', () => {
@@ -94,6 +95,7 @@ describe('web run', () => {
     assert.deepEqual(written[0]!.origin.web, {
       threadId: ask.threadId,
       userExternalId: ask.userExternalId,
+      sessionId: ask.sessionId,
       timestamp: written[0]!.origin.web.timestamp,
     });
   });

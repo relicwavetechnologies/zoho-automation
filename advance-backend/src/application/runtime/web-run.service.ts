@@ -375,6 +375,7 @@ export class WebRunService {
         web: {
           threadId: input.threadId,
           userExternalId: input.userExternalId,
+          sessionId: input.sessionId,
           timestamp: incoming.timestamp,
         },
       };

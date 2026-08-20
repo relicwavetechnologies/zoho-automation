@@ -282,7 +282,11 @@ function isQuestion(value: unknown): value is DecisionQuestion {
   if (!Array.isArray(options) || options.length === 0) return false;
   return options.every(option => {
     const entry = asRecord(option);
-    return Boolean(readString(entry['value'])) && Boolean(readString(entry['label']));
+    const href = entry['href'];
+    return Boolean(readString(entry['value']))
+      && Boolean(readString(entry['label']))
+      && (href === undefined || typeof href === 'string')
+      && !(typeof href === 'string' && 'settles' in entry);
   });
 }
 

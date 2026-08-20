@@ -3,10 +3,16 @@ import type { RunContext } from '../../domain/orchestration/run-context';
 import type { ConnectAskOutcome } from './connection-request/connection-request.service';
 import type { GoogleConnectionAuthorizationService } from './google-connection-authorization.service';
 import type { RunOriginStore } from './run-origin.store';
+import type { ScopeGap } from '../../domain/connections/scope-gap';
+import {
+  WEB_CONNECTION_AUTHORIZATION_CHAT_TYPE,
+} from './connection-authorization-intent';
+import type { WebConnectionAskCourier } from './connection-request/web.courier';
 
 export interface BeginGoogleAuthorizationInput {
   readonly toolId?: string;
   readonly toolIds?: readonly string[];
+  readonly gap?: ScopeGap;
   readonly reason: string;
   readonly runContext: RunContext;
 }
@@ -28,6 +34,7 @@ export interface DeliverGoogleConnectCard {
 export interface BeginGoogleAuthorizationDeps {
   readonly runOrigins: Pick<RunOriginStore, 'recall' | 'attachPendingAuthorization'>;
   readonly authorization: Pick<GoogleConnectionAuthorizationService, 'issue'>;
+  readonly webCourier?: () => Pick<WebConnectionAskCourier, 'deliver'> | undefined;
   /**
    * Resolved per call, not captured: the Lark adapter that delivers the card is
    * built long after this closure, and a card that cannot be delivered is the
@@ -58,10 +65,12 @@ export function createBeginGoogleAuthorization(
     // signed runtime lease. Without it there is no conversation to send a card
     // into and no ask to resume, so there is no continuation to offer.
     const origin = await recallOrigin(deps, input.runContext, companyId, userId);
-    if (!origin || origin.channel !== 'lark') {
+    if (!origin) {
       return { status: 'unavailable' as const };
     }
-    const requestedToolIds = input.toolIds?.length
+    const requestedToolIds = input.gap?.toolIds?.length
+      ? [...input.gap.toolIds]
+      : input.toolIds?.length
       ? [...input.toolIds]
       : input.toolId
         ? [input.toolId]
@@ -76,14 +85,28 @@ export function createBeginGoogleAuthorization(
       ...(input.runContext.departmentId
         ? { departmentId: String(input.runContext.departmentId) }
         : {}),
-      larkOpenId: origin.lark.larkOpenId,
-      larkTenantKey: origin.lark.larkTenantKey,
-      chatId: origin.lark.chatId,
-      chatType: origin.lark.chatType,
-      originalMessageId: origin.lark.originalMessageId,
-      ...(origin.lark.rootMessageId ? { rootMessageId: origin.lark.rootMessageId } : {}),
-      replyInThread: origin.lark.replyInThread,
-      ...(origin.lark.groupReplyMode ? { groupReplyMode: origin.lark.groupReplyMode } : {}),
+      ...(origin.channel === 'lark'
+        ? {
+            larkOpenId: origin.lark.larkOpenId,
+            larkTenantKey: origin.lark.larkTenantKey,
+            chatId: origin.lark.chatId,
+            chatType: origin.lark.chatType,
+            originalMessageId: origin.lark.originalMessageId,
+            ...(origin.lark.rootMessageId ? { rootMessageId: origin.lark.rootMessageId } : {}),
+            replyInThread: origin.lark.replyInThread,
+            ...(origin.lark.groupReplyMode ? { groupReplyMode: origin.lark.groupReplyMode } : {}),
+          }
+        : {
+            // The intent table's original address fields are Lark-shaped. A web
+            // target uses the same durable row with an explicit chatType marker;
+            // continuation resolves the member and delivery from the web origin.
+            larkOpenId: origin.web.userExternalId,
+            larkTenantKey: WEB_CONNECTION_AUTHORIZATION_CHAT_TYPE,
+            chatId: origin.web.threadId,
+            chatType: WEB_CONNECTION_AUTHORIZATION_CHAT_TYPE,
+            originalMessageId: String(input.runContext.runtimeRunId),
+            replyInThread: false,
+          }),
       originalRequest: origin.originalRequest,
       requestedToolIds,
     });
@@ -102,7 +125,17 @@ export function createBeginGoogleAuthorization(
         intentId: issued.intentId,
         authorizeUrl: issued.authorizeUrl,
       });
-      if (attached) return { status: 'sent' as const, intentId: issued.intentId };
+      if (attached && origin.channel === 'lark') {
+        return { status: 'sent' as const, intentId: issued.intentId };
+      }
+      if (!attached && origin.channel === 'web') {
+        deps.logger.error('google.authorization.web_origin_store_failed', {
+          intentId: issued.intentId,
+          companyId,
+          userId,
+        });
+        return { status: 'unavailable' as const };
+      }
     } catch (error) {
       deps.logger.error('google.authorization.final_action_store_failed', {
         intentId: issued.intentId,
@@ -110,6 +143,36 @@ export function createBeginGoogleAuthorization(
         userId,
         error: error instanceof Error ? error.message : String(error),
       });
+      if (origin.channel === 'web') return { status: 'unavailable' as const };
+    }
+
+    if (origin.channel === 'web') {
+      const courier = deps.webCourier?.();
+      if (!courier) {
+        deps.logger.error('google.authorization.web_decision_unavailable', {
+          intentId: issued.intentId,
+          companyId,
+          userId,
+        });
+        return { status: 'unavailable' as const };
+      }
+      const delivered = await courier.deliver({
+        gap: input.gap ?? {
+          provider: 'google_workspace',
+          toolId: requestedToolIds[0]!,
+          toolIds: requestedToolIds,
+          missingScopeGroups: [],
+          reason: input.reason.toLowerCase().includes('missing')
+            ? 'insufficient_scope'
+            : 'not_connected',
+        },
+        runContext: input.runContext,
+        intentId: issued.intentId,
+        authorizeUrl: issued.authorizeUrl,
+      });
+      return delivered.status === 'unreachable'
+        ? { status: 'unavailable' as const }
+        : delivered;
     }
 
     const deliver = deps.deliverConnectCard();

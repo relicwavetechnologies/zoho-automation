@@ -302,6 +302,10 @@ export class DecisionService {
     if (questions && questions.length === 0) {
       return { ok: false, reason: 'invalid', message: 'A decision needs at least one question.' };
     }
+    const invalidLink = questions && invalidDecisionLink(questions);
+    if (invalidLink) {
+      return { ok: false, reason: 'invalid', message: invalidLink };
+    }
 
     /* The questions are part of what makes this the same question.
        `createOrReuseActive` reuses any live row with a matching key without
@@ -906,6 +910,25 @@ export class DecisionService {
       .catch(error => this.deps.logger.error('decision.resume_failed', { id: row.id, error: String(error) }));
     return 'resumed';
   }
+}
+
+function invalidDecisionLink(questions: readonly DecisionQuestion[]): string | undefined {
+  for (const question of questions) {
+    if (!('options' in question)) continue;
+    for (const option of question.options) {
+      if (!option.href) continue;
+      if (option.settles) {
+        return 'A decision link cannot also settle the decision.';
+      }
+      try {
+        const url = new URL(option.href);
+        if (url.protocol !== 'https:') return 'A decision link must use HTTPS.';
+      } catch {
+        return 'A decision link must be a valid HTTPS URL.';
+      }
+    }
+  }
+  return undefined;
 }
 
 /** What to tell somebody whose answer will not do. */

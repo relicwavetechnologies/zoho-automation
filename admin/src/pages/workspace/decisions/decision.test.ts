@@ -39,6 +39,12 @@ const CONFIRM = {
     { value: 'no', label: 'Reject', settles: 'rejected' as const },
   ],
 }
+const CONNECT = {
+  id: 'connect',
+  ask: 'Connect Google Workspace',
+  pick: 'one' as const,
+  options: [{ value: 'connect', label: 'Connect Google', href: 'https://accounts.google.com/' }],
+}
 
 describe('choosing', () => {
   it('replaces on a single-choice question', () => {
@@ -93,6 +99,11 @@ describe('completeness', () => {
     const stopped = choose(EMPTY, CONFIRM, 'no')
     assert.equal(settlesEarly([CONFIRM, MIXINS], stopped), true)
     assert.equal(complete([CONFIRM, MIXINS], stopped), true)
+  })
+
+  it('keeps a link option outside the answer and settlement flow', () => {
+    assert.equal(settlesEarly([CONNECT], EMPTY), false)
+    assert.equal(complete([CONNECT], EMPTY), false)
   })
 })
 

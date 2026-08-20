@@ -195,6 +195,10 @@ import {
 } from './application/connections/begin-google-authorization';
 import { ConnectionRequestService } from './application/connections/connection-request/connection-request.service';
 import { createGoogleConnectionRequestAdapter } from './application/connections/connection-request/google.adapter';
+import {
+  createWebConnectionAskCourier,
+  type WebConnectionAskCourier,
+} from './application/connections/connection-request/web.courier';
 import { MailOpsWorker } from './application/mail-ops/mail-ops.worker';
 import { MailOpsConnectionUnavailableError } from './application/mail-ops/mail-ops.types';
 import { GmailHistoryClient } from './infrastructure/google/gmail-history.client';
@@ -498,6 +502,8 @@ export interface Container {
   larkPiRuntime: import('./application/runtime/lark-pi-runtime.service').LarkPiRuntimeService;
   /** The same runtime, driven from the browser. Not a second agent — a second view. */
   webRuns: import('./application/runtime/web-run.service').WebRunService;
+  /** Run-scoped origins used by deferred connection continuations. */
+  runOrigins: RunOriginStore;
   /** Video attached to a conversation: taken in, read, and thrown away. */
   /** Absent when the deployment has no vision or transcription key. */
   conversationVideo: import('./application/conversation-video/conversation-video.service').ConversationVideoService | undefined;
@@ -929,11 +935,13 @@ export async function buildContainer(
     logger,
   });
   let deliverGoogleConnect: DeliverGoogleConnectCard | undefined;
+  let webConnectionAskCourier: WebConnectionAskCourier | undefined;
   const connectionRequest = new ConnectionRequestService(new Map([
     ['google_workspace', createGoogleConnectionRequestAdapter({
       runOrigins,
       authorization: googleConnectionAuthorization,
       deliverConnectCard: () => deliverGoogleConnect,
+      webCourier: () => webConnectionAskCourier,
       logger,
     })],
   ]));
@@ -2839,6 +2847,7 @@ export async function buildContainer(
       await larkAdapter.updateMessageById(messageId, card);
     },
   });
+  webConnectionAskCourier = createWebConnectionAskCourier({ decisions });
   const decisionCardHandler = new LarkDecisionCardHandler(decisions, logger, env.APP_BASE_URL);
   const automationPlanService = new AutomationPlanService({
     toolExecutor: gatewayToolExecutor,
@@ -3027,6 +3036,7 @@ export async function buildContainer(
       ...(conversationVideo ? { videos: conversationVideo } : {}),
       logger: logger.child({ service: 'web-run' }),
     }),
+    runOrigins,
     conversationVideo,
     webRunRegistry: new (await import('./application/runtime/web-run-registry')).WebRunRegistry({
       logger: logger.child({ service: 'web-run-registry' }),

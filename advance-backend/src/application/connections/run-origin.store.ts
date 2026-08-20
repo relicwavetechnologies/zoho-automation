@@ -48,6 +48,8 @@ export interface LarkRunOriginFields {
 export interface WebRunOriginFields {
   readonly threadId: string;
   readonly userExternalId: string;
+  /** The exact web sign-in the run must resume under. */
+  readonly sessionId: string;
   readonly timestamp: string;
 }
 

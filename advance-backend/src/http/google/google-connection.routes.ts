@@ -51,7 +51,9 @@ export function createGoogleConnectionRoutes(deps: {
           res.status(200).send(resultHtml(
             true,
             'Google connected',
-            `Connected as ${completion.accountName}. Divo is continuing your request in Lark now.`,
+            completion.channel === 'web'
+              ? `Connected as ${completion.accountName}. Divo is continuing your request in the web thread now.`
+              : `Connected as ${completion.accountName}. Divo is continuing your request in Lark now.`,
           ));
           return;
         }
