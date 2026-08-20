@@ -17,7 +17,6 @@ import { ApprovalResumerService } from './application/approval/approval-resumer.
 import { parsePersonalGate } from './domain/approval/personal-gate';
 import { AutomationPlanService } from './application/gateway/automation-plan.service';
 import { AutomationPlanExecutor } from './application/gateway/automation-plan.executor';
-import { LarkApprovalCardHandler } from './infrastructure/channels/lark/lark-approval-card.handler';
 import { LarkWorkbookConversionCardHandler } from './infrastructure/channels/lark/lark-workbook-conversion-card.handler';
 import { ConsoleLogger } from './shared/logger';
 import { createPinoLogger } from './shared/pino-logger';
@@ -443,7 +442,6 @@ export interface Container {
   apiKeyExhaustionNotifier: ApiKeyExhaustionNotifierPort;
   // HITL approval
   approvalGate: ApprovalGateService;
-  approvalCardHandler: LarkApprovalCardHandler;
   workbookConversionCardHandler: LarkWorkbookConversionCardHandler;
   approvalResumer: ApprovalResumerService;
   /** The one place Divo asks a person something and hears back. */
@@ -2837,10 +2835,6 @@ export async function buildContainer(
     },
   });
   const decisionCardHandler = new LarkDecisionCardHandler(decisions, logger, env.APP_BASE_URL);
-  const approvalCardHandler = new LarkApprovalCardHandler(
-    decisions,
-    logger.child({ service: 'approval-card-handler' }),
-  );
   const automationPlanService = new AutomationPlanService({
     toolExecutor: gatewayToolExecutor,
     permissions,
@@ -2966,12 +2960,11 @@ export async function buildContainer(
     executionRunLifecycle,
     auditService,
     tokenUsageService,
-  proxyKeyStore,
-  llmProxyService,
-  apiKeyExhaustionNotifier: apiKeyExhaustionFacade,
-  // HITL approval
-  approvalGate,
-    approvalCardHandler,
+    proxyKeyStore,
+    llmProxyService,
+    apiKeyExhaustionNotifier: apiKeyExhaustionFacade,
+    // HITL approval
+    approvalGate,
     workbookConversionCardHandler,
     approvalResumer,
     decisions,

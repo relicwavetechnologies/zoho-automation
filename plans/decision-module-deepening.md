@@ -1,6 +1,6 @@
 # Deepen the Decision module into the one human ask interface
 
-> Status: **All included phases complete; compatibility cleanup pending approval**
+> Status: **All included phases and approved compatibility cleanup complete**
 >
 > Created: **2026-08-20**
 >
@@ -8,7 +8,7 @@
 >
 > Scope: **The module that opens, delivers, reads, and settles human decisions in `advance-backend/`.**
 >
-> Parked: **Desktop app work in `jan/`, Pi runtime work in `divo-pi/`, OAuth/connect resume work, and destructive removal of old Lark card handlers.** This job is about the backend Decision module and the adapters that already call it.
+> Parked: **Desktop app work in `jan/`, Pi runtime work in `divo-pi/`, and OAuth/connect resume work.** This job is about the backend Decision module and the adapters that already call it.
 
 ## 1. Outcome
 
@@ -16,7 +16,7 @@ The Decision module becomes the only backend module that opens and settles a hum
 
 `ApprovalGateService` keeps authority resolution, RBAC policy, connection-owner policy, idempotent execution grants, and exact-action replay. `BusinessActionService` keeps requester-owned execution. `AutomationPlanService` keeps batch preflight and execution. The Decision module owns the common human-ask mechanics behind one interface.
 
-After this work, new Lark cards for the included asks use `decision_answer`, web and Desktop continue to read the same rows through `DecisionService.open`, and old `approval_decision` cards remain answerable only as compatibility traffic.
+After this work, new Lark cards for the included asks use `decision_answer`, web and Desktop continue to read the same rows through `DecisionService.open`, and the approved cleanup removes the old actionable Lark approval-card compatibility surface.
 
 ## 2. Scope boundary
 
@@ -25,7 +25,7 @@ After this work, new Lark cards for the included asks use `decision_answer`, web
 - `tool_action` manager approvals opened by `ApprovalGateService.check`.
 - `business_action` requester confirmations opened by `BusinessActionService.prepare`.
 - `automation_script_plan` approvals opened by `AutomationPlanService.create`.
-- Lark card clicks for both new `decision_answer` cards and already-delivered old `approval_decision` cards.
+- Lark card clicks for new `decision_answer` cards.
 - Web and Desktop decision routes that already go through `DecisionService`.
 - Focused tests around the Decision module, approval flow, business actions, automation plans, and surface parity.
 
@@ -35,7 +35,7 @@ After this work, new Lark cards for the included asks use `decision_answer`, web
 - OAuth connect asks and `advance-backend/src/application/connections/google-connection-continuation.ts`. The connect plan owns that work.
 - `jan/`. Installed Desktop clients keep using `desktop-approvals.routes.ts`; do not change the app.
 - `divo-pi/`. Pi is the runtime layer, not the authority for approvals or decisions.
-- Deleting `lark-approval-card.handler.ts` or `approval-card-builder.ts`. Old cards may still be in flight. Stop and ask Abhishek before destructive cleanup.
+- Reintroducing a separate manager-approval Lark card handler. The approved cleanup has removed that compatibility path.
 - Moving RBAC, approval authority, connection policy, or execution grants into the Decision module. That would create duplicate authority.
 - Database schema changes. The existing `RuntimeApproval` row shape is enough for this work.
 
@@ -49,7 +49,7 @@ After this work, new Lark cards for the included asks use `decision_answer`, web
 
 **D4. New Lark cards use `decision_answer`.** Reason: `LarkDecisionCardHandler` is already the thin adapter over `DecisionService.answerOne`, while `LarkApprovalCardHandler` repeats load, auth, expiry, resolve, card update, and resume.
 
-**D5. Old `approval_decision` cards remain supported during the migration.** Reason: delivered cards can outlive a deploy. Compatibility is not dead code until no old card can still be clicked and Abhishek approves cleanup.
+**D5. Old approval-card compatibility was temporary.** Reason: delivered cards can outlive a deploy, so the compatibility adapter stayed during migration. Abhishek has now approved the final cleanup, so the old actionable manager-approval card path is removed instead of preserved indefinitely.
 
 **D6. `DecisionContinuation` is not widened.** Reason: native decisions intentionally accept only `{ kind: 'none' }`; legacy rows already project to `{ kind: 'run' }` because they carry executable payloads.
 
@@ -57,9 +57,7 @@ After this work, new Lark cards for the included asks use `decision_answer`, web
 
 ## 4. Open questions
 
-None block phases 1 to 4.
-
-One cleanup question remains parked: after the migrated producers have shipped and old card TTL has passed, may the compatibility-only `approval_decision` handler and old card builders be removed? Answered by Abhishek only, and only after the build log proves no included producer still emits old cards.
+None.
 
 ## 5. Current state
 
@@ -175,7 +173,7 @@ The adapter seam is `DecisionCourier`. It may need a richer failure result than 
 
 - Do not weaken the old open-id or tenant check.
 - Do not move `approvalResumesAutomatically` logic into the handler. `DecisionService.continue` already owns that choice.
-- Do not remove `LarkApprovalCardHandler`; it still handles delivered old cards.
+- ~~Do not remove `LarkApprovalCardHandler`; it still handles delivered old cards.~~ Superseded by phase 6 after Abhishek approved the old-card compatibility cleanup.
 
 **Gate.** The phase closes only when the Decision tests and approval HITL tests in section 9 pass, and code inspection shows `LarkApprovalCardHandler` no longer calls `atomicResolve` or `resumer.resume` directly.
 
@@ -298,6 +296,20 @@ The adapter seam is `DecisionCourier`. It may need a richer failure result than 
 - Do not touch workbook conversion, knowledge review, or group-mode card branches unless a migrated producer requires it.
 
 **Gate.** The phase closes only when all section 9 commands pass and code inspection shows the included producers no longer emit `approval_decision`.
+
+### Phase 6 — remove the approved old card compatibility surface ✅ *2026-08-20*
+
+**Goal.** Remove the old actionable manager-approval Lark card path after Abhishek approval, while keeping the current approval resolution card used by `DecisionService.onResolvedCard`.
+
+**Files.**
+
+- `advance-backend/src/infrastructure/channels/lark/lark-approval-card.handler.ts` - deleted.
+- `advance-backend/src/infrastructure/channels/lark/lark.webhook.routes.ts` - removed the fallback handler dispatch.
+- `advance-backend/src/composition.ts` and `advance-backend/src/server.ts` - stopped constructing and passing the deleted handler.
+- `advance-backend/src/application/approval/approval-card-builder.ts` - removed old actionable builders, kept resolution rendering.
+- `advance-backend/tests/approval/hitl-flow.test.ts` and `advance-backend/tests/approval/approval-card-builder.test.ts` - removed compatibility-only tests and kept current Decision path coverage.
+
+**Gate.** The phase closes only when `rg` finds no production old-card handler or builder reference, focused approval/decision/automation tests pass, and backend typecheck passes.
 
 ## 8. Primary files
 
@@ -455,13 +467,13 @@ from `## Next action`.
 - 2026-08-20: Cold review first identified the callback recovery wait. The fire-and-forget correction and regression test were independently rechecked by the same reviewer, who found no remaining verified blockers and returned `ship`.
 - 2026-08-20: Post-review correction: `LarkDecisionCardHandler` now uses `SettleOutcome.followUp`, so gateway approvals tell the requester to retry the exact action instead of claiming Divo is continuing. Regression coverage lives in `tests/infrastructure/lark/lark-decision-card.handler.test.ts`.
 - 2026-08-20: Post-review correction: after a successful `setDecisionMessageId` checkpoint, `DecisionService.ask` returns a local row reflecting `pending` and the stored message id. The Decision ask test now asserts the immediate outcome is not stale.
+- 2026-08-20: Final cleanup approved by Abhishek. Deleted the old Lark approval card handler, removed webhook/composition/server wiring for it, removed the old actionable approval-card builders, and kept only the approval resolution card still used by the current Decision path.
 
 Found, out of scope:
 
-- Compatibility-only `approval_decision` builders and handler remain until Abhishek approves cleanup after old-card TTL and the build log proves no included producer emits them.
 - `plans/scope-gap-connect-ask.md`, OAuth/connect continuation, Desktop app work, and Pi work remain parked.
 - The shared `dev` tip also contains landing/onboarding UI and schema-backed personal-approvals work in separate commits. This follow-up keeps the decision fixes isolated and does not rewrite shared history; review or merge those unrelated commits separately.
 
 ## 12. Next action
 
-No implementation phase remains. Await Abhishek's decision on removing the compatibility-only `approval_decision` handler and builders after the old-card TTL.
+No Decision-module implementation phase remains.
