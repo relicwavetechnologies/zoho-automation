@@ -53,39 +53,12 @@ const KNOWN: readonly Known[] = [
    by the word "Sheets". Sorted once at module load rather than per keystroke. */
 const BY_LENGTH: readonly Known[] = [...KNOWN].sort((a, b) => b.name.length - a.name.length)
 
-/**
- * The colour a mention wears, per app.
- *
- * Taken from the real marks in `components/brand-icons.tsx` rather than
- * invented, so a Lark pebble is Lark's blue and a Zoho Books pebble is Zoho's.
- * Where a logo is genuinely several colours, this picks the one that
- * identifies it fastest *and* keeps it apart from its neighbours: Drive gets
- * its yellow rather than its green, because Sheets already owns green and two
- * green pebbles side by side say less than one green and one yellow.
- *
- * Null for an app with no vendor colour. Those fall back to plain ink, which is
- * the same rule `tools.tsx` uses for Divo's own capabilities.
+/*
+ * The colour a mention wears now lives in `pebble.ts`, because a link in the
+ * transcript and a step in the landing reel wear the same one. Re-exported here
+ * so a caller that already has a mention in hand does not have to know that.
  */
-const TINT: Partial<Record<NonNullable<ToolKey>, string>> = {
-  gmail: '#EA4335',       // the red in the Gmail M
-  sheets: '#0F9D58',      // Sheets green
-  drive: '#FFBA00',       // Drive's yellow arm
-  calendar: '#4285F4',    // Calendar blue
-  docs: '#2684FC',        // Docs blue
-  zohoBooks: '#226DB4',   // Zoho blue
-  zohoCrm: '#E42527',     // Zoho red
-  lark: '#4C6FFB',        // Lark blue
-  airtable: '#18BFFF',    // Airtable cyan, not its red — Gmail has the red
-  canva: '#7D2AE8',       // Canva purple
-  semrush: '#FF642D',     // Semrush orange
-  shopify: '#95BF47',     // Shopify green
-}
-
-/** The app's own colour, or null for one that has none. */
-export function tintFor(key: ToolKey | null): string | null {
-  if (!key) return null
-  return TINT[key] ?? null
-}
+export { tintFor } from './pebble'
 
 export type Run =
   | { kind: 'text'; text: string }

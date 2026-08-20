@@ -10,7 +10,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, ArrowUpRight, Check, ChevronDown, Plus } from 'lucide-react'
 import { ToolMark, tool, type ToolKey } from './tools'
-import { splitMentions, tintFor } from './mentions'
+import { splitMentions } from './mentions'
+import { tintFor } from './pebble'
+import './pebble.css'
 import './mentions.css'
 import { FileChips, RejectionNote } from './attach.view'
 import { namedForClipboard, type Rejection } from './attach'
@@ -464,8 +466,8 @@ export function Composer({
                 ) : (
                   <span
                     key={index}
-                    className="cmp-mention"
-                    data-marked={run.key ? 'true' : undefined}
+                    className="pebble cmp-mention"
+                    data-brand={tintFor(run.key) ? 'true' : undefined}
                     /* Carries the space after it, so the pebble has a right
                        side to pad with. See `mentions.css`. */
                     data-tail={run.text.endsWith(' ') ? 'true' : undefined}
@@ -473,7 +475,7 @@ export function Composer({
                        here: the tint has to be blended against whichever theme
                        is on, and `color-mix` in the stylesheet knows that and
                        this does not. */
-                    style={tintFor(run.key) ? { ['--cmp-brand' as string]: tintFor(run.key) } : undefined}
+                    style={tintFor(run.key) ? { ['--pebble-brand' as string]: tintFor(run.key) } : undefined}
                   >
                     {run.key ? (
                       <span className="cmp-mention-mark">

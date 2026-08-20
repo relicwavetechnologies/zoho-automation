@@ -45,47 +45,31 @@
 
 /* ── One app ──────────────────────────────────────────── */
 
+/*
+ * The colour comes from `.pebble` in `pebble.css`, which this element also
+ * carries. Everything below is the part a mention cannot share: its box.
+ *
+ * Vertical padding is free and horizontal padding is not, so they are not the
+ * same number and cannot be.
+ *
+ * On an inline element, vertical padding paints outside the line box without
+ * moving anything, so the pebble can be as tall as it needs. Horizontal padding
+ * would widen the run and slide every character after it out from under the
+ * caret, so the sides get a spread shadow instead — and that is capped by the
+ * single space between two adjacent mentions, 3.8px at this size. Whatever the
+ * sides take, they take from that gap: at 1.9px a side the two pebbles meet
+ * exactly and read as one long pebble with two logos in it, which is where this
+ * started. 1.5 is the most that still leaves daylight.
+ *
+ * A link in the transcript has none of these constraints and is simply padded.
+ * That difference is the reason `.pebble` defines a colour and not a box.
+ */
 .cmp-mention {
   position: relative;
-  /* Grown with the padding: the same radius on a taller pebble reads as a box
-     with rounded corners rather than as a pebble. */
-  border-radius: 6px;
-  background: var(--cmp-pebble);
-  /* Vertical padding is free: on an inline element it paints outside the line
-     box without moving anything. Horizontal padding is not free — it would
-     widen the run and slide every character after it out from under the caret
-     — so the sides get a spread shadow instead, kept narrow enough that two
-     mentions one space apart do not touch. */
-  /*
-   * Vertical padding is free and horizontal padding is not, so they are not the
-   * same number and cannot be.
-   *
-   * On an inline element, vertical padding paints outside the line box without
-   * moving anything, so the pebble can be as tall as it needs. Horizontal
-   * padding would widen the run and slide every character after it out from
-   * under the caret, so the sides get a spread shadow instead — and that is
-   * capped by the single space between two adjacent mentions, 3.8px at this
-   * size. Whatever the sides take, they take from that gap: at 1.9px a side the
-   * two pebbles meet exactly and read as one long pebble with two logos in it,
-   * which is where this started. 1.5 is the most that still leaves daylight.
-   */
   padding: 3px 0;
-  box-shadow: 0 0 0 1.5px var(--cmp-pebble);
-  --cmp-pebble: color-mix(in oklab, var(--bui-ink) 11%, transparent);
+  box-shadow: 0 0 0 1.5px var(--pebble-tint);
 }
 
-/*
- * Each app in its own colour.
- *
- * `--cmp-brand` is set per mention from `tintFor`, and mixed here rather than
- * there because the amount depends on the theme: 18% of Gmail red over a light
- * canvas is a tint, and the same 18% over a dark one is nearly invisible.
- *
- * A single shared accent was the first attempt and it was worse than no colour
- * at all — four orange pebbles in a row look like one control that has been
- * repeated, where red, green and blue read instantly as three different
- * services.
- */
 /*
  * A pebble that swallowed a space gives a sliver of it back.
  *
@@ -100,10 +84,10 @@
   background-color: transparent;
   background-image: linear-gradient(
     to right,
-    var(--cmp-pebble) calc(100% - 1.7px),
+    var(--pebble-tint) calc(100% - 1.7px),
     transparent 0
   );
-  box-shadow: -1.5px 0 0 0 var(--cmp-pebble);
+  box-shadow: -1.5px 0 0 0 var(--pebble-tint);
 }
 
 /*
@@ -116,18 +100,6 @@
  */
 .cmp-mention[data-tail] + .cmp-mention {
   box-shadow: none;
-}
-
-.cmp-mention[data-marked='true'] {
-  --cmp-pebble: color-mix(in oklab, var(--cmp-brand, var(--bui-brand)) 18%, transparent);
-}
-
-/* `.dark` on the root element, which is what `use-theme` actually sets — and
-   the only thing worth keying off. A `prefers-color-scheme` query would boost
-   the tint for somebody who chose light mode on a dark machine, which is the
-   one reader who has said out loud that they do not want it. */
-.dark .cmp-mention[data-marked='true'] {
-  --cmp-pebble: color-mix(in oklab, var(--cmp-brand, var(--bui-brand)) 26%, transparent);
 }
 
 /*

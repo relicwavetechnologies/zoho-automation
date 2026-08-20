@@ -1,0 +1,64 @@
+/*
+ * The pebble.
+ *
+ * One tinted, rounded base, used wherever an app or a site is named: a mention
+ * in the composer, a link in the transcript, a step in the landing reel. The
+ * look is defined once here so those three cannot drift; what each of them adds
+ * on top is its own geometry, and only its geometry.
+ *
+ * The split that matters is between the *colour*, which is shared, and the
+ * *box*, which is not. A mention lives on a mirror behind a textarea and may
+ * never change a character's width, so it has no horizontal padding and gets its
+ * sides from a shadow. A link in prose has no such constraint and can simply be
+ * padded. Forcing those two to share a box would mean giving the link the
+ * mention's compromises for no reason.
+ */
+
+.pebble {
+  /* The neutral, for something with no brand of its own. */
+  --pebble-tint: color-mix(in oklab, var(--bui-ink) 11%, transparent);
+  border-radius: 6px;
+  background: var(--pebble-tint);
+}
+
+/*
+ * The branded case.
+ *
+ * `--pebble-brand` is set per element from `tintFor`, and the mixing happens
+ * here rather than there because the amount depends on the theme: 18% of Gmail
+ * red over a light canvas is a tint, and the same 18% over a dark one is nearly
+ * invisible.
+ */
+.pebble[data-brand] {
+  --pebble-tint: color-mix(in oklab, var(--pebble-brand, var(--bui-brand)) 18%, transparent);
+}
+
+/*
+ * `.dark` on the root element, which is what `use-theme` actually sets — and the
+ * only thing worth keying off. A `prefers-color-scheme` query would boost the
+ * tint for somebody who chose light mode on a dark machine, which is the one
+ * reader who has said out loud that they do not want it.
+ */
+.dark .pebble[data-brand] {
+  --pebble-tint: color-mix(in oklab, var(--pebble-brand, var(--bui-brand)) 26%, transparent);
+}
+
+/*
+ * A pebble you can click.
+ *
+ * Only links take this. A mention is not a control — it is a word with a
+ * background — and giving it a hover state would promise something the composer
+ * does not do.
+ */
+.pebble-link {
+  text-decoration: none;
+  transition: background-color .12s ease, color .12s ease;
+}
+
+.pebble-link:hover {
+  --pebble-tint: color-mix(in oklab, var(--pebble-brand, var(--bui-ink)) 30%, transparent);
+}
+
+.dark .pebble-link:hover {
+  --pebble-tint: color-mix(in oklab, var(--pebble-brand, var(--bui-ink)) 40%, transparent);
+}

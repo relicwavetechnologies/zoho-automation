@@ -24,6 +24,8 @@ import {
 import { ToolMark } from '../tools'
 import { SiteBrandMark } from '@/components/admin/brand-mark'
 import { markForUrl } from '../tool-identity'
+import { tintForLink } from '../pebble'
+import '../pebble.css'
 import {
   fileNameOf, initialOf, isBareLink, isNavigable, targetOf, tintOf,
   type FileFamily, type Source,
@@ -128,13 +130,21 @@ export function SourceLink({
 
   if (target.kind === 'site' && isBareLink(text, href)) {
     /* An address printed in full is the least readable thing on a line. The
-       chip says the same thing in the width of a word. */
+       chip says the same thing in the width of a word.
+
+       Tinted by the site it points at, using the same pebble the composer draws
+       a mention with — so a Google Sheet named in what you typed and the same
+       sheet linked in the answer are recognisably one thing. Unlike the
+       composer's, this pebble sits in ordinary prose with no mirror behind it,
+       so it can have real padding instead of a shadow. */
     return (
       <a
         href={href}
         target="_blank"
         rel="noreferrer noopener"
-        className="mx-[1px] inline-flex max-w-full translate-y-[2px] items-center gap-1 rounded-[5px] bg-fill px-1.5 py-[1px] align-baseline text-[11.5px] text-ink-2 no-underline transition-colors duration-100 hover:bg-field hover:text-ink"
+        className="pebble pebble-link mx-[1px] inline-flex max-w-full translate-y-[2px] items-center gap-1.5 px-[5px] py-[1px] align-baseline text-[11.5px] text-ink-2 hover:text-ink"
+        data-brand="true"
+        style={{ ['--pebble-brand' as string]: tintForLink(markForUrl(href), target.domain) }}
       >
         <SiteMark href={href} domain={target.domain} size={12} />
         <span className="truncate font-mono">{target.domain}</span>
@@ -210,7 +220,10 @@ function FileLink({ href, target }: {
         window.clearTimeout(settle.current)
         settle.current = window.setTimeout(() => setCopied(false), 1_600)
       }}
-      className={`mx-[1px] inline-flex max-w-full translate-y-[2px] items-center gap-1 rounded-[5px] bg-fill px-1.5 py-[1px] align-baseline text-[11.5px] no-underline transition-colors duration-100 hover:bg-field ${LINK_INK}`}
+      /* The same pebble as a site chip, and deliberately without a brand
+         colour. Colour here means *which service*, so a file that is not one
+         stays neutral rather than borrowing a hue that would imply it is. */
+      className={`pebble pebble-link mx-[1px] inline-flex max-w-full translate-y-[2px] items-center gap-1.5 px-[5px] py-[1px] align-baseline text-[11.5px] ${LINK_INK}`}
     >
       {copied
         ? <Check size={12} aria-hidden className="shrink-0 text-[var(--bui-green)]" />
