@@ -69,6 +69,12 @@ export async function executeGatewayRequest(
 			op: "connections.resume",
 			departmentId: request.departmentId,
 			payload: { askId: outcome.askId },
+			// Carried, not omitted. Under a Pi runtime lease the backend checks
+			// every call's execution against the signed run and thread, so a
+			// resume without it is refused as provenance that does not match —
+			// after the member has already connected, which is the worst moment
+			// to lose the run.
+			...(request.execution ? { execution: request.execution } : {}),
 		}, fetch, { signal: ctx.signal });
 	}
 
