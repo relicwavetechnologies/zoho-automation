@@ -11,7 +11,8 @@
  * and it made the console look like a demo of itself.
  */
 import type { ReactNode } from 'react'
-import { Diamond, Gauge, Moon, ShieldCheck, Sun, Users } from 'lucide-react'
+import { Gauge, Moon, ShieldCheck, Sun, Users } from 'lucide-react'
+import { DivoMark } from '@/components/admin/divo-mark'
 import { useTheme } from '@/lib/use-theme'
 
 type AuthCardProps = {
@@ -29,7 +30,7 @@ export function AuthCard({ title, description, children }: AuthCardProps) {
         <aside className="ws-auth-aside">
           <div>
             <div className="brand" style={{ padding: '0 0 40px' }}>
-              <span className="mark"><Diamond size={13} fill="currentColor" strokeWidth={0} /></span>
+              <span className="mark"><DivoMark size={15} /></span>
               <b className="display">Divo</b>
             </div>
             <h1>The console behind the agent.</h1>
@@ -77,7 +78,7 @@ export function AuthCard({ title, description, children }: AuthCardProps) {
           <div className="ws-auth-box">
             {/* Shown only where the aside is hidden, so the page still identifies itself. */}
             <div className="brand" style={{ padding: 0 }}>
-              <span className="mark"><Diamond size={13} fill="currentColor" strokeWidth={0} /></span>
+              <span className="mark"><DivoMark size={15} /></span>
               <b className="display">Divo</b>
             </div>
             <h2>{title}</h2>

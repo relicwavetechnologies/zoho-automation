@@ -17,11 +17,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Activity, Building2, Check, ChevronsUpDown, CircleCheck, CircleDashed, Diamond, FileClock,
+  Activity, Building2, Check, ChevronsUpDown, CircleCheck, CircleDashed, FileClock,
   Grid2X2, LogOut, Mail, Minus, Moon, MoreHorizontal, PanelLeft,
   PanelLeftClose, Pencil, Plus, Search, Settings, Sun, Trash2, Users, UserSquare,
   Waypoints, type LucideIcon,
 } from 'lucide-react'
+import { DivoMark } from '@/components/admin/divo-mark'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { notify } from '@/lib/notify'
 import { useManagedDepartments } from '@/pages/workspace/data/use-team'
@@ -258,7 +259,7 @@ export function WorkspaceShell() {
                 <Avatar name={session.name} email={session.email} src={session.avatarUrl} size={32} />
               ) : (
                 <span className="ws-scope-ic" data-tone="brand">
-                  <Diamond size={13} fill="currentColor" strokeWidth={0} />
+                  <DivoMark size={15} />
                 </span>
               )}
               <span className="ws-scope-txt">
