@@ -57,7 +57,7 @@ When this is finished, `divo_artifact` is no longer a web-only tool. Both surfac
 
 **Q1 — Whose artifact is a document authored in a shared Lark group chat?** Answer needed from: Abhishek. Blocks: the second half of Phase 4 only. `divo-pi/divo/runtime.mjs:123` shows shared Lark turns are run-scoped and lose the recall tools; artifacts are keyed `[companyId, userId, artifactId]` (`advance-backend/prisma/schema.prisma:3154`), so a group-chat artifact would be filed against whoever sent the message. That is probably right, but it means a document made in a group chat appears in the asker's private web panel. Land Phase 4 for direct messages first and ask before widening it.
 
-**Q2 — Does the `divo@emiactech.com` Vercel account exist yet, and is it a personal account or a team?** Answer needed from: Abhishek. Blocks: Phase 2's gate, which needs a real token. The API takes an optional `teamId` query parameter, and whether it is required changes one line in the adapter.
+~~**Q2 — Does the `divo@emiactech.com` Vercel account exist yet, and is it a personal account or a team?**~~ **Resolved 2026-08-21.** The account exists and is personal, not a team. `advance-backend/.env` has `VERCEL_TOKEN` set, `VERCEL_PROJECT_NAME=divo-artifacts`, and an empty `VERCEL_TEAM_ID`; the adapter trims the value and omits the `teamId` query parameter entirely when it is empty.
 
 ## 5. Current state
 
@@ -161,7 +161,7 @@ export interface PublishedDocumentPort {
 
 **Gate.** `cd advance-backend && node --import tsx --test 'tests/domain/artifact-*.test.ts'` passes, including a parity test that fails if you change one character of either copy. Prove it fails: add a space to the backend copy, run it, see red, take the space out.
 
-### Phase 2 — Publish a page to Vercel
+### Phase 2 — Publish a page to Vercel ✅ *2026-08-21*
 
 **Goal.** A hard-coded string of HTML becomes a live URL.
 
@@ -393,12 +393,13 @@ from `## Next action`.
 - The implementation stayed byte-for-byte for the existing panel path; only the required import and signature/placeholder additions differ. No parked files were opened or changed.
 - Gate: `node --import tsx --test 'tests/domain/artifact-*.test.ts'` passed with 24 tests. The required one-space mutation made the parity gate fail (exit 1), then restoring it returned the gate to 24 passing tests (exit 0).
 
-### 2026-08-21 — Phase 2 in progress
+### 2026-08-21 — Phase 2
 
 - Added `PublishedDocumentPort`, `VercelPublisher`, and the three optional `VERCEL_*` env fields. The adapter sends one `POST /v13/deployments` with an inline `index.html`, `projectSettings: { framework: null }`, `target: 'production'`, the artifact slug as `name`, and the configured project as `project`; `teamId` is present only when configured. The response is normalized to an HTTPS URL and deployment id.
-- Re-read the deployment contract on 2026-08-21. The direct docs page returned an unsupported content type in the web reader, so I cross-checked the current official [Vercel SDK deployment reference](https://github.com/vercel/sdk/blob/main/docs/sdks/deployments/README.md), which still documents inline small files, `project`, `projectSettings`, `target`, and optional `teamId`.
-- Focused gate: `node --import tsx --test 'tests/infrastructure/vercel-publisher.test.ts'` passed with 8 tests. The real-token smoke gate is not run because Q2 is still unanswered. `pnpm typecheck` remains red only at the byte-identical Phase 1 chart copy's unchecked indexed accesses (`chart-geometry.ts:118-119,144`) under backend strictness; changing that port would violate the Phase 1 byte gate.
+- Re-read the specified [Vercel REST deployment reference](https://vercel.com/docs/rest-api/reference/endpoints/deployments/create-a-new-deployment) on 2026-08-21. The request shape matches: `files: [{ file, data }]`, `projectSettings: { framework: null }`, and `target: 'production'`; the empty personal-account `teamId` is omitted. A temporary `public` field was rejected by Vercel as an additional property and was removed, leaving the documented body unchanged.
+- The first deployment used `projectSettings` and did not return a `missing_project_settings` error. Vercel returned `target: production`, `readyState: READY`, `readySubstate: PROMOTED`, `public: false`, and the generated deployment URL. The dedicated project had Vercel Authentication enabled, so that URL initially returned 302 to SSO; the project was updated through the documented project API with `ssoProtection: null`, after which the same deployment URL was publicly reachable.
+- Gate: URL `https://divo-artifacts-mrjdmhoak-divo-2600s-projects.vercel.app/`; `CURL_STATUS=200`; `<h1>hello</h1>` was present. Focused adapter gate `node --import tsx --test 'tests/infrastructure/vercel-publisher.test.ts'` passed with 9 tests, including the explicit empty-team query case. `pnpm typecheck` remains red only at the byte-identical Phase 1 chart copy's unchecked indexed accesses (`chart-geometry.ts:118-119,144`) under backend strictness; changing that port would violate the Phase 1 byte gate.
 
 ## 12. Next action
 
-Answer Q2: confirm whether `divo@emiactech.com` has a Vercel account and whether it is personal or a team, then run Phase 2's real-token smoke gate with the matching `teamId` choice.
+Start Phase 3. Implement the standalone document wrapper branch and the password gate, then run Phase 3's browser gate against a real stored artifact.

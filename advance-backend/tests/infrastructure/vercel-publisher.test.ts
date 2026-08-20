@@ -87,6 +87,19 @@ describe('VercelPublisher', () => {
     assert.equal(new URL(calls[0]!.url).searchParams.get('teamId'), 'team_123');
   });
 
+  it('omits the team query entirely when the configured team id is empty', async () => {
+    const { publisher, calls } = makePublisher(
+      new Response(JSON.stringify({ id: 'dpl_personal', url: 'personal-report.vercel.app' }), { status: 200 }),
+      { teamId: '' },
+    );
+
+    await publisher.publish(request());
+
+    const url = new URL(calls[0]!.url);
+    assert.equal(url.toString(), 'https://api.vercel.com/v13/deployments');
+    assert.equal(url.search, '');
+  });
+
   it('fails without a token and never makes a request', async () => {
     const { publisher, calls } = makePublisher(
       new Response(JSON.stringify({ id: 'never' }), { status: 200 }),
