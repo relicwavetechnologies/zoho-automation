@@ -1017,6 +1017,32 @@ from `## Next action`.
 
 ## 11. Build log
 
+**2026-08-21. The poll looked for the wrong thing.** Second live run: the card
+now disappears on its own, so the withdraw works. The answer still did not
+appear.
+
+The poll was asking "is a run in flight" and joining one if so. Two independent
+reasons that can never catch a continuation. First, it is too fast: measured
+from the message rows, the continuation writes its context and its answer in
+**679ms**. A six-second poll arrives long after it is over, and a one-second
+poll would still usually miss. Second, `GET /threads/:id` reports `running` from
+an in-memory registry of runs started through the web chat route, and a
+continuation is started by the OAuth worker calling the web runtime directly, so
+it never appears there at all.
+
+The right question is not "is something running" but "is there anything here I
+have not shown". Turns are read from the conversation, which every writer goes
+through, and they carry `sequence` straight from `RuntimeConversationMessage`.
+The poll now keeps the newest sequence it has rendered and redraws the settled
+history when the server has more. The live-run join is kept for the case where a
+run genuinely is catchable, because that streams rather than arriving whole.
+
+One wrinkle worth recording: a locally watched run also writes turns the poll
+would then see as news, and redrawing would replace the exchange this browser
+had just rendered, visibly changing the work log a few seconds after every run.
+So when a local run settles, the baseline is moved past its turns with a quiet
+fetch that touches only the ref.
+
 **2026-08-21. First live web run, and the two defects it found.** Abhishek ran
 the real thing: asked for Drive and Sheets, got the Connect card with the Google
 mark and the right two scopes, connected, and then nothing appeared to happen.

@@ -364,6 +364,10 @@ export function useThreadRun(input: {
      is a second reader of one stream. */
   const currentToken = useRef(input.token)
   currentToken.current = input.token
+  /* The newest turn this thread has been shown, by sequence. The idle poll
+     compares the server against it to notice turns that arrived from somewhere
+     other than this browser. */
+  const lastSeenSequence = useRef(0)
 
   /**
    * Consume a run's events, however it was reached.
@@ -452,6 +456,7 @@ export function useThreadRun(input: {
       const trailingAsk = live !== undefined && lastTurn?.role === 'user'
 
       setTurns(trailingAsk ? page.slice(0, -1) : page)
+      lastSeenSequence.current = page[page.length - 1]?.sequence ?? 0
       setHasEarlier(found?.thread.hasEarlier ?? false)
       setTitle(found?.thread.title?.trim() || null)
       setLoading(false)
@@ -492,29 +497,37 @@ export function useThreadRun(input: {
   }, [input.threadId, input.token, consume])
 
   /*
-   * Finding a run this reader did not start.
+   * Finding work this reader did not start.
    *
    * The effect above joins whatever is running when the thread opens, and then
    * it is done: it only re-runs when the thread or the token changes. That is
-   * correct for the ordinary case, where every run in a thread began with
-   * somebody typing in it, and the stream that answers is the one they opened.
+   * correct while every run in a thread begins with somebody typing in it.
    *
-   * It is wrong the moment a run can begin somewhere else. A Google connect ask
-   * ends its own run when the card goes out, so by the time OAuth completes in
+   * It is wrong the moment a run can begin elsewhere. A Google connect ask ends
+   * its own run when the card goes out, so by the time OAuth completes in
    * another tab this hook is idle. The continuation starts a *new* run, writes
-   * its answer into this very conversation, and nothing here is listening — the
-   * answer sits in the thread until the reader happens to reload. Scheduled work
-   * and Lark-initiated runs have the same blind spot.
+   * its answer into this very conversation, and nothing here is listening.
    *
-   * So: while nothing is running, ask the server every few seconds whether
-   * something is. `getThread` already reports a live run, and joining one is the
-   * same `consume(watch(...))` the other two paths use, which is the whole
-   * reason this is short.
+   * What this watches for is **new turns, not a live run**. The first version
+   * looked for a run in flight and almost never found one: a continuation run
+   * writes its ask and its answer in under a second — 679ms, measured — so a
+   * poll on any sane interval arrives after it is over. Asking "is something
+   * running" answers "no" and misses the whole exchange. Asking "is there
+   * anything here I have not shown" catches it however brief it was.
    *
-   * Two things keep it cheap. It does not run at all while a run is open, which
-   * is when the stream is already doing this job. And it skips while the tab is
-   * hidden, with an immediate check when it comes back — which is exactly the
-   * moment that matters here, because the reader was last seen leaving for
+   * There is a second, independent reason the same question fails: the server
+   * reports `running` from an in-memory registry of runs started through the
+   * web chat route, and a continuation is started by the OAuth worker calling
+   * the web runtime directly. It never appears there at all. Turns are read
+   * from the conversation itself, which every writer goes through.
+   *
+   * A live run is still joined when one happens to be caught, because that
+   * streams rather than appearing all at once.
+   *
+   * Two things keep it cheap: it does not run while a run is open, which is
+   * when the stream already does this job, and it skips while the tab is
+   * hidden, with an immediate check when it comes back. That last part is the
+   * one that matters most here, because the reader was last seen leaving for
    * Google's consent screen.
    */
   useEffect(() => {
@@ -523,30 +536,47 @@ export function useThreadRun(input: {
     const token = input.token
     let stopped = false
 
-    const joinAnyRun = async (): Promise<void> => {
+    const check = async (): Promise<void> => {
       if (stopped || document.hidden) return
       const controller = new AbortController()
       const found = await getThread(threadId, token, controller.signal).catch(() => null)
-      // Every reason to walk away: the reader left, switched threads, or started
+      // Every reason to walk away: the reader left, switched threads, or began
       // their own run while this request was in flight.
-      if (stopped || !found?.running || currentThread.current !== threadId) return
+      if (stopped || !found || currentThread.current !== threadId) return
 
-      abort.current?.abort()
-      abort.current = controller
-      startedAt.current = found.running.startedAt
-      setPrompt(found.running.prompt)
-      setSent(found.running.attachments ?? [])
-      setTimeline(null)
-      setWatching(null)
-      setLiveAnswer('')
-      setFinal(null)
-      setError(null)
-      setRunning(true)
-      await consume(watch({ threadId, token, signal: controller.signal }), controller)
+      if (found.running) {
+        abort.current?.abort()
+        abort.current = controller
+        startedAt.current = found.running.startedAt
+        setPrompt(found.running.prompt)
+        setSent(found.running.attachments ?? [])
+        setTimeline(null)
+        setWatching(null)
+        setLiveAnswer('')
+        setFinal(null)
+        setError(null)
+        setRunning(true)
+        await consume(watch({ threadId, token, signal: controller.signal }), controller)
+        return
+      }
+
+      const page = found.thread.turns
+      const newest = page[page.length - 1]?.sequence ?? 0
+      if (newest <= lastSeenSequence.current) return
+
+      /* Redraw the settled history from the server and drop the exchanges this
+         browser appended itself, because the server's copy already contains
+         them — keeping both is how one answer appears twice. Both writes land
+         in one commit, so nothing blanks in between. */
+      lastSeenSequence.current = newest
+      setTurns(page)
+      setHasEarlier(found.thread.hasEarlier)
+      setAppended([])
+      if (found.thread.title?.trim()) setTitle(found.thread.title.trim())
     }
 
-    const timer = window.setInterval(() => { void joinAnyRun() }, IDLE_RUN_POLL_MS)
-    const onVisible = (): void => { if (!document.hidden) void joinAnyRun() }
+    const timer = window.setInterval(() => { void check() }, IDLE_RUN_POLL_MS)
+    const onVisible = (): void => { if (!document.hidden) void check() }
     document.addEventListener('visibilitychange', onVisible)
     return () => {
       stopped = true
@@ -590,6 +620,19 @@ export function useThreadRun(input: {
     // also the moment the rail's own claim on this thread expires: the server
     // has the conversation now, so it is the one that should be describing it.
     threadSettled(input.threadId)
+    /* Move the idle poll's baseline past the turns this run just wrote.
+       Without it the next poll sees them as news and redraws the history from
+       the server — the same content, but it would replace the exchange
+       rendered here a moment ago, and the work log above it would visibly
+       change a few seconds after every run. Only the ref is touched; nothing
+       re-renders. */
+    if (input.token) {
+      void getThread(input.threadId, input.token).then(found => {
+        const page = found?.thread.turns ?? []
+        const newest = page[page.length - 1]?.sequence ?? 0
+        if (newest > lastSeenSequence.current) lastSeenSequence.current = newest
+      }).catch(() => {})
+    }
     // Intentionally keyed on the run ending: the values it reads are all
     // settled by then, and re-running on every frame would duplicate the
     // exchange.
