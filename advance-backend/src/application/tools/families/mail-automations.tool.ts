@@ -8,10 +8,11 @@ import type { ToolActionGroup } from '../../../domain/permissions/tool-action-gr
 import { asToolId } from '../../../shared/ids';
 import type { MailOpsRepository } from '../../../infrastructure/persistence/mail-ops.repository';
 import type {
-  BeginGoogleWorkspaceAuthorization,
   GoogleWorkspaceMcpConnectionChoice,
 } from './google-workspace-mcp.tool';
 import { SELF_SERVICE_CONNECT_HINT } from './google-workspace-mcp.tool';
+import type { ConnectionRequestService } from '../../connections/connection-request/connection-request.service';
+import { googleConnectionScopeGap } from '../../connections/connection-request/google-scope-gap';
 import { mailRuleMatchSchema, parseMailRule } from '../../mail-ops/mail-rule.matcher';
 import {
   mailRuleActionGroup,
@@ -577,7 +578,7 @@ export function createMailAutomationsTool(deps: {
     connectionId?: string;
     abortSignal?: AbortSignal;
   }): Promise<MailAutomationConnectionResolution>;
-  beginAuthorization?: BeginGoogleWorkspaceAuthorization;
+  connectionRequest?: Pick<ConnectionRequestService, 'request'>;
   /**
    * Grounds a named Lark chat against the company that would deliver into it.
    * Optional so the tool still constructs in tests and in deployments with no
@@ -859,13 +860,16 @@ export function createMailAutomationsTool(deps: {
           });
         }
         if (connection.status === 'unavailable') {
-          if (deps.beginAuthorization) {
-            const authorization = await deps.beginAuthorization({
-              toolId: 'mailAutomations',
-              reason: connection.reason,
+          if (deps.connectionRequest) {
+            const gap = googleConnectionScopeGap(
+              'mailAutomations',
+              connection.connectionState === 'none_accessible' ? 'no_connection' : 'missing_scope',
+            );
+            const authorization = await deps.connectionRequest.request({
+              gap,
               runContext: ctx.runContext,
             });
-            if (authorization.status !== 'unavailable') {
+            if (authorization.status !== 'unreachable') {
               return ok({
                 success: false,
                 operation: args.operation,

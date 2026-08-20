@@ -419,7 +419,7 @@ passes, and `tests/application/google-sheet-resource-resolver.test.ts` plus
 `tests/application/google-workspace-contract-bootstrap.service.test.ts` still
 pass unchanged.
 
-### Phase 2 — One asker
+### Phase 2 — One asker ✅ *2026-08-21*
 
 **Goal.** One provider-agnostic `request()` replaces `BeginGoogleWorkspaceAuthorization`
 at all three call sites, with Google as the first adapter and behaviour identical
@@ -445,14 +445,14 @@ in Lark.
 
 **Steps.**
 
-- [ ] Write `ConnectionRequestService` with the two-function interface from
+- [x] Write `ConnectionRequestService` with the two-function interface from
       section 6. Provider adapters go in a map keyed by `ProviderKey`.
-- [ ] Move the Google body behind the adapter without changing what it does.
-- [ ] Replace all three call sites. The call site now passes a `ScopeGap`, not a
+- [x] Move the Google body behind the adapter without changing what it does.
+- [x] Replace all three call sites. The call site now passes a `ScopeGap`, not a
       `toolId` and a hand-written reason string.
-- [ ] Wire in composition. One instance, passed where `beginGoogleAuthorization`
+- [x] Wire in composition. One instance, passed where `beginGoogleAuthorization`
       was passed.
-- [ ] Retarget the existing 9 tests; add one asserting an unknown provider
+- [x] Retarget the existing 9 tests; add one asserting an unknown provider
       returns `unreachable` rather than throwing.
 
 **Do not.** Do not change `google-connection-authorization.service.ts` or
@@ -959,6 +959,32 @@ provider confirmation remains open for Phase 5. Gate result:
 `node --import tsx --test tests/application/google-scope-gap.test.ts tests/application/google-sheet-resource-resolver.test.ts tests/application/google-workspace-contract-bootstrap.service.test.ts`
 returned **22 pass, 0 fail**.
 
+**2026-08-21. Phase 2 complete.** Added `ConnectionRequestService` with the
+`classify` and `request` interface, and a single Google adapter. The existing
+Google authorization body remains in `begin-google-authorization.ts`; the
+adapter translates a `ScopeGap` into its existing input and maps its
+`unavailable` outcome to the shared `unreachable` result. The Google MCP and
+Mail Ops callers now pass gaps, not provider-specific authorization arguments.
+Composition builds one service instance and gives both tool families that
+instance. The existing nine authorization tests remain at the low-level Google
+implementation seam, and two additional tests cover the shared adapter and the
+unsupported-provider outcome.
+
+The service returns a structured `unreachable` result when no adapter exists.
+Phase 3 will turn that result into the named hard failure from `connect_app`;
+there is no empty success or fallback provider path. The authorization service
+still derives the Google consent scopes from `requestedToolIds`, so the model
+cannot supply a scope list.
+
+Gate result:
+`node --import tsx --test tests/application/begin-google-authorization.test.ts tests/application/google-connection-flow.test.ts`
+returned **26 pass, 0 fail**. A live Cloud-Pi Lark run also completed with the
+pinned `deepseek-v4-flash` model and delivered normally, but the selected member
+already had Google accounts. It called account discovery and did not enter the
+missing-account card branch. The live card check is therefore deferred to the
+Phase 3 front door, which can trigger the ask directly. The initial `--model
+pro` attempt was rejected by the pinned model policy before admission.
+
 **2026-08-20 (second pass) — design changed by Abhishek, no code changed.** The
 agent now gets a front door, not only an honest dead end: a provider-neutral
 connect tool it can call before anything fails, and which a member can trigger by
@@ -991,9 +1017,10 @@ from 48.
 
 ## 12. Next action
 
-Start **Phase 2**. Put the existing Google authorization body behind the
-provider-neutral connection-request interface, then replace its three callers
-without changing the Lark behaviour.
+Start **Phase 3**. Add the provider-neutral `connect_app` tool and provision the
+connections skill. It must derive consent from tool ids, hard fail every
+non-Google provider, and give the member one explicit way to ask before a tool
+fails.
 
 The classifier is now grounded in Divo's existing Google fixtures and client
 error path. The pinned upstream repository did not expose the literal prose in

@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createBeginGoogleAuthorization } from '../../src/application/connections/begin-google-authorization';
+import { createGoogleConnectionRequestAdapter } from '../../src/application/connections/connection-request/google.adapter';
+import { ConnectionRequestService } from '../../src/application/connections/connection-request/connection-request.service';
 import { RunOriginStore, type RunOrigin } from '../../src/application/connections/run-origin.store';
 import type { CachePort } from '../../src/shared/cache';
 import type { RunContext } from '../../src/domain/orchestration/run-context';
@@ -271,5 +273,58 @@ describe('createBeginGoogleAuthorization', () => {
     assert.deepEqual(result, { status: 'unavailable' });
     assert.ok(h.logger.lines.some((line: any) =>
       line.event === 'google.authorization.run_origin_missing'));
+  });
+
+  it('routes a Google ScopeGap through the shared asker and maps an unreachable Lark surface', async () => {
+    const h = harness({ deliver: undefined });
+    const asker = new ConnectionRequestService(new Map([
+      ['google_workspace', createGoogleConnectionRequestAdapter({
+        runOrigins: h.runOrigins,
+        authorization: {
+          issue: async () => ({
+            outcome: 'issued' as const,
+            intentId: 'intent-1',
+            authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=abc',
+          }),
+        } as any,
+        deliverConnectCard: () => undefined,
+        logger: h.logger,
+      })],
+    ]));
+
+    assert.equal(
+      asker.classify({
+        provider: 'google_workspace',
+        toolId: 'googleGmail',
+        error: new Error('HttpError 403: Request had insufficient authentication scopes.'),
+      })?.reason,
+      'insufficient_scope',
+    );
+
+    const result = await asker.request({
+      gap: {
+        provider: 'google_workspace',
+        toolId: 'googleGmail',
+        missingScopeGroups: [],
+        reason: 'not_connected',
+      },
+      runContext: runContext(),
+    });
+
+    assert.deepEqual(result, { status: 'unreachable' });
+  });
+
+  it('returns a named unreachable outcome for an unsupported provider', async () => {
+    const asker = new ConnectionRequestService(new Map());
+    const result = await asker.request({
+      gap: {
+        provider: 'shopify',
+        toolId: 'shopify',
+        missingScopeGroups: [],
+        reason: 'not_connected',
+      },
+      runContext: runContext(),
+    });
+    assert.deepEqual(result, { status: 'unreachable' });
   });
 });

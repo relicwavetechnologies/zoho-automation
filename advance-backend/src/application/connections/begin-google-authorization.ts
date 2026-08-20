@@ -1,8 +1,18 @@
 import type { Logger } from '../../shared/logger';
 import type { RunContext } from '../../domain/orchestration/run-context';
-import type { BeginGoogleWorkspaceAuthorization } from '../tools/families/google-workspace-mcp.tool';
+import type { ConnectAskOutcome } from './connection-request/connection-request.service';
 import type { GoogleConnectionAuthorizationService } from './google-connection-authorization.service';
 import type { RunOriginStore } from './run-origin.store';
+
+export interface BeginGoogleAuthorizationInput {
+  readonly toolId: string;
+  readonly reason: string;
+  readonly runContext: RunContext;
+}
+
+export type BeginGoogleAuthorization = (
+  input: BeginGoogleAuthorizationInput,
+) => Promise<ConnectAskOutcome | { readonly status: 'unavailable' }>;
 
 export interface DeliverGoogleConnectCard {
   (input: {
@@ -39,7 +49,7 @@ export interface BeginGoogleAuthorizationDeps {
  */
 export function createBeginGoogleAuthorization(
   deps: BeginGoogleAuthorizationDeps,
-): BeginGoogleWorkspaceAuthorization {
+): BeginGoogleAuthorization {
   return async (input) => {
     const companyId = String(input.runContext.companyId);
     const userId = String(input.runContext.userId);

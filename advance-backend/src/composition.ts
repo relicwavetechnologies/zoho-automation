@@ -191,9 +191,10 @@ import {
   nextMailBriefRunAt,
 } from './application/mail-ops/mail-brief.schedule';
 import {
-  createBeginGoogleAuthorization,
   type DeliverGoogleConnectCard,
 } from './application/connections/begin-google-authorization';
+import { ConnectionRequestService } from './application/connections/connection-request/connection-request.service';
+import { createGoogleConnectionRequestAdapter } from './application/connections/connection-request/google.adapter';
 import { MailOpsWorker } from './application/mail-ops/mail-ops.worker';
 import { MailOpsConnectionUnavailableError } from './application/mail-ops/mail-ops.types';
 import { GmailHistoryClient } from './infrastructure/google/gmail-history.client';
@@ -927,12 +928,14 @@ export async function buildContainer(
     logger,
   });
   let deliverGoogleConnect: DeliverGoogleConnectCard | undefined;
-  const beginGoogleAuthorization = createBeginGoogleAuthorization({
-    runOrigins,
-    authorization: googleConnectionAuthorization,
-    deliverConnectCard: () => deliverGoogleConnect,
-    logger,
-  });
+  const connectionRequest = new ConnectionRequestService(new Map([
+    ['google_workspace', createGoogleConnectionRequestAdapter({
+      runOrigins,
+      authorization: googleConnectionAuthorization,
+      deliverConnectCard: () => deliverGoogleConnect,
+      logger,
+    })],
+  ]));
   const googleWorkspaceMcpSchemas = new GoogleWorkspaceMcpSchemaCatalog();
   const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: ephemeralCache, logger });
   const airtableMcpOAuthService   = new AirtableMcpOAuthService({ env, cache: ephemeralCache, logger });
@@ -1933,7 +1936,7 @@ export async function buildContainer(
   for (const tool of createGoogleWorkspaceMcpTools({
     getConnection: getGoogleWorkspaceMcpConnection,
     resolveSheetReference: resolveGoogleSheetReference,
-    beginAuthorization: beginGoogleAuthorization,
+    connectionRequest,
   })) {
     toolRegistry.register(tool);
   }
@@ -1946,7 +1949,7 @@ export async function buildContainer(
       workersEnabled: env.DIVO_AUTONOMOUS_WORKERS_ENABLED,
     },
     resolveConnection: resolveMailAutomationGoogleConnection,
-    beginAuthorization: beginGoogleAuthorization,
+    connectionRequest,
     authorizeLarkChat: authorizeMailOpsLarkChat,
     connectionApproval: input => connectionRateLimits.approval(input),
     // The read repository, not `mailOpsRepo`: a dry run must not be able to
