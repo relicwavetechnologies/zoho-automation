@@ -55,7 +55,7 @@ When this is finished, `divo_artifact` is no longer a web-only tool. Both surfac
 
 ## 4. Open questions
 
-**Q1 — Whose artifact is a document authored in a shared Lark group chat?** Answer needed from: Abhishek. Blocks: the second half of Phase 4 only. `divo-pi/divo/runtime.mjs:123` shows shared Lark turns are run-scoped and lose the recall tools; artifacts are keyed `[companyId, userId, artifactId]` (`advance-backend/prisma/schema.prisma:3154`), so a group-chat artifact would be filed against whoever sent the message. That is probably right, but it means a document made in a group chat appears in the asker's private web panel. Land Phase 4 for direct messages first and ask before widening it.
+**Q1 — Whose artifact is a document authored in a shared Lark group chat?** Answer needed from: Abhishek. Blocks: the second half of Phase 4 only. `divo-pi/divo/runtime.mjs:123` shows shared Lark turns are run-scoped and lose the recall tools; artifacts are keyed `[companyId, userId, artifactId]` (`advance-backend/prisma/schema.prisma:3154`), so a group-chat artifact would be filed against whoever sent the message. That is probably right, but it means a document made in a group chat appears in the asker's private web panel. The backend publish seam is ready for direct messages. Answer this before widening the Lark descriptor, manifest, or skill to a surface that may include group chats.
 
 ~~**Q2 — Does the `divo@emiactech.com` Vercel account exist yet, and is it a personal account or a team?**~~ **Resolved 2026-08-21.** The account exists and is personal, not a team. `advance-backend/.env` has `VERCEL_TOKEN` set, `VERCEL_PROJECT_NAME=divo-artifacts`, and an empty `VERCEL_TEAM_ID`; the adapter trims the value and omits the `teamId` query parameter entirely when it is empty.
 
@@ -221,10 +221,10 @@ export interface PublishedDocumentPort {
 
 **Steps.**
 
-- [ ] Add `publishedUrl String?`, `publishedAt DateTime?`, `publishGateHash String?`, `publishDeploymentId String?` to `model Artifact`, then `pnpm prisma db push` — **this project has no `_prisma_migrations` table; never run `prisma migrate`**
-- [ ] Add `artifactPublish: defineCapability('context', ['create'])` to `TOOL_CAPABILITY_DEFINITIONS`
-- [ ] Write the tool on the `web-search.tool.ts` shape: args `{ artifactId }`, result `{ url, password }`. It loads the artifact through `ArtifactRepoPort.get` scoped to the caller, refuses a `text/markdown` artifact with a plain reason, wraps, publishes, persists the four columns
-- [ ] Register it in `composition.ts` beside the other tool registrations
+- [x] Add `publishedUrl String?`, `publishedAt DateTime?`, `publishGateHash String?`, `publishDeploymentId String?` to `model Artifact`, then `pnpm prisma db push` — **this project has no `_prisma_migrations` table; never run `prisma migrate`**
+- [x] Add `artifactPublish: defineCapability('context', ['create'])` to `TOOL_CAPABILITY_DEFINITIONS`
+- [x] Write the tool on the `web-search.tool.ts` shape: args `{ artifactId }`, result `{ url, password }`. It loads the artifact through `ArtifactRepoPort.get` scoped to the caller, refuses a `text/markdown` artifact with a plain reason, wraps, publishes, persists the four columns
+- [x] Register it in `composition.ts` beside the other tool registrations
 - [ ] Flip Lark's descriptor to `artifacts: 'link'` and update the comment above it, which currently explains why it is `'none'`
 - [ ] Add `"lark"` to both `CHANNEL_ONLY_MODULES` and `CHANNEL_ONLY_TOOLS`, and update `scopedManifest`'s tests in `divo-pi/divo/test/runtime.test.mjs`
 - [ ] Rewrite the skill's "This skill exists on the web surface only" line, and add a short section: on a surface whose descriptor says `link`, publish and speak the URL and the password; on `inline`, the panel is enough unless asked
@@ -406,6 +406,13 @@ from `## Next action`.
 - Unit gate: `node --import tsx --test 'tests/domain/artifact-*.test.ts'` passed with 29 tests. The parity test still passes because it strips only the marked standalone additions and the mode branch, not the panel copy.
 - Browser gate: published a real dark-themed chart artifact at `https://divo-artifacts-1ubtsdsxh-divo-2600s-projects.vercel.app/`. The page asked for a password, refused a wrong password, and revealed the report with one rendered chart SVG after the correct password. The title and dark theme remained intact. View-source still exposes the base64 body and script, as D5 requires.
 
+### 2026-08-21 — Phase 4 in progress
+
+- Added the four publication columns, kept `publishGateHash` inside the repository write path, and cleared all publication state when an artifact is revised. `prisma db push` synced Development `divo_dev` successfully and regenerated Prisma Client. No migration command was run.
+- Added the `artifactPublish` capability, human label, channel-neutral tool, Vercel wiring, and focused tests. The tool accepts only an owned `artifactId`, refuses Markdown, wraps HTML in the standalone gate, publishes, persists the four publication values, and returns the password exactly once. It contains no channel branch.
+- Focused gates: `node --import tsx --test 'tests/tools/artifact-publishing.tool.test.ts'` passed with 5 tests; `node --import tsx --test 'tests/domain/artifact-*.test.ts'` passed with 29 tests. `pnpm typecheck` reports only the known Phase 1 chart indexed-access errors.
+- Q1 now blocks the remaining Lark descriptor, runtime manifest, skill, and cross-surface proof. Those changes would expose the tool to shared group turns whose artifact ownership is not settled.
+
 ## 12. Next action
 
-Start Phase 4. Add the four `Artifact` publication columns with `prisma db push`, then implement and register the channel-neutral `divo_publish` tool before touching the Lark manifest or skill.
+Answer Q1: should an artifact authored in a shared Lark group chat belong to the sending member and appear in that member's private web panel, or should group-chat artifacts use a different ownership/delivery rule? Then widen the Lark descriptor, manifest, and skill accordingly.

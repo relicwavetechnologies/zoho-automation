@@ -2,7 +2,12 @@ import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
-import type { Artifact, ArtifactSummary, ArtifactWrite } from '../../domain/artifact/artifact';
+import type {
+  Artifact,
+  ArtifactPublicationWrite,
+  ArtifactSummary,
+  ArtifactWrite,
+} from '../../domain/artifact/artifact';
 import { isArtifactMime } from '../../domain/artifact/artifact';
 import { ARTIFACT_PREVIEW_SOURCE_CHARS, previewOf } from '../../domain/artifact/preview';
 
@@ -28,6 +33,10 @@ export interface ArtifactScope {
 export interface ArtifactRepoPort {
   save(scope: ArtifactScope, write: ArtifactWrite): Promise<Result<ArtifactSummary, InfraError>>;
   get(scope: ArtifactScope & { artifactId: string }): Promise<Result<Artifact | null, InfraError>>;
+  markPublished(
+    scope: ArtifactScope & { artifactId: string },
+    publication: ArtifactPublicationWrite,
+  ): Promise<Result<ArtifactSummary, InfraError>>;
   /** Newest first. `threadId` narrows to one conversation's output. */
   list(
     scope: ArtifactScope & { threadId?: string },
@@ -43,6 +52,9 @@ type Row = {
   threadId: string | null;
   createdAt: Date;
   updatedAt: Date;
+  publishedUrl: string | null;
+  publishedAt: Date | null;
+  publishDeploymentId: string | null;
   preview: string;
 };
 
@@ -60,6 +72,9 @@ function summaryOf(row: Row): ArtifactSummary {
     ...(row.threadId ? { threadId: row.threadId } : {}),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
+    ...(row.publishedUrl ? { publishedUrl: row.publishedUrl } : {}),
+    ...(row.publishedAt ? { publishedAt: row.publishedAt.toISOString() } : {}),
+    ...(row.publishDeploymentId ? { publishDeploymentId: row.publishDeploymentId } : {}),
     preview: row.preview,
   };
 }
@@ -72,6 +87,9 @@ const SUMMARY_SELECT = {
   threadId: true,
   createdAt: true,
   updatedAt: true,
+  publishedUrl: true,
+  publishedAt: true,
+  publishDeploymentId: true,
 } as const;
 
 export class ArtifactRepository implements ArtifactRepoPort {
@@ -99,6 +117,10 @@ export class ArtifactRepository implements ArtifactRepoPort {
           body: write.body,
           ...(write.threadId ? { threadId: write.threadId } : {}),
           ...(write.executionRunId ? { executionRunId: write.executionRunId } : {}),
+          publishedUrl: null,
+          publishedAt: null,
+          publishGateHash: null,
+          publishDeploymentId: null,
         },
         update: {
           title: write.title,
@@ -111,6 +133,10 @@ export class ArtifactRepository implements ArtifactRepoPort {
           version: { increment: 1 },
           ...(write.threadId ? { threadId: write.threadId } : {}),
           ...(write.executionRunId ? { executionRunId: write.executionRunId } : {}),
+          publishedUrl: null,
+          publishedAt: null,
+          publishGateHash: null,
+          publishDeploymentId: null,
         },
         select: SUMMARY_SELECT,
       });
@@ -120,6 +146,33 @@ export class ArtifactRepository implements ArtifactRepoPort {
       return ok(summaryOf({ ...row, preview: previewOf(write.body, write.mime) }));
     } catch (error) {
       return err(wrapInfra('prisma', 'artifact.save', error));
+    }
+  }
+
+  async markPublished(
+    scope: ArtifactScope & { artifactId: string },
+    publication: ArtifactPublicationWrite,
+  ): Promise<Result<ArtifactSummary, InfraError>> {
+    try {
+      const row = await this.db.artifact.update({
+        where: {
+          companyId_userId_artifactId: {
+            companyId: scope.companyId,
+            userId: scope.userId,
+            artifactId: scope.artifactId,
+          },
+        },
+        data: {
+          publishedUrl: publication.publishedUrl,
+          publishedAt: new Date(publication.publishedAt),
+          publishGateHash: publication.publishGateHash,
+          publishDeploymentId: publication.publishDeploymentId,
+        },
+        select: SUMMARY_SELECT,
+      });
+      return ok(summaryOf({ ...row, preview: '' }));
+    } catch (error) {
+      return err(wrapInfra('prisma', 'artifact.markPublished', error));
     }
   }
 
@@ -164,7 +217,8 @@ export class ArtifactRepository implements ArtifactRepoPort {
        */
       const rows = await this.db.$queryRaw<(Omit<Row, 'preview'> & { head: string })[]>(Prisma.sql`
         SELECT "artifactId", "title", "mime", "version", "threadId",
-          "createdAt", "updatedAt", left("body", ${ARTIFACT_PREVIEW_SOURCE_CHARS}::int) AS "head"
+          "createdAt", "updatedAt", "publishedUrl", "publishedAt", "publishDeploymentId",
+          left("body", ${ARTIFACT_PREVIEW_SOURCE_CHARS}::int) AS "head"
         FROM "Artifact"
         WHERE "companyId" = ${scope.companyId} AND "userId" = ${scope.userId}
           ${scope.threadId ? Prisma.sql`AND "threadId" = ${scope.threadId}` : Prisma.empty}

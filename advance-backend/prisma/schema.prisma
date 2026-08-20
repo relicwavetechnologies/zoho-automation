@@ -3150,6 +3150,10 @@ model Artifact {
   version        Int      @default(1)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+  publishedUrl   String?
+  publishedAt   DateTime?
+  publishGateHash String?
+  publishDeploymentId String?
 
   @@unique([companyId, userId, artifactId])
   @@index([companyId, userId, updatedAt])

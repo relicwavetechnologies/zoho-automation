@@ -67,6 +67,7 @@ export const TOOL_LABELS: Readonly<Record<CanonicalToolId, ToolLabel>> = {
   shopifyAnalytics:   { name: 'Shopify Analytics', noun: 'reports', brand: 'shopify' },
   shopifyOrders:      { name: 'Shopify Orders',    noun: 'orders', brand: 'shopify' },
   shopifyCustomers:   { name: 'Shopify Customers', noun: 'customers', brand: 'shopify' },
+  artifactPublish:    { name: 'Publish Artifact',  noun: 'documents' },
   webSearch:          { name: 'Web Search',       noun: 'the web' },
   connectApp:         { name: 'Connect App',      noun: 'provider access' },
   knowledge:          { name: 'Divo Knowledge',   noun: 'knowledge' },

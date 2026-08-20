@@ -48,6 +48,9 @@ export interface Artifact {
   readonly threadId?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly publishedUrl?: string;
+  readonly publishedAt?: string;
+  readonly publishDeploymentId?: string;
 }
 
 /**
@@ -68,6 +71,14 @@ export interface ArtifactWrite {
   readonly body: string;
   readonly threadId?: string;
   readonly executionRunId?: string;
+}
+
+/** Publication state written after a deployment succeeds. The gate hash never leaves the repository seam. */
+export interface ArtifactPublicationWrite {
+  readonly publishedUrl: string;
+  readonly publishedAt: string;
+  readonly publishGateHash: string;
+  readonly publishDeploymentId: string;
 }
 
 export function isArtifactMime(value: unknown): value is ArtifactMime {

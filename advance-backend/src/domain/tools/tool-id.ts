@@ -174,6 +174,7 @@ export const TOOL_CAPABILITY_DEFINITIONS = {
   shopifyOrders:    defineCapability('shopify', ['read']),
   shopifyCustomers: defineCapability('shopify', ['read']),
 
+  artifactPublish: defineCapability('context', ['create']),
   webSearch:       defineCapability('context', ['read']),
   connectApp:      defineCapability('context', ['create']),
   knowledge:       defineCapability('memory', ['read', 'create', 'update', 'delete']),

@@ -223,6 +223,8 @@ import { ManagerTeachPersonaProcessor } from './application/persona-learning/man
 import { PeepshowVideoExtractor } from './infrastructure/media/peepshow-video.extractor';
 import { OpenRouterFrameReader } from './infrastructure/ai/ocr/openrouter-frame.reader';
 import { OpenAiVideoTranscriber } from './infrastructure/ai/transcription/openai-video.transcriber';
+import { ArtifactRepository } from './infrastructure/persistence/artifact.repository';
+import { VercelPublisher } from './infrastructure/publishing/vercel-publisher';
 
 // Central knowledge authority and semantic recall projection
 import type { MemoryService } from './application/knowledge/semantic-memory.port';
@@ -272,6 +274,7 @@ import { hasAirtableScopeGroups } from './application/airtable/airtable-mcp-mani
 import { createZohoCrmTool } from './application/tools/families/zoho-crm.tool';
 import { createZohoBooksTool } from './application/tools/families/zoho-books.tool';
 import { createWebSearchTool } from './application/tools/families/web-search.tool';
+import { createArtifactPublishingTool } from './application/tools/families/artifact-publishing.tool';
 import { createKnowledgeTool } from './application/tools/families/knowledge.tool';
 import { createRunCommandTool } from './application/tools/families/run-command.tool';
 import { createScheduledWorkflowsTool } from './application/tools/families/scheduled-workflows.tool';
@@ -535,6 +538,7 @@ export async function buildContainer(
 
   // ── Infra ──────────────────────────────────────────────────────────────
   const prisma = getPrismaClient();
+  const artifacts = new ArtifactRepository(prisma);
 
   // Three purposeful Redis connections. Each falls back to REDIS_URL in local
   // dev so a single Redis instance continues to work with no config changes.
@@ -2119,6 +2123,14 @@ export async function buildContainer(
     appBaseUrl:      env.ZOHO_BOOKS_APP_BASE_URL,
   }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
+  toolRegistry.register(createArtifactPublishingTool({
+    artifacts,
+    publisher: new VercelPublisher({
+      ...(env.VERCEL_TOKEN ? { token: env.VERCEL_TOKEN } : {}),
+      ...(env.VERCEL_PROJECT_NAME ? { projectName: env.VERCEL_PROJECT_NAME } : {}),
+      ...(env.VERCEL_TEAM_ID ? { teamId: env.VERCEL_TEAM_ID } : {}),
+    }),
+  }));
   toolRegistry.register(createKnowledgeTool({
     mutations: knowledgeMutations,
     projections: knowledgeProjections,
@@ -3059,7 +3071,7 @@ export async function buildContainer(
       logger: logger.child({ service: 'web-run-registry' }),
     }),
     webThreads: new (await import('./infrastructure/persistence/web-thread.repository')).WebThreadRepository(prisma),
-    artifacts: new (await import('./infrastructure/persistence/artifact.repository')).ArtifactRepository(prisma),
+    artifacts,
     /*
       The member's own Lark account, resolved from the connection they
       authorized rather than from a run context. `userExternalId` is an open_id
