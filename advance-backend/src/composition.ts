@@ -771,6 +771,17 @@ export async function buildContainer(
     env.OMS_SITE_DATA_API_KEY ?? '',
     env.OMS_VENDOR_FETCH_API_KEY ?? '',
   );
+  for (const [name, value] of [
+    ['OMS_SITE_DATA_API_KEY', env.OMS_SITE_DATA_API_KEY],
+    ['OMS_VENDOR_FETCH_API_KEY', env.OMS_VENDOR_FETCH_API_KEY],
+  ] as const) {
+    if (!value) {
+      logger.warn('oms.api_key.missing', {
+        variable: name,
+        consequence: 'OMS calls needing this key will fail until it is set.',
+      });
+    }
+  }
 
   // ── Lark user OAuth ───────────────────────────────────────────────────────
   const larkOAuthRedirectUri =
