@@ -509,7 +509,7 @@ describe('mailAutomations tool', () => {
     assert.equal(result.ok, true);
     assert.equal(
       result.ok && result.value.code,
-      'google_workspace_authorization_pending',
+      'connection_ask_sent',
     );
     assert.equal(authorizationInput.gap.toolId, 'mailAutomations');
     // The tool's only job here is to hand the live run context over intact.

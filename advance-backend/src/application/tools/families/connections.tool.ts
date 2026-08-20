@@ -8,7 +8,10 @@ import { asToolId } from '../../../shared/ids';
 import { CONNECTION_PROVIDER_IDS } from '../../../domain/connections/connection-provider';
 import { googleScopeGroupsForToolIds } from '../../google/google-scope-request';
 import { GOOGLE_WORKSPACE_TOOL_IDS } from '../../google/google-workspace-mcp-manifest';
-import type { ConnectionRequestService } from '../../connections/connection-request/connection-request.service';
+import {
+  connectionAskSentResult,
+  type ConnectionRequestService,
+} from '../../connections/connection-request/connection-request.service';
 
 const ProviderSchema = z.enum([...CONNECTION_PROVIDER_IDS] as [string, ...string[]]);
 const ArgsSchema = z.object({
@@ -101,16 +104,7 @@ export function createConnectionsTool(deps: {
         }));
       }
 
-      const alreadyPending = outcome.status === 'already_pending';
-      return ok({
-        success: false,
-        code: 'connection_ask_sent' as const,
-        intentId: outcome.intentId,
-        provider: args.provider,
-        message: alreadyPending
-          ? 'A Google connection ask is already open for this request. End this run and wait for the member to finish it.'
-          : 'A Google connection ask was sent to the member. End this run and wait for OAuth to complete.',
-      });
+      return ok(connectionAskSentResult(args.provider, outcome)!);
     },
   };
 }

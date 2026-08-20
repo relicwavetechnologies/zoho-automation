@@ -49,7 +49,7 @@ describe('connectApp tool', () => {
       code: 'connection_ask_sent',
       intentId: 'intent-1',
       provider: 'google_workspace',
-      message: 'A Google connection ask was sent to the member. End this run and wait for OAuth to complete.',
+      message: 'A connection ask was sent to the member. End this run and wait for the member to finish it.',
     });
   });
 

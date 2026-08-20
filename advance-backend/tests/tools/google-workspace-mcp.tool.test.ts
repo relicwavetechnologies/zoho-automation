@@ -154,8 +154,11 @@ describe('Google Workspace MCP product tools', () => {
     assert.equal(result.ok, true);
     assert.equal(result.ok && result.value.success, false);
     assert.deepEqual(result.ok && result.value.data, {
-      code: 'google_workspace_authorization_pending',
+      success: false,
+      code: 'connection_ask_sent',
       intentId: 'intent-1',
+      provider: 'google_workspace',
+      message: 'A connection ask was sent to the member. End this run and wait for the member to finish it.',
     });
     assert.equal(authorizationGaps[0].toolId, 'googleSheets');
     assert.equal(authorizationGaps[0].reason, 'not_connected');
@@ -617,13 +620,13 @@ describe('Google Workspace MCP product tools', () => {
     }, makeCtx('googleGmail', ['read'], { runtimeRunId: 'run-1' }));
 
     assert.equal(result.ok, true);
-    assert.equal(result.ok && (result.value.data as any).code, 'google_workspace_authorization_pending');
+    assert.equal(result.ok && (result.value.data as any).code, 'connection_ask_sent');
     assert.equal(authorizationInput.gap.toolId, 'googleGmail');
     // See the note in mail-automations.tool.test.ts: the tool forwards the live
     // run context, and whether an authorization can start from it is proved
     // against the real closure in begin-google-authorization.test.ts.
     assert.equal(authorizationInput.runContext.runtimeRunId, 'run-1');
-    assert.match(result.ok ? result.value.message ?? '' : '', /fresh run automatically/);
+    assert.match(result.ok ? result.value.message ?? '' : '', /End this run/);
   });
 
   it('points a member at Connected apps when no card can be sent', async () => {

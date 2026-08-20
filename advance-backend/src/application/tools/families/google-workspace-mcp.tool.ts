@@ -27,7 +27,10 @@ import {
   googleConnectionScopeGap,
   googleScopeGapReasonText,
 } from '../../connections/connection-request/google-scope-gap';
-import type { ConnectionRequestService } from '../../connections/connection-request/connection-request.service';
+import {
+  connectionAskSentResult,
+  type ConnectionRequestService,
+} from '../../connections/connection-request/connection-request.service';
 
 function createNativeArgsSchema(nativeTool: z.ZodType<string>) {
   return z.discriminatedUnion('op', [
@@ -372,17 +375,13 @@ function createProductTool(
               gap,
               runContext: ctx.runContext,
             });
-            if (authorization.status !== 'unreachable') {
+            const sent = connectionAskSentResult('google_workspace', authorization);
+            if (sent) {
               return ok({
                 success: false,
                 nativeTool: 'resolve_sheet_reference',
-                data: {
-                  code: 'google_workspace_authorization_pending',
-                  intentId: authorization.intentId,
-                },
-                message:
-                  'The Google connection card was sent. End this run now; '
-                  + 'Divo will start a fresh run automatically after OAuth completes.',
+                data: sent,
+                message: sent.message,
               });
             }
           }
@@ -458,17 +457,13 @@ function createProductTool(
             gap,
             runContext: ctx.runContext,
           });
-          if (authorization.status !== 'unreachable') {
+          const sent = connectionAskSentResult('google_workspace', authorization);
+          if (sent) {
             return ok({
               success: false,
               nativeTool: args.nativeTool,
-              data: {
-                code: 'google_workspace_authorization_pending',
-                intentId: authorization.intentId,
-              },
-              message:
-                'The Google connection card was sent. End this run now; '
-                + 'Divo will start a fresh run automatically after OAuth completes.',
+              data: sent,
+              message: sent.message,
             });
           }
         }

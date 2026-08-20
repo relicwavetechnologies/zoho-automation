@@ -11,7 +11,10 @@ import type {
   GoogleWorkspaceMcpConnectionChoice,
 } from './google-workspace-mcp.tool';
 import { SELF_SERVICE_CONNECT_HINT } from './google-workspace-mcp.tool';
-import type { ConnectionRequestService } from '../../connections/connection-request/connection-request.service';
+import {
+  connectionAskSentResult,
+  type ConnectionRequestService,
+} from '../../connections/connection-request/connection-request.service';
 import { googleConnectionScopeGap } from '../../connections/connection-request/google-scope-gap';
 import { mailRuleMatchSchema, parseMailRule } from '../../mail-ops/mail-rule.matcher';
 import {
@@ -233,11 +236,12 @@ const resultSchema = z.object({
     'archive',
   ]),
   code: z.enum([
-    'google_workspace_authorization_pending',
+    'connection_ask_sent',
     'google_workspace_connection_selection_required',
     'mail_ops_configuration_required',
   ]).optional(),
   intentId: z.string().optional(),
+  provider: z.string().optional(),
   connections: z.array(z.object({
     connectionId: z.string(),
     label: z.string(),
@@ -869,15 +873,11 @@ export function createMailAutomationsTool(deps: {
               gap,
               runContext: ctx.runContext,
             });
-            if (authorization.status !== 'unreachable') {
+            const sent = connectionAskSentResult('google_workspace', authorization);
+            if (sent) {
               return ok({
-                success: false,
                 operation: args.operation,
-                code: 'google_workspace_authorization_pending',
-                intentId: authorization.intentId,
-                message:
-                  'The Google connection card was sent. End this run now; '
-                  + 'Divo will start a fresh run automatically after OAuth completes.',
+                ...sent,
               });
             }
           }

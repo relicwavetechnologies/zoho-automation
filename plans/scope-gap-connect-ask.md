@@ -686,7 +686,7 @@ typecheck is clean. The requested live web OAuth gate was not run; the user will
 test that flow later. The concurrent `brand-catalog.ts` and `brand-mark.tsx`
 files were read and not edited.
 
-### Phase 6 — One result shape for the model
+### Phase 6 — One result shape for the model ✅ *2026-08-21*
 
 **Goal.** Every tool family says the same thing after an ask is sent.
 
@@ -699,21 +699,38 @@ files were read and not edited.
 
 **Steps.**
 
-- [ ] Define the result once, next to `ConnectAskOutcome`: code
+- [x] Define the result once, next to `ConnectAskOutcome`: code
       `connection_ask_sent`, the `intentId`, the provider, and one sentence
       telling the agent the member has been asked and this run should end.
-- [ ] Replace `google_workspace_authorization_pending` at both sites.
-- [ ] Keep `SELF_SERVICE_CONNECT_HINT` for the `unreachable` case only. It is
+- [x] Replace `google_workspace_authorization_pending` at both sites.
+- [x] Keep `SELF_SERVICE_CONNECT_HINT` for the `unreachable` case only. It is
       the honest answer when no surface can carry a card, and Desktop still needs
       it.
-- [ ] Grep for `authorization_pending` and confirm no other shape survives.
+- [x] Grep for `authorization_pending` and confirm no other shape survives.
 
 **Do not.** Do not remove `SELF_SERVICE_CONNECT_HINT`. Do not change
 `/api/desktop/approvals`; installed Desktop clients read
 `description.title` / `.tool` / `.details` off it and that shape is frozen.
 
-**Gate.** `grep -rn "authorization_pending" advance-backend/src` returns only the
-one definition. The full application suite passes.
+**Gate.** `grep -rn "authorization_pending" advance-backend/src` returns no
+legacy authorization-pending shape. The full application suite remains the
+later test pass requested by the user.
+
+**2026-08-21 build log.** `ConnectAskOutcome` now has one adjacent
+`ConnectionAskSentResult` helper and message: `success: false`,
+`code: 'connection_ask_sent'`, the intent id, provider, and an instruction to
+end the run and wait. Google pasted-reference and ordinary-call paths, and
+Mail Ops, all use that result. The Connections front door uses the same helper.
+`SELF_SERVICE_CONNECT_HINT` remains only on the unreachable branch; the
+unsupported-provider front door still returns its named hard error.
+
+The Google product skill now teaches the new result code. The old
+`google_workspace_authorization_pending` string is gone from
+`advance-backend/src`; Shopify has no connection-ask path and was left
+unchanged because Phase 8 is cut. Focused connection, decision, Google-skill,
+Google-tool, and Mail Ops tests passed (**107 pass, 0 fail**) with backend
+typecheck clean. The full suite and any live channel run were not requested;
+they remain for the later test pass.
 
 ### Phase 7 — The resume tells the agent what changed
 
@@ -1112,9 +1129,11 @@ from 48.
 
 ## 12. Next action
 
-Start **Phase 6**. Normalize every tool-family response after a connection ask
-to the one `connection_ask_sent` result shape, keep `SELF_SERVICE_CONNECT_HINT`
-for unreachable surfaces, and confirm no `authorization_pending` shape remains.
+Start **Phase 7**. Establish how an `IncomingMessage` reaches the model — raw
+does not currently cross the runtime request boundary — then make the OAuth
+resume tell the agent it is continuing the earlier ask, that the connection is
+present, and which exact scope groups Google actually granted. Apply the same
+context to the web resume.
 
 The classifier is now grounded in Divo's existing Google fixtures and client
 error path. The pinned upstream repository did not expose the literal prose in
