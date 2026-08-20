@@ -39,17 +39,21 @@ function silentLogger() {
 
 const ORIGIN: RunOrigin = {
   version: 1,
+  channel: 'lark',
   companyId: 'co-1',
   userId: 'user-1',
-  larkOpenId: 'ou_user',
-  larkTenantKey: 'tenant-1',
-  chatId: 'oc_chat',
-  chatType: 'group',
-  originalMessageId: 'om_request',
-  rootMessageId: 'om_root',
-  replyInThread: true,
-  groupReplyMode: 'threaded',
   originalRequest: 'Forward every invoice to finance@example.com',
+  conversationKey: 'oc_chat',
+  lark: {
+    larkOpenId: 'ou_user',
+    larkTenantKey: 'tenant-1',
+    chatId: 'oc_chat',
+    chatType: 'group',
+    originalMessageId: 'om_request',
+    rootMessageId: 'om_root',
+    replyInThread: true,
+    groupReplyMode: 'threaded',
+  },
 };
 
 function runContext(overrides: Partial<RunContext> = {}): RunContext {
@@ -113,7 +117,8 @@ describe('createBeginGoogleAuthorization', () => {
       runId: 'run-1',
       companyId: 'co-1',
       userId: 'user-1',
-    }))?.googleAuthorization, {
+    }))?.pendingAuthorization, {
+      provider: 'google_workspace',
       intentId: 'intent-1',
       authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=abc',
     });
@@ -198,7 +203,7 @@ describe('createBeginGoogleAuthorization', () => {
     const cache = memoryCache();
     const store = cache.set.bind(cache);
     cache.set = async (key, value, ttlSeconds) => (
-      (value as any)?.googleAuthorization
+      (value as any)?.pendingAuthorization
         ? err(wrapInfra('redis', 'set', new Error('down')))
         : store(key, value, ttlSeconds)
     );
@@ -225,7 +230,7 @@ describe('createBeginGoogleAuthorization', () => {
     const cache = memoryCache();
     const store = cache.set.bind(cache);
     cache.set = async (key, value, ttlSeconds) => (
-      (value as any)?.googleAuthorization
+      (value as any)?.pendingAuthorization
         ? err(wrapInfra('redis', 'set', new Error('down')))
         : store(key, value, ttlSeconds)
     );

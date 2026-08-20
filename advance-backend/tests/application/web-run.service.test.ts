@@ -71,6 +71,33 @@ describe('web run', () => {
     assert.equal(input['threadId'], 'web:thread-1');
   });
 
+  it('records a replayable web origin before the shared runtime starts', async () => {
+    const { piRuntime } = fakeRuntime({});
+    const written: Array<{ runId: string; origin: any }> = [];
+    const service = new WebRunService({
+      piRuntime,
+      logger: noopLogger,
+      runOrigins: {
+        remember: async (runId, origin) => {
+          written.push({ runId, origin });
+          return true;
+        },
+      },
+    });
+
+    await collect(service.run(ask));
+
+    assert.equal(written.length, 1);
+    assert.equal(written[0]!.origin.channel, 'web');
+    assert.equal(written[0]!.origin.conversationKey, ask.threadId);
+    assert.equal(written[0]!.origin.originalRequest, ask.text);
+    assert.deepEqual(written[0]!.origin.web, {
+      threadId: ask.threadId,
+      userExternalId: ask.userExternalId,
+      timestamp: written[0]!.origin.web.timestamp,
+    });
+  });
+
   it('hands the composer model and reasoning choice to the shared runtime unchanged', async () => {
     const { piRuntime, seen } = fakeRuntime({});
     const service = new WebRunService({ piRuntime, logger: noopLogger });

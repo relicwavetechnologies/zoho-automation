@@ -758,19 +758,23 @@ export class LarkPiRuntimeService {
 
     const origin: RunOrigin = {
       version: 1,
+      channel: 'lark',
       companyId: String(input.runContext.companyId),
       userId: String(input.runContext.userId),
-      larkOpenId: incoming.userExternalId,
-      larkTenantKey: incoming.tenantKey,
-      chatId: String(incoming.chatId),
-      chatType: incoming.chatType,
-      originalMessageId: String(incoming.messageId),
-      ...(incoming.rootMessageId
-        ? { rootMessageId: String(incoming.rootMessageId) }
-        : {}),
-      replyInThread: input.conversation.replyInThread ?? false,
-      ...(incoming.groupReplyMode ? { groupReplyMode: incoming.groupReplyMode } : {}),
       originalRequest: incoming.text,
+      conversationKey: String(incoming.chatId),
+      lark: {
+        larkOpenId: incoming.userExternalId,
+        larkTenantKey: incoming.tenantKey,
+        chatId: String(incoming.chatId),
+        chatType: incoming.chatType,
+        originalMessageId: String(incoming.messageId),
+        ...(incoming.rootMessageId
+          ? { rootMessageId: String(incoming.rootMessageId) }
+          : {}),
+        replyInThread: input.conversation.replyInThread ?? false,
+        ...(incoming.groupReplyMode ? { groupReplyMode: incoming.groupReplyMode } : {}),
+      },
     };
 
     try {
@@ -1291,7 +1295,7 @@ export class LarkPiRuntimeService {
     };
     let effect: VerifiedKnowledgeEffect | null = null;
     let workbookEffect: OfferedWorkbookConversionEffect | null = null;
-    let googleAuthorization: RunOrigin['googleAuthorization'];
+    let pendingAuthorization: RunOrigin['pendingAuthorization'];
     let effectVerification: 'verified' | 'unavailable' = 'verified';
     if (this.deps.runEffectReceipts) {
       try {
@@ -1325,14 +1329,14 @@ export class LarkPiRuntimeService {
     }
     if (this.deps.runOrigins?.recall) {
       try {
-        googleAuthorization = (await measureRunLatency(latencyTrace, {
+        pendingAuthorization = (await measureRunLatency(latencyTrace, {
           name: 'runtime.origin.recall',
           category: 'cache',
         }, () => this.deps.runOrigins!.recall!({
           runId: input.incoming.traceId,
           companyId: identity.companyId,
           userId: identity.userId,
-        })))?.googleAuthorization;
+        })))?.pendingAuthorization;
       } catch (error) {
         this.log.error('pi.google_authorization.lookup_failed', {
           correlationId: input.incoming.traceId,
@@ -1380,12 +1384,12 @@ export class LarkPiRuntimeService {
     }
 
     return {
-      text: googleAuthorization
+      text: pendingAuthorization
         ? '# Connect Google Workspace\n\nConnect or reconnect your Google account below. '
           + "Once it’s connected, I’ll continue this request automatically—no need to send it again."
         : assistantText,
       effects: effect ? [effect] : [],
-      ...(workbookEffect || googleAuthorization
+      ...(workbookEffect || pendingAuthorization
         ? {
             actions: [
               ...(workbookEffect ? [{
@@ -1396,9 +1400,9 @@ export class LarkPiRuntimeService {
                 }),
                 style: 'primary',
               } as const] : []),
-              ...(googleAuthorization ? [{
+              ...(pendingAuthorization ? [{
                 label: 'Connect Google',
-                url: googleAuthorization.authorizeUrl,
+                url: pendingAuthorization.authorizeUrl,
                 style: 'primary',
               } as const] : []),
             ],

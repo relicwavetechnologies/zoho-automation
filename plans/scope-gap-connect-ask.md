@@ -524,7 +524,7 @@ present, and get a Connect button without any tool having failed first. Then ask
 for a Sheets export on a Gmail-only connection and get the same button by the
 Phase 1 route. Record both. Web delivery is Phase 5; this gate is Lark only.
 
-### Phase 4 — An origin for every channel
+### Phase 4 — An origin for every channel ✅ *2026-08-21*
 
 **Goal.** A web run remembers where it came from, so a connect ask has somewhere
 to go **and enough to replay the run from**.
@@ -549,22 +549,22 @@ half-built there. Do not invent a second one beside it.
 
 **Steps.**
 
-- [ ] Split `RunOrigin` into a common part (`companyId`, `userId`, `channel`,
+- [x] Split `RunOrigin` into a common part (`companyId`, `userId`, `channel`,
       `originalRequest`, `conversationKey`) and a per-channel part
       (`lark: {...}` holding the five Lark fields, `web: { threadId }`).
-- [ ] Rename `googleAuthorization` to `pendingAuthorization` and add `provider`.
+- [x] Rename `googleAuthorization` to `pendingAuthorization` and add `provider`.
       It is about to hold Shopify too.
-- [ ] Update the Lark writer and `begin-google-authorization.ts`'s reader for the
+- [x] Update the Lark writer and `begin-google-authorization.ts`'s reader for the
       new shape. No behaviour change.
-- [ ] Write the web origin in `web-run.service.ts`. The thread id is a plain
+- [x] Write the web origin in `web-run.service.ts`. The thread id is a plain
       field on the service's own input at `:90` (used at `:218`, `:359`, `:374`).
       An earlier version of this plan said it lived only on
       `metadata.execution.threadId`; that was wrong, and this step is smaller
       than it looks.
-- [ ] Store whatever the replay needs, per D7, not merely the thread id. Check it
+- [x] Store whatever the replay needs, per D7, not merely the thread id. Check it
       by reconstructing an `IncomingMessage` from a recalled web origin alone and
       asserting it equals what `webIncomingMessage` builds from the live input.
-- [ ] Test: remember and recall round-trips for both channels; the 16,000
+- [x] Test: remember and recall round-trips for both channels; the 16,000
       character ask ceiling still refuses to store an over-long request.
 
 **Do not.** Do not change `RUN_ORIGIN_TTL_SECONDS` or
@@ -1024,6 +1024,25 @@ the card; adding that field fixed the harness without weakening the runtime
 origin check. The Gmail-only scope-gap live case remains to be confirmed after
 the owner-aware branch in Phase 5.
 
+**2026-08-21. Phase 4 complete.** `RunOrigin` is now a discriminated
+channel-agnostic value with common identity, request, and conversation fields.
+Lark-specific delivery data lives under `lark`; web data lives under `web` with
+the thread id, external user id, and stable message timestamp needed to rebuild
+the turn. `pendingAuthorization` is provider-tagged. The store keeps its TTL,
+maximum request size, and `run-origin:v1` key unchanged, and normalizes the old
+flat Lark shape on read so an in-flight authorization does not disappear during
+the short cache migration.
+
+`WebRunService` now remembers the web origin before calling Pi. The existing
+`webIncomingMessage` adapter is exported and takes the stored timestamp, so the
+test reconstructs an `IncomingMessage` from the recalled origin and compares it
+with the live turn exactly. Lark writing and the Google reader use the new
+fields without changing the Lark card path.
+
+Gate result:
+`pnpm typecheck && node --import tsx --test tests/application/run-origin.store.test.ts tests/application/begin-google-authorization.test.ts tests/application/web-run.service.test.ts tests/application/lark-pi-runtime.service.test.ts`
+returned **83 pass, 0 fail**. No TTL or 16,000-character limit changed.
+
 **2026-08-20 (second pass) — design changed by Abhishek, no code changed.** The
 agent now gets a front door, not only an honest dead end: a provider-neutral
 connect tool it can call before anything fails, and which a member can trigger by
@@ -1056,10 +1075,10 @@ from 48.
 
 ## 12. Next action
 
-Start **Phase 4**. Make the origin channel-agnostic and replayable. Read the
-existing web adapter before designing the shape, keep the Lark fields required
-inside its channel branch, and prove that a recalled web origin reconstructs the
-same `IncomingMessage` as the live turn.
+Start **Phase 5**. Add the web courier through the existing decision card, then
+wire OAuth completion to replay both Lark and web origins. Read the decision
+module and the concurrent brand files first. The link option must open Google,
+settle nothing, and carry the Google subject mark.
 
 The classifier is now grounded in Divo's existing Google fixtures and client
 error path. The pinned upstream repository did not expose the literal prose in

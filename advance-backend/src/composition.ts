@@ -3020,6 +3020,7 @@ export async function buildContainer(
     larkPiRuntime,
     webRuns: new (await import('./application/runtime/web-run.service')).WebRunService({
       piRuntime: larkPiRuntime,
+      runOrigins,
       identity: channelIdentityRepo,
       departments: deptRepo,
       transcript: conversationRepo,

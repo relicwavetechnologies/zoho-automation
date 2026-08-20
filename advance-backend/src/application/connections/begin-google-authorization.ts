@@ -26,7 +26,7 @@ export interface DeliverGoogleConnectCard {
 }
 
 export interface BeginGoogleAuthorizationDeps {
-  readonly runOrigins: Pick<RunOriginStore, 'recall' | 'attachGoogleAuthorization'>;
+  readonly runOrigins: Pick<RunOriginStore, 'recall' | 'attachPendingAuthorization'>;
   readonly authorization: Pick<GoogleConnectionAuthorizationService, 'issue'>;
   /**
    * Resolved per call, not captured: the Lark adapter that delivers the card is
@@ -58,7 +58,7 @@ export function createBeginGoogleAuthorization(
     // signed runtime lease. Without it there is no conversation to send a card
     // into and no ask to resume, so there is no continuation to offer.
     const origin = await recallOrigin(deps, input.runContext, companyId, userId);
-    if (!origin) {
+    if (!origin || origin.channel !== 'lark') {
       return { status: 'unavailable' as const };
     }
     const requestedToolIds = input.toolIds?.length
@@ -76,14 +76,14 @@ export function createBeginGoogleAuthorization(
       ...(input.runContext.departmentId
         ? { departmentId: String(input.runContext.departmentId) }
         : {}),
-      larkOpenId: origin.larkOpenId,
-      larkTenantKey: origin.larkTenantKey,
-      chatId: origin.chatId,
-      chatType: origin.chatType,
-      originalMessageId: origin.originalMessageId,
-      ...(origin.rootMessageId ? { rootMessageId: origin.rootMessageId } : {}),
-      replyInThread: origin.replyInThread,
-      ...(origin.groupReplyMode ? { groupReplyMode: origin.groupReplyMode } : {}),
+      larkOpenId: origin.lark.larkOpenId,
+      larkTenantKey: origin.lark.larkTenantKey,
+      chatId: origin.lark.chatId,
+      chatType: origin.lark.chatType,
+      originalMessageId: origin.lark.originalMessageId,
+      ...(origin.lark.rootMessageId ? { rootMessageId: origin.lark.rootMessageId } : {}),
+      replyInThread: origin.lark.replyInThread,
+      ...(origin.lark.groupReplyMode ? { groupReplyMode: origin.lark.groupReplyMode } : {}),
       originalRequest: origin.originalRequest,
       requestedToolIds,
     });
@@ -94,10 +94,11 @@ export function createBeginGoogleAuthorization(
     }
 
     try {
-      const attached = await deps.runOrigins.attachGoogleAuthorization({
+      const attached = await deps.runOrigins.attachPendingAuthorization({
         runId: String(input.runContext.runtimeRunId),
         companyId,
         userId,
+        provider: 'google_workspace',
         intentId: issued.intentId,
         authorizeUrl: issued.authorizeUrl,
       });
@@ -117,9 +118,9 @@ export function createBeginGoogleAuthorization(
     const delivered = await deliver({
       url: issued.authorizeUrl,
       reason: input.reason,
-      chatId: origin.chatId,
-      replyToMessageId: origin.originalMessageId,
-      replyInThread: origin.replyInThread,
+      chatId: origin.lark.chatId,
+      replyToMessageId: origin.lark.originalMessageId,
+      replyInThread: origin.lark.replyInThread,
     });
     if (!delivered) {
       deps.logger.error('google.authorization.card_delivery_failed', {
