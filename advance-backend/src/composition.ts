@@ -14,6 +14,7 @@ import { buildApprovalResolutionCard } from './application/approval/approval-car
 import { ApprovalResolverService } from './application/approval/approval-resolver.service';
 import { ApprovalGateService } from './application/approval/approval-gate.service';
 import { ApprovalResumerService } from './application/approval/approval-resumer.service';
+import { parsePersonalGate } from './domain/approval/personal-gate';
 import { AutomationPlanService } from './application/gateway/automation-plan.service';
 import { AutomationPlanExecutor } from './application/gateway/automation-plan.executor';
 import { LarkApprovalCardHandler } from './infrastructure/channels/lark/lark-approval-card.handler';
@@ -771,6 +772,23 @@ export async function buildContainer(
     env.OMS_SITE_DATA_API_KEY ?? '',
     env.OMS_VENDOR_FETCH_API_KEY ?? '',
   );
+  /* Said at boot because the alternative is finding out from a user.
+     Both keys are optional and fall back to an empty string, which is sent as
+     an empty `X-API-Key` header, so OMS answers 401 and the tool reports
+     "OMS rejected the configured API key". That reads as a bad key rather than
+     as no key, and on a deployed box nobody can open the env file to tell the
+     difference. Only presence is logged; the values are not. */
+  for (const [name, value] of [
+    ['OMS_SITE_DATA_API_KEY', env.OMS_SITE_DATA_API_KEY],
+    ['OMS_VENDOR_FETCH_API_KEY', env.OMS_VENDOR_FETCH_API_KEY],
+  ] as const) {
+    if (!value) {
+      logger.warn('oms.api_key.missing', {
+        variable: name,
+        consequence: 'OMS calls needing this key will fail as provider_auth_failed until it is set.',
+      });
+    }
+  }
 
   // ── Lark user OAuth ───────────────────────────────────────────────────────
   const larkOAuthRedirectUri =
@@ -2506,6 +2524,13 @@ export async function buildContainer(
   if (approvalGateOptions.disableManagerSelfBypass) {
     logger.warn('approval.gate.manager_self_bypass_disabled');
   }
+  // ApprovalGateService is needed by the runtime executor and resumer before
+  // the rest of the container can construct DecisionService. Keep one lazy ask
+  // port so the gate and the Decision module still share one implementation.
+  let decisions!: DecisionService;
+  const decisionAsk: Pick<DecisionService, 'ask'> = {
+    ask: input => decisions.ask(input),
+  };
   const approvalGate     = new ApprovalGateService(
     approvalRepo,
     approvalResolver,
@@ -2513,6 +2538,7 @@ export async function buildContainer(
     logger.child({ service: 'approval-gate' }),
     { ...approvalGateOptions, knowledgeMutations },
     connectionRateLimits,
+    decisionAsk,
   );
   const gatewayToolExecutor = new ToolExecutor({
     toolRegistry,
@@ -2780,14 +2806,20 @@ export async function buildContainer(
 
   const businessActions = new BusinessActionService({
     approvals: approvalRepo,
+    decisions: decisionAsk,
     toolExecutor: gatewayToolExecutor,
     logger: logger.child({ service: 'business-action' }),
+    /* The same repository the resumer writes approval outcomes through, so a
+       confirmed action lands in the thread as an ordinary assistant turn. Its
+       absence here is what let the agent tell somebody their calendar event had
+       not been created while the event existed. */
+    webTranscript: conversationRepo,
   });
 
   // Every question Divo puts to a person, whichever surface it lands on.
   // `onResolvedCard` is what stops a delivered card from still offering buttons
   // for a decision that was already answered somewhere else.
-  const decisions = new DecisionService({
+  decisions = new DecisionService({
     approvals: approvalRepo,
     resumer: approvalResumer,
     businessActions,
@@ -2817,7 +2849,7 @@ export async function buildContainer(
     approvalRepo,
     approvalResolver,
     approvalGate,
-    larkAdapter,
+    decisions: decisionAsk,
     logger: logger.child({ service: 'automation-plan' }),
   });
   const mediaOcr = new MediaOcrService(env, logger);
@@ -2841,6 +2873,17 @@ export async function buildContainer(
     skillCatalog,
     toolExecutor: gatewayToolExecutor,
     businessActions,
+    /* The person's own "ask me before Divo does this". Read per gated call
+       rather than cached: it is one indexed lookup on a unique key, and a
+       cached copy would leave somebody who just picked an action unprotected
+       for the rest of their session — the one moment they are watching for it
+       to work. */
+    readPersonalGate: async (userId) => parsePersonalGate(
+      (await prisma.userDepartmentPreference.findUnique({
+        where: { userId },
+        select: { personalApprovalsJson: true },
+      }))?.personalApprovalsJson,
+    ),
     connectionRegistry: integrationConnectionRepo,
     workContractBootstrap,
     mediaOcr,

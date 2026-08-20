@@ -85,6 +85,7 @@ import {
   type RunLatencyTrace,
 } from '../observability/run-latency-recorder';
 import { requiresRequesterConfirmation } from '../approval/business-action-routing';
+import type { PersonalGate } from '../../domain/approval/personal-gate';
 import {
   WorkBootstrapService,
   connectionProvidersForToolIds,
@@ -107,6 +108,14 @@ export interface GatewayDispatcherDeps {
   readonly skillCatalog: SkillCatalogService;
   readonly toolExecutor: ToolExecutor;
   readonly businessActions?: BusinessActionService;
+  /**
+   * The requester's own "ask me before Divo acts".
+   *
+   * A port rather than a Prisma call, because this module holds no database and
+   * should not start. Absent in tests and in any composition that has not wired
+   * it, which reads as "off" — the behaviour before the preference existed.
+   */
+  readonly readPersonalGate?: (userId: string) => Promise<PersonalGate | null>;
   readonly connectionRegistry?: ConnectionRegistryPort;
   readonly workContractBootstrap?: WorkContractBootstrapPort;
   readonly mediaOcr?: MediaOcrService;
@@ -980,10 +989,19 @@ export class GatewayDispatcher {
     // broaden access.
     const isReviewedKnowledgeApply = parsed.data.toolId === 'knowledge'
       && operation === 'apply';
+    /* Read before the routing test rather than inside it, so the rule stays a
+       pure function over values. A failed read is "no gate": somebody's
+       optional preference being unreadable must not turn into a refused tool
+       call. Skipped entirely for reads, which nothing can gate. */
+    const personal = prepared.data.action === 'read'
+      ? null
+      : await this.deps.readPersonalGate?.(String(member.userId)).catch(() => null) ?? null;
     const needsRequesterConfirmation = requiresRequesterConfirmation({
+      toolId: parsed.data.toolId,
       action: prepared.data.action,
       ...(member.channel ? { channel: member.channel } : {}),
       reviewAlreadyRecorded: isReviewedKnowledgeApply,
+      personal,
     });
     if (needsRequesterConfirmation) {
       if (!this.deps.businessActions) {

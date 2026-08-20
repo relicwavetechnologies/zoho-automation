@@ -22,6 +22,7 @@ import { ApprovalGateService } from '../../src/application/approval/approval-gat
 import { buildApprovalResolutionCard } from '../../src/application/approval/approval-card-builder.ts';
 import { DecisionService } from '../../src/application/decision/decision.service.ts';
 import { LarkApprovalCardHandler } from '../../src/infrastructure/channels/lark/lark-approval-card.handler.ts';
+import { LarkDecisionCourier } from '../../src/infrastructure/channels/lark/lark-decision.courier.ts';
 import type { RuntimeApprovalRow } from '../../src/infrastructure/persistence/runtime-approval.repository.ts';
 import type { PermissionResult } from '../../src/application/permissions/permission.types.ts';
 import type { RunContext } from '../../src/domain/orchestration/run-context.ts';
@@ -357,6 +358,32 @@ function makeLarkAdapter() {
   };
 }
 
+function makeGate(
+  repo: unknown,
+  resolver: unknown,
+  lark: unknown,
+  logger: Logger,
+  options: Record<string, unknown> = {},
+  connectionRateLimits?: unknown,
+  decisions?: Pick<DecisionService, 'ask'>,
+) {
+  const decisionService = decisions ?? new DecisionService({
+    approvals: repo as never,
+    resumer: { resume: async () => {} } as never,
+    logger,
+    courier: new LarkDecisionCourier(lark as never, logger),
+  });
+  return new ApprovalGateService(
+    repo as never,
+    resolver as never,
+    lark as never,
+    logger,
+    options as never,
+    connectionRateLimits as never,
+    decisionService,
+  );
+}
+
 function makeApprovalCardHandler(
   repo: ReturnType<typeof makeApprovalRepo>,
   resumer: { resume: (id: string, decision: string) => Promise<void> },
@@ -515,7 +542,7 @@ describe('ApprovalGateService', () => {
     const connectionPolicy = {
       approval: async () => ({ kind: 'required' as const, mode: 'connection_owner' as const, policySource: 'manager_policy' as const }),
     };
-    const gate = new ApprovalGateService(repo as any, resolver as any, lark as any, makeLogger(), {}, connectionPolicy as any);
+    const gate = makeGate(repo as any, resolver as any, lark as any, makeLogger(), {}, connectionPolicy as any);
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -538,7 +565,7 @@ describe('ApprovalGateService', () => {
     // under is revoked, so nothing can re-derive it later.
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     await gate.check({
       toolId: String(TOOL_ID),
@@ -560,7 +587,7 @@ describe('ApprovalGateService', () => {
   it('sends and tags a cloud Pi approval card for non-read action', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -600,12 +627,13 @@ describe('ApprovalGateService', () => {
     // Card sent to manager
     assert.equal(lark.sentCards.length, 1);
     assert.equal(lark.sentCards[0].openId, MANAGER_OID);
+    assert.match(lark.sentCards[0].content, /decision_answer/);
   });
 
   it('allows read actions without gating', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -625,7 +653,7 @@ describe('ApprovalGateService', () => {
   it('returns idempotent pending for duplicate tool call', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const input = {
       toolId: String(TOOL_ID),
@@ -657,7 +685,7 @@ describe('ApprovalGateService', () => {
   it('keeps identical requests from different users in the same chat isolated', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const base = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -692,7 +720,7 @@ describe('ApprovalGateService', () => {
   it('keeps identical requests in different Lark threads isolated and pinned to their source', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const base = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -748,7 +776,7 @@ describe('ApprovalGateService', () => {
   it('reuses a compatible pre-upgrade pending approval without sending another card', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const args = { op: 'send', to: ['x@y.com'], subject: 'Rolling upgrade' };
     const argsHash = computeArgsHash(args);
     const legacyKey = computeIdempotencyKey(
@@ -804,7 +832,7 @@ describe('ApprovalGateService', () => {
   it('serializes concurrent identical requests into one approval and one card', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -844,7 +872,7 @@ describe('ApprovalGateService', () => {
   it('claims an approved exact action once and replays its completed result', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -884,7 +912,7 @@ describe('ApprovalGateService', () => {
   it('keeps an executing action as the exactly-once barrier after approval expiry', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -911,7 +939,7 @@ describe('ApprovalGateService', () => {
   it('replays a consumed result after approval expiry instead of approving the mutation again', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -947,7 +975,7 @@ describe('ApprovalGateService', () => {
   it('blocks an identical retry when an approved mutation failed with an uncertain provider outcome', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -980,7 +1008,7 @@ describe('ApprovalGateService', () => {
   it('keeps department-manager approval namespaces separate when one manager owns both departments', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const base = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -1013,7 +1041,7 @@ describe('ApprovalGateService', () => {
   it('creates a fresh approval when the matching pending approval is expired', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const args = { op: 'send', to: ['x@y.com'], subject: 'Expired' };
     const input = {
@@ -1040,7 +1068,7 @@ describe('ApprovalGateService', () => {
   it('claims an approved exact-match approval grant and allows execution', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const args = { op: 'send', to: ['x@y.com'], subject: 'Approved' };
     const input = {
@@ -1066,7 +1094,7 @@ describe('ApprovalGateService', () => {
   it('returns rejected for an exact request after the manager rejects it', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const args = { op: 'send', to: ['x@y.com'], subject: 'Rejected' };
     const input = {
@@ -1092,7 +1120,7 @@ describe('ApprovalGateService', () => {
   it('marks a claimed approval grant consumed after successful execution', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     await repo.create({
       chatId: CHAT_ID,
@@ -1120,7 +1148,7 @@ describe('ApprovalGateService', () => {
   it('replays a durable terminal checkpoint when the consumed transition could not be stored', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -1152,7 +1180,7 @@ describe('ApprovalGateService', () => {
   it('rejects an approved grant when stored metadata does not match requester', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const args = { op: 'send', to: ['x@y.com'], subject: 'Mismatch' };
     const input = {
@@ -1179,7 +1207,7 @@ describe('ApprovalGateService', () => {
   it('returns misconfigured when approval config is malformed', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -1206,7 +1234,7 @@ describe('ApprovalGateService', () => {
         return err(new Error('timeout after request body was sent'));
       },
     };
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as const,
@@ -1253,7 +1281,7 @@ describe('ApprovalGateService', () => {
           : ok({ messageId: 'msg-card-2' });
       },
     };
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as const,
@@ -1288,7 +1316,7 @@ describe('ApprovalGateService', () => {
     const repo = makeApprovalRepo();
     repo.setDecisionMessageId = async () => err(new Error('database write failed'));
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as const,
@@ -1311,7 +1339,7 @@ describe('ApprovalGateService', () => {
   it('self-bypass: manager triggering their own action is allowed', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -1330,7 +1358,7 @@ describe('ApprovalGateService', () => {
   it('can disable manager self-bypass for local approval-card smoke tests', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(
+    const gate = makeGate(
       repo as any,
       makeResolver() as any,
       lark as any,
@@ -1357,7 +1385,7 @@ describe('ApprovalGateService', () => {
   it('returns misconfigured when no manager resolved', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver(null) as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver(null) as any, lark as any, makeLogger());
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -1375,7 +1403,7 @@ describe('ApprovalGateService', () => {
   it('returns misconfigured when no department context', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const permNoDept: PermissionResult = {
       allowedToolIds:       new Set([TOOL_ID]),
@@ -2140,7 +2168,7 @@ describe('an approval requested through the gateway and executed through the run
 
   it('is claimed by the execution that follows it, not asked for a second time', async () => {
     const repo = makeApprovalRepo();
-    const gate = new ApprovalGateService(
+    const gate = makeGate(
       repo as any, makeResolver() as any, makeLarkAdapter() as any, makeLogger(),
     );
 
@@ -2168,7 +2196,7 @@ describe('an approval requested through the gateway and executed through the run
     // The run scope is what stops one manager decision being spent by an
     // unrelated turn. Widening the search must not cost that.
     const repo = makeApprovalRepo();
-    const gate = new ApprovalGateService(
+    const gate = makeGate(
       repo as any, makeResolver() as any, makeLarkAdapter() as any, makeLogger(),
     );
 

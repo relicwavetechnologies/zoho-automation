@@ -1,6 +1,8 @@
 /**
- * Builds the interactive Lark card sent to the manager for approval/rejection.
- * The card action payload follows: { kind: 'approval_decision', approvalId, decision }
+ * Compatibility builders for manager approval cards delivered before the
+ * Decision module migration. New included asks use `decision_answer`; these
+ * builders remain because an old card may still be clicked after a deploy.
+ * The callback payload follows: { kind: 'approval_decision', approvalId, decision }.
  */
 
 import type { ApprovalAuthority } from './approval.types';
@@ -95,9 +97,9 @@ export function buildApprovalCard(input: ApprovalCardInput): string {
 }
 
 /**
- * A batch card is deliberately more explicit than a normal one-action card:
- * the manager approves a fixed list of server-preflighted mutations, not an
- * open-ended Python script or a future agent decision.
+ * Compatibility builder for an old automation batch card. New automation plans
+ * use the Decision module's `decision_answer` card; keep this builder until
+ * delivered old batches can no longer be clicked and cleanup is approved.
  */
 export function buildAutomationPlanApprovalCard(input: {
   approvalId: string;

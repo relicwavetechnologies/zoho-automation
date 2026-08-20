@@ -1,4 +1,4 @@
-import type { PrismaClient } from '../../generated/prisma';
+import type { Prisma, PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import {
   DepartmentAdminService,
@@ -12,6 +12,12 @@ import type { PermissionService } from '../permissions/permission.service';
 import { ManagerApprovalConfigSchema, type ManagerApprovalConfig } from '../approval/approval.types';
 import { getDesktopToolPolicy } from '../../domain/tools/tool-policy';
 import { TOOL_SUPPORTED_ACTIONS, type CanonicalToolId } from '../../domain/tools/tool-id';
+import { ACTION_VERBS, toolLabel } from '../../domain/tools/tool-labels';
+import {
+  normalisePersonalGate,
+  parsePersonalGate,
+  type PersonalGate,
+} from '../../domain/approval/personal-gate';
 
 export type DesktopDepartmentActor = {
   userId: string;
@@ -29,6 +35,72 @@ export class DesktopDepartmentManagementError extends Error {
 export type DepartmentManagementSnapshot = Pick<DeptDetail, 'department' | 'roles' | 'memberships'>;
 
 export type DepartmentManagerApprovalPolicy = Pick<ManagerApprovalConfig, 'enabled' | 'requiredActions'>;
+
+/**
+ * Everything the "will this stop and ask me?" screen needs, for one person.
+ *
+ * Inputs rather than a verdict. The verdict is `forecastGate` in the domain,
+ * read by this screen and by the runtime, which is what stops the two from
+ * disagreeing.
+ */
+export interface ApprovalForecastDepartment {
+  readonly departmentId: string;
+  readonly departmentName: string;
+  /** Null when the department has no policy, has it off, or stored a broken one. */
+  readonly policy: DepartmentManagerApprovalPolicy | null;
+  /** Is the person reading this the one whose yes this department's policy names? */
+  readonly askerIsApprover: boolean;
+  /** False when the policy names an approver role nobody currently holds. */
+  readonly approverExists: boolean;
+  readonly approverName: string | null;
+}
+
+/**
+ * Every department the reader belongs to, each with its own answer.
+ *
+ * A list rather than one department, because picking one for them is how this
+ * first went wrong: somebody in Finance and Tech Testing had gates on the
+ * second and was shown the first, with nothing on screen naming which. Rules
+ * differ per department and a person can sit in several, so the honest shape is
+ * all of them.
+ */
+/**
+ * One thing Divo can be asked to do, named the way a person would say it.
+ *
+ * Flat and global, with no department on it, because the reader's own "ask me"
+ * list is not a department concept and never was. Building that list out of
+ * per-department permission matrices is what put a personal switch inside a
+ * team tab, and left somebody unable to tell whether ticking it covered one
+ * team or all of them.
+ */
+export interface ApprovalForecastAction {
+  readonly toolId: string;
+  readonly action: string;
+  /** "Lark Calendar". */
+  readonly toolName: string;
+  /** "Delete events". */
+  readonly actionLabel: string;
+  readonly brand?: string;
+}
+
+export interface ApprovalForecastSnapshot {
+  /**
+   * Everything Divo can do, once each.
+   *
+   * The whole catalogue rather than what the reader can reach today, on
+   * purpose: a pick on a tool they have not been granted yet still protects
+   * them the day they are, which is the same reason `all` is a mode rather
+   * than a list of today's tools.
+   */
+  readonly actions: readonly ApprovalForecastAction[];
+  readonly departments: readonly ApprovalForecastDepartment[];
+  /**
+   * The reader's own picks. Theirs alone, and the same in every team they are
+   * in, because wanting to see your own mail before it goes is not a fact about
+   * which department you happened to be asking from.
+   */
+  readonly personal: PersonalGate;
+}
 
 /**
  * The whole gate, expressed the one way the desktop can edit it.
@@ -85,6 +157,28 @@ function expandLegacySelectors(
   return [...byTool].map(([toolId, actions]) => ({ toolId, actions: [...actions] }));
 }
 
+
+/**
+ * The catalogue, built once at module load.
+ *
+ * Three static domain tables and no I/O, so there is nothing to cache and
+ * nothing to invalidate. Reads are dropped: nobody can gate one, so a row
+ * offering to would be a control that does nothing.
+ */
+const CATALOGUE: readonly ApprovalForecastAction[] = Object.entries(TOOL_SUPPORTED_ACTIONS)
+  .flatMap(([toolId, supported]) => {
+    const label = toolLabel(toolId);
+    return supported
+      .filter((action) => action !== 'read')
+      .map((action) => ({
+        toolId,
+        action,
+        toolName: label.name,
+        actionLabel: `${ACTION_VERBS[action] ?? action} ${label.noun}`,
+        ...(label.brand ? { brand: label.brand } : {}),
+      }));
+  })
+  .sort((a, b) => a.toolName.localeCompare(b.toolName) || a.action.localeCompare(b.action));
 
 type DepartmentManagerServiceDeps = {
   prisma: PrismaClient;
@@ -289,6 +383,109 @@ export class DesktopDepartmentManagementService {
       enabled: parsed.data.enabled,
       requiredActions: expandLegacySelectors(parsed.data),
     };
+  }
+
+  /**
+   * What will stop and ask, for the person asking, in their own department.
+   *
+   * Readable by every member, which is the whole point and is why it does not
+   * go through `requireManager` like the policy reader above it. A member could
+   * previously not find out what Divo would do with their own request: the
+   * policy lived behind a manager-only route and three of the four rules that
+   * decide the outcome were never surfaced anywhere at all.
+   *
+   * Returns the inputs, not the verdict. `forecastGate` in the domain turns
+   * these into an outcome, and both this screen and the runtime read that one
+   * function so they cannot drift.
+   */
+  async approvalForecast(actor: DesktopDepartmentActor): Promise<ApprovalForecastSnapshot> {
+    const memberships = await this.deps.prisma.departmentMembership.findMany({
+      where: {
+        userId: actor.userId,
+        status: 'active',
+        department: { companyId: actor.companyId, status: 'active' },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { departmentId: true, department: { select: { name: true } } },
+    });
+
+    const departments = await Promise.all(memberships.map(async (membership) => {
+      const [config, manager, askerIsApprover] = await Promise.all([
+        this.deps.prisma.departmentAgentConfig.findFirst({
+          where: { departmentId: membership.departmentId },
+          select: { managerApprovalJson: true },
+        }),
+        this.deps.prisma.departmentMembership.findFirst({
+          where: { departmentId: membership.departmentId, status: 'active', role: { slug: 'MANAGER' } },
+          orderBy: { updatedAt: 'desc' },
+          select: { user: { select: { name: true, email: true } } },
+        }),
+        this.isLiveManager(actor, membership.departmentId),
+      ]);
+
+      const parsed = ManagerApprovalConfigSchema.safeParse(config?.managerApprovalJson ?? {});
+      /* An unparseable config is reported as no policy rather than as an error.
+         The runtime already treats it as ungated (`checkApprovalPolicy` returns
+         `misconfigured` and does not gate), so "your team has not switched on
+         approvals" is what is actually true for the reader. */
+      const policy = parsed.success && parsed.data.enabled
+        ? { enabled: true, requiredActions: expandLegacySelectors(parsed.data) }
+        : null;
+
+      return {
+        departmentId: membership.departmentId,
+        departmentName: membership.department?.name ?? 'Your team',
+        policy,
+        askerIsApprover,
+        approverExists: Boolean(manager),
+        approverName: manager?.user?.name ?? manager?.user?.email ?? null,
+      };
+    }));
+
+    const preference = await this.deps.prisma.userDepartmentPreference.findUnique({
+      where: { userId: actor.userId },
+      select: { personalApprovalsJson: true },
+    });
+
+    /* Anything that stops somebody first. A person in four departments opens
+       this to find out what will interrupt them, not to read the ones where
+       nothing does. */
+    return {
+      departments: departments.sort(
+        (a, b) => (b.policy?.requiredActions.length ?? 0) - (a.policy?.requiredActions.length ?? 0),
+      ),
+      actions: CATALOGUE,
+      personal: parsePersonalGate(preference?.personalApprovalsJson),
+    };
+  }
+
+  /**
+   * "Ask me before Divo does this", set by the person it applies to.
+   *
+   * No permission check beyond being signed in, deliberately. Choosing to see
+   * more of your own work is not a privilege, and a member who wants confirming
+   * on what they ask for is not changing what anybody else may do.
+   *
+   * Replaces the whole selection rather than taking a delta, the same contract
+   * as `setManagerApprovalPolicy`. Two people editing their own gate cannot
+   * collide, and one arrangement of a gate is easier to reason about than a log
+   * of edits that produced it.
+   */
+  async setPersonalApprovals(
+    actor: DesktopDepartmentActor,
+    gate: PersonalGate,
+  ): Promise<{ personal: PersonalGate }> {
+    const personal = normalisePersonalGate(gate);
+    await this.deps.prisma.userDepartmentPreference.upsert({
+      where: { userId: actor.userId },
+      create: {
+        userId: actor.userId,
+        companyId: actor.companyId,
+        personalApprovalsJson: personal as unknown as Prisma.InputJsonValue,
+      },
+      update: { personalApprovalsJson: personal as unknown as Prisma.InputJsonValue },
+    });
+    return { personal };
   }
 
   async setManagerApprovalPolicy(

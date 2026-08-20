@@ -12,6 +12,8 @@ import assert from 'node:assert/strict';
 import { ok } from '../../src/shared/result.ts';
 import { ApprovalGateService } from '../../src/application/approval/approval-gate.service.ts';
 import { ApprovalResolverService } from '../../src/application/approval/approval-resolver.service.ts';
+import { DecisionService } from '../../src/application/decision/decision.service.ts';
+import { LarkDecisionCourier } from '../../src/infrastructure/channels/lark/lark-decision.courier.ts';
 import type { PermissionResult } from '../../src/application/permissions/permission.types.ts';
 import type { RunContext } from '../../src/domain/orchestration/run-context.ts';
 import type { Logger } from '../../src/shared/logger.ts';
@@ -60,7 +62,17 @@ function makeRepo() {
   return {
     rows,
     createOrReuseActive: async (input: any) => {
-      const approval = { id: `approval-${rows.length + 1}`, status: 'pending', ...input };
+      const now = new Date();
+      const approval = {
+        id: `approval-${rows.length + 1}`,
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now,
+        expiresAt: input.expiresAt ?? new Date(now.getTime() + 86_400_000),
+        responseJson: null,
+        decisionMessageId: null,
+        ...input,
+      };
       rows.push(approval);
       return ok({ approval, created: true, replacedExpired: false });
     },
@@ -77,7 +89,20 @@ function makeLark() {
 }
 
 const gateWith = (approver: unknown, repo: unknown, lark: unknown) =>
-  new ApprovalGateService(repo as never, { resolveManager: async () => approver } as never, lark as never, logger);
+  new ApprovalGateService(
+    repo as never,
+    { resolveManager: async () => approver } as never,
+    lark as never,
+    logger,
+    {},
+    undefined,
+    new DecisionService({
+      approvals: repo as never,
+      resumer: { resume: async () => {} } as never,
+      logger,
+      courier: new LarkDecisionCourier(lark as never, logger),
+    }),
+  );
 
 const send = (gate: ApprovalGateService) => gate.check({
   toolId: String(TOOL_ID),

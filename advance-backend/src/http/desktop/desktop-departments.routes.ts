@@ -30,6 +30,16 @@ const managerApprovalSchema = z.object({
   }).strict()).max(50),
 }).strict();
 const zohoScopeSchema = z.object({ personalized: z.boolean() }).strict();
+/* The whole selection, not a delta — the same contract as the manager policy
+   above it. Capped for the same reason: a stored gate is read on every gated
+   tool call, so it has to stay small enough to be free to read. */
+const personalApprovalsSchema = z.object({
+  all: z.boolean(),
+  actions: z.array(z.object({
+    toolId: z.string().trim().min(1).max(120),
+    actions: z.array(z.string().trim().min(1).max(60)).max(20),
+  }).strict()).max(50),
+}).strict();
 
 function actor(res: Response) {
   return { userId: res.locals.userId as string, companyId: res.locals.companyId as string };
@@ -57,6 +67,22 @@ export function createDesktopDepartmentRoutes(deps: DesktopDepartmentRoutesDeps)
     const parsed = candidateQuerySchema.safeParse(req.query);
     if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'query is required' }); return; }
     try { res.json(await deps.service.searchCandidates(actor(res), req.params.departmentId!, parsed.data.query)); } catch (error) { respondError(res, error); }
+  });
+
+  /* Deliberately not under `/departments/:id`. It is about the person asking,
+     not about a department they administer, and every member may read it —
+     which is the difference between this and the manager-only policy route
+     below. */
+  router.get('/me/approval-forecast', memberAuth, async (_req: Request, res: Response) => {
+    try { res.json(await deps.service.approvalForecast(actor(res))); } catch (error) { respondError(res, error); }
+  });
+
+  /* Member auth, not manager auth. Choosing to be shown more of your own work
+     is not a privilege, so every signed-in person may write their own. */
+  router.put('/me/personal-approvals', memberAuth, async (req: Request, res: Response) => {
+    const parsed = personalApprovalsSchema.safeParse(req.body);
+    if (!parsed.success) { res.status(400).json({ error: 'bad_request', message: 'Send { all, actions: [{ toolId, actions }] }' }); return; }
+    try { res.json(await deps.service.setPersonalApprovals(actor(res), parsed.data)); } catch (error) { respondError(res, error); }
   });
 
   router.get('/departments/:departmentId/manager-approval', memberAuth, async (req: Request, res: Response) => {
