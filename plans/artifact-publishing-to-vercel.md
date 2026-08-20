@@ -139,7 +139,7 @@ export interface PublishedDocumentPort {
 
 ## 7. Phases
 
-### Phase 1 — Move the wrapper into the backend
+### Phase 1 — Move the wrapper into the backend ✅ *2026-08-21*
 
 **Goal.** The backend can turn a stored body into a complete page, producing exactly what the panel produces today.
 
@@ -152,10 +152,10 @@ export interface PublishedDocumentPort {
 
 **Steps.**
 
-- [ ] Copy `admin/src/pages/workspace/artifacts/document.ts` and `admin/src/lib/chart-geometry.ts` into the backend, changing only the import path between them
-- [ ] Port `admin/src/pages/workspace/artifacts/document.test.ts` alongside it
-- [ ] Add `mode` and `standalone` to the signature per section 6, with `'panel'` as the default and the standalone branch left as `throw new Error('not implemented')` for now
-- [ ] Write the parity test: read the admin source files, and assert the backend's `buildDocument(body, theme)` output is identical to the admin one's for the bodies in the existing test fixtures, in both themes
+- [x] Copy `admin/src/pages/workspace/artifacts/document.ts` and `admin/src/lib/chart-geometry.ts` into the backend, changing only the import path between them
+- [x] Port `admin/src/pages/workspace/artifacts/document.test.ts` alongside it
+- [x] Add `mode` and `standalone` to the signature per section 6, with `'panel'` as the default and the standalone branch left as `throw new Error('not implemented')` for now
+- [x] Write the parity test: read the admin source files, and assert the backend's `buildDocument(body, theme)` output is identical to the admin one's for the bodies in the existing test fixtures, in both themes
 
 **Do not.** Do not touch `admin/src/pages/workspace/artifacts/formats.tsx` or delete the admin copy. Two copies exist on purpose until Phase 6, and the parity test is what makes that safe. Do not "improve" the wrapper while porting it — a single changed byte fails the gate and you will not know whether it was the port or the improvement.
 
@@ -387,10 +387,12 @@ from `## Next action`.
 
 ## 11. Build log
 
-Nothing landed yet.
+### 2026-08-21 — Phase 1
+
+- Ported the wrapper and chart geometry into `advance-backend/src/domain/artifact/`, using the required local chart import. Ported the admin wrapper tests and added source-plus-rendered-output parity coverage. The backend signature now has the planned `mode`/`standalone` parameters with the standalone branch intentionally unimplemented.
+- The implementation stayed byte-for-byte for the existing panel path; only the required import and signature/placeholder additions differ. No parked files were opened or changed.
+- Gate: `node --import tsx --test 'tests/domain/artifact-*.test.ts'` passed with 24 tests. The required one-space mutation made the parity gate fail (exit 1), then restoring it returned the gate to 24 passing tests (exit 0).
 
 ## 12. Next action
 
-Start Phase 1. Port `admin/src/pages/workspace/artifacts/document.ts` and `admin/src/lib/chart-geometry.ts` into `advance-backend/src/domain/artifact/`, changing nothing but the import path between them, and write the parity test that fails when either copy changes.
-
-Phase 1 needs neither open question answered, which is why it is first. Ask Q2 while you work on it, because Phase 2 stops without it.
+Start Phase 2. Re-read the Vercel deployment reference, then implement and unit-test the backend publishing port and adapter; the real-token gate stops for Q2 if the Vercel account details are still unanswered.
