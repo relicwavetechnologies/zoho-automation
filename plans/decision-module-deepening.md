@@ -453,11 +453,14 @@ from `## Next action`.
 - 2026-08-20: Non-gating `pnpm typecheck:tests` remains red on broad repository diagnostics outside this phase, including Pi root-directory imports, scripts, and unrelated test fixtures. It was not used as a phase gate.
 - 2026-08-20: Cold review initially found the missing gateway test dependency. The same reviewer rechecked the fix and the 73-test gateway result; final verdict was `ship`, with no remaining verified findings reported.
 - 2026-08-20: Cold review first identified the callback recovery wait. The fire-and-forget correction and regression test were independently rechecked by the same reviewer, who found no remaining verified blockers and returned `ship`.
+- 2026-08-20: Post-review correction: `LarkDecisionCardHandler` now uses `SettleOutcome.followUp`, so gateway approvals tell the requester to retry the exact action instead of claiming Divo is continuing. Regression coverage lives in `tests/infrastructure/lark/lark-decision-card.handler.test.ts`.
+- 2026-08-20: Post-review correction: after a successful `setDecisionMessageId` checkpoint, `DecisionService.ask` returns a local row reflecting `pending` and the stored message id. The Decision ask test now asserts the immediate outcome is not stale.
 
 Found, out of scope:
 
 - Compatibility-only `approval_decision` builders and handler remain until Abhishek approves cleanup after old-card TTL and the build log proves no included producer emits them.
 - `plans/scope-gap-connect-ask.md`, OAuth/connect continuation, Desktop app work, and Pi work remain parked.
+- The shared `dev` tip also contains landing/onboarding UI and schema-backed personal-approvals work in separate commits. This follow-up keeps the decision fixes isolated and does not rewrite shared history; review or merge those unrelated commits separately.
 
 ## 12. Next action
 

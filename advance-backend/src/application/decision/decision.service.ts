@@ -407,7 +407,7 @@ export class DecisionService {
       };
     }
 
-    const { approval, created: wasCreated, replacedExpired } = created.value;
+    let { approval, created: wasCreated, replacedExpired } = created.value;
     if (isToolAction && input.beforeDelivery) {
       const validation = await input.beforeDelivery(approval);
       if (!validation.ok) {
@@ -459,7 +459,17 @@ export class DecisionService {
         deliveredVia = 'lark';
         if (sent.messageId) {
           const persisted = await this.deps.approvals.setDecisionMessageId(approval.id, sent.messageId);
-          if (isToolAction && !persisted.ok) {
+          if (persisted.ok) {
+            /* The repository deliberately returns no row from this checkpoint.
+               Keep the ask outcome truthful for callers that render it
+               immediately: the durable row is now pending and carries the
+               message that made it actionable. */
+            approval = {
+              ...approval,
+              decisionMessageId: sent.messageId,
+              status: 'pending',
+            };
+          } else if (isToolAction) {
             this.deps.logger.error('decision.delivery_persist_failed', {
               id: approval.id,
               error: persisted.error.message,

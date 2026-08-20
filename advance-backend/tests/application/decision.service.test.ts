@@ -632,6 +632,8 @@ describe('decisions — asking', () => {
     assert.equal(outcome.ok && outcome.deliveredVia, 'lark');
     assert.equal(outcome.ok && outcome.requestState, 'created');
     assert.equal(outcome.ok && outcome.row.kind, 'tool_action');
+    assert.equal(outcome.ok && outcome.row.status, 'pending');
+    assert.equal(outcome.ok && outcome.row.decisionMessageId, 'om_new');
     assert.equal(calls.created[0].payloadJson.argsHash, 'hash-q2');
     assert.equal(calls.created[0].metadataJson.approvalAuthority, 'department_manager');
     assert.deepEqual(
