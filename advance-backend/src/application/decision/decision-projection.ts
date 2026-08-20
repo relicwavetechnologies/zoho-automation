@@ -8,11 +8,11 @@
  * one-question decision with two options and draws in the same card as a form
  * asked this morning.
  *
- * Native rows carry their questions in the payload. Everything else — the
- * manager gate's `tool_action`, the requester's `business_action` — carries a
- * tool call, and the only question anyone was ever asked about one of those was
- * yes or no. So that is what it becomes, with `describeToolAction` supplying
- * the words it already supplies to the card and the inbox.
+ * Native rows carry their questions in the payload. Tool approvals and
+ * requester confirmations carry a tool call, and the only question anyone was
+ * ever asked about one of those was yes or no. Automation plans are the one
+ * stored batch shape, so they get their title and preview from the immutable
+ * plan payload instead of being described as a fake single tool call.
  *
  * Pure, and separate from the module that does the loading, because this is the
  * part that can be silently wrong: a projection that drops a question or
@@ -26,6 +26,8 @@ import {
   type DecisionQuestion,
 } from '../../domain/decision/decision';
 import { describeToolAction, type ToolActionDescription } from '../approval/describe-tool-action';
+import { subjectFromToolAction } from './subject-from-tool-action';
+import type { DecisionSubject } from '../../domain/decision/decision-subject';
 import type { RuntimeApprovalRow } from '../../infrastructure/persistence/runtime-approval.repository';
 
 /** The row kind a decision asked through this module is stored under. */
@@ -89,24 +91,39 @@ export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
   const meta = asRecord(row.metadataJson);
   const payload = asRecord(row.payloadJson);
   const native = row.kind === DECISION_ROW_KIND ? readPayload(payload) : null;
+  const automation = row.kind === 'automation_script_plan' ? readAutomationPayload(payload) : null;
   const args = 'args' in payload ? payload['args'] : payload;
   const requesterName = readString(meta['requesterName'])
     ?? readString(meta['requesterEmail'])
     ?? row.requestedBy
     ?? 'Someone';
 
-  const described = native ? null : describeToolAction(row.toolId, row.actionGroup, args);
+  const described = native || automation ? null : describeToolAction(row.toolId, row.actionGroup, args);
   const questions = native
     ? native.questions
-    : [confirmQuestion({ ask: described!.title })];
-  const title = native ? (readString(meta['title']) ?? row.summary) : described!.title;
+    : automation
+      ? [confirmQuestion({ ask: `Approve this exact ${automation.invocationCount}-call automation plan?` })]
+      : [confirmQuestion({ ask: described!.title })];
+  const title = native
+    ? (readString(meta['title']) ?? row.summary)
+    : automation?.title ?? described!.title;
+  /* A native ask declares its own subject when it has one; a tool approval has
+     never declared anything, so its subject is read back out of the call it
+     already stores. That is what gives every approval written before this
+     existed a logo and a preview without a migration or a new producer. */
+  const subject = native
+    ? readSubject(meta['subject'])
+    : automation
+      ? undefined
+      : subjectFromToolAction(row.toolId, row.actionGroup, args);
 
   return {
     decision: {
       id: row.id,
       title,
-      ...(detailOf(native, meta, described) ? { detail: detailOf(native, meta, described)! } : {}),
+      ...(detailOf(native, automation, meta, described) ? { detail: detailOf(native, automation, meta, described)! } : {}),
       source: native ? (readString(meta['source']) ?? 'Divo') : requesterName,
+      ...(subject ? { subject } : {}),
       questions,
       requestedAt: row.createdAt.toISOString(),
       expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
@@ -115,6 +132,8 @@ export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
     questions,
     continuation: native
       ? native.continuation
+      : automation
+        ? { kind: 'run', toolId: row.toolId, action: row.actionGroup, argsHash: readString(meta['planHash']) ?? '' }
       /* A tool approval has always resumed by re-running the exact stored call.
          Saying so here rather than leaving it implied is what lets settlement
          switch on one field instead of reading four pieces of metadata. */
@@ -189,13 +208,52 @@ function webThreadIdOf(meta: Record<string, unknown>): string | null {
  */
 function detailOf(
   native: DecisionPayload | null,
+  automation: AutomationPayloadView | null,
   meta: Record<string, unknown>,
   described: { readonly details: ReadonlyArray<{ label: string; value: string }> } | null,
 ): string | undefined {
   if (native) return readString(meta['detail']);
+  if (automation) {
+    const storedDetail = readString(meta['detail']);
+    if (storedDetail) return storedDetail;
+    const preview = automation.callSummaries.slice(0, 12)
+      .map((call, index) => `${index + 1}. ${call}`)
+      .join('\n');
+    const remaining = automation.callSummaries.length - 12;
+    return [
+      `**What will happen**\n${automation.summary}`,
+      `**Exact preflighted calls**\n${preview || 'No calls'}${remaining > 0 ? `\n… and ${remaining} more exact calls` : ''}`,
+      'Approval permits only this preflighted batch. New, changed, or unplanned actions need a new approval.',
+    ].join('\n\n');
+  }
   const details = described?.details ?? [];
   if (details.length === 0) return undefined;
   return details.map(entry => `${entry.label}: ${entry.value}`).join('\n');
+}
+
+interface AutomationPayloadView {
+  readonly title: string;
+  readonly summary: string;
+  readonly invocationCount: number;
+  readonly callSummaries: readonly string[];
+}
+
+function readAutomationPayload(payload: Record<string, unknown>): AutomationPayloadView | null {
+  const title = readString(payload['title']);
+  const summary = readString(payload['summary']);
+  const invocations = payload['invocations'];
+  if (!title || !summary || !Array.isArray(invocations)) return null;
+  const callSummaries = invocations.flatMap(entry => {
+    const record = asRecord(entry);
+    const callSummary = readString(record['callSummary']);
+    return callSummary ? [callSummary] : [];
+  });
+  return {
+    title,
+    summary,
+    invocationCount: invocations.length,
+    callSummaries,
+  };
 }
 
 /**
@@ -243,6 +301,23 @@ function readContinuation(value: unknown): DecisionContinuation {
      `none` says the true thing, which is that no continuation this build can
      carry out was recorded. */
   return { kind: 'none' };
+}
+
+/**
+ * A stored subject, read back only as far as it can be trusted.
+ *
+ * `brand` and `action` are the two fields a card cannot draw without, so a row
+ * missing either yields no subject at all rather than a strip with a blank logo.
+ * The preview is carried through as stored: it was written by this build's own
+ * ask, and re-validating every arm of it here would be a second copy of the
+ * type that drifts from the first.
+ */
+function readSubject(value: unknown): DecisionSubject | undefined {
+  const record = asRecord(value);
+  const brand = readString(record['brand']);
+  const action = readString(record['action']);
+  if (!brand || !action) return undefined;
+  return { ...record, brand, action } as DecisionSubject;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

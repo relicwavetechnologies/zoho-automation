@@ -1,4 +1,5 @@
 import type { CanonicalToolId } from './tool-id';
+import type { DecisionBrand } from '../decision/decision-subject';
 
 /**
  * How a tool and its actions are named to a human.
@@ -23,45 +24,54 @@ export interface ToolLabel {
   readonly name: string;
   /** What the tool acts on, in the plural — "email", "records", "events". */
   readonly noun: string;
+  /**
+   * Whose product it is, for the surfaces that draw a logo.
+   *
+   * Here rather than in a card because it is the same kind of fact as the name:
+   * what a person recognises this as. Absent for Divo's own tools and for the
+   * open web — `webSearch` and `knowledge` have no third party behind them, and
+   * inventing a mark for them would be the surface lying about who is involved.
+   */
+  readonly brand?: DecisionBrand;
 }
 
 export const TOOL_LABELS: Readonly<Record<CanonicalToolId, ToolLabel>> = {
-  larkMessaging:      { name: 'Lark Messaging',   noun: 'messages' },
-  larkContacts:       { name: 'Lark Contacts',    noun: 'contacts' },
-  larkTask:           { name: 'Lark Tasks',       noun: 'tasks' },
-  larkCalendar:       { name: 'Lark Calendar',    noun: 'events' },
-  larkMeeting:        { name: 'Lark Meetings',    noun: 'meetings' },
-  larkDoc:            { name: 'Lark Docs',        noun: 'documents' },
-  larkBase:           { name: 'Lark Base',        noun: 'tables' },
-  larkApproval:       { name: 'Lark Approvals',   noun: 'approvals' },
-  googleGmail:        { name: 'Gmail',            noun: 'email' },
-  googleDrive:        { name: 'Google Drive',     noun: 'files' },
-  googleCalendar:     { name: 'Google Calendar',  noun: 'events' },
-  googleDocs:         { name: 'Google Docs',      noun: 'documents' },
-  googleSheets:       { name: 'Google Sheets',    noun: 'spreadsheets' },
-  googleSlides:       { name: 'Google Slides',    noun: 'presentations' },
-  googleForms:        { name: 'Google Forms',     noun: 'forms' },
-  googleTasks:        { name: 'Google Tasks',     noun: 'tasks' },
-  googleContacts:     { name: 'Google Contacts',  noun: 'contacts' },
-  googleChat:         { name: 'Google Chat',      noun: 'messages' },
-  googleAppsScript:   { name: 'Apps Script',      noun: 'scripts' },
-  canvaDesign:        { name: 'Canva',            noun: 'designs' },
-  airtableBase:       { name: 'Airtable',         noun: 'bases and records' },
-  airtableRecords:    { name: 'Airtable Records', noun: 'records' },
-  airtableSchema:     { name: 'Airtable Schema',  noun: 'tables and fields' },
-  airtableAutomation: { name: 'Airtable Automations', noun: 'automations' },
-  aitableDatasheets:  { name: 'AITable Datasheets', noun: 'records' },
-  aitableFields:      { name: 'AITable Fields',   noun: 'fields' },
-  zohoCrm:            { name: 'Zoho CRM',         noun: 'records' },
-  zohoBooks:          { name: 'Zoho Books',       noun: 'invoices' },
-  shopifyAnalytics:   { name: 'Shopify Analytics', noun: 'reports' },
-  shopifyOrders:      { name: 'Shopify Orders',    noun: 'orders' },
-  shopifyCustomers:   { name: 'Shopify Customers', noun: 'customers' },
+  larkMessaging:      { name: 'Lark Messaging',   noun: 'messages', brand: 'lark' },
+  larkContacts:       { name: 'Lark Contacts',    noun: 'contacts', brand: 'lark' },
+  larkTask:           { name: 'Lark Tasks',       noun: 'tasks', brand: 'lark' },
+  larkCalendar:       { name: 'Lark Calendar',    noun: 'events', brand: 'lark' },
+  larkMeeting:        { name: 'Lark Meetings',    noun: 'meetings', brand: 'lark' },
+  larkDoc:            { name: 'Lark Docs',        noun: 'documents', brand: 'lark' },
+  larkBase:           { name: 'Lark Base',        noun: 'tables', brand: 'lark' },
+  larkApproval:       { name: 'Lark Approvals',   noun: 'approvals', brand: 'lark' },
+  googleGmail:        { name: 'Gmail',            noun: 'email', brand: 'gmail' },
+  googleDrive:        { name: 'Google Drive',     noun: 'files', brand: 'googleDrive' },
+  googleCalendar:     { name: 'Google Calendar',  noun: 'events', brand: 'googleCalendar' },
+  googleDocs:         { name: 'Google Docs',      noun: 'documents', brand: 'googleDocs' },
+  googleSheets:       { name: 'Google Sheets',    noun: 'spreadsheets', brand: 'googleSheets' },
+  googleSlides:       { name: 'Google Slides',    noun: 'presentations', brand: 'googleSlides' },
+  googleForms:        { name: 'Google Forms',     noun: 'forms', brand: 'googleForms' },
+  googleTasks:        { name: 'Google Tasks',     noun: 'tasks', brand: 'googleTasks' },
+  googleContacts:     { name: 'Google Contacts',  noun: 'contacts', brand: 'googleContacts' },
+  googleChat:         { name: 'Google Chat',      noun: 'messages', brand: 'googleChat' },
+  googleAppsScript:   { name: 'Apps Script',      noun: 'scripts', brand: 'googleAppsScript' },
+  canvaDesign:        { name: 'Canva',            noun: 'designs', brand: 'canva' },
+  airtableBase:       { name: 'Airtable',         noun: 'bases and records', brand: 'airtable' },
+  airtableRecords:    { name: 'Airtable Records', noun: 'records', brand: 'airtable' },
+  airtableSchema:     { name: 'Airtable Schema',  noun: 'tables and fields', brand: 'airtable' },
+  airtableAutomation: { name: 'Airtable Automations', noun: 'automations', brand: 'airtable' },
+  aitableDatasheets:  { name: 'AITable Datasheets', noun: 'records', brand: 'aitable' },
+  aitableFields:      { name: 'AITable Fields',   noun: 'fields', brand: 'aitable' },
+  zohoCrm:            { name: 'Zoho CRM',         noun: 'records', brand: 'zohoCrm' },
+  zohoBooks:          { name: 'Zoho Books',       noun: 'invoices', brand: 'zohoBooks' },
+  shopifyAnalytics:   { name: 'Shopify Analytics', noun: 'reports', brand: 'shopify' },
+  shopifyOrders:      { name: 'Shopify Orders',    noun: 'orders', brand: 'shopify' },
+  shopifyCustomers:   { name: 'Shopify Customers', noun: 'customers', brand: 'shopify' },
   webSearch:          { name: 'Web Search',       noun: 'the web' },
   knowledge:          { name: 'Divo Knowledge',   noun: 'knowledge' },
-  mailAutomations:    { name: 'Mail Ops',          noun: 'mail rules' },
+  mailAutomations:    { name: 'Mail Ops',          noun: 'mail rules', brand: 'gmail' },
   scheduledWorkflows: { name: 'Scheduled Work',   noun: 'schedules' },
-  semrush:            { name: 'Semrush',          noun: 'SEO data' },
+  semrush:            { name: 'Semrush',          noun: 'SEO data', brand: 'semrush' },
   omsSiteData:        { name: 'OMS Site Data',    noun: 'site inventory' },
   menhoodData:        { name: 'Menhood Data',     noun: 'records' },
 };

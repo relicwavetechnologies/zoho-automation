@@ -17,6 +17,7 @@ import {
 } from './lark-decision-card';
 
 export interface LarkDecisionCardActor {
+  readonly tenantKey: string;
   readonly openId: string;
   readonly userId: string;
   readonly companyId: string;
@@ -48,7 +49,12 @@ export class LarkDecisionCardHandler {
     if (!isDecisionCardAction(action)) return { responseBody: { ok: true } };
 
     const outcome = await this.decisions.answerOne(
-      { userId: actor.userId, companyId: actor.companyId, ...(actor.displayName ? { displayName: actor.displayName } : {}) },
+      {
+        userId: actor.userId,
+        companyId: actor.companyId,
+        ...(actor.displayName ? { displayName: actor.displayName } : {}),
+        lark: { openId: actor.openId, tenantKey: actor.tenantKey },
+      },
       action.decisionId,
       action.questionId,
       action.value,

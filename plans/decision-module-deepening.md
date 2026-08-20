@@ -1,6 +1,6 @@
 # Deepen the Decision module into the one human ask interface
 
-> Status: **Active handover**
+> Status: **All included phases complete; compatibility cleanup pending approval**
 >
 > Created: **2026-08-20**
 >
@@ -179,7 +179,7 @@ The adapter seam is `DecisionCourier`. It may need a richer failure result than 
 
 **Gate.** The phase closes only when the Decision tests and approval HITL tests in section 9 pass, and code inspection shows `LarkApprovalCardHandler` no longer calls `atomicResolve` or `resumer.resume` directly.
 
-### Phase 2 - move manager approval opening
+### Phase 2 — move manager approval opening ✅ *2026-08-20*
 
 **Goal.** `ApprovalGateService.check` still decides authority, but `DecisionService.ask` opens and delivers `tool_action` human asks.
 
@@ -198,14 +198,14 @@ The adapter seam is `DecisionCourier`. It may need a richer failure result than 
 
 **Steps.**
 
-- [ ] Keep `ApprovalGateService.inspect`, `bindKnowledgeApproval`, `decisionFromExisting`, and grant claiming in `ApprovalGateService`.
-- [ ] Let `ApprovalGateService.check` compute the exact approver, authority, args hash, idempotency namespace, compatibility scopes, requester display, and execution metadata as it does today.
-- [ ] Move the `createOrReuseActive` call for new `tool_action` rows behind the Decision ask interface.
-- [ ] Preserve the stored metadata fields currently read by projection, inbox queries, resumer, execution replay, and Desktop compatibility.
-- [ ] Send new Lark approvals through `LarkDecisionCourier`, so their button value is `decision_answer`.
-- [ ] Preserve no-Lark behaviour: the row stays pending and visible in Divo instead of failing the tool call.
-- [ ] Preserve ambiguous Lark delivery behaviour: checkpoint unknown delivery and block exact automatic retry.
-- [ ] Return the same `ApprovalDecision` shapes from `ApprovalGateService.check` that callers already handle.
+- [x] Keep `ApprovalGateService.inspect`, `bindKnowledgeApproval`, `decisionFromExisting`, and grant claiming in `ApprovalGateService`.
+- [x] Let `ApprovalGateService.check` compute the exact approver, authority, args hash, idempotency namespace, compatibility scopes, requester display, and execution metadata as it does today.
+- [x] Move the `createOrReuseActive` call for new `tool_action` rows behind the Decision ask interface.
+- [x] Preserve the stored metadata fields currently read by projection, inbox queries, resumer, execution replay, and Desktop compatibility.
+- [x] Send new Lark approvals through `LarkDecisionCourier`, so their button value is `decision_answer`.
+- [x] Preserve no-Lark behaviour: the row stays pending and visible in Divo instead of failing the tool call.
+- [x] Preserve ambiguous Lark delivery behaviour: checkpoint unknown delivery and block exact automatic retry.
+- [x] Return the same `ApprovalDecision` shapes from `ApprovalGateService.check` that callers already handle.
 
 **Do not.**
 
@@ -215,7 +215,7 @@ The adapter seam is `DecisionCourier`. It may need a richer failure result than 
 
 **Gate.** The phase closes only when the Decision, approval HITL, no-Lark approver, and surface parity tests in section 9 pass, and code inspection shows `ApprovalGateService.check` no longer builds or sends Lark cards directly.
 
-### Phase 3 - move requester confirmation opening
+### Phase 3 — move requester confirmation opening ✅ *2026-08-20*
 
 **Goal.** Requester confirmations become Decision asks while `BusinessActionService.decide` keeps the exact execution lifecycle.
 
@@ -229,11 +229,11 @@ The adapter seam is `DecisionCourier`. It may need a richer failure result than 
 
 **Steps.**
 
-- [ ] Move `business_action` row opening out of `BusinessActionService.prepare`.
-- [ ] Preserve `resolvedDecisionUserId`, `resolvedManagerUserId`, requester metadata, session metadata, `approvalOrigin: 'gateway'`, and `autoResume: true`.
-- [ ] Keep `BusinessActionService.decide` unchanged unless the new ask outcome requires a narrow type adjustment.
-- [ ] Keep web thread extraction working for requester confirmations.
-- [ ] Return the existing gateway success shape from `prepare`.
+- [x] Move `business_action` row opening out of `BusinessActionService.prepare`.
+- [x] Preserve `resolvedDecisionUserId`, `resolvedManagerUserId`, requester metadata, session metadata, `approvalOrigin: 'gateway'`, and `autoResume: true`.
+- [x] Keep `BusinessActionService.decide` unchanged unless the new ask outcome requires a narrow type adjustment.
+- [x] Keep web thread extraction working for requester confirmations.
+- [x] Return the existing gateway success shape from `prepare`.
 
 **Do not.**
 
@@ -243,7 +243,7 @@ The adapter seam is `DecisionCourier`. It may need a richer failure result than 
 
 **Gate.** The phase closes only when the Decision and business-action tests in section 9 pass, and code inspection shows `BusinessActionService.prepare` no longer calls `createOrReuseActive`.
 
-### Phase 4 - move automation plan opening
+### Phase 4 — move automation plan opening ✅ *2026-08-20*
 
 **Goal.** Automation batch approval uses the same Decision ask interface without changing batch preflight or execution.
 
@@ -258,12 +258,12 @@ The adapter seam is `DecisionCourier`. It may need a richer failure result than 
 
 **Steps.**
 
-- [ ] Keep automation preflight, plan hashing, invocation signatures, and executor revalidation in the automation module.
-- [ ] Move only row opening and Lark delivery behind Decision.
-- [ ] Preserve existing `automation_script_plan` payload and metadata fields, including `planHash`, `actionCounts`, approver metadata, authority, requester metadata, and delivery mode.
-- [ ] Project automation rows as one confirm question with the same approve/reject semantics.
-- [ ] Put the existing batch preview and safety copy into the Decision detail, capped to the same preview count used today.
-- [ ] Preserve no-Lark inbox behaviour and delivery uncertainty checkpoints.
+- [x] Keep automation preflight, plan hashing, invocation signatures, and executor revalidation in the automation module.
+- [x] Move only row opening and Lark delivery behind Decision.
+- [x] Preserve existing `automation_script_plan` payload and metadata fields, including `planHash`, `actionCounts`, approver metadata, authority, requester metadata, and delivery mode.
+- [x] Project automation rows as one confirm question with the same approve/reject semantics.
+- [x] Put the existing batch preview and safety copy into the Decision detail, capped to the same preview count used today.
+- [x] Preserve no-Lark inbox behaviour and delivery uncertainty checkpoints.
 
 **Do not.**
 
@@ -273,7 +273,7 @@ The adapter seam is `DecisionCourier`. It may need a richer failure result than 
 
 **Gate.** The phase closes only when the Decision, automation-plan, approval HITL, and surface parity tests in section 9 pass, and code inspection shows `AutomationPlanService.create` no longer builds or sends Lark cards directly.
 
-### Phase 5 - shrink the old card surface to compatibility
+### Phase 5 — shrink the old card surface to compatibility ✅ *2026-08-20*
 
 **Goal.** New included asks emit only `decision_answer`; old `approval_decision` code is labelled as compatibility and left in place until cleanup is approved.
 
@@ -286,10 +286,10 @@ The adapter seam is `DecisionCourier`. It may need a richer failure result than 
 
 **Steps.**
 
-- [ ] Confirm no included producer still calls `buildApprovalCard` or `buildAutomationPlanApprovalCard`.
-- [ ] Update comments on old card files to match current behaviour.
-- [ ] Leave old handler wiring intact for delivered cards.
-- [ ] Add a build-log entry naming what remains compatibility-only and why it was not deleted.
+- [x] Confirm no included producer still calls `buildApprovalCard` or `buildAutomationPlanApprovalCard`.
+- [x] Update comments on old card files to match current behaviour.
+- [x] Leave old handler wiring intact for delivered cards.
+- [x] Add a build-log entry naming what remains compatibility-only and why it was not deleted.
 
 **Do not.**
 
@@ -360,21 +360,21 @@ All commands below were run from `advance-backend/` on **2026-08-20** against th
 node --import tsx --test tests/application/decision.service.test.ts tests/domain/decision.test.ts
 ```
 
-Result on 2026-08-20: 57 pass, 0 fail. It does not prove the old Lark approval handler delegates to Decision yet.
+Result on 2026-08-20: 64 pass, 0 fail. It covers native asks, manager tool asks, automation projection, reuse, no-Lark delivery, uncertain delivery, settlement, and answer validation.
 
 ```bash
 # Proves approval gate policy, idempotency, delivery states, old Lark card handling, and no-Lark approver behaviour.
 node --import tsx --test tests/approval/hitl-flow.test.ts tests/approval/approver-without-lark.test.ts
 ```
 
-Result on 2026-08-20: 65 pass, 0 fail. It does not prove new approvals emit `decision_answer` yet.
+Result on 2026-08-20: 66 pass, 0 fail. It covers new `decision_answer` manager cards, old `approval_decision` compatibility cards, delivery checkpoints, and no-Lark approvers.
 
 ```bash
 # Proves requester confirmations and automation batch approvals before opening moves into Decision.
 node --import tsx --test tests/application/business-action.service.test.ts tests/application/automation-plan.service.test.ts
 ```
 
-Result on 2026-08-20: 40 pass, 0 fail. It does not prove the automation plan projects well as a Decision card yet.
+Result on 2026-08-20: 47 pass, 0 fail across the requester-confirmation service and automation plan service/executor tests. The Decision test above covers automation projection.
 
 ```bash
 # Proves surface grants and Google scope helpers stayed unchanged while this plan was written.
@@ -445,14 +445,20 @@ from `## Next action`.
 - 2026-08-20: `LarkApprovalCardHandler` is now a compatibility adapter. It still parses object, single-encoded, and double-encoded `approval_decision` values and returns the old resolution card, but it delegates answer validation, authorization, atomic settlement, auditing, and continuation to `DecisionService.settle`. A neutral `followUp` result preserves the old gateway retry toast without moving `approvalResumesAutomatically` into the adapter. Delivered-card PATCHes remain fire-and-forget so the Lark callback is not held on recovery I/O.
 - 2026-08-20: Composition constructs the legacy handler after the existing `DecisionService`; no second Decision module was introduced. The old handler and old approval builders remain wired for compatibility.
 - 2026-08-20: Gate passed. `node --import tsx --test tests/application/decision.service.test.ts tests/domain/decision.test.ts` returned 59 pass, 0 fail. `node --import tsx --test tests/approval/hitl-flow.test.ts tests/approval/approver-without-lark.test.ts` returned 66 pass, 0 fail, including a regression test that leaves `updateMessageById` pending while the old callback returns. `pnpm typecheck` returned 0. Static inspection found no direct `atomicResolve`, `resumer.resume`, or approval-policy call in `lark-approval-card.handler.ts`.
-- 2026-08-20: Non-gating `pnpm typecheck:tests` remains red on broad repository diagnostics outside this phase, including Pi root-directory imports, scripts, and unrelated test fixtures. It was not used as the phase gate.
+- 2026-08-20: Phase 2 complete. `ApprovalGateService.check` still owns inspection, authority, exact-match compatibility, knowledge binding, grants, and execution replay. It now passes the exact row facts to `DecisionService.ask`, which owns row creation, `decision_answer` delivery, message-id persistence, and delivery checkpoints. The lazy composition port avoids a construction cycle without creating a second Decision implementation. Gates: 64 Decision/domain, 66 approval/no-Lark, and 12 surface/Google tests passed; `pnpm typecheck` passed.
+- 2026-08-20: Phase 3 complete. `BusinessActionService.prepare` now asks the Decision module to open `business_action` rows and preserves requester metadata, session/execution facts, and the existing gateway response. `BusinessActionService.decide` remains the execution owner. Gate: 64 Decision/domain and 13 business-action/routing tests passed; inspection found no `createOrReuseActive` call in `prepare`.
+- 2026-08-20: Phase 4 complete. `AutomationPlanService.create` still owns preflight, plan hashing, approval signatures, and the immutable payload, but passes opening and delivery to Decision. Automation rows project to one exact-batch question with the existing 12-call preview cap and safety copy. `AutomationPlanExecutor` was not changed. Gate: 64 Decision/domain, 34 automation service/executor, 66 approval/no-Lark, and 12 surface/Google tests passed.
+- 2026-08-20: Phase 5 complete. Included producers no longer call `buildApprovalCard` or `buildAutomationPlanApprovalCard`; new included cards contain `decision_answer`. The old handler, builders, tests, and webhook wiring remain because delivered old cards can still be clicked. Compatibility cleanup remains an Abhishek decision after the old-card TTL.
+- 2026-08-20: The broader gateway regression suite exposed its own `BusinessActionService` test factory without the new Decision dependency. It was repaired with the same in-memory approval repository; `node --import tsx --test tests/application/gateway.test.ts` returned 73 pass, 0 fail.
+- 2026-08-20: Non-gating `pnpm typecheck:tests` remains red on broad repository diagnostics outside this phase, including Pi root-directory imports, scripts, and unrelated test fixtures. It was not used as a phase gate.
+- 2026-08-20: Cold review initially found the missing gateway test dependency. The same reviewer rechecked the fix and the 73-test gateway result; final verdict was `ship`, with no remaining verified findings reported.
 - 2026-08-20: Cold review first identified the callback recovery wait. The fire-and-forget correction and regression test were independently rechecked by the same reviewer, who found no remaining verified blockers and returned `ship`.
 
 Found, out of scope:
 
-- The remaining producers still open their own rows and old cards. Phase 2 owns manager approval opening; later phases own requester confirmations and automation plans.
-- `plans/scope-gap-connect-ask.md`, OAuth/connect continuation, Desktop app work, Pi work, and removal of old handlers/builders remain parked.
+- Compatibility-only `approval_decision` builders and handler remain until Abhishek approves cleanup after old-card TTL and the build log proves no included producer emits them.
+- `plans/scope-gap-connect-ask.md`, OAuth/connect continuation, Desktop app work, and Pi work remain parked.
 
 ## 12. Next action
 
-Start Phase 2: move manager approval opening behind `DecisionService.ask` while keeping `ApprovalGateService` as the authority and policy owner.
+No implementation phase remains. Await Abhishek's decision on removing the compatibility-only `approval_decision` handler and builders after the old-card TTL.

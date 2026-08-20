@@ -341,6 +341,7 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
           // and as each of those migrates, its branch below simply goes away.
           if (deps.decisionCardHandler?.claims(cardEvent)) {
             const result = await deps.decisionCardHandler.handle(cardEvent, {
+              tenantKey: actor.tenantKey,
               openId: actor.openId,
               userId: actor.userId,
               companyId: actor.companyId,
@@ -369,6 +370,8 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
             });
             return;
           }
+          // Compatibility only. Included manager approvals now arrive as
+          // `decision_answer`; this branch stays for old delivered cards.
           if (deps.approvalCardHandler) {
             const result = await deps.approvalCardHandler.handle(cardEvent, actor);
             res.status(200).json(result.responseBody ?? { ok: true });

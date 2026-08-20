@@ -8,10 +8,9 @@
  * `set_group_mode` — four vocabularies arriving at one webhook, dispatched by
  * an if-chain that every new feature extended.
  *
- * None of those has been migrated yet. Nothing calls `DecisionService.ask`, so
- * no card built here has been sent in production and the four older branches
- * are all still in `lark.webhook.routes.ts` below this one's. What is here is
- * proven by its tests and is waiting for its first caller.
+ * Manager tool approvals and automation plans now call `DecisionService.ask`
+ * through this builder. The remaining older feature branches are still in
+ * `lark.webhook.routes.ts` below this one and will migrate separately.
  *
  * The interesting part is the degradation. A card is a row of buttons: it can
  * carry a single choice and cannot carry a text field or a multi-select that

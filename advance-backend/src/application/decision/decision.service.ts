@@ -8,7 +8,12 @@ import type { ApprovalResumerService } from '../approval/approval-resumer.servic
 import type { BusinessActionService } from '../approval/business-action.service';
 import type { ApprovalCardInput } from '../approval/approval-card-builder';
 import type { GatewayMemberContext } from '../gateway/gateway.types';
+import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
 import { approvalResumesAutomatically, isGatewayApprovalMetadata } from '../approval/approval-origin';
+import {
+  approvalDeliveryFailedCheckpoint,
+  approvalDeliveryUnknownCheckpoint,
+} from '../approval/approval-delivery';
 import { sha256 } from '../../shared/hash';
 import { surfaceCapabilities } from '../../domain/channel/surface-capabilities';
 import type { ChannelKey } from '../../domain/channel/incoming-message';
@@ -22,6 +27,7 @@ import {
   type DecisionAnswer,
   type DecisionContinuation,
   type DecisionQuestion,
+  type DecisionSubject,
   type DecisionVerdict,
 } from '../../domain/decision/decision';
 import {
@@ -42,14 +48,11 @@ import {
  * WHAT IS AND IS NOT MIGRATED. Every existing approval is *read* and *settled*
  * through here: the projection turns any stored row into questions, so the web
  * card, the Approvals page, the Desktop route, and the compatibility handler for
- * old Lark approval cards all come through this module. What has not moved is
- * the *asking*. `ask` has no caller yet — the seven older paths still write
- * their own rows and draw their own Lark cards, and the branches for them are
- * still in the webhook. So the Lark half of this module (the courier, the
- * decision card, `answerOne`, `responseJson`) is proven by its tests and still
- * carries no production traffic until the first producer is migrated. Said
- * plainly here because a module that reads as finished is one the next author
- * will not finish.
+ * old Lark approval cards all come through this module. Manager approval opening
+ * now comes through `ask` too. The other older producers still write their own
+ * rows and draw their own cards until their phases migrate them. Said plainly
+ * here because a module that reads as finished is one the next author will not
+ * finish.
  *
  * Three things are true of every question that comes through here, and each one
  * used to be re-established per feature:
@@ -93,7 +96,8 @@ export interface DecisionActor {
   readonly member?: GatewayMemberContext;
 }
 
-export interface AskDecision {
+export interface NativeDecisionAsk {
+  readonly kind?: 'decision';
   readonly companyId: string;
   /** Who has to answer. */
   readonly approver: { readonly userId: string; readonly displayName?: string; readonly larkOpenId?: string | null };
@@ -103,6 +107,14 @@ export interface AskDecision {
   readonly detail?: string;
   /** Named on the card: a requester, a department, "Divo". */
   readonly source?: string;
+  /**
+   * The product being acted on, when there is one.
+   *
+   * Declared by the asker rather than worked out here: this module knows
+   * nothing about tool ids on purpose, and a native ask is the one case where
+   * there is no stored tool call to read a subject back out of.
+   */
+  readonly subject?: DecisionSubject;
   readonly questions: readonly DecisionQuestion[];
   /**
    * Deliberately narrower than `DecisionContinuation`.
@@ -133,9 +145,63 @@ export interface AskDecision {
   readonly expiresInMs?: number;
 }
 
+export interface ToolActionDecisionAsk {
+  readonly kind: 'tool_action';
+  readonly companyId: string;
+  /** Who has to answer. */
+  readonly approver: { readonly userId: string; readonly displayName?: string; readonly larkOpenId?: string | null };
+  /** Who is asking, as a person rather than a system. */
+  readonly requestedBy: { readonly userId: string; readonly displayName?: string };
+  /** The exact requester-facing summary already prepared by the producer. */
+  readonly summary: string;
+  readonly toolId: string;
+  readonly action: ToolActionGroup;
+  /** Stored row kind, kept explicit for requester-owned execution routing. */
+  readonly rowKind?: 'tool_action' | 'business_action' | 'automation_script_plan';
+  readonly args: unknown;
+  readonly argsHash: string;
+  /** Optional immutable payload for a domain-specific row such as an automation plan. */
+  readonly payloadJson?: unknown;
+  /** Producer-owned metadata that must survive row opening unchanged. */
+  readonly metadata: Readonly<Record<string, unknown>>;
+  /** Validation/binding that must finish before a new card is sent. */
+  readonly beforeDelivery?: (row: RuntimeApprovalRow) => Promise<
+    | { readonly ok: true }
+    | { readonly ok: false; readonly reason: string; readonly message: string }
+  >;
+  readonly channel: ChannelKey;
+  readonly conversationKey: string;
+  readonly idempotencyKey: string;
+  readonly compatibleIdempotencyKeys?: readonly string[];
+  /** Exact legacy-row predicate owned by the approval gate. */
+  readonly isCompatibleApproval?: (row: RuntimeApprovalRow) => boolean;
+  /** Producer-owned copy for delivery failures that include domain context. */
+  readonly deliveryMessages?: {
+    readonly unknown: (rowId: string) => string;
+    readonly failed: (rowId: string) => string;
+  };
+  readonly initialStatus: 'dispatching' | 'pending';
+  readonly expiresInMs?: number;
+}
+
+export type AskDecision = NativeDecisionAsk | ToolActionDecisionAsk;
+
 export type AskOutcome =
-  | { readonly ok: true; readonly decision: Decision; readonly created: boolean; readonly deliveredVia: 'lark' | 'divo' }
-  | { readonly ok: false; readonly message: string };
+  | {
+      readonly ok: true;
+      readonly decision: Decision;
+      readonly row: RuntimeApprovalRow;
+      readonly created: boolean;
+      readonly replacedExpired: boolean;
+      readonly deliveredVia: 'lark' | 'desktop' | 'web' | 'divo';
+      readonly requestState: 'created' | 'reused' | 'dispatching' | 'replaced_expired';
+    }
+  | {
+      readonly ok: false;
+      readonly reason: 'invalid' | 'store_failed' | 'delivery_failed' | 'delivery_unknown';
+      readonly message: string;
+      readonly rowId?: string;
+    };
 
 export type SettleOutcome =
   | {
@@ -177,7 +243,16 @@ export interface DecisionCourier {
     readonly decision: Decision;
     readonly questions: readonly DecisionQuestion[];
     readonly approverOpenId: string;
-  }): Promise<{ readonly ok: boolean; readonly messageId?: string }>;
+  }): Promise<
+    | { readonly ok: true; readonly messageId?: string }
+    | {
+        readonly ok: false;
+        readonly failure?: {
+          readonly certainty: 'definite' | 'unknown';
+          readonly message: string;
+        };
+      }
+  >;
 }
 
 export interface DecisionServiceDeps {
@@ -222,90 +297,252 @@ export class DecisionService {
    * question. Somebody Divo cannot card still has it waiting in Divo.
    */
   async ask(input: AskDecision): Promise<AskOutcome> {
-    const questions = input.questions;
-    if (questions.length === 0) return { ok: false, message: 'A decision needs at least one question.' };
+    const isToolAction = input.kind === 'tool_action';
+    const questions = isToolAction ? null : input.questions;
+    if (questions && questions.length === 0) {
+      return { ok: false, reason: 'invalid', message: 'A decision needs at least one question.' };
+    }
 
     /* The questions are part of what makes this the same question.
        `createOrReuseActive` reuses any live row with a matching key without
        comparing payloads, so a key built from the title alone let a second,
        different ask inside the TTL quietly return the first one's decision —
        answered, resumed, while its own caller was told it had been asked. */
-    const idempotencyKey = input.idempotencyKey
-      ?? sha256(`decision:${input.companyId}:${input.approver.userId}:${input.conversationKey}:${input.title}:${
-        JSON.stringify({ questions, continuation: input.continuation })}`);
+    const idempotencyKey = isToolAction
+      ? input.idempotencyKey
+      : input.idempotencyKey
+        ?? sha256(`decision:${input.companyId}:${input.approver.userId}:${input.conversationKey}:${input.title}:${
+          JSON.stringify({ questions, continuation: input.continuation })}`);
 
-    const created = await this.deps.approvals.createOrReuseActive({
-      chatId: input.conversationKey,
-      companyId: input.companyId,
-      toolId: DECISION_TOOL_ID,
-      actionGroup: 'execute',
-      kind: DECISION_ROW_KIND,
-      summary: input.title,
-      payloadJson: { questions, continuation: input.continuation },
-      metadataJson: {
-        title: input.title,
-        detail: input.detail ?? null,
-        source: input.source ?? input.requestedBy.displayName ?? 'Divo',
-        // The field the inbox query reads. Named for the manager approval it
-        // came from; it means "whose answer this is waiting on".
-        resolvedManagerUserId: input.approver.userId,
-        resolvedManagerName: input.approver.displayName ?? null,
-        resolvedManagerOpenId: input.approver.larkOpenId ?? null,
-        requesterId: input.requestedBy.userId,
-        requesterName: input.requestedBy.displayName ?? null,
-        sourceChannel: input.channel,
-        approvalOrigin: input.channel === 'lark' ? 'lark' : 'gateway',
-        /* A native decision never resumes a stored tool call — see the note on
-           `continuation` above — so it must not inherit the gateway rule that
-           would ask the resumer to find one. */
-        autoResume: false,
-        /* Named so the projection can tell a decision asked in a browser from
-           one asked anywhere else, without inferring it from an id shape. */
-        conversationKey: input.conversationKey,
-      },
-      channel: input.channel,
-      requestedBy: input.requestedBy.userId,
-      idempotencyKey,
-      expiresAt: new Date(Date.now() + (input.expiresInMs ?? DEFAULT_TTL_MS)),
-      // Nothing has to be delivered for a decision to be answerable: it is
-      // already visible in Divo the moment it exists.
-      initialStatus: 'pending',
-    });
+    const createInput = isToolAction
+      ? {
+          chatId: input.conversationKey,
+          companyId: input.companyId,
+          toolId: input.toolId,
+          actionGroup: input.action,
+          kind: input.rowKind ?? 'tool_action',
+          summary: input.summary,
+          payloadJson: input.payloadJson ?? {
+            toolId: input.toolId,
+            action: input.action,
+            args: input.args,
+            argsHash: input.argsHash,
+          },
+          metadataJson: {
+            ...input.metadata,
+            resolvedManagerUserId: input.approver.userId,
+            resolvedManagerName: input.approver.displayName ?? null,
+            resolvedManagerOpenId: input.approver.larkOpenId ?? null,
+            requesterId: input.requestedBy.userId,
+            requesterName: input.requestedBy.displayName ?? null,
+          },
+          channel: input.channel,
+          requestedBy: input.requestedBy.userId,
+          idempotencyKey,
+          expiresAt: new Date(Date.now() + (input.expiresInMs ?? DEFAULT_TTL_MS)),
+          initialStatus: input.initialStatus,
+        }
+      : {
+          chatId: input.conversationKey,
+          companyId: input.companyId,
+          toolId: DECISION_TOOL_ID,
+          actionGroup: 'execute' as const,
+          kind: DECISION_ROW_KIND,
+          summary: input.title,
+          payloadJson: { questions, continuation: input.continuation },
+          metadataJson: {
+            title: input.title,
+            detail: input.detail ?? null,
+            source: input.source ?? input.requestedBy.displayName ?? 'Divo',
+            /* Stored rather than derived, because a native ask is the one case with
+               no tool call to read it back out of. A tool approval gets its subject
+               from the call it already holds; this is the other half. */
+            subject: input.subject ?? null,
+            // The field the inbox query reads. Named for the manager approval it
+            // came from; it means "whose answer this is waiting on".
+            resolvedManagerUserId: input.approver.userId,
+            resolvedManagerName: input.approver.displayName ?? null,
+            resolvedManagerOpenId: input.approver.larkOpenId ?? null,
+            requesterId: input.requestedBy.userId,
+            requesterName: input.requestedBy.displayName ?? null,
+            sourceChannel: input.channel,
+            approvalOrigin: input.channel === 'lark' ? 'lark' : 'gateway',
+            /* A native decision never resumes a stored tool call — see the note on
+               `continuation` above — so it must not inherit the gateway rule that
+               would ask the resumer to find one. */
+            autoResume: false,
+            /* Named so the projection can tell a decision asked in a browser from
+               one asked anywhere else, without inferring it from an id shape. */
+            conversationKey: input.conversationKey,
+          },
+          channel: input.channel,
+          requestedBy: input.requestedBy.userId,
+          idempotencyKey,
+          expiresAt: new Date(Date.now() + (input.expiresInMs ?? DEFAULT_TTL_MS)),
+          // Nothing has to be delivered for a decision to be answerable: it is
+          // already visible in Divo the moment it exists.
+          initialStatus: 'pending' as const,
+        };
+    const createOptions = isToolAction
+      ? {
+          ...(input.compatibleIdempotencyKeys
+            ? { compatibleIdempotencyKeys: input.compatibleIdempotencyKeys }
+            : {}),
+          ...(input.isCompatibleApproval
+            ? { isCompatibleApproval: input.isCompatibleApproval }
+            : {}),
+        }
+      : undefined;
+    const created = await this.deps.approvals.createOrReuseActive(createInput, createOptions);
 
     if (!created.ok) {
-      this.deps.logger.error('decision.ask_failed', { error: created.error.message, title: input.title });
-      return { ok: false, message: 'Divo could not open that request. Please try again.' };
+      this.deps.logger.error('decision.ask_failed', {
+        error: created.error.message,
+        title: isToolAction ? input.summary : input.title,
+      });
+      return {
+        ok: false,
+        reason: 'store_failed',
+        message: 'Divo could not open that request. Please try again.',
+      };
     }
 
-    const projected = projectDecision(created.value.approval);
+    const { approval, created: wasCreated, replacedExpired } = created.value;
+    if (isToolAction && input.beforeDelivery) {
+      const validation = await input.beforeDelivery(approval);
+      if (!validation.ok) {
+        const marked = await this.deps.approvals.markFailed(approval.id, validation.reason);
+        if (!marked.ok) {
+          this.deps.logger.error('decision.before_delivery_failed', {
+            id: approval.id,
+            error: marked.error.message,
+          });
+        }
+        return {
+          ok: false,
+          reason: 'invalid',
+          message: validation.message,
+          rowId: approval.id,
+        };
+      }
+    }
+
+    const projected = projectDecision(approval);
     const cardable = input.approver.larkOpenId
+      && input.channel === 'lark'
       && surfaceCapabilities(input.channel).decisions === 'buttons'
       && this.deps.courier;
 
-    let deliveredVia: 'lark' | 'divo' = 'divo';
-    if (cardable && created.value.created) {
+    let deliveredVia: 'lark' | 'desktop' | 'web' | 'divo' = isToolAction
+      ? input.channel === 'airnote' ? 'divo' : input.channel
+      : 'divo';
+    let requestState: 'created' | 'reused' | 'dispatching' | 'replaced_expired' = wasCreated
+      ? (replacedExpired ? 'replaced_expired' : 'created')
+      : 'reused';
+    if (cardable && wasCreated) {
       const sent = await this.deps.courier!.deliver({
-        decisionId: created.value.approval.id,
+        decisionId: approval.id,
         decision: projected.decision,
-        questions,
+        questions: projected.questions,
         approverOpenId: input.approver.larkOpenId!,
       }).catch(error => {
-        this.deps.logger.warn('decision.deliver_failed', { id: created.value.approval.id, error: String(error) });
-        return { ok: false as const };
+        this.deps.logger.warn('decision.deliver_failed', { id: approval.id, error: String(error) });
+        return {
+          ok: false as const,
+          failure: { certainty: 'unknown' as const, message: String(error) },
+        };
       });
-      if (sent.ok) {
+      if (!sent.ok) {
+        if (isToolAction) return this.handleToolDeliveryFailure(input, approval, sent.failure);
+        this.deps.logger.warn('decision.native_delivery_unavailable', { id: approval.id });
+      } else {
         deliveredVia = 'lark';
-        if (sent.messageId) await this.deps.approvals.setDecisionMessageId(created.value.approval.id, sent.messageId);
+        if (sent.messageId) {
+          const persisted = await this.deps.approvals.setDecisionMessageId(approval.id, sent.messageId);
+          if (isToolAction && !persisted.ok) {
+            this.deps.logger.error('decision.delivery_persist_failed', {
+              id: approval.id,
+              error: persisted.error.message,
+            });
+            requestState = 'dispatching';
+          }
+        }
       }
     }
 
     this.deps.logger.info('decision.asked', {
-      id: created.value.approval.id,
-      created: created.value.created,
-      questions: questions.length,
+      id: approval.id,
+      created: wasCreated,
+      questions: projected.questions.length,
       deliveredVia,
     });
-    return { ok: true, decision: projected.decision, created: created.value.created, deliveredVia };
+    return {
+      ok: true,
+      decision: projected.decision,
+      row: approval,
+      created: wasCreated,
+      replacedExpired,
+      deliveredVia,
+      requestState,
+    };
+  }
+
+  private async handleToolDeliveryFailure(
+    input: ToolActionDecisionAsk,
+    approval: RuntimeApprovalRow,
+    failure?: { readonly certainty: 'definite' | 'unknown'; readonly message: string },
+  ): Promise<AskOutcome> {
+    const detail = failure ?? {
+      certainty: 'unknown' as const,
+      message: 'The delivery adapter did not report whether Lark accepted the card.',
+    };
+    if (detail.certainty === 'unknown') {
+      const checkpoint = await this.deps.approvals.persistResult(
+        approval.id,
+        approvalDeliveryUnknownCheckpoint(detail.message),
+      );
+      if (!checkpoint.ok) {
+        this.deps.logger.error('decision.delivery_unknown_checkpoint_failed', {
+          id: approval.id,
+          error: checkpoint.error.message,
+        });
+      }
+      return {
+        ok: false,
+        reason: 'delivery_unknown',
+        message: input.deliveryMessages?.unknown(approval.id)
+          ?? `Divo lost confirmation while delivering the approval card to ${input.approver.displayName ?? 'the approver'}. The card may still be actionable, so the exact request is blocked from automatic retry (id: ${approval.id}). Please contact your administrator.`,
+        rowId: approval.id,
+      };
+    }
+
+    const markedFailed = await this.deps.approvals.markFailed(
+      approval.id,
+      `card_send_failed:${detail.message}`,
+    );
+    if (!markedFailed.ok) {
+      this.deps.logger.error('decision.delivery_failure_mark_failed_failed', {
+        id: approval.id,
+        error: markedFailed.error.message,
+      });
+      const checkpoint = await this.deps.approvals.persistResult(
+        approval.id,
+        approvalDeliveryFailedCheckpoint(detail.message),
+      );
+      if (!checkpoint.ok) {
+        this.deps.logger.error('decision.delivery_failure_checkpoint_failed', {
+          id: approval.id,
+          error: checkpoint.error.message,
+        });
+      }
+    }
+    return {
+      ok: false,
+      reason: 'delivery_failed',
+      message: input.deliveryMessages?.failed(approval.id)
+        ?? 'This action requires manager approval, but the approval card could not be delivered. Please try again or contact your administrator.',
+      rowId: approval.id,
+    };
   }
 
   /**
