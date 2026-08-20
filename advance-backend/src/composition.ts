@@ -2873,6 +2873,7 @@ export async function buildContainer(
     intentRepo: connectionAuthorizationRepo,
     connectionRepo: integrationConnectionRepo,
     decisions,
+    runOrigins,
     logger,
   });
   const decisionCardHandler = new LarkDecisionCardHandler(decisions, logger, env.APP_BASE_URL);

@@ -87,6 +87,46 @@ describe('RunOriginStore', () => {
     );
   });
 
+  it('forgets an authorization the member has finished with', async () => {
+    /* The runtime answers with the Connect card text for as long as this is
+       attached. Once the member has connected, the run has a real answer and
+       that substitution would discard it. */
+    const store = new RunOriginStore(fakeCache());
+    await store.remember('run-1', ORIGIN);
+    await store.attachPendingAuthorization({
+      runId: 'run-1',
+      companyId: 'co-1',
+      userId: 'user-1',
+      provider: 'google_workspace',
+      intentId: 'intent-1',
+      authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
+    });
+
+    const cleared = await store.clearPendingAuthorization({
+      runId: 'run-1',
+      companyId: 'co-1',
+      userId: 'user-1',
+    });
+
+    assert.equal(cleared, true);
+    const origin = await store.recall({ runId: 'run-1', companyId: 'co-1', userId: 'user-1' });
+    assert.equal(origin?.pendingAuthorization, undefined);
+    assert.equal(origin?.channel, ORIGIN.channel, 'the rest of the origin survives');
+  });
+
+  it('reports nothing to forget when no authorization is attached', async () => {
+    const store = new RunOriginStore(fakeCache());
+    await store.remember('run-1', ORIGIN);
+    assert.equal(
+      await store.clearPendingAuthorization({
+        runId: 'run-1',
+        companyId: 'co-1',
+        userId: 'user-1',
+      }),
+      false,
+    );
+  });
+
   it('refuses to hand a run origin to a different member or company', async () => {
     const store = new RunOriginStore(fakeCache());
     await store.remember('run-1', ORIGIN);

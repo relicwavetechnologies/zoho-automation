@@ -32,6 +32,7 @@ function build(overrides: {
   connections?: readonly unknown[];
   onFinish?: (...args: any[]) => void;
   onWithdraw?: (input: any) => void;
+  onClearOrigin?: (input: any) => void;
 } = {}) {
   const service = new ConnectionResumeService({
     intentRepo: {
@@ -59,6 +60,12 @@ function build(overrides: {
       withdraw: async (input: any) => {
         overrides.onWithdraw?.(input);
         return 1;
+      },
+    },
+    runOrigins: {
+      clearPendingAuthorization: async (input: any) => {
+        overrides.onClearOrigin?.(input);
+        return true;
       },
     },
     logger: noopLogger,
@@ -112,6 +119,21 @@ describe('resuming a run that waited for a connection', () => {
     assert.deepEqual(withdrawn, [
       { idempotencyKey: 'intent-1', reason: 'google_connected' },
     ]);
+  });
+
+  it('lets the run speak for itself again', async () => {
+    /* While an authorization is pending the runtime answers with the Connect
+       card text instead of with the run. Leaving it attached after the member
+       connects throws away the answer the run then goes on to produce, and
+       offers a Connect button for an account that is already connected. */
+    const cleared: any[] = [];
+    await build({ onClearOrigin: input => cleared.push(input) }).resume(RESUME);
+
+    assert.deepEqual(cleared, [{
+      runId: 'run-1',
+      companyId: 'company-1',
+      userId: 'user-1',
+    }]);
   });
 
   it('reads a second resume as nothing left to pick up', async () => {

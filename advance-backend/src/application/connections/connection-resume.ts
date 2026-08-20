@@ -28,6 +28,21 @@ export interface ConnectionResumeDeps {
   readonly decisions?: {
     withdraw(input: { idempotencyKey: string; reason: string }): Promise<number>;
   };
+  /**
+   * Lets the run speak for itself again.
+   *
+   * While an authorization is pending the runtime replaces the run's final
+   * answer with the Connect card text. That is correct while the member still
+   * has to act, and wrong the moment they have, because the run then goes on to
+   * produce the real answer this would discard.
+   */
+  readonly runOrigins?: {
+    clearPendingAuthorization(input: {
+      runId: string;
+      companyId: string;
+      userId: string;
+    }): Promise<boolean>;
+  };
   readonly logger: Logger;
 }
 
@@ -97,7 +112,7 @@ export class ConnectionResumeService {
       return { status: 'connection_missing' };
     }
 
-    await this.settle(intent.intentId);
+    await this.settle(intent);
 
     return {
       status: 'connected',
@@ -129,13 +144,31 @@ export class ConnectionResumeService {
     return true;
   }
 
-  /** The run carried on, so the intent is done and the card is moot. */
-  private async settle(intentId: string): Promise<void> {
-    const finished = await this.deps.intentRepo.finishContinuation(intentId, {
-      runId: `connection-resume:${intentId}`,
+  /**
+   * The run carried on, so everything that still asks the member to connect is
+   * taken back: the durable intent, the card, and the runtime's own standing
+   * instruction to answer with the card instead of with the run.
+   */
+  private async settle(intent: ConnectionContinuationClaim): Promise<void> {
+    const finished = await this.deps.intentRepo.finishContinuation(intent.intentId, {
+      runId: `connection-resume:${intent.intentId}`,
     });
     if (!finished.ok) throw finished.error;
-    await this.withdrawCard(intentId, 'google_connected');
+    await this.withdrawCard(intent.intentId, 'google_connected');
+    /* Best effort, like the card. The run has its answer either way, and the
+       origin expires on its own short TTL. */
+    try {
+      await this.deps.runOrigins?.clearPendingAuthorization({
+        runId: intent.originalMessageId,
+        companyId: intent.companyId,
+        userId: intent.userId,
+      });
+    } catch (error) {
+      this.log.warn('connection.resume.origin_clear_failed', {
+        intentId: intent.intentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async release(intentId: string, failureCode: string): Promise<void> {

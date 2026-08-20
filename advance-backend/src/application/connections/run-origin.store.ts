@@ -158,6 +158,37 @@ export class RunOriginStore {
     if (!stored.ok) throw stored.error;
     return true;
   }
+
+  /**
+   * Forget an authorization the member has finished with.
+   *
+   * A run that is still waiting for a Connect ask has nothing of its own to
+   * say, so the runtime replaces its final answer with the card text and a
+   * Connect button. That is right up to the moment the member connects, and
+   * wrong immediately after: the run then goes on to do the actual work, and
+   * leaving this attached throws that answer away and offers a button for an
+   * account that is already connected.
+   *
+   * The mirror of `attachPendingAuthorization`, and the same idea as
+   * withdrawing the card: once the ask is answered, take back everything that
+   * still advertises it.
+   */
+  async clearPendingAuthorization(input: {
+    readonly runId: string;
+    readonly companyId: string;
+    readonly userId: string;
+  }): Promise<boolean> {
+    const origin = await this.recall(input);
+    if (!origin?.pendingAuthorization) return false;
+    const { pendingAuthorization: _resolved, ...withoutAuthorization } = origin;
+    const stored = await this.cache.set(
+      runOriginKey(input.runId),
+      withoutAuthorization,
+      RUN_ORIGIN_TTL_SECONDS,
+    );
+    if (!stored.ok) throw stored.error;
+    return true;
+  }
 }
 
 function runOriginKey(runId: string): string {
