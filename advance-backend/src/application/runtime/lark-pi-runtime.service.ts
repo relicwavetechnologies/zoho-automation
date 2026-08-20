@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from '../../generated/prisma';
 import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime-session';
+import { GENERIC_RUNTIME_FAILURE_MESSAGE, explainRuntimeFailure } from './runtime-failure';
 import type { Logger } from '../../shared/logger';
 import type { ConversationHandle } from '../channels/channel.adapter';
 import type { IncomingMessage } from '../../domain/channel/incoming-message';
@@ -228,28 +229,16 @@ function asRuntimeChannel(channel: string): RuntimeChannel {
   return channel;
 }
 
-const GENERIC_RUNTIME_FAILURE_MESSAGE =
-  'Divo hit a temporary problem while finishing this request. Please try again.';
-const MODEL_CONNECTION_LOST_MESSAGE =
-  'Divo lost the model connection while finishing this request. Please try again.';
-const MODEL_CONNECTION_LOST_AFTER_ACTION_MESSAGE =
-  'Divo lost the model connection while handling a company-action step. It did not retry automatically, '
-  + 'so it would not duplicate the action. Check the latest result before trying again.';
-
+/*
+ * The mapping moved to `runtime-failure.ts`, and grew a reason.
+ *
+ * It used to answer from the controller's code alone, which describes the shape
+ * of a failure and never its cause — so a workspace with no model key was told
+ * Divo had lost a connection it never had. The gateway had already said the
+ * useful thing, in the detail string, and this threw it away.
+ */
 function controllerFailureMessage(code: string, detail?: string): string {
-  if (code === 'capacity_full') {
-    return 'Divo is at full capacity right now. Please try again shortly.';
-  }
-  if (code === 'user_busy') {
-    return 'Divo is finishing your previous request. This one will start automatically.';
-  }
-  if (code === 'model_continuation_failed') {
-    if (detail && /company action|duplicate action/i.test(detail)) {
-      return MODEL_CONNECTION_LOST_AFTER_ACTION_MESSAGE;
-    }
-    return MODEL_CONNECTION_LOST_MESSAGE;
-  }
-  return GENERIC_RUNTIME_FAILURE_MESSAGE;
+  return explainRuntimeFailure(code, detail).message;
 }
 
 function runtimeExecutionFailure(error: unknown): { code: string; message: string } {
@@ -1125,7 +1114,10 @@ export class LarkPiRuntimeService {
       const controllerMessage = typeof body?.error?.message === 'string'
         ? body.error.message
         : undefined;
-      const userMessage = controllerFailureMessage(code);
+      /* The detail was sitting right here and went unused, so this path always
+         produced the code-level message even when the gateway had named the
+         cause. */
+      const userMessage = controllerFailureMessage(code, controllerMessage);
       throw new LarkPiRuntimeError(code, userMessage, controllerMessage);
     }
     if (typeof body?.text !== 'string' || !body.text.trim()) {
