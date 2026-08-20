@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, Loader2, Mail, X } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { Showcase } from './showcase.view'
 import { api } from '@/lib/api'
 import {
   EMPTY_DRAFT, FIRST_STEP, MIN_PASSWORD, TOTAL_STEPS, advance, answered,
@@ -99,6 +100,15 @@ export function Onboarding({ prompt, onClose, onDone }: {
       <div className="ws-scrim" onClick={busy ? undefined : onClose} />
       <div className="lp-modal-wrap">
         <div className="lp-modal" role="dialog" aria-modal="true" aria-label="Create your workspace">
+          {/* Divo working, next to the reason somebody is being asked to sign
+              up for it. Four short runs, three of which stop — because what a
+              buyer cannot tell from a happy-path demo is whether the thing will
+              quietly email a customer. Hidden on a narrow screen, where there
+              is only room for one column and the questions are the one that
+              has to be there. */}
+          <Showcase />
+
+          <div className="lp-ask">
           <header className="lp-modal-top">
             <button
               type="button"
@@ -155,6 +165,7 @@ export function Onboarding({ prompt, onClose, onDone }: {
               )}
             </p>
           </footer>
+          </div>
         </div>
       </div>
     </>
