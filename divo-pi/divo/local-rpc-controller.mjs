@@ -707,7 +707,10 @@ export async function promptWithRuntimeLease(runtime, message, options = {}, eff
 	return runPrompt({
 		...runtime,
 		message,
-		answerRequest: createHeadlessExtensionResponder(),
+		// The caller may hand over an answerer that can wait for a person. The
+		// headless policy remains the default, so a caller that supplies nothing
+		// still gets the decision made immediately, as every caller once did.
+		answerRequest: options.answerRequest ?? createHeadlessExtensionResponder(),
 		attachments: options.attachments,
 		sessionScope: validateSessionScope(options.sessionScope),
 		ephemeral: runtime.ephemeral === true,

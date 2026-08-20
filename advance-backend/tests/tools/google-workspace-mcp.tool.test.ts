@@ -158,7 +158,7 @@ describe('Google Workspace MCP product tools', () => {
       code: 'connection_ask_sent',
       intentId: 'intent-1',
       provider: 'google_workspace',
-      message: 'A connection ask was sent to the member. End this run and wait for the member to finish it.',
+      message: 'A connection ask was sent to the member. This run waits for them to finish it.',
     });
     assert.equal(authorizationGaps[0].toolId, 'googleSheets');
     assert.equal(authorizationGaps[0].reason, 'not_connected');
@@ -626,7 +626,7 @@ describe('Google Workspace MCP product tools', () => {
     // run context, and whether an authorization can start from it is proved
     // against the real closure in begin-google-authorization.test.ts.
     assert.equal(authorizationInput.runContext.runtimeRunId, 'run-1');
-    assert.match(result.ok ? result.value.message ?? '' : '', /End this run/);
+    assert.match(result.ok ? result.value.message ?? '' : '', /This run waits for them/);
   });
 
   it('points a member at Connected apps when no card can be sent', async () => {

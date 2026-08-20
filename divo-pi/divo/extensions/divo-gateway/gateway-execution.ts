@@ -1,5 +1,6 @@
 import {
 	approvePreparedDivoIntent,
+	awaitConnectionAsk,
 	type ApprovalContext,
 } from "./approval-gate.ts";
 import {
@@ -13,12 +14,17 @@ import type { DivoRuntimeChannel } from "./run-correlation.ts";
 export interface GatewayExecutionDependencies {
 	callGateway: typeof callDivoGateway;
 	approveIntent?: typeof approvePreparedDivoIntent;
+	awaitConnection?: typeof awaitConnectionAsk;
 }
 
 const DEFAULT_DEPENDENCIES: GatewayExecutionDependencies = {
 	callGateway: callDivoGateway,
 	approveIntent: approvePreparedDivoIntent,
+	awaitConnection: awaitConnectionAsk,
 };
+
+/** The backend has sent a Connect ask and is holding this call open. */
+const CONNECTION_PENDING_STATUS = "connection_pending";
 
 export interface GatewayExecutionContext extends ApprovalContext {
 	runtimeChannel?: DivoRuntimeChannel;
@@ -42,6 +48,30 @@ export async function executeGatewayRequest(
 		signal: ctx.signal,
 		...(ctx.resultMode ? { resultMode: ctx.resultMode } : {}),
 	});
+	/*
+	 * Checked before the runtime-channel guard below, and that ordering is the
+	 * point of this whole flow.
+	 *
+	 * Requester confirmation is skipped on backend-driven channels because those
+	 * channels render their own approval and the run is expected to end. A
+	 * connect ask is the opposite: the card is already on its way to the member,
+	 * and what the run must do is wait for it. Falling through to the guard here
+	 * would end the run and put us back to rebuilding it afterwards.
+	 */
+	if (result.body.status === CONNECTION_PENDING_STATUS) {
+		const outcome = await (dependencies.awaitConnection ?? awaitConnectionAsk)(
+			result.body.data,
+			ctx,
+		);
+		if (ctx.signal?.aborted) throw new DOMException("The Divo action was cancelled.", "AbortError");
+		if (!outcome.granted) return result;
+		return dependencies.callGateway(config, {
+			op: "connections.resume",
+			departmentId: request.departmentId,
+			payload: { askId: outcome.askId },
+		}, fetch, { signal: ctx.signal });
+	}
+
 	const requesterConfirmation = result.body.status === "requester_confirmation_required"
 		|| result.body.status === "local_approval_required";
 	if (!requesterConfirmation || ctx.runtimeChannel) {

@@ -177,9 +177,30 @@ needed, which is why the skill is workable here at all.
 member can approve a subset on Google's consent screen. An agent told it has
 Drive when it does not fails a second time with less excuse than the first.
 
+**D15 — One run that waits, not two runs joined up.** *(2026-08-21, supersedes
+the resume half of D7.)* The run that sends the Connect ask does not end. It
+blocks in the container on `ctx.ui.confirm` under the `divo_connect_v1` title,
+the controller parks that question instead of answering it from a policy, and
+the OAuth callback answers it. The run then reads what was granted through
+`connections.resume` and carries on inside its own stream.
+
+Reason: the previous shape ended the run and rebuilt an equivalent one
+afterwards, which cost a continuation worker, a run-origin recall, an identity
+re-resolve, a client poll, and a Connect card whose lifetime nobody owned. Every
+one of those existed to paper over the run having ended too early. Measured on a
+real run: the member watched a stale card for 95 seconds and saw the answer only
+after a reload. Under the waiting shape the web thread needs no new mechanism at
+all, because the run it is already streaming never stopped.
+
+Cost, accepted by Abhishek on 2026-08-21: a waiting run holds the member's
+admission slot, so they cannot start another request until the ask is answered
+or expires. `RUN_SLOT_TIMEOUT_MS` is 20 minutes and a connect intent expires in
+10, so the wait is bounded by the intent.
+
 ## 4. Open questions
 
 None. Q1 and Q2 were answered by Abhishek on 2026-08-20 and are now D7 and D8.
+D15 replaced the two-run resume on 2026-08-21.
 
 ## 5. Current state
 
@@ -1281,19 +1302,69 @@ from 48.
 
 ## 12. Next action
 
-All seven build phases are complete. The remaining live web/Lark OAuth gates
-and the full application-suite pass are intentionally deferred to the user's
-later test run, as requested.
+Phases 1 to 7 are complete, and Phase 9 replaced the way Phase 7 resumed a run.
+What is left is the live gate, which is Abhishek's to run:
 
-The classifier is now grounded in Divo's existing Google fixtures and client
-error path. The pinned upstream repository did not expose the literal prose in
-its public source or documentation, so Phase 5 must still confirm the prose
-against a live missing-scope run.
+1. In the web thread, ask for something that needs a Google scope you do not
+   have. Expect the Connect card, and expect the thread to stay visibly working
+   rather than settling.
+2. Complete OAuth. Expect the callback page to say Divo is picking the request
+   back up, the card to close, and the same run to continue streaming in the
+   thread with no reload.
+3. Expect the reply to name only the scope groups Google actually returned.
 
-No open questions remain. D7 and D8 answer what used to block Phase 5. D9 to D14
-carry the design Abhishek set on 2026-08-20: a front door as well as a floor,
-Google only, and a resume that says what it was granted.
+If the run does not resume, the split to check first is
+`curl localhost:4317/health`: a non-zero `pendingAsks` while the card is up
+proves the container is waiting and points at the callback, and a zero one
+points at the ask never being parked.
 
-One thing this plan deliberately does not know, and you must find out in Phase 7:
-whether an `IncomingMessage`'s `raw` can reach the model at all today. Everything
-in Phase 7 depends on that answer, so establish it before designing the phase.
+Still never proven live: the classifier path in Phase 1. Every successful run so
+far reached the connect ask through the front-door tool, not through a real
+Google 403.
+
+## 13. Phase 9 — One run that waits *2026-08-21*
+
+Built after Abhishek approved candidate 1 of the architecture review. The review
+itself is not in the repo; its findings are D15 above.
+
+**The container waits.** `approval-gate.ts` gained `DIVO_CONNECT_PROTOCOL_TITLE`
+and `awaitConnectionAsk`, which blocks on `ctx.ui.confirm`. `gateway-execution.ts`
+handles the `connection_pending` status *before* the runtime-channel guard, which
+is the ordering the whole flow rests on: that guard exists to stop backend
+channels opening local approval UI and would otherwise end the run here.
+
+**The controller parks the question.** New `runtime-ask-registry.mjs` owns the
+two ways a wait ends badly, a deadline and an abandoned run, and settles rather
+than leaks in both. `createRuntimeExtensionResponder` parks a connect request and
+delegates everything else to the headless policy unchanged. New route
+`POST /v1/runtime-asks/:askId` answers a parked question; `/health` now reports
+`pendingAsks`. `promptWithRuntimeLease` takes the responder as an option instead
+of hardcoding the headless one.
+
+**The backend asks and resumes.** `connection_pending` is a gateway status,
+`connections.resume` a gateway op. `ConnectionResumeService` claims the intent
+atomically, checks it belongs to the caller, reads the granted scope groups and
+withdraws the card. `ConnectionAskCourier` posts the answer to the controller,
+and the OAuth callback calls it instead of enqueueing.
+
+**Deleted.** `google-connection-continuation.ts` in full, worker and queue, with
+its composition and server wiring; `tests/application/web-google-continuation.test.ts`;
+the `Google connection continuation` block in `google-connection-flow.test.ts`;
+and the idle poll in `admin/src/pages/workspace/chat/live.ts` with its
+`lastSeenSequence` bookkeeping. Nothing replaced the poll: the run never ends, so
+the stream the browser already holds carries the whole thing.
+
+**Extracted.** `grantedGoogleScopeGroups` moved to `google-granted-scopes.ts` so
+the resume path and the deleted worker did not need two copies.
+
+**Fixed in passing.** `begin-google-authorization` read `.toISOString()` off an
+expiry that fixtures may omit, the same shape of bug as the `grantedScopes`
+crash on 2026-08-20: a missing field should mean "not stated", not a throw.
+`catalogue.test.ts` still asserted 37 tools after `74e3a165c` added
+`connectApp`, which had been failing since that commit.
+
+**Green.** Backend 3976 pass, 0 fail. Container 288 pass across the controller
+and gateway suites. Admin 453 pass; `tsc -b` clean apart from the concurrent
+agent's pre-existing `use-skills.ts(48,53)`. Controller answers
+`POST /v1/runtime-asks/unknown` with 404 `no_pending_ask`. No live OAuth run was
+made, per Abhishek's standing instruction that live testing is his.

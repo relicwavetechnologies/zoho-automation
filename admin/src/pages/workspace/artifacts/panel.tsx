@@ -103,7 +103,14 @@ export function ArtifactWorkspace({ children }: { children: React.ReactNode }) {
             aria-orientation="vertical"
             aria-label="Resize document panel"
             onPointerDown={onDrag}
-            className="w-px shrink-0 cursor-col-resize bg-line transition-colors hover:bg-ink-3"
+            /*
+              The line is one pixel and the grab zone is not. A separator drawn
+              at its own hit size is either a fat rule or an unhittable one, so
+              the pseudo-element reaches six pixels either side while the rule
+              itself stays hairline and the flex row keeps its measurements.
+              `touch-none` stops a trackpad drag being read as a scroll.
+            */
+            className="relative w-px shrink-0 cursor-col-resize touch-none bg-line transition-colors hover:bg-ink-3 after:absolute after:inset-y-0 after:-left-1.5 after:-right-1.5 after:content-['']"
           />
           <div
             className="min-h-0 min-w-0 shrink-0"

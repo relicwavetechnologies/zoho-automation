@@ -167,11 +167,10 @@ import { GoogleSheetResourceResolver } from './application/artifacts/google-shee
 import { GoogleSheetResourceProbeClient } from './infrastructure/google/google-sheet-resource-probe';
 import { LarkIngressQueue } from './application/lark-ingress/lark-ingress.queue';
 import {
-  GoogleConnectionContinuationQueue,
-} from './application/connections/google-connection-continuation';
-import {
   GoogleConnectionAuthorizationService,
 } from './application/connections/google-connection-authorization.service';
+import { ConnectionAskCourier } from './application/connections/connection-ask-courier';
+import { ConnectionResumeService } from './application/connections/connection-resume';
 import { RunOriginStore } from './application/connections/run-origin.store';
 import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
 import { createMailRuleWriter } from './application/mail-ops/mail-rule-writer';
@@ -394,7 +393,8 @@ export interface Container {
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
   googleConnectionAuthorization: GoogleConnectionAuthorizationService;
-  googleConnectionContinuationQueue: GoogleConnectionContinuationQueue;
+  connectionAskCourier: ConnectionAskCourier;
+  connectionResume: ConnectionResumeService;
   connectionAuthorizationRepo: ConnectionAuthorizationRepository;
   mailOpsRepo: MailOpsRepository;
   mailOpsReadRepo: MailOpsReadRepository;
@@ -932,6 +932,15 @@ export async function buildContainer(
     connectionRepo: integrationConnectionRepo,
     mailBriefOnboarding: input => mailBriefOnboarding(input),
     callbackUrl: googleConnectionCallbackUrl,
+    logger,
+  });
+  /*
+   * Tells a waiting run that the member has finished. Its other half,
+   * `connectionResume`, is built once the decision module exists, since
+   * resuming also takes the Connect card back.
+   */
+  const connectionAskCourier = new ConnectionAskCourier({
+    controllerUrl: env.PI_LARK_CONTROLLER_URL,
     logger,
   });
   let deliverGoogleConnect: DeliverGoogleConnectCard | undefined;
@@ -1529,8 +1538,6 @@ export async function buildContainer(
 
   const workbookConversionQueue = new WorkbookConversionQueue(queueRedisUrl);
   const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
-  const googleConnectionContinuationQueue =
-    new GoogleConnectionContinuationQueue(queueRedisUrl);
   const personaLearningQueue = new PersonaLearningQueue(
     queueRedisUrl,
     env.REDIS_PERSONA_LEARNING_QUEUE_NAME,
@@ -2848,6 +2855,14 @@ export async function buildContainer(
     },
   });
   webConnectionAskCourier = createWebConnectionAskCourier({ decisions });
+  /* The other half of the resume: what the member actually granted, and the
+     Connect card taken back now that its question has been answered. */
+  const connectionResume = new ConnectionResumeService({
+    intentRepo: connectionAuthorizationRepo,
+    connectionRepo: integrationConnectionRepo,
+    decisions,
+    logger,
+  });
   const decisionCardHandler = new LarkDecisionCardHandler(decisions, logger, env.APP_BASE_URL);
   const automationPlanService = new AutomationPlanService({
     toolExecutor: gatewayToolExecutor,
@@ -2893,6 +2908,7 @@ export async function buildContainer(
       }))?.personalApprovalsJson,
     ),
     connectionRegistry: integrationConnectionRepo,
+    connectionResume,
     workContractBootstrap,
     mediaOcr,
     managerPersonaRuntime: managerPersonaRuntimeService,
@@ -2943,7 +2959,8 @@ export async function buildContainer(
     // OAuth surfaces
     googleOAuthService,
     googleConnectionAuthorization,
-    googleConnectionContinuationQueue,
+    connectionAskCourier,
+    connectionResume,
     connectionAuthorizationRepo,
     mailOpsRepo,
     mailOpsReadRepo,

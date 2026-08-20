@@ -25,6 +25,8 @@ const ResultSchema = z.object({
   code: z.literal('connection_ask_sent').optional(),
   intentId: z.string().optional(),
   provider: z.string().optional(),
+  /** ISO-8601. Bounds how long the waiting run holds its question open. */
+  expiresAt: z.string().optional(),
   message: z.string().optional(),
 });
 type Res = z.infer<typeof ResultSchema>;

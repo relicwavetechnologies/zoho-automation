@@ -55,6 +55,19 @@ export interface BeginGoogleAuthorizationDeps {
  * sent. It is a standalone unit now because the only test that covered it stubbed
  * this exact seam, which is why nobody noticed.
  */
+/**
+ * The deadline the waiting run should hold to, when there is one.
+ *
+ * Absent means "no stated deadline", not a fault. The run that waits already
+ * caps itself, so a missing expiry costs a few extra minutes of patience, while
+ * reading `.toISOString()` off nothing costs the member their Connect ask.
+ */
+function askDeadline(issued: { expiresAt?: Date }): { expiresAt?: string } {
+  return issued.expiresAt instanceof Date && !Number.isNaN(issued.expiresAt.getTime())
+    ? { expiresAt: issued.expiresAt.toISOString() }
+    : {};
+}
+
 export function createBeginGoogleAuthorization(
   deps: BeginGoogleAuthorizationDeps,
 ): BeginGoogleAuthorization {
@@ -113,7 +126,7 @@ export function createBeginGoogleAuthorization(
     // A Connect action for this exact request is already pending. Issuing a
     // second URL would give the member two continuations for the same ask.
     if (issued.outcome === 'already_pending') {
-      return { status: 'already_pending' as const, intentId: issued.intentId };
+      return { status: 'already_pending' as const, intentId: issued.intentId, ...askDeadline(issued) };
     }
 
     try {
@@ -126,7 +139,7 @@ export function createBeginGoogleAuthorization(
         authorizeUrl: issued.authorizeUrl,
       });
       if (attached && origin.channel === 'lark') {
-        return { status: 'sent' as const, intentId: issued.intentId };
+        return { status: 'sent' as const, intentId: issued.intentId, ...askDeadline(issued) };
       }
       if (!attached && origin.channel === 'web') {
         deps.logger.error('google.authorization.web_origin_store_failed', {
@@ -193,7 +206,7 @@ export function createBeginGoogleAuthorization(
       });
       return { status: 'unavailable' as const };
     }
-    return { status: 'sent' as const, intentId: issued.intentId };
+    return { status: 'sent' as const, intentId: issued.intentId, ...askDeadline(issued) };
   };
 }
 

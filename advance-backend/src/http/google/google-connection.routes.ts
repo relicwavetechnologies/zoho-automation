@@ -1,11 +1,12 @@
 import { Router, type Request, type Response } from 'express';
 import type { GoogleConnectionAuthorizationService } from '../../application/connections/google-connection-authorization.service';
-import type { GoogleConnectionContinuationQueue } from '../../application/connections/google-connection-continuation';
+import type { ConnectionAskCourier } from '../../application/connections/connection-ask-courier';
 import type { Logger } from '../../shared/logger';
 
 export function createGoogleConnectionRoutes(deps: {
   authorization: GoogleConnectionAuthorizationService;
-  continuationQueue: Pick<GoogleConnectionContinuationQueue, 'enqueue'>;
+  /** Answers the run that is standing still waiting for this callback. */
+  askCourier: Pick<ConnectionAskCourier, 'answer'>;
   logger: Logger;
 }): Router {
   const router = Router();
@@ -38,22 +39,21 @@ export function createGoogleConnectionRoutes(deps: {
 
       switch (completion.outcome) {
         case 'connected': {
-          try {
-            await deps.continuationQueue.enqueue(completion.intentId);
-          } catch (error) {
-            // The durable intent remains pending. Worker reconciliation will
-            // admit it without making the browser wait for an agent run.
-            log.warn('google.connection.continuation_enqueue_failed', {
-              intentId: completion.intentId,
-              error: String(error),
-            });
-          }
+          /*
+           * The run that asked never ended. It is blocked on this exact answer,
+           * so the browser's last act is to unblock it, and the work carries on
+           * inside the run the member was already watching.
+           */
+          const answered = await deps.askCourier.answer(completion.intentId, true);
+          const where = completion.channel === 'web' ? 'the web thread' : 'Lark';
           res.status(200).send(resultHtml(
             true,
             'Google connected',
-            completion.channel === 'web'
-              ? `Connected as ${completion.accountName}. Divo is continuing your request in the web thread now.`
-              : `Connected as ${completion.accountName}. Divo is continuing your request in Lark now.`,
+            answered === 'answered'
+              ? `Connected as ${completion.accountName}. Divo is picking your request back up in ${where} now.`
+              // Said plainly rather than dressed up. The account is genuinely
+              // connected, and the only thing lost is the run that was waiting.
+              : `Connected as ${completion.accountName}. The earlier request stopped waiting, so ask Divo again in ${where}.`,
           ));
           return;
         }
