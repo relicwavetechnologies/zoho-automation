@@ -9,6 +9,7 @@ import { createCanvaDesignTool } from '../src/application/tools/families/canva-d
 import { createGoogleWorkspaceMcpTools } from '../src/application/tools/families/google-workspace-mcp.tool';
 import { createKnowledgeTool } from '../src/application/tools/families/knowledge.tool';
 import { createLarkApprovalTool } from '../src/application/tools/families/lark-approval.tool';
+import { createConnectionsTool } from '../src/application/tools/families/connections.tool';
 import { createLarkBaseTool } from '../src/application/tools/families/lark-base.tool';
 import { createLarkCalendarTool } from '../src/application/tools/families/lark-calendar.tool';
 import { createLarkContactsTool } from '../src/application/tools/families/lark-contacts.tool';
@@ -65,6 +66,7 @@ export function buildCanonicalToolContracts(): ReadonlyArray<Tool<unknown, unkno
     createLarkDocTool(inert),
     createLarkBaseTool(inert),
     createLarkApprovalTool(inert),
+    createConnectionsTool(inert),
     ...createGoogleWorkspaceMcpTools(inert),
     createCanvaDesignTool(inert),
     ...createAirtableMcpTools(inert),

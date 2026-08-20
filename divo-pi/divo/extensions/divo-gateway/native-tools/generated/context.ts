@@ -34,5 +34,50 @@ export const CONTEXT_NATIVE_TOOLS = [
       "additionalProperties": false
     },
     "executionMode": "parallel"
+  },
+  {
+    "toolId": "connectApp",
+    "name": "divo_connect_app",
+    "family": "context",
+    "label": "Divo Connect App",
+    "description": "Ask a member to connect or widen a provider account for the requested Divo tools.",
+    "promptSnippet": "Use divo_connect_app for governed context work. The backend remains authoritative for access, connections, approvals, and execution.",
+    "promptGuidelines": [
+      "provider: The connection provider. Google Workspace is the only provider supported by this tool today.",
+      "toolIds: The Divo tool IDs that need access, such as googleDrive, googleSheets, or mailAutomations.",
+      "Do not pass scopes. Divo derives the narrow Google consent request from toolIds."
+    ],
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": [
+            "google_workspace",
+            "zoho",
+            "canva",
+            "airtable",
+            "aitable",
+            "lark",
+            "shopify"
+          ]
+        },
+        "toolIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "maxItems": 20
+        }
+      },
+      "required": [
+        "provider",
+        "toolIds"
+      ],
+      "additionalProperties": false
+    },
+    "executionMode": "sequential"
   }
 ] as const satisfies readonly NativeToolSpec[];

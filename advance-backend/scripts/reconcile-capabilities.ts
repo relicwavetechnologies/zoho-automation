@@ -18,6 +18,7 @@ import { provisionKnowledgeForExistingCompanies } from '../src/application/skill
 import { provisionFilesAndDocumentsForExistingCompanies } from '../src/application/skills/files-and-documents-system-skills';
 import { provisionDivoLocalPythonForExistingCompanies } from '../src/application/skills/divo-local-python-system-skill';
 import { provisionMenhoodDataForExistingCompanies } from '../src/application/skills/menhood-data-system-skill';
+import { provisionConnectionsSkillForExistingCompanies } from '../src/application/skills/connections.skill';
 import { PermissionCache } from '../src/application/permissions/permission.cache';
 import { RedisCache } from '../src/infrastructure/cache/redis-cache';
 import { disconnectAllRedis, getRedisClient } from '../src/infrastructure/cache/redis.client';
@@ -43,6 +44,7 @@ export async function reconcileCapabilities(
   const retiredDataExport = await retireDataExportCapability(prisma);
   const registeredTools = await seedRegisteredTools(prisma);
   const skills = {
+    connections: await provisionConnectionsSkillForExistingCompanies(prisma),
     lark: await provisionLarkSkillsForExistingCompanies(prisma),
     google: await provisionGoogleWorkspaceSkillsForExistingCompanies(prisma),
     airtableAndAitable: await provisionConnectedProviderSkillsForExistingCompanies(prisma),

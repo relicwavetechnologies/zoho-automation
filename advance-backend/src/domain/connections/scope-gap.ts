@@ -9,6 +9,8 @@ export type ScopeGapReason = 'not_connected' | 'insufficient_scope';
 export interface ScopeGap {
   readonly provider: ProviderKey;
   readonly toolId: string;
+  /** Multiple tool ids are allowed for one proactive consent request. */
+  readonly toolIds?: readonly string[];
   readonly missingScopeGroups: readonly (readonly string[])[];
   readonly reason: ScopeGapReason;
 }

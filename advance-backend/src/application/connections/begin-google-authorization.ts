@@ -5,7 +5,8 @@ import type { GoogleConnectionAuthorizationService } from './google-connection-a
 import type { RunOriginStore } from './run-origin.store';
 
 export interface BeginGoogleAuthorizationInput {
-  readonly toolId: string;
+  readonly toolId?: string;
+  readonly toolIds?: readonly string[];
   readonly reason: string;
   readonly runContext: RunContext;
 }
@@ -60,6 +61,14 @@ export function createBeginGoogleAuthorization(
     if (!origin) {
       return { status: 'unavailable' as const };
     }
+    const requestedToolIds = input.toolIds?.length
+      ? [...input.toolIds]
+      : input.toolId
+        ? [input.toolId]
+        : [];
+    if (requestedToolIds.length === 0) {
+      throw new Error('Google authorization requires at least one Divo tool id.');
+    }
 
     const issued = await deps.authorization.issue({
       companyId,
@@ -76,7 +85,7 @@ export function createBeginGoogleAuthorization(
       replyInThread: origin.replyInThread,
       ...(origin.groupReplyMode ? { groupReplyMode: origin.groupReplyMode } : {}),
       originalRequest: origin.originalRequest,
-      requestedToolIds: [input.toolId],
+      requestedToolIds,
     });
     // A Connect action for this exact request is already pending. Issuing a
     // second URL would give the member two continuations for the same ask.

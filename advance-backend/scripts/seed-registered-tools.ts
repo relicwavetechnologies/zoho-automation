@@ -25,6 +25,7 @@ export interface RegisteredToolSeed {
 }
 
 export const REGISTERED_TOOL_SEEDS: readonly RegisteredToolSeed[] = [
+  { toolId: 'connectApp', name: 'Connect App', description: 'Ask a member to connect or widen a provider account for governed Divo tools.', category: 'connections', domain: 'context' },
   { toolId: 'larkMessaging', name: 'Lark Messaging', description: 'Send and reply to Lark messages and DMs.', category: 'communication', domain: 'lark' },
   { toolId: 'larkContacts', name: 'Lark Contacts', description: 'Resolve and search Lark employee contacts.', category: 'directory', domain: 'lark' },
   { toolId: 'larkTask', name: 'Lark Tasks', description: 'Create, read, update and complete Lark tasks and tasklists.', category: 'productivity', domain: 'lark' },

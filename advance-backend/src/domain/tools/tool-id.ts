@@ -175,6 +175,7 @@ export const TOOL_CAPABILITY_DEFINITIONS = {
   shopifyCustomers: defineCapability('shopify', ['read']),
 
   webSearch:       defineCapability('context', ['read']),
+  connectApp:      defineCapability('context', ['create']),
   knowledge:       defineCapability('memory', ['read', 'create', 'update', 'delete']),
   mailAutomations:  defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
   scheduledWorkflows: defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
@@ -247,6 +248,11 @@ export const TOOL_SUPPORTED_ACTIONS: Readonly<Record<CanonicalToolId, readonly s
 export const TOOL_DEFAULT_PERMISSIONS: Readonly<Record<CanonicalToolId, BuiltInRoleDefaults>> =
   mapCapabilities<BuiltInRoleDefaults>(definition => definition.defaultPermissions);
 
+// Permission policy includes the department-inheritance table, which is a
+// separate authority from the canonical tool definitions above. Bump this
+// epoch when that table changes so a live cache cannot retain the old overlay.
+const TOOL_PERMISSION_POLICY_EPOCH = 'connect-app-inherited-v1';
+
 /** Every canonical tool ID in one family, in stable catalogue order. */
 export function toolIdsForFamily(family: ToolFamily): CanonicalToolId[] {
   return CANONICAL_TOOL_IDS.filter(toolId => TOOL_CAPABILITY_DEFINITIONS[toolId].family === family);
@@ -259,6 +265,7 @@ export function toolIdsForFamily(family: ToolFamily): CanonicalToolId[] {
  */
 export const TOOL_PERMISSION_POLICY_REVISION = createHash('sha256')
   .update(JSON.stringify({
+    policyEpoch: TOOL_PERMISSION_POLICY_EPOCH,
     toolIds: CANONICAL_TOOL_IDS,
     supportedActions: TOOL_SUPPORTED_ACTIONS,
     defaults: TOOL_DEFAULT_PERMISSIONS,

@@ -73,6 +73,7 @@ export const DEPARTMENT_GRANT_ONLY_TOOLS: readonly CanonicalToolId[] = [
  * scope and human-approval policy are enforced again by the knowledge core.
  */
 export const DEPARTMENT_COMPANY_INHERITED_TOOLS: readonly CanonicalToolId[] = [
+  'connectApp',
   'knowledge',
 ];
 

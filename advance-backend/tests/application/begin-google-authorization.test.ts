@@ -327,4 +327,39 @@ describe('createBeginGoogleAuthorization', () => {
     });
     assert.deepEqual(result, { status: 'unreachable' });
   });
+
+  it('keeps every requested tool id on one Google authorization intent', async () => {
+    const h = harness();
+    await h.runOrigins.remember('run-1', ORIGIN);
+    const issuedWith: any[] = [];
+    const adapter = createGoogleConnectionRequestAdapter({
+      runOrigins: h.runOrigins,
+      authorization: {
+        issue: async (input: any) => {
+          issuedWith.push(input);
+          return {
+            outcome: 'issued' as const,
+            intentId: 'intent-1',
+            authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=abc',
+          };
+        },
+      } as any,
+      deliverConnectCard: () => undefined,
+      logger: h.logger,
+    });
+
+    const result = await adapter.request({
+      gap: {
+        provider: 'google_workspace',
+        toolId: 'googleDrive',
+        toolIds: ['googleDrive', 'googleSheets'],
+        missingScopeGroups: [],
+        reason: 'insufficient_scope',
+      },
+      runContext: runContext({ runtimeRunId: 'run-1' }),
+    });
+
+    assert.deepEqual(result, { status: 'sent', intentId: 'intent-1' });
+    assert.deepEqual(issuedWith[0].requestedToolIds, ['googleDrive', 'googleSheets']);
+  });
 });

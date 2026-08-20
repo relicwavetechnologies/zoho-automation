@@ -466,7 +466,7 @@ tests/application/google-connection-flow.test.ts` passes, and a Lark run that
 hits a scope gap still receives the same card it does today. State in the build
 log how you checked the second half.
 
-### Phase 3 — The connect tool and the connections skill
+### Phase 3 — The connect tool and the connections skill ✅ *2026-08-21*
 
 **Goal.** The agent can ask for access on purpose, before anything fails, and a
 member can say "connect my Google" and have it work.
@@ -488,28 +488,28 @@ agent does not do this. Both exist on purpose, and neither replaces the other.
 
 **Steps.**
 
-- [ ] Define the tool as `connect_app`, reaching Pi as `divo_connect_app` through
+- [x] Define the tool as `connect_app`, reaching Pi as `divo_connect_app` through
       the existing typed-tool naming. It takes `provider` and `toolIds`, never
       scopes. The name is provider-neutral per D10 and covers both cases per D12:
       connecting from nothing and widening an existing grant. If you want to
       change it, change it now and say so; renaming later costs a relearn.
-- [ ] Derive the scopes inside the tool from `googleScopeGroupsForToolIds`, per
+- [x] Derive the scopes inside the tool from `googleScopeGroupsForToolIds`, per
       D9. The model names what it wants to do; the backend decides what that
       costs in consent.
-- [ ] Hard fail any provider that is not Google, per D11. A named error saying
+- [x] Hard fail any provider that is not Google, per D11. A named error saying
       which providers are supported, not an empty success and not a silent
       no-op.
-- [ ] Handle both cases from D12 through one call. `not_connected` and
+- [x] Handle both cases from D12 through one call. `not_connected` and
       `insufficient_scope` differ in what the member is told, not in what the
       agent does.
-- [ ] Return the Phase 6 result shape: the ask was sent, stop here.
-- [ ] Write the skill. It states when to call the tool, that scopes are never
+- [x] Return the Phase 6 result shape: the ask was sent, stop here.
+- [x] Write the skill. It states when to call the tool, that scopes are never
       guessed, that a sent ask ends the run, and what the member sees. Keep it
       short; the tool's schema carries the mechanics.
-- [ ] Add it to the provisioned set and confirm it actually reaches a member.
+- [x] Add it to the provisioned set and confirm it actually reaches a member.
       `zoho.skill.ts:20` records a skill that was written, tested, and never
       provisioned, so no member ever received it. Do not repeat that.
-- [ ] Test: a Google call routes to `request()`; a Shopify call hard fails with a
+- [x] Test: a Google call routes to `request()`; a Shopify call hard fails with a
       named error; a call naming scopes instead of tool ids is rejected.
 
 **Do not.** Do not let the tool accept a scope list, however convenient. Do not
@@ -985,6 +985,45 @@ missing-account card branch. The live card check is therefore deferred to the
 Phase 3 front door, which can trigger the ask directly. The initial `--model
 pro` attempt was rejected by the pinned model policy before admission.
 
+**2026-08-21. Phase 3 complete.** Added `connectApp`, exposed to Pi as
+`divo_connect_app`, with a strict `{ provider, toolIds }` schema. The tool
+rejects scopes and unknown tool ids, derives Google scope groups through
+`googleScopeGroupsForToolIds`, routes one combined ask to the shared service,
+and returns the model-facing `connection_ask_sent` shape. Non-Google providers
+return the named `connection_provider_not_supported` error before the asker is
+called. The Connections skill is provisioned through
+`scripts/reconcile-capabilities.ts`, which is the real set of existing-company
+provisioners in this checkout; `system-skill-provisioner.ts` only contains the
+generic writer and has no set to extend.
+
+The tool catalogue required additive wiring outside the files first named by the
+plan: `connectApp` is now in the canonical tool taxonomy, labels, registered-tool
+seed, generated Pi-native catalogue, and Pi runtime allowlist. It is also a
+company-inherited permission so a department overlay cannot hide the front door.
+The permission policy epoch was bumped so a live cache cannot retain the old
+department default. The multi-tool schema exposed an interface mismatch in the
+original shape, so `ScopeGap` carries optional `toolIds` and the Google adapter
+passes every requested id into one authorization intent. This keeps the consent
+request unioned and narrow instead of issuing one intent per tool.
+
+Reconciliation result: one registered tool created, 39 already present; the
+Connections skill was created for 2 Development companies; skill routes had no
+missing targets. The focused tool, permission, taxonomy, and generated-catalogue
+tests passed, including **31 pass** for the catalogue/tool set and **57 pass**
+for the permission service. The native catalogue check returned `Verified 13
+generated Pi-native catalogue files.`
+
+The first live run found that the pre-change Pi image still exposed only the old
+account-discovery route, so the local `divo-pi-local:phase0` image was rebuilt
+and the controller restarted. A second run showed the new `divo_connect_app`
+call but exposed stale department permission cache. The final run called
+`divo_connect_app` successfully and delivered the Lark Connect card. The member
+read `# Connect Google Workspace` and the continuation sentence. The harness
+itself had omitted `IncomingMessage.tenantKey`, which made origin storage skip
+the card; adding that field fixed the harness without weakening the runtime
+origin check. The Gmail-only scope-gap live case remains to be confirmed after
+the owner-aware branch in Phase 5.
+
 **2026-08-20 (second pass) — design changed by Abhishek, no code changed.** The
 agent now gets a front door, not only an honest dead end: a provider-neutral
 connect tool it can call before anything fails, and which a member can trigger by
@@ -1017,10 +1056,10 @@ from 48.
 
 ## 12. Next action
 
-Start **Phase 3**. Add the provider-neutral `connect_app` tool and provision the
-connections skill. It must derive consent from tool ids, hard fail every
-non-Google provider, and give the member one explicit way to ask before a tool
-fails.
+Start **Phase 4**. Make the origin channel-agnostic and replayable. Read the
+existing web adapter before designing the shape, keep the Lark fields required
+inside its channel branch, and prove that a recalled web origin reconstructs the
+same `IncomingMessage` as the live turn.
 
 The classifier is now grounded in Divo's existing Google fixtures and client
 error path. The pinned upstream repository did not expose the literal prose in

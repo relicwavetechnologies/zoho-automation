@@ -257,6 +257,7 @@ import { createLarkMeetingTool } from './application/tools/families/lark-meeting
 import { createLarkDocTool } from './application/tools/families/lark-doc.tool';
 import { createLarkBaseTool } from './application/tools/families/lark-base.tool';
 import { createLarkApprovalTool } from './application/tools/families/lark-approval.tool';
+import { createConnectionsTool } from './application/tools/families/connections.tool';
 import { createGoogleWorkspaceMcpTools } from './application/tools/families/google-workspace-mcp.tool';
 import { createCanvaDesignTool } from './application/tools/families/canva-design.tool';
 import {
@@ -1933,6 +1934,7 @@ export async function buildContainer(
   toolRegistry.register(createLarkApprovalTool({
     client: larkApprovalClient,
   }));
+  toolRegistry.register(createConnectionsTool({ connectionRequest }));
   for (const tool of createGoogleWorkspaceMcpTools({
     getConnection: getGoogleWorkspaceMcpConnection,
     resolveSheetReference: resolveGoogleSheetReference,

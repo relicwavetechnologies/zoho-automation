@@ -19,7 +19,7 @@ export function createGoogleConnectionRequestAdapter(
     classify: input => classifyGoogleScopeGap(input.toolId, input.error),
     request: async input => {
       const authorization = await beginGoogleAuthorization({
-        toolId: input.gap.toolId,
+        toolIds: input.gap.toolIds ?? [input.gap.toolId],
         reason: reasonFor(input.gap),
         runContext: input.runContext,
       });
