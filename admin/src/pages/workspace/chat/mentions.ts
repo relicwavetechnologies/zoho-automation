@@ -128,13 +128,29 @@ export function splitMentions(draft: string): Run[] {
       continue
     }
     flush()
+    /*
+     * The space after the app comes with it.
+     *
+     * Not a trick — it is the only real horizontal room this design has. The
+     * pebble must span exactly the advance width of what it covers, because the
+     * mirror it is drawn on has to keep pace with the textarea underneath,
+     * character for character. So padding cannot be added on that side; it can
+     * only be found in characters that are already there and have no ink in
+     * them.
+     *
+     * The space is one of those. Painting the pebble over it moves nothing and
+     * costs nothing, and it is worth three and a half pixels — more than twice
+     * what the shadow can spare.
+     */
+    const after = i + 1 + found.name.length
+    const trailing = draft[after] === ' ' ? ' ' : ''
     runs.push({
       kind: 'mention',
-      text: `@${draft.slice(i + 1, i + 1 + found.name.length)}`,
+      text: `@${draft.slice(i + 1, after)}${trailing}`,
       name: found.name,
       key: found.key,
     })
-    i += 1 + found.name.length
+    i = after + trailing.length
   }
 
   flush()

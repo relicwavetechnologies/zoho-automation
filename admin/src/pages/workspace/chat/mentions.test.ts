@@ -9,10 +9,33 @@ const rejoin = (draft: string): string =>
 
 describe('splitMentions', () => {
   it('finds an app in the middle of a sentence', () => {
+    /* The space after the app belongs to the mention: it is the pebble's right
+       padding, and it is the only place that padding can come from. */
     assert.deepEqual(splitMentions('pull @Gmail threads'), [
       { kind: 'text', text: 'pull ' },
+      { kind: 'mention', text: '@Gmail ', name: 'Gmail', key: 'gmail' },
+      { kind: 'text', text: 'threads' },
+    ])
+  })
+
+  it('takes the space after the app, and only one of them', () => {
+    const one = splitMentions('@Gmail then')[0]
+    assert.equal(one?.kind === 'mention' && one.text, '@Gmail ')
+    /* A second space is ordinary text again — swallowing a run of them would
+       make one pebble wider than its neighbour for no reason a reader could
+       see. */
+    assert.deepEqual(splitMentions('@Gmail  then')[1], { kind: 'text', text: ' then' })
+  })
+
+  it('has no space to take at the end of a draft', () => {
+    const run = splitMentions('send it with @Gmail')[1]
+    assert.equal(run?.kind === 'mention' && run.text, '@Gmail')
+  })
+
+  it('does not swallow a newline, which is not padding', () => {
+    assert.deepEqual(splitMentions('@Gmail\nthen'), [
       { kind: 'mention', text: '@Gmail', name: 'Gmail', key: 'gmail' },
-      { kind: 'text', text: ' threads' },
+      { kind: 'text', text: '\nthen' },
     ])
   })
 
@@ -69,9 +92,11 @@ describe('splitMentions', () => {
   })
 
   it('handles a draft that is nothing but apps', () => {
+    /* The first takes the space between them as its own right padding; the
+       second has nothing after it to take. */
     assert.deepEqual(
       splitMentions('@Gmail @Books').filter((r) => r.kind === 'mention').map((r) => r.text),
-      ['@Gmail', '@Books'],
+      ['@Gmail ', '@Books'],
     )
   })
 

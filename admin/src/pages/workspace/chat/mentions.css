@@ -47,17 +47,30 @@
 
 .cmp-mention {
   position: relative;
-  border-radius: 5px;
+  /* Grown with the padding: the same radius on a taller pebble reads as a box
+     with rounded corners rather than as a pebble. */
+  border-radius: 6px;
   background: var(--cmp-pebble);
   /* Vertical padding is free: on an inline element it paints outside the line
      box without moving anything. Horizontal padding is not free — it would
      widen the run and slide every character after it out from under the caret
      — so the sides get a spread shadow instead, kept narrow enough that two
      mentions one space apart do not touch. */
-  padding: 2px 0;
-  /* 1px, because the only thing between two mentions is one space. At 2px they
-     met in the middle and read as a single long pebble with a logo in it. */
-  box-shadow: 0 0 0 1px var(--cmp-pebble);
+  /*
+   * Vertical padding is free and horizontal padding is not, so they are not the
+   * same number and cannot be.
+   *
+   * On an inline element, vertical padding paints outside the line box without
+   * moving anything, so the pebble can be as tall as it needs. Horizontal
+   * padding would widen the run and slide every character after it out from
+   * under the caret, so the sides get a spread shadow instead — and that is
+   * capped by the single space between two adjacent mentions, 3.8px at this
+   * size. Whatever the sides take, they take from that gap: at 1.9px a side the
+   * two pebbles meet exactly and read as one long pebble with two logos in it,
+   * which is where this started. 1.5 is the most that still leaves daylight.
+   */
+  padding: 3px 0;
+  box-shadow: 0 0 0 1.5px var(--cmp-pebble);
   --cmp-pebble: color-mix(in oklab, var(--bui-ink) 11%, transparent);
 }
 
@@ -73,6 +86,38 @@
  * repeated, where red, green and blue read instantly as three different
  * services.
  */
+/*
+ * A pebble that swallowed a space gives a sliver of it back.
+ *
+ * Painting the whole space makes two adjacent chips meet exactly, and a brown
+ * one flush against a green one reads as a single striped pebble. So the
+ * background stops short of the end and the shadow only extends left, which
+ * leaves both a right padding and a gap — out of the same 3.8px, because that
+ * space is the entire horizontal budget between two chips and nothing can add
+ * to it.
+ */
+.cmp-mention[data-tail] {
+  background-color: transparent;
+  background-image: linear-gradient(
+    to right,
+    var(--cmp-pebble) calc(100% - 1.7px),
+    transparent 0
+  );
+  box-shadow: -1.5px 0 0 0 var(--cmp-pebble);
+}
+
+/*
+ * A chip that follows one drops its left extension.
+ *
+ * The chip before it already ended short of its own edge, so that sliver is
+ * the gap between them; extending left across it would close the gap straight
+ * back up. Reachable as an adjacent sibling because the first chip swallowed
+ * the space, which leaves the two mentions next to each other in the DOM.
+ */
+.cmp-mention[data-tail] + .cmp-mention {
+  box-shadow: none;
+}
+
 .cmp-mention[data-marked='true'] {
   --cmp-pebble: color-mix(in oklab, var(--cmp-brand, var(--bui-brand)) 18%, transparent);
 }
@@ -96,23 +141,41 @@
 
 .cmp-mention-mark {
   position: absolute;
-  /* Centred inside the width the `@` was always going to occupy, and a shade
-     smaller than it, so there is daylight between the mark and the first
-     letter of the name. Sized in `em` because the field's font-size is a
-     function of how far Home has been scrolled. */
-  left: 0.09em;
+  /*
+   * Sized to the cap height, and set inside the slot with room on both sides.
+   *
+   * The `@` advance is 0.968em in Inter — nearly a full em — and the mark only
+   * needs about 0.7em to match the capital beside it (`G` is 0.743em). The
+   * quarter-em left over is the only horizontal room this design has, and it
+   * is spent in two places: 0.11em in front of the mark, which is the pebble's
+   * left padding, and the remainder behind it, which is the gap before the
+   * first letter.
+   *
+   * Both have to come out of the slot rather than out of padding. Horizontal
+   * padding would widen the run, and the mirror has to advance at exactly the
+   * rate the textarea does or the caret drifts away from the letters it is
+   * standing in. Sized in `em` because the field's font-size is a function of
+   * how far Home has been scrolled.
+   */
+  left: 0.11em;
   top: 50%;
-  width: 0.8em;
-  height: 0.8em;
+  width: 0.7em;
+  height: 0.7em;
   transform: translateY(-50%);
   display: grid;
   place-items: center;
 }
 
-.cmp-mention-mark > * {
-  width: 100%;
-  height: 100%;
-}
+/*
+ * Nothing to resize here.
+ *
+ * The mark arrives already at the slot's size, measured off the field's own
+ * font size in `composer.tsx`. This used to try to stretch it with
+ * `width: 100%`, which never applied: `BrandMark` sets its box in an inline
+ * style, and an inline style beats a stylesheet every time. The artwork stayed
+ * at its natural size, overflowed the slot, and sat low in the pebble — the
+ * boxes were all perfectly centred and the thing inside them was not.
+ */
 
 @media (prefers-reduced-motion: no-preference) {
   .cmp-mention { transition: background-color .12s ease, box-shadow .12s ease; }

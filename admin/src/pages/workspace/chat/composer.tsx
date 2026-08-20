@@ -58,6 +58,15 @@ const SOURCES: { key: ToolKey; name: string; hint: string }[] = [
 const NO_FILES: readonly File[] = []
 const NO_REJECTIONS: readonly Rejection[] = []
 
+/**
+ * How much of the type size an app's mark takes, as a fraction.
+ *
+ * Has to stay in step with `.cmp-mention-mark`'s `width` in `mentions.css`.
+ * They are two halves of one number: the CSS reserves the slot, this fills it,
+ * and when they disagreed the artwork overflowed its own pebble and sat low.
+ */
+const MARK_EM = 0.7
+
 /** The `@token` under the caret, if the caret is inside one. */
 function tokenAt(draft: string) {
   const at = draft.lastIndexOf('@')
@@ -151,6 +160,27 @@ export function Composer({
   const ready = value.trim().length > 0
   const canSend = ready && (modelSelection !== null || !picksModel)
   const model = models.find(candidate => candidate.id === modelSelection?.model)
+  /*
+   * The field's type size, as one number.
+   *
+   * It was spelled out three times — the mirror, the textarea, and the fallback
+   * `text-[13px]` — and now a fourth thing depends on it: the app marks drawn
+   * inside the text have to scale with the letters they sit among, because the
+   * landing composer's font size is a function of how far Home has been
+   * scrolled.
+   */
+  const fieldFontPx = hero === undefined ? 13 : 13 + 1.5 * hero
+  /*
+   * The mark, in pixels, at the same fraction of the type size the CSS slot
+   * uses.
+   *
+   * Sized here rather than stretched by CSS because `BrandMark` writes its own
+   * width and height as inline styles, and an inline style beats a stylesheet.
+   * The old `> * { width: 100% }` rule silently lost that fight: the artwork
+   * kept its natural 14px inside a 10.7px slot, overflowed the bottom, and sat
+   * a pixel and a half below the centre of its own pebble.
+   */
+  const markPx = Math.round(fieldFontPx * MARK_EM)
   const runs = useMemo(() => splitMentions(value), [value])
   const token = tokenAt(value)
   const rows = useMemo(() => {
@@ -436,6 +466,9 @@ export function Composer({
                     key={index}
                     className="cmp-mention"
                     data-marked={run.key ? 'true' : undefined}
+                    /* Carries the space after it, so the pebble has a right
+                       side to pad with. See `mentions.css`. */
+                    data-tail={run.text.endsWith(' ') ? 'true' : undefined}
                     /* The app's own colour, handed to CSS rather than mixed
                        here: the tint has to be blended against whichever theme
                        is on, and `color-mix` in the stylesheet knows that and
@@ -444,7 +477,7 @@ export function Composer({
                   >
                     {run.key ? (
                       <span className="cmp-mention-mark">
-                        <ToolMark name={run.key} size={14} />
+                        <ToolMark name={run.key} size={markPx} />
                       </span>
                     ) : null}
                     <span className={run.key ? 'cmp-mention-at' : undefined}>@</span>
