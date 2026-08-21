@@ -19,7 +19,16 @@ const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 type ToolRegistryEntry = { toolId: string; name: string }
 
-/** Tool id → display label, sourced from the live registry (falls back to id). */
+/**
+ * Tool id → display label, sourced from the live registry.
+ *
+ * The fallback humanises rather than returning the id, because the registry is
+ * a network read: it is empty on first paint and stays empty if the request
+ * fails or the company's registry omits a tool a skill still names. Returning
+ * the id meant those cases rendered `larkBase` and `zohoCrm` at a person — an
+ * identifier leaking through a label. `humanizeId` is the same helper the chat
+ * trace already degrades through, so the two surfaces agree on the wording.
+ */
 export function useToolLabels(): (id: string) => string {
   const { token } = useAdminAuth()
   const scope = getAdminQueryScope(token)
@@ -36,7 +45,7 @@ export function useToolLabels(): (id: string) => string {
     for (const t of query.data ?? []) m.set(t.toolId, t.name)
     return m
   }, [query.data])
-  return useCallback((id: string) => map.get(id) ?? id, [map])
+  return useCallback((id: string) => map.get(id) ?? humanizeId(id), [map])
 }
 
 export function useSkillRegistry() {
