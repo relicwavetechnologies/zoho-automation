@@ -792,16 +792,23 @@
    scarce orange, and the theme toggle is present here too because a person
    who prefers dark should not have to sign in to get it.
    ══════════════════════════════════════════════════════ */
-.cur .ws-auth { min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; background: var(--cur-canvas); }
-@media (max-width: 1020px) { .cur .ws-auth { grid-template-columns: 1fr; } .cur .ws-auth-aside { display: none; } }
+.cur .ws-auth { position: relative; min-height: 100vh; display: grid; grid-template-columns: 1fr 1fr; background: var(--cur-canvas); }
 
-/* Left: what this is. Not marketing, and pointedly not design-system trivia. */
+/*
+ * Right: the argument. Not marketing, and pointedly not design-system trivia.
+ *
+ * Centred rather than pushed to the top and bottom. Spread apart it read as two
+ * unrelated blocks with a hole between them; gathered, it is one statement with
+ * its evidence under it, sitting opposite the form at the same height.
+ */
 .cur .ws-auth-aside {
-  padding: 44px; display: flex; flex-direction: column; justify-content: space-between;
-  border-right: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft);
+  position: relative;
+  padding: 44px; display: flex; flex-direction: column; justify-content: center; gap: 40px;
+  border-left: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft);
 }
+.cur .ws-auth-pitch { max-width: 46ch; }
 .cur .ws-auth-aside h1 { font-size: 30px; font-weight: 400; letter-spacing: -0.028em; line-height: 1.18; max-width: 15ch; }
-.cur .ws-auth-aside > div > p { font-size: 13px; color: var(--cur-body); line-height: 1.6; margin-top: 14px; max-width: 44ch; }
+.cur .ws-auth-pitch > p { font-size: 13px; color: var(--cur-body); line-height: 1.6; margin-top: 14px; max-width: 44ch; }
 .cur .ws-auth-list { display: flex; flex-direction: column; gap: 2px; margin-top: 30px; }
 /* Direct children only — the inner wrapper holds the text and must stay block. */
 .cur .ws-auth-list > div { display: flex; gap: 11px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--cur-hairline-soft); }
@@ -809,21 +816,45 @@
 .cur .ws-auth-list svg { color: var(--cur-muted); flex-shrink: 0; margin-top: 2px; }
 .cur .ws-auth-list b { font-size: 13px; font-weight: 500; display: block; }
 .cur .ws-auth-list p { font-size: 12px; color: var(--cur-muted); margin-top: 3px; line-height: 1.45; }
-.cur .ws-auth-foot { font-size: 11px; color: var(--cur-muted-soft); }
+/* Pinned to the foot of the panel rather than riding under the centred pitch,
+   which would drag the pitch off centre by its own height. */
+.cur .ws-auth-foot {
+  position: absolute; left: 44px; right: 44px; bottom: 30px;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 20px;
+  font-size: 11px; color: var(--cur-muted-soft);
+}
 
-/* Right: the form. Bounded, centred, never full-bleed. */
-.cur .ws-auth-main { display: flex; align-items: center; justify-content: center; padding: 44px 32px; position: relative; }
-.cur .ws-auth-theme { position: absolute; top: 22px; right: 22px; }
-.cur .ws-auth-attribution { position: absolute; bottom: 16px; color: var(--cur-muted-soft); font-size: 10px; }
+/* Left: the form. Bounded, centred, never full-bleed. */
+.cur .ws-auth-main { display: flex; align-items: center; justify-content: center; padding: 44px 32px; }
+/* Page-level now, so it survives the panel being dropped on a narrow screen. */
+.cur .ws-auth-theme { position: absolute; top: 22px; right: 22px; z-index: 2; }
+.cur .ws-auth-attribution { color: var(--cur-muted-soft); font-size: 10px; white-space: nowrap; }
 .cur .ws-auth-attribution:hover { color: var(--cur-muted); }
-.cur .ws-auth-box { width: 100%; max-width: 372px; }
-/* The mark inside the box is the fallback identity for narrow screens, where
-   the aside that carries it is gone. Two marks side by side is one too many. */
-.cur .ws-auth-box > .brand { display: none; }
-@media (max-width: 1020px) { .cur .ws-auth-box > .brand { display: flex; } }
-.cur .ws-auth-box > h2 { font-size: 20px; font-weight: 400; letter-spacing: -0.02em; margin-top: 0; }
-.cur .ws-auth-box > .brand + h2 { margin-top: 26px; }
-.cur .ws-auth-box > h2 + p { font-size: 13px; color: var(--cur-muted); margin-top: 8px; line-height: 1.55; }
+.cur .ws-auth-box { width: 100%; max-width: 400px; }
+
+/*
+ * One column, once there is no room for two.
+ *
+ * Declared here rather than beside `.ws-auth` at the top, and that is the whole
+ * fix: it was written first, so the `display: flex` on `.ws-auth-aside` further
+ * down won on equal specificity and the panel never actually hid. Below 1020px
+ * the page had two half-width columns squeezed into a phone.
+ */
+@media (max-width: 1020px) {
+  .cur .ws-auth { grid-template-columns: 1fr; }
+  .cur .ws-auth-aside { display: none; }
+}
+/* The form carries the mark now, on every width. The panel opposite used to
+   hold one too, and on a narrow screen where the panel is dropped the page lost
+   its only identity — so this was hidden on wide screens and shown on small
+   ones. One mark, in the half that never goes away, needs none of that. */
+.cur .ws-auth-box > .brand { padding: 0; }
+/* The same size the onboarding card uses. These are the two doors into the
+   product and a person may meet either first; a 20px heading on one and a 26px
+   heading on the other reads as two different apps. */
+.cur .ws-auth-box > h2 { font-size: 26px; font-weight: 500; line-height: 1.2; letter-spacing: -0.022em; margin-top: 0; }
+.cur .ws-auth-box > .brand + h2 { margin-top: 30px; }
+.cur .ws-auth-box > h2 + p { font-size: 13px; color: var(--cur-muted); margin-top: 9px; line-height: 1.6; }
 .cur .ws-auth-form { display: flex; flex-direction: column; gap: 16px; margin-top: 26px; }
 .cur .ws-auth-form .btn { width: 100%; justify-content: center; height: 38px; }
 
