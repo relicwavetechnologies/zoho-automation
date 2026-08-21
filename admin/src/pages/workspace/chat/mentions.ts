@@ -101,33 +101,46 @@ export function splitMentions(draft: string): Run[] {
       continue
     }
     flush()
-    /*
-     * The space after the app comes with it.
-     *
-     * Not a trick — it is the only real horizontal room this design has. The
-     * pebble must span exactly the advance width of what it covers, because the
-     * mirror it is drawn on has to keep pace with the textarea underneath,
-     * character for character. So padding cannot be added on that side; it can
-     * only be found in characters that are already there and have no ink in
-     * them.
-     *
-     * The space is one of those. Painting the pebble over it moves nothing and
-     * costs nothing, and it is worth three and a half pixels — more than twice
-     * what the shadow can spare.
-     */
-    const after = i + 1 + found.name.length
-    const trailing = draft[after] === ' ' ? ' ' : ''
     runs.push({
       kind: 'mention',
-      text: `@${draft.slice(i + 1, after)}${trailing}`,
+      text: `@${draft.slice(i + 1, i + 1 + found.name.length)}`,
       name: found.name,
       key: found.key,
     })
-    i = after + trailing.length
+    i += 1 + found.name.length
   }
 
   flush()
   return runs
+}
+
+/**
+ * Whether the tile at `index` has another one a single space away, either side.
+ *
+ * The tile pays for its padding out of the space beside it, and between two
+ * tiles there is exactly one space to share — 3.8px at the field's size, against
+ * 4.3px each tile would take. Anywhere else, before a word or at the end of a
+ * line, the padding costs nothing.
+ *
+ * Both directions, and both tiles in a pair tighten. Marking only the first left
+ * the second still pushing a full pad into the shared space from the other side,
+ * and the two overlapped by 1.7px. A pair reads as a pair; they give way
+ * together.
+ *
+ * A question about the draft, answered where the draft is understood, rather
+ * than a DOM trick in the stylesheet. CSS can see that two spans are adjacent
+ * siblings; it cannot see that the only thing between them is one space.
+ */
+export function crowded(runs: readonly Run[], index: number): boolean {
+  if (runs[index]?.kind !== 'mention') return false
+  return oneSpaceApart(runs, index, 1) || oneSpaceApart(runs, index, -1)
+}
+
+/** A mention exactly one space away in `direction`. */
+function oneSpaceApart(runs: readonly Run[], index: number, direction: 1 | -1): boolean {
+  const between = runs[index + direction]
+  if (between?.kind !== 'text' || between.text !== ' ') return false
+  return runs[index + direction * 2]?.kind === 'mention'
 }
 
 /** The longest known name sitting at `from`, if any. */

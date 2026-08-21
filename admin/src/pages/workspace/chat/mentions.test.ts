@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { mentionedApps, splitMentions } from './mentions'
+import { crowded, mentionedApps, splitMentions } from './mentions'
 
 /** The invariant the overlay depends on: nothing added, nothing dropped. */
 const rejoin = (draft: string): string =>
@@ -9,33 +9,13 @@ const rejoin = (draft: string): string =>
 
 describe('splitMentions', () => {
   it('finds an app in the middle of a sentence', () => {
-    /* The space after the app belongs to the mention: it is the pebble's right
-       padding, and it is the only place that padding can come from. */
+    /* The mention is the name and nothing else. It used to take the space after
+       it as somewhere to put padding; the tile now pays for its own out of a
+       negative margin, so the space belongs to the sentence again. */
     assert.deepEqual(splitMentions('pull @Gmail threads'), [
       { kind: 'text', text: 'pull ' },
-      { kind: 'mention', text: '@Gmail ', name: 'Gmail', key: 'gmail' },
-      { kind: 'text', text: 'threads' },
-    ])
-  })
-
-  it('takes the space after the app, and only one of them', () => {
-    const one = splitMentions('@Gmail then')[0]
-    assert.equal(one?.kind === 'mention' && one.text, '@Gmail ')
-    /* A second space is ordinary text again — swallowing a run of them would
-       make one pebble wider than its neighbour for no reason a reader could
-       see. */
-    assert.deepEqual(splitMentions('@Gmail  then')[1], { kind: 'text', text: ' then' })
-  })
-
-  it('has no space to take at the end of a draft', () => {
-    const run = splitMentions('send it with @Gmail')[1]
-    assert.equal(run?.kind === 'mention' && run.text, '@Gmail')
-  })
-
-  it('does not swallow a newline, which is not padding', () => {
-    assert.deepEqual(splitMentions('@Gmail\nthen'), [
       { kind: 'mention', text: '@Gmail', name: 'Gmail', key: 'gmail' },
-      { kind: 'text', text: '\nthen' },
+      { kind: 'text', text: ' threads' },
     ])
   })
 
@@ -92,16 +72,56 @@ describe('splitMentions', () => {
   })
 
   it('handles a draft that is nothing but apps', () => {
-    /* The first takes the space between them as its own right padding; the
-       second has nothing after it to take. */
     assert.deepEqual(
       splitMentions('@Gmail @Books').filter((r) => r.kind === 'mention').map((r) => r.text),
-      ['@Gmail ', '@Books'],
+      ['@Gmail', '@Books'],
     )
   })
 
   it('has nothing to say about an empty draft', () => {
     assert.deepEqual(splitMentions(''), [])
+  })
+})
+
+describe('crowded', () => {
+  it('is true for a tile with one space and another tile behind it', () => {
+    const runs = splitMentions('@Gmail @Books')
+    assert.equal(crowded(runs, 0), true)
+  })
+
+  it('is true for the second of a pair as well as the first', () => {
+    /* Both give way, or the one that did not still pushes a full pad into the
+       space they share and the pair overlaps. */
+    const runs = splitMentions('@Gmail @Books')
+    assert.equal(crowded(runs, 2), true)
+  })
+
+  it('is false for a lone tile with words on both sides', () => {
+    const runs = splitMentions('pull @Gmail threads')
+    assert.equal(crowded(runs, 1), false)
+  })
+
+  it('is false when a word sits between two tiles', () => {
+    /* There is a whole word of room here. Tightening would be the layout
+       flinching at something that is not happening. */
+    const runs = splitMentions('@Gmail and @Books')
+    assert.equal(crowded(runs, 0), false)
+  })
+
+  it('is false when the gap is wider than one space', () => {
+    const runs = splitMentions('@Gmail  @Books')
+    assert.equal(crowded(runs, 0), false)
+  })
+
+  it('is false for a newline between them, which is not a gap but a break', () => {
+    const runs = splitMentions('@Gmail\n@Books')
+    assert.equal(crowded(runs, 0), false)
+  })
+
+  it('is false for plain text and for an index nobody filled', () => {
+    const runs = splitMentions('just words')
+    assert.equal(crowded(runs, 0), false)
+    assert.equal(crowded(runs, 99), false)
   })
 })
 

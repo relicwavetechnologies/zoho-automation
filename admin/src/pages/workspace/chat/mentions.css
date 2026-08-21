@@ -9,8 +9,9 @@
  * That arrangement has one rule, and everything below obeys it. **Nothing here
  * may change the width of a single character.** The mirror and the real text
  * must wrap at the same points and advance at the same rate, or the caret walks
- * away from the letters underneath it. So the pebble is a `box-shadow` rather
- * than padding, and the mark is absolutely positioned rather than inserted.
+ * away from the letters underneath it. So the mark is placed on top of the `@`
+ * rather than inserted beside it, and the tile's padding is paid back with an
+ * equal negative margin — see `.cmp-mention` below.
  */
 
 /* The two layers, stacked and identical. `inset-0` on the mirror pins it to the
@@ -46,61 +47,44 @@
 /* ── One app ──────────────────────────────────────────── */
 
 /*
- * The colour comes from `.pebble` in `pebble.css`, which this element also
- * carries. Everything below is the part a mention cannot share: its box.
+ * The tile, given real padding without moving a character.
  *
- * Vertical padding is free and horizontal padding is not, so they are not the
- * same number and cannot be.
+ * The rule this file has always obeyed is that nothing may change the width of
+ * a run, because the mirror has to advance at exactly the rate the textarea
+ * under it does. For a long time that was read as "no horizontal padding", and
+ * the sides were faked with a 1.5px shadow that never looked like the tile used
+ * everywhere else.
  *
- * On an inline element, vertical padding paints outside the line box without
- * moving anything, so the pebble can be as tall as it needs. Horizontal padding
- * would widen the run and slide every character after it out from under the
- * caret, so the sides get a spread shadow instead — and that is capped by the
- * single space between two adjacent mentions, 3.8px at this size. Whatever the
- * sides take, they take from that gap: at 1.9px a side the two pebbles meet
- * exactly and read as one long pebble with two logos in it, which is where this
- * started. 1.5 is the most that still leaves daylight.
+ * That reading was too strong. Padding moves the *following* content; an equal
+ * negative margin moves it back. The element's left edge shifts out by the pad
+ * and its content starts a pad further in, which is where it always was, and
+ * the next character resumes exactly where it would have. Every glyph stays
+ * put, the caret stays with it, and the painted box is genuinely wider.
  *
- * A link in the transcript has none of these constraints and is simply padded.
- * That difference is the reason `.pebble` defines a colour and not a box.
+ * So the tile keeps the padding it has in the tray and the transcript, and this
+ * file only says where the room comes from.
  */
 .cmp-mention {
+  /* Not the tile's `inline-flex`: this one sits in wrapping text and has to
+     break like the words around it. The mark is placed rather than laid out,
+     which is why it can afford to. */
+  display: inline;
   position: relative;
-  padding: 3px 0;
-  box-shadow: 0 0 0 1.5px var(--pebble-tint);
+  /* In `em`, because the field's size is a function of how far Home is
+     scrolled and a fixed pad would drift away from the type. */
+  --pebble-pad-x: 0.3em;
+  --pebble-pad-y: 3px;
+  margin-inline: calc(-1 * var(--pebble-pad-x));
 }
 
 /*
- * A pebble that swallowed a space gives a sliver of it back.
+ * Two tiles with one space between them share that space.
  *
- * Painting the whole space makes two adjacent chips meet exactly, and a brown
- * one flush against a green one reads as a single striped pebble. So the
- * background stops short of the end and the shadow only extends left, which
- * leaves both a right padding and a gap — out of the same 3.8px, because that
- * space is the entire horizontal budget between two chips and nothing can add
- * to it.
+ * Each would otherwise paint a full pad into it and the pair would merge into
+ * one long tile with two logos in it. `crowded()` in `mentions.ts` decides
+ * this, because it is a fact about the draft rather than about the DOM.
  */
-.cmp-mention[data-tail] {
-  background-color: transparent;
-  background-image: linear-gradient(
-    to right,
-    var(--pebble-tint) calc(100% - 1.7px),
-    transparent 0
-  );
-  box-shadow: -1.5px 0 0 0 var(--pebble-tint);
-}
-
-/*
- * A chip that follows one drops its left extension.
- *
- * The chip before it already ended short of its own edge, so that sliver is
- * the gap between them; extending left across it would close the gap straight
- * back up. Reachable as an adjacent sibling because the first chip swallowed
- * the space, which leaves the two mentions next to each other in the DOM.
- */
-.cmp-mention[data-tail] + .cmp-mention {
-  box-shadow: none;
-}
+.cmp-mention[data-crowded] { --pebble-pad-x: 0.08em; }
 
 /*
  * The mark stands where the `@` is.
@@ -123,13 +107,21 @@
    * left padding, and the remainder behind it, which is the gap before the
    * first letter.
    *
-   * Both have to come out of the slot rather than out of padding. Horizontal
-   * padding would widen the run, and the mirror has to advance at exactly the
-   * rate the textarea does or the caret drifts away from the letters it is
-   * standing in. Sized in `em` because the field's font-size is a function of
-   * how far Home has been scrolled.
+   * Flush with the content edge, so the tile's left gap is its padding and
+   * nothing else. The containing block for an absolute child of an inline
+   * element is its *padding* box, which is what makes this work — and which is
+   * also why a bare `0.11em` used to sit the mark *inside* the padding and eat
+   * it, leaving every tile measuring 1.6px on the left however much padding it
+   * actually had.
+   *
+   * The slot is wider than the mark by design: the `@` advance is 0.968em and
+   * the mark is 0.7em, so the quarter-em left over now falls entirely behind the
+   * mark, where it becomes the gap before the first letter.
+   *
+   * Sized in `em` because the field's font-size is a function of how far Home
+   * has been scrolled.
    */
-  left: 0.11em;
+  left: var(--pebble-pad-x, 0px);
   top: 50%;
   width: 0.7em;
   height: 0.7em;
@@ -150,5 +142,5 @@
  */
 
 @media (prefers-reduced-motion: no-preference) {
-  .cmp-mention { transition: background-color .12s ease, box-shadow .12s ease; }
+  .cmp-mention { transition: background-color .12s ease; }
 }

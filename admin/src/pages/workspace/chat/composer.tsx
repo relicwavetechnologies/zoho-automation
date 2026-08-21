@@ -10,7 +10,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, ArrowUpRight, Check, ChevronDown, Plus } from 'lucide-react'
 import { ToolMark, tool, type ToolKey } from './tools'
-import { splitMentions } from './mentions'
+import { crowded, splitMentions } from './mentions'
 import { tintFor } from './pebble'
 import './pebble.css'
 import './mentions.css'
@@ -468,9 +468,9 @@ export function Composer({
                     key={index}
                     className="pebble cmp-mention"
                     data-brand={tintFor(run.key) ? 'true' : undefined}
-                    /* Carries the space after it, so the pebble has a right
-                       side to pad with. See `mentions.css`. */
-                    data-tail={run.text.endsWith(' ') ? 'true' : undefined}
+                    /* Another tile right behind this one, with a single space
+                       to share. See `crowded` and `mentions.css`. */
+                    data-crowded={crowded(runs, index) ? 'true' : undefined}
                     /* The app's own colour, handed to CSS rather than mixed
                        here: the tint has to be blended against whichever theme
                        is on, and `color-mix` in the stylesheet knows that and
