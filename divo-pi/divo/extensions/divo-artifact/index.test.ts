@@ -131,6 +131,7 @@ test("stores the document's body and reports the version the reader will get", a
 		// rather than guessed.
 		assert.equal(calls[0]?.body.threadId, "web_thread-1");
 		assert.equal(calls[0]?.body.executionRunId, "run-1");
+		assert.match(result?.content[0]?.text ?? "", /Artifact id: art-fixed-id\./);
 
 		const details = result?.details as unknown as {
 			version: number;

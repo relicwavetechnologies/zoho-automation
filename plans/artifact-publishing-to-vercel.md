@@ -421,7 +421,8 @@ from `## Next action`.
 - Typecheck remains red only at the known Phase 1 byte-port chart indexed accesses (`chart-geometry.ts:118-119,144`); no Phase 4 type errors were introduced.
 - Classified `artifactPublish` as an ownership-scoped company-inherited capability and bumped the existing permission-policy epoch so live Redis snapshots cannot retain the pre-capability decision. The permission service and department-template tests pass.
 - The first direct-Lark Cloud-Pi run reached `write` and `divo_artifact` successfully, then exposed the stale permission snapshot. D8 now removes that blocked password mint; the next run must confirm a working unprotected URL in the Lark card. No group-chat run is authorized by D9.
+- The first unprotected live runs eventually succeeded but showed the model guessing the artifact id after `divo_artifact`. The extension now includes the ownership-scoped `artifactId` in its result text as well as structured details, so `divo_publish` has an exact value to use instead of retrying guessed ids. A clean confirmation remains the last Phase 4 proof.
 
 ## 12. Next action
 
-Resume Phase 4 from the direct-Lark run: rerun the short report prompt, confirm the card carries a working unprotected URL with no panel wording, then prove the shared/unknown negative and the web run before closing Phase 4.
+Rerun the short report prompt in direct Lark after the explicit artifact-id result fix, confirm the card carries a working unprotected URL with no panel wording, then close Phase 4 with the already-passing shared/unknown negative and web URL checks.

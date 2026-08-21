@@ -372,11 +372,11 @@ export default function divoArtifactExtension(pi: ExtensionAPI) {
 				storedVersion: stored.version,
 			});
 
-			const pointer = summaryForChat ?? (
+			const pointer = `${summaryForChat ?? (
 				artifactMode === "inline"
 					? `Opened "${title}" beside the conversation, from ${basename(resolved.path)}. Keep the chat reply to a short pointer; do not paste the full body.`
 					: `Filed "${title}" for link delivery, from ${basename(resolved.path)}. Keep the chat reply to a short pointer; do not paste the full body.`
-			);
+			)} Artifact id: ${artifactId}.`;
 
 			return {
 				content: [{ type: "text" as const, text: pointer }],
