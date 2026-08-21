@@ -7,6 +7,7 @@ import type { ArtifactPublishingService } from '../../application/publishing/art
 import type { PermissionService } from '../../application/permissions/permission.service';
 import { asCompanyId, asToolId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
+import { buildDocument } from '../../domain/artifact/document';
 
 /**
  * The artifact's way in and out.
@@ -156,6 +157,31 @@ export function createArtifactRoutes(deps: {
       return;
     }
     res.json({ ok: true, publication: { url: published.value.url } });
+  });
+
+  router.get('/:artifactId/document', async (req, res) => {
+    const scope = scopeFrom(res);
+    if (!scope) return unauthenticated(res);
+    const artifactId = artifactIdSchema.safeParse(req.params['artifactId']);
+    if (!artifactId.success) {
+      res.status(400).json({ ok: false, error: 'invalid_artifact_id' });
+      return;
+    }
+    const found = await deps.artifacts.get({ ...scope, artifactId: artifactId.data });
+    if (!found.ok) {
+      log.error('artifacts.document_failed', { error: String(found.error) });
+      res.status(500).json({ ok: false, error: 'artifacts_unavailable' });
+      return;
+    }
+    if (!found.value) {
+      res.status(404).json({ ok: false, error: 'artifact_not_found' });
+      return;
+    }
+    res.json({
+      ok: true,
+      mode: 'panel',
+      document: buildDocument(found.value.body, 'light', 'panel'),
+    });
   });
 
   router.get('/:artifactId', async (req, res) => {

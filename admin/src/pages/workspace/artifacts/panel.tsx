@@ -374,7 +374,7 @@ function ArtifactSurface({ tab, token }: { tab: ArtifactTab; token: string | nul
             </pre>
           </>
         ) : (
-          format.render(tab.body)
+          format.render(tab.body, { artifactId: tab.artifactId, token, version: tab.version })
         )}
       </div>
     </div>

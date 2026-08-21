@@ -12,7 +12,16 @@
  */
 import { useEffect, useState } from 'react'
 import { Markdown } from '../chat/answer/answer.view'
-import { DOCUMENT_SANDBOX, buildDocument, type DocumentTheme } from './document'
+import { getArtifactDocument, withDocumentTheme } from './data'
+
+export const DOCUMENT_SANDBOX = 'allow-scripts allow-popups allow-popups-to-escape-sandbox'
+export type DocumentTheme = 'light' | 'dark'
+
+export type DocumentRenderContext = {
+  readonly artifactId?: string
+  readonly token?: string | null
+  readonly version?: number
+}
 
 export type DocumentFormat = {
   /**
@@ -23,7 +32,7 @@ export type DocumentFormat = {
    * its own end.
    */
   readonly selfScrolling: boolean
-  readonly render: (body: string) => React.ReactNode
+  readonly render: (body: string, context?: DocumentRenderContext) => React.ReactNode
 }
 
 const FORMATS: Readonly<Record<string, DocumentFormat>> = {
@@ -37,7 +46,13 @@ const FORMATS: Readonly<Record<string, DocumentFormat>> = {
   },
   'text/html': {
     selfScrolling: true,
-    render: (body) => <HtmlDocument body={body} />,
+    render: (_body, context) => (
+      <HtmlDocument
+        artifactId={context?.artifactId ?? ''}
+        token={context?.token ?? null}
+        version={context?.version ?? 1}
+      />
+    ),
   },
 }
 
@@ -49,15 +64,44 @@ export function formatFor(mime: string): DocumentFormat | undefined {
 /** Every type this build can draw. The skill's promise is checked against it. */
 export const RENDERABLE_MIMES: readonly string[] = Object.keys(FORMATS)
 
-function HtmlDocument({ body }: { body: string }) {
+function HtmlDocument({
+  artifactId,
+  token,
+  version,
+}: {
+  readonly artifactId: string
+  readonly token: string | null
+  readonly version: number
+}) {
   const theme = useDocumentTheme()
+  const [documentMarkup, setDocumentMarkup] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let live = true
+    setDocumentMarkup(null)
+    setFailed(false)
+    if (!token || !artifactId) {
+      setFailed(true)
+      return () => { live = false }
+    }
+    void getArtifactDocument(artifactId, token).then(markup => {
+      if (!live) return
+      if (markup) setDocumentMarkup(markup)
+      else setFailed(true)
+    })
+    return () => { live = false }
+  }, [artifactId, token, version])
+
+  if (failed) return <p className="px-5 py-6 text-[13px] text-ink-3">This document could not be loaded.</p>
+  if (!documentMarkup) return <p className="px-5 py-6 text-[13px] text-ink-3">Loading document…</p>
   return (
     <iframe
       title="Document"
       // Without `allow-same-origin` this runs on an opaque origin, which is the
       // control that matters — see the note in `document.ts`.
       sandbox={DOCUMENT_SANDBOX}
-      srcDoc={buildDocument(body, theme)}
+      srcDoc={withDocumentTheme(documentMarkup, theme)}
       className="h-full w-full border-0 bg-canvas"
     />
   )

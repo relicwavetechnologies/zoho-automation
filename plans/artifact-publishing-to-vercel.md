@@ -241,7 +241,7 @@ export interface PublishedDocumentPort {
 
 **Gate.** Two runs, both recorded in the build log. On the web, ask Divo to write a short report and publish it: the panel fills and the reply carries a working URL. On Lark, ask the same thing in a direct message: the card carries a working URL, and no panel is implied anywhere in the wording. Then confirm the negative: `divo-pi` tests still pass, and a shared/unknown run still has no artifact tools.
 
-### Phase 5 — The publish control in the panel
+### Phase 5 — The publish control in the panel (in progress)
 
 **Goal.** Someone reading a document in the panel can publish it without asking.
 
@@ -271,16 +271,16 @@ export interface PublishedDocumentPort {
 
 - `advance-backend/src/http/member/artifacts.routes.ts` — `GET /:artifactId/document`
 - `admin/src/pages/workspace/artifacts/formats.tsx` — fetch instead of build
-- `admin/src/pages/workspace/artifacts/document.ts`, `admin/src/lib/chart-geometry.ts` — delete
+- `admin/src/pages/workspace/artifacts/document.ts` — delete
 - `advance-backend/tests/domain/artifact-document-parity.test.ts` — delete
 
 **Steps.**
 
-- [ ] Add the route returning `mode: 'panel'` output for an artifact the caller owns
-- [ ] Change `HtmlDocument` to fetch it once per artifact version and hold it, keeping `DOCUMENT_SANDBOX` on the frame
-- [ ] Handle theme without a refetch: both palettes are already in the document, so flip `data-theme` on the frame's root element
-- [ ] Delete the admin copies, the parity test, and `DOCUMENT_SANDBOX`'s import path if it moved
-- [ ] Run the full admin suite and confirm nothing else imported them
+- [x] Add the route returning `mode: 'panel'` output for an artifact the caller owns
+- [x] Change `HtmlDocument` to fetch it once per artifact version and hold it, keeping `DOCUMENT_SANDBOX` on the frame
+- [x] Handle theme without a refetch: both palettes are now in the backend panel document, so flip `data-theme` on the fetched wrapper
+- [x] Delete the admin document wrapper and parity test; retain `admin/src/lib/chart-geometry.ts` because the dashboard chart surface still imports it
+- [ ] Run the full admin suite and confirm nothing else imported the deleted document wrapper; the build currently stops on the unrelated concurrent `use-skills.ts` `humanizeId` error
 
 **Do not.** Do not start this phase before Phase 5 has landed and been used. It is the cleanup that makes the design honest, and it is also the only phase that can break the working web panel, so it goes last and alone. Do not refetch on theme change.
 
@@ -435,6 +435,13 @@ from `## Next action`.
 - Phase 5 backend/UI implementation: added `ArtifactPublishingService` as the shared seam, `POST /api/artifacts/:artifactId/publish` with ownership and RBAC checks, URL-only admin data/state, and a panel header control with open/copy link actions. The live member route returned `PUBLISH_ROUTE_STATUS=200` and URL `https://divo-artifacts-hqy5xiro9-divo-2600s-projects.vercel.app/`; no password field or response value exists under D8.
 - Focused verification: backend publish/tool/permission/catalogue tests passed; admin publish-state and artifact-store tests passed; admin `tsc --noEmit` passed. Backend typecheck remains red only at the known Phase 1 chart indexed accesses (`chart-geometry.ts:118-119,144`). The panel browser click gate is the remaining Phase 5 proof.
 
+### 2026-08-21 — Phase 5/6 implementation in progress
+
+- Phase 5 route proof: `POST /api/artifacts/phase-4-clean-web-gate-557eafe6d3950ffd/publish` returned `PUBLISH_ROUTE_STATUS=200` and an unprotected URL. The route and Pi tool now share `ArtifactPublishingService`; the panel's pure publish state and URL-only control are covered by focused tests and admin `tsc --noEmit`.
+- Phase 6 document transport proof: `GET /api/artifacts/phase-4-clean-web-gate-557eafe6d3950ffd/document` returned `DOCUMENT_ROUTE_STATUS=200`, `mode: 'panel'`, the report body, light tokens, and the dark-theme selector. The panel fetches once per artifact version and rewrites `data-theme` without rebuilding or refetching the body.
+- Phase 6 removed the admin document wrapper, its chart-source copy used only by that wrapper, and the backend parity test. The dashboard still imports `admin/src/lib/chart-geometry.ts`, so that utility and its test were restored rather than breaking an unrelated chart surface; this is a deliberate deviation from the original cleanup list.
+- Remaining gates: the in-app browser is signed out, so the panel click gate is unverified and no human credentials were guessed. `admin pnpm build` also stops in concurrent `admin/src/pages/workspace/data/use-skills.ts` at missing `humanizeId`; artifact-focused tests and `tsc --noEmit` pass. Backend typecheck remains red only at the known Phase 1 chart indexed accesses.
+
 ## 12. Next action
 
-Complete the Phase 5 browser gate against the signed-in admin panel: click Publish on an unpublished artifact, confirm URL-only published state and direct readability, then verify the Postgres publication row before moving to Phase 6.
+Have a signed-in admin browser session available, then complete the Phase 5 panel click gate and rerun the full admin build after the concurrent `use-skills.ts` `humanizeId` issue is resolved. Only then close Phases 5 and 6 and record the final Postgres row proof.

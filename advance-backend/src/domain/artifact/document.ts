@@ -589,7 +589,8 @@ export function buildDocument(
 <meta http-equiv="Content-Security-Policy" content="${POLICY}">
 <base target="_blank">
 <style>
-:root { ${theme === 'dark' ? DARK : LIGHT} ${CATEGORICAL} }
+:root { ${LIGHT} ${CATEGORICAL} }
+html[data-theme="dark"] { ${DARK} }
 ${BASE}
 ${CHART_STYLE}
 </style>

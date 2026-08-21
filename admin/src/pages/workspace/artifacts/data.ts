@@ -34,6 +34,14 @@ export type ArtifactSummary = {
 }
 
 export type ArtifactDocument = ArtifactSummary & { body: string }
+export type ArtifactDocumentMarkup = { document: string }
+
+export function withDocumentTheme(markup: string, theme: 'light' | 'dark'): string {
+  return markup.replace(
+    /(<html\b[^>]*\bdata-theme=")([^"]*)(")/i,
+    `$1${theme}$3`,
+  )
+}
 
 export type PublishedArtifact = { url: string }
 
@@ -54,6 +62,14 @@ async function read<T>(url: string, token: string, key: string): Promise<T | nul
 
 export function getArtifact(artifactId: string, token: string): Promise<ArtifactDocument | null> {
   return read<ArtifactDocument>(`${base}/${encodeURIComponent(artifactId)}`, token, 'artifact')
+}
+
+export function getArtifactDocument(artifactId: string, token: string): Promise<string | null> {
+  return read<ArtifactDocumentMarkup>(
+    `${base}/${encodeURIComponent(artifactId)}/document`,
+    token,
+    'document',
+  ).then(found => found?.document ?? null)
 }
 
 /**
