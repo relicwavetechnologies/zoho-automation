@@ -13,6 +13,7 @@ import {
   type SkillRegistryTree,
 } from "@/lib/api"
 import { adminQueryKeys, getAdminQueryScope } from "@/lib/query-client"
+import { humanizeId } from "./trace-step"
 
 /** "1 skill" / "3 skills" — so a count never reads as `1 skill(s)`. */
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
