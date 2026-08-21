@@ -57,4 +57,29 @@ describe('artifact gate', () => {
     assert.match(page, /--canvas: #1c1d1f/);
     assert.match(page, /createElementNS/);
   });
+
+  it('names the document once, in the tab, and never draws a second heading', () => {
+    /* The stored body opens with the document's own <h1>. A wrapper that added
+       another put the title on the page twice, which is what a reader saw on
+       the first published link. The <title> is the tab and is not a heading, so
+       it stays; anything visible is the document's own. */
+    const titled = buildDocument(
+      '<h1>Menhood sales</h1><p>rows</p>',
+      'light',
+      'standalone',
+      { title: 'Menhood sales' },
+    );
+
+    assert.match(titled, /<title>Menhood sales<\/title>/);
+    assert.equal(titled.match(/<h1>/g)?.length, 1);
+    assert.equal(titled.includes('artifact-header'), false);
+  });
+
+  it('draws the body the same way in both modes', () => {
+    /* One soul: the panel and the published page differ in what wraps the
+       document, never in the document. */
+    const body = '<h1>Report</h1><p>rows</p>';
+    assert.ok(buildDocument(body, 'light', 'panel').includes(body));
+    assert.ok(buildDocument(body, 'light', 'standalone', { title: 'Report' }).includes(body));
+  });
 });

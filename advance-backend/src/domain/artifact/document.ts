@@ -431,7 +431,6 @@ const CHART_STYLE = `
 
 /* Standalone-only additions begin. */
 const STANDALONE_GATE_STYLE = `
-  .artifact-header { margin: 0 0 20px; }
   .artifact-gate { max-width: 420px; background: var(--surface); border-radius: 12px;
                    box-shadow: 0 0 0 1px var(--line); padding: 20px; }
   .artifact-gate p { margin: 0 0 14px; }
@@ -555,7 +554,6 @@ ${STANDALONE_GATE_STYLE}
 </style>
 </head>
 <body>
-<header class="artifact-header"><h1>${title}</h1></header>
 ${main}
 ${script}
 </body>
