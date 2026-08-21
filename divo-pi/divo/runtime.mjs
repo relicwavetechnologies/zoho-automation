@@ -126,7 +126,7 @@ const DIRECT_MESSAGE_ONLY_TOOLS = [
 	"divo_search_chats",
 	"divo_read_chat",
 	"divo_artifact",
-	"divo_publish",
+	"divo_artifact_publish",
 ];
 
 /** The extension registering those tools and the skill teaching them share a name. */
@@ -149,7 +149,7 @@ const DIRECT_MESSAGE_ONLY_MODULES = ["divo-chat-history", "divo-artifact"];
 const CHANNEL_ONLY_MODULES = { "divo-artifact": ["web", "lark"] };
 const CHANNEL_ONLY_TOOLS = {
 	divo_artifact: ["web", "lark"],
-	divo_publish: ["web", "lark"],
+	divo_artifact_publish: ["web", "lark"],
 };
 
 /** @param {Record<string, string[]>} table @param {string} name @param {string|undefined} channel */

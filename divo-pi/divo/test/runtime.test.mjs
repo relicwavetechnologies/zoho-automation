@@ -179,7 +179,7 @@ describe("Divo Pi runtime boundary", () => {
 			const args = buildPiArguments({ ...values, ...(channel ? { channel } : {}) });
 			const loaded = args.some((argument) => argument.endsWith("/divo-artifact/index.ts"));
 			const tools = args[args.indexOf("--tools") + 1].split(",");
-			const allowed = tools.includes("divo_artifact") && tools.includes("divo_publish");
+			const allowed = tools.includes("divo_artifact") && tools.includes("divo_artifact_publish");
 			// Loading the extension without allowing the tool, or the reverse, is a
 			// half-gate — so both halves are asserted together rather than apart.
 			assert.equal(loaded, tools.includes("divo_artifact"), `${channel ?? "local"}: extension and allowlist disagree`);
@@ -195,7 +195,7 @@ describe("Divo Pi runtime boundary", () => {
 		const sharedTools = sharedArgs[sharedArgs.indexOf("--tools") + 1].split(",");
 		assert.ok(!sharedArgs.some((argument) => argument.endsWith("/divo-artifact/index.ts")));
 		assert.ok(!sharedTools.includes("divo_artifact"));
-		assert.ok(!sharedTools.includes("divo_publish"));
+		assert.ok(!sharedTools.includes("divo_artifact_publish"));
 		// A run nobody drives is a desktop-local one, which loads its own copy of
 		// the extension. Withheld here rather than granted by the absence of a
 		// channel: an unknown surface should arrive without the tool.

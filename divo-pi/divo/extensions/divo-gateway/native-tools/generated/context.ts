@@ -6,11 +6,11 @@ import type { NativeToolSpec } from "../catalogue-contract.ts";
 export const CONTEXT_NATIVE_TOOLS = [
   {
     "toolId": "artifactPublish",
-    "name": "divo_publish",
+    "name": "divo_artifact_publish",
     "family": "context",
     "label": "Divo Artifact Publish",
     "description": "Publish an HTML artifact as an unprotected link.",
-    "promptSnippet": "Use divo_publish for governed context work. The backend remains authoritative for access, connections, approvals, and execution.",
+    "promptSnippet": "Use divo_artifact_publish for governed context work. The backend remains authoritative for access, connections, approvals, and execution.",
     "promptGuidelines": [
       "artifactId: The existing HTML artifact id to publish"
     ],

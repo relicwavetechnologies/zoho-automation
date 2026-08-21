@@ -203,9 +203,15 @@ export const CANONICAL_TOOL_IDS = Object.freeze(
  * may not carry case. The transform is lossy, which is why the reverse lookup
  * below is a table of the ids we actually have rather than an attempt to undo
  * it — an inverted guess would confidently name a tool that does not exist.
+ *
+ * **Mirrors means mirrors. No special cases.** One id was briefly given a
+ * shorter name here and nowhere else, so the backend called it `divo_publish`
+ * while the container derived `divo_artifact_publish` from the same id, and the
+ * two halves of the system disagreed about what a tool was called. An exception
+ * living in one of two copies is the failure; adding it to both would only make
+ * the next one harder to see. If a name reads badly, change the id.
  */
 export function typedToolNameFor(toolId: string): string {
-  if (toolId === 'artifactPublish') return 'divo_publish';
   const snake = toolId
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .replace(/[^a-zA-Z0-9]+/g, '_')

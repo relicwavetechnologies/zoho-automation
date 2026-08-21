@@ -147,6 +147,14 @@ export const REGISTERED_TOOL_SEEDS: readonly RegisteredToolSeed[] = [
     guardrails: ['Read-only protected-data tool', 'Requires explicit deployment enablement and read_customers scope', 'Separately grantable protected-data capability', 'Names and contact fields are never returned', 'Durable approval storage is rejected; direct read access must be explicitly granted'],
   },
   { toolId: 'webSearch', name: 'Web Search', description: 'Search the web for current information.', category: 'knowledge', domain: 'context' },
+  {
+    toolId: 'artifactPublish',
+    name: 'Publish Document',
+    description: 'Publish a document Divo already filed as a shareable web link.',
+    category: 'documents',
+    domain: 'context',
+    guardrails: ['Publishes only a document the caller already owns', 'The link is unprotected: anyone it reaches can read the document'],
+  },
   KNOWLEDGE_REGISTERED_TOOL,
   {
     toolId: 'mailAutomations',
