@@ -173,6 +173,11 @@ export function openArtifact(input: OpenArtifactInput): string {
   const existing = state.tabs.find(
     (tab): tab is ArtifactTab => tab.kind === 'artifact' && tab.artifactId === input.artifactId,
   )
+  const publishedUrl = input.publishedUrl !== undefined
+    ? input.publishedUrl
+    : existing && input.version !== undefined && input.version > existing.version
+      ? undefined
+      : existing?.publishedUrl
   const next: ArtifactTab = {
     id: existing?.id ?? `artifact:${input.artifactId}`,
     kind: 'artifact',
@@ -180,7 +185,7 @@ export function openArtifact(input: OpenArtifactInput): string {
     title: input.title.trim() || existing?.title || 'Document',
     mime: input.mime ?? existing?.mime ?? DEFAULT_MIME,
     version: input.version ?? existing?.version ?? 1,
-    ...(input.publishedUrl ?? existing?.publishedUrl ? { publishedUrl: input.publishedUrl ?? existing?.publishedUrl } : {}),
+    ...(publishedUrl ? { publishedUrl } : {}),
     ...(input.threadId ?? existing?.threadId ? { threadId: input.threadId ?? existing?.threadId } : {}),
     ...(input.body !== undefined ? { body: input.body } : {}),
   }
@@ -232,7 +237,17 @@ export function fillArtifact(artifactId: string, version: number, body: string, 
   set({
     tabs: state.tabs.map(tab => (
       tab.kind === 'artifact' && tab.artifactId === artifactId && tab.version <= version
-        ? { ...tab, body, version, failed: false, ...(publishedUrl ? { publishedUrl } : {}) }
+        ? {
+            ...tab,
+            body,
+            version,
+            failed: false,
+            ...(publishedUrl !== undefined
+              ? (publishedUrl ? { publishedUrl } : { publishedUrl: undefined })
+              : (version > tab.version
+                ? { publishedUrl: undefined }
+                : tab.publishedUrl ? { publishedUrl: tab.publishedUrl } : {})),
+          }
         : tab
     )),
   })

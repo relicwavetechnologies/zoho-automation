@@ -53,6 +53,17 @@ describe('artifact panel state', () => {
     assert.equal(only().body, 'current text')
   })
 
+  it('clears a published link when a newer revision is opened', () => {
+    openArtifact({
+      artifactId: 'q3',
+      title: 'Q3',
+      version: 1,
+      publishedUrl: 'https://published.example/q3',
+    })
+    openArtifact({ artifactId: 'q3', title: 'Q3', version: 2 })
+    assert.equal(only().publishedUrl, undefined)
+  })
+
   it('never trims away the document being read', () => {
     for (let index = 0; index < 12; index += 1) {
       openArtifact({ artifactId: `doc-${index}`, title: `Doc ${index}` })
