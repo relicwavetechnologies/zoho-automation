@@ -113,10 +113,18 @@ export function shareAssignment(
 
   let at = 0
   for (let o = 0; o < order.length; o++) {
+    /* Held in a local rather than indexed twice. The backend compiles with
+       `noUncheckedIndexedAccess` — the admin build this was ported from did
+       not — and a bounds check the loop already guarantees is cheaper to state
+       than to assert away. `!` would also be the wrong tool here: this function
+       is serialised with `toString()` and evaluated inside the document frame,
+       so anything that survives to the frame has to be plain JavaScript. */
+    const entry = order[o]
+    if (!entry) continue
     const take = o === order.length - 1
       ? filled - at
-      : Math.round((order[o].value / total) * filled)
-    for (let k = 0; k < take && at < filled; k++) assignment[at++] = order[o].index
+      : Math.round((entry.value / total) * filled)
+    for (let k = 0; k < take && at < filled; k++) assignment[at++] = entry.index
   }
   return assignment
 }
@@ -141,7 +149,12 @@ export function dotColumns(
     const t = points.length > 1 ? (col / (cols - 1)) * (points.length - 1) : 0
     const low = Math.floor(t)
     const high = Math.min(points.length - 1, low + 1)
-    const value = points[low] + (points[high] - points[low]) * (t - low)
+    /* Same reason as `shareAssignment` above. `low` and `high` are both clamped
+       into the array, so the fallbacks never fire; they are here to say that in
+       a way the compiler can read. */
+    const lowValue = points[low] ?? 0
+    const highValue = points[high] ?? lowValue
+    const value = lowValue + (highValue - lowValue) * (t - low)
     lit.push(Math.round(((value - min) / span) * rows))
   }
   return lit

@@ -280,7 +280,7 @@ export interface PublishedDocumentPort {
 - [x] Change `HtmlDocument` to fetch it once per artifact version and hold it, keeping `DOCUMENT_SANDBOX` on the frame
 - [x] Handle theme without a refetch: both palettes are now in the backend panel document, so flip `data-theme` on the fetched wrapper
 - [x] Delete the admin document wrapper and parity test; retain `admin/src/lib/chart-geometry.ts` because the dashboard chart surface still imports it
-- [ ] Run the full admin suite and confirm nothing else imported the deleted document wrapper; the build currently stops on the unrelated concurrent `use-skills.ts` `humanizeId` error
+- [x] Run the full admin suite and confirm nothing else imported the deleted document wrapper — 444 passing, 0 failing, 2026-08-21. No stale imports: `DOCUMENT_SANDBOX` is now declared in `formats.tsx` rather than imported from the deleted module. `tsc -b` still stops on the concurrent `use-skills.ts` `humanizeId` error, which is one foreign uncommitted file and the only error the typecheck emits
 
 **Do not.** Do not start this phase before Phase 5 has landed and been used. It is the cleanup that makes the design honest, and it is also the only phase that can break the working web panel, so it goes last and alone. Do not refetch on theme change.
 
@@ -443,6 +443,18 @@ from `## Next action`.
 - Phase 6 removed the admin document wrapper and the backend parity test. The shared `admin/src/lib/chart-geometry.ts` utility is retained because the dashboard still imports it; deleting it would break an unrelated chart surface. This is a deliberate deviation from the original cleanup list.
 - Remaining gates: the in-app browser is signed out, so the panel click gate is unverified and no human credentials were guessed. `admin pnpm build` also stops in concurrent `admin/src/pages/workspace/data/use-skills.ts` at missing `humanizeId`; artifact-focused tests and `tsc --noEmit` pass. Backend typecheck remains red only at the known Phase 1 chart indexed accesses.
 
+### 2026-08-21 — Closing the non-browser remainder
+
+- The backend typecheck was red on our own ported file, `src/domain/artifact/chart-geometry.ts:118-119,144`, five `noUncheckedIndexedAccess` errors that the admin build it came from does not enforce. Fixed by restructuring rather than asserting: `shareAssignment` holds `order[o]` in a local and skips a hole, `dotColumns` defaults its two reads. Both are provably unreachable given the loop bounds, so runtime behaviour is unchanged. **`!` was specifically not used** — these functions are serialised with `toString()` and evaluated inside the page, so TypeScript-only syntax reaching the frame is a syntax error there while looking fine in the editor. `npx tsc --noEmit` in `advance-backend` is now clean.
+- The port dropped `admin/src/lib/chart-geometry.test.ts`, which was the only thing evaluating `CHART_GEOMETRY_SOURCE` as text. Restored as `tests/domain/artifact-chart-geometry.test.ts`: it runs the serialised source through `new Function`, checks all five functions survive, checks they compute the same answers in the frame as in the module, and covers the empty-series bounds the new fallbacks describe. 3 tests, passing. Without it the fix above could have been the thing that broke every published chart, silently.
+- Full admin suite re-run: 444 passing, 0 failing. Backend artifact suite: 30 passing.
+
+**Found, out of scope**
+
+- Chart geometry now exists twice: `admin/src/lib/chart-geometry.ts` for the dashboard's own charts, and `advance-backend/src/domain/artifact/chart-geometry.ts` for documents. Phase 6 removed one duplicate wrapper and this reintroduced a smaller one a layer down. Nothing is broken today, but a fix to `niceScale` applied in one place would leave a dashboard chart and a published chart disagreeing about the same numbers. Not fixed here: it needs the shared-package decision that section 5 records this repo does not have.
+
 ## 12. Next action
 
-Have a signed-in admin browser session available, then complete the Phase 5 panel click gate and rerun the full admin build after the concurrent `use-skills.ts` `humanizeId` issue is resolved. Only then close Phases 5 and 6 and record the final Postgres row proof.
+**Testing is the user's.** Sign in at `http://localhost:5173`, open a chat holding an HTML artifact, and click Publish in the panel header: a URL appears, opens, and the artifact row gains `publishedUrl`, `publishedAt` and `publishDeploymentId`. That closes Phase 5, and Phase 6 with it.
+
+Everything not requiring a browser is closed. `npm run build` in `admin` still stops at `use-skills.ts(48,53) humanizeId`, which is one foreign uncommitted file from a concurrent agent and the only error the typecheck emits — nothing in this feature depends on it. Do not fix it here.
