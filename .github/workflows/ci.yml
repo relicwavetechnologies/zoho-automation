@@ -84,6 +84,12 @@ jobs:
         # They are static imports, so a missing file is not a skipped test but a
         # suite that cannot load: `advance-backend` has been red on main and dev
         # since the allowlist parity test arrived without the two paths it reads.
+        #
+        # `admin/src/styles/palette.css` is here for the same reason and arrived
+        # the same way. A published document carries a copy of the app's greys,
+        # and the test that stops the copy drifting reads the original. Locally
+        # the whole repo is on disk so it passes; in this job only what is listed
+        # here exists, so the test threw ENOENT rather than comparing anything.
         with:
           sparse-checkout: |
             advance-backend
@@ -93,6 +99,7 @@ jobs:
             divo-pi/divo/extensions/divo-gateway/native-tools/catalogue-contract.ts
             divo-pi/divo/extensions/divo-gateway/native-tools/generated
             divo-pi/divo/extensions/divo-gateway/native-tools/semrush-contract.ts
+            admin/src/styles/palette.css
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
