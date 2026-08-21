@@ -430,6 +430,28 @@ const CHART_STYLE = `
 `
 
 /* Standalone-only additions begin. */
+
+/**
+ * The page around the document.
+ *
+ * The panel gets this for free: it is a fixed column beside a conversation, so
+ * the document is measured whether it asks to be or not. A browser window is
+ * not, and the same markup that reads well at 900px runs to the full width of
+ * whatever monitor opens it — stat cards stretched into billboards, table rows
+ * you have to track across two feet of glass.
+ *
+ * So standalone supplies the measure the panel was supplying. Not a different
+ * design: the same document, given the width it was written for. Everything
+ * inside — type scale, spacing, colour — stays exactly as the panel draws it,
+ * because a published page and a panel showing the same document must not be
+ * two designs.
+ */
+const STANDALONE_PAGE_STYLE = `
+  body { padding: 44px 24px 80px; }
+  #divo-artifact-content, .artifact-gate { max-width: 980px; margin-inline: auto; }
+  @media (max-width: 640px) { body { padding: 24px 16px 48px; } }
+`
+
 const STANDALONE_GATE_STYLE = `
   .artifact-gate { max-width: 420px; background: var(--surface); border-radius: 12px;
                    box-shadow: 0 0 0 1px var(--line); padding: 20px; }
@@ -550,6 +572,7 @@ ${body}
 html[data-theme="dark"] { ${DARK} }
 ${BASE}
 ${CHART_STYLE}
+${STANDALONE_PAGE_STYLE}
 ${STANDALONE_GATE_STYLE}
 </style>
 </head>

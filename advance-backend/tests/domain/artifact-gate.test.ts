@@ -82,4 +82,22 @@ describe('artifact gate', () => {
     assert.ok(buildDocument(body, 'light', 'panel').includes(body));
     assert.ok(buildDocument(body, 'light', 'standalone', { title: 'Report' }).includes(body));
   });
+
+  it('gives a published page the measure the panel supplies for free', () => {
+    /* Verified in a browser at 1600px: content 980px wide, 310px either side,
+       no sideways scroll; at 375px it is 343px wide inside 16px gutters. The
+       panel needs none of this because it is already a fixed column, which is
+       exactly why standalone has to say it. */
+    const page = buildDocument('<h1>Wide</h1>', 'light', 'standalone', { title: 'Wide' });
+
+    assert.match(page, /#divo-artifact-content[^}]*max-width: 980px/);
+    assert.match(page, /#divo-artifact-content[^}]*margin-inline: auto/);
+    assert.match(page, /@media \(max-width: 640px\)/);
+  });
+
+  it('adds the page chrome to standalone only, never to the panel', () => {
+    /* The panel is measured by the app around it. Constraining it here would
+       narrow a column that is already the right width. */
+    assert.equal(buildDocument('<p>x</p>', 'light', 'panel').includes('max-width: 980px'), false);
+  });
 });
