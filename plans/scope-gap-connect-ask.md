@@ -1302,7 +1302,11 @@ from 48.
 
 ## 12. Next action
 
-Phases 1 to 7 are complete, and Phase 9 replaced the way Phase 7 resumed a run.
+Phases 1 to 7 are complete, Phase 9 replaced the way Phase 7 resumed a run, and
+all of it shipped to `main` and `dev` on 2026-08-21. The session record, the
+deploy state, and what is proven versus merely built are in
+[`plans/connect-ask-waiting-run-handover.md`](./connect-ask-waiting-run-handover.md).
+
 What is left is the live gate, which is Abhishek's to run:
 
 1. In the web thread, ask for something that needs a Google scope you do not
