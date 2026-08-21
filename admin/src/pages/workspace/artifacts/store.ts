@@ -43,6 +43,7 @@ export type ArtifactTab = TabBase & {
   readonly artifactId: string
   readonly mime: string
   readonly version: number
+  readonly publishedUrl?: string
   /**
    * The body, once it has been fetched.
    *
@@ -151,6 +152,7 @@ export type OpenArtifactInput = {
   readonly title: string
   readonly mime?: string
   readonly version?: number
+  readonly publishedUrl?: string
   readonly threadId?: string
   readonly body?: string
 }
@@ -178,6 +180,7 @@ export function openArtifact(input: OpenArtifactInput): string {
     title: input.title.trim() || existing?.title || 'Document',
     mime: input.mime ?? existing?.mime ?? DEFAULT_MIME,
     version: input.version ?? existing?.version ?? 1,
+    ...(input.publishedUrl ?? existing?.publishedUrl ? { publishedUrl: input.publishedUrl ?? existing?.publishedUrl } : {}),
     ...(input.threadId ?? existing?.threadId ? { threadId: input.threadId ?? existing?.threadId } : {}),
     ...(input.body !== undefined ? { body: input.body } : {}),
   }
@@ -202,7 +205,7 @@ export function openArtifact(input: OpenArtifactInput): string {
  * the surface fetches its own when it is first drawn.
  */
 export function restoreArtifacts(
-  summaries: readonly { artifactId: string; title: string; mime: string; version: number }[],
+  summaries: readonly { artifactId: string; title: string; mime: string; version: number; publishedUrl?: string }[],
   threadId: string,
 ): void {
   const known = new Set(
@@ -217,6 +220,7 @@ export function restoreArtifacts(
       title: summary.title,
       mime: summary.mime,
       version: summary.version,
+      ...(summary.publishedUrl ? { publishedUrl: summary.publishedUrl } : {}),
       threadId,
     }))
   if (restored.length === 0) return
@@ -224,11 +228,11 @@ export function restoreArtifacts(
 }
 
 /** Attach a fetched body to a tab, if that tab is still open and still current. */
-export function fillArtifact(artifactId: string, version: number, body: string): void {
+export function fillArtifact(artifactId: string, version: number, body: string, publishedUrl?: string): void {
   set({
     tabs: state.tabs.map(tab => (
       tab.kind === 'artifact' && tab.artifactId === artifactId && tab.version <= version
-        ? { ...tab, body, version, failed: false }
+        ? { ...tab, body, version, failed: false, ...(publishedUrl ? { publishedUrl } : {}) }
         : tab
     )),
   })

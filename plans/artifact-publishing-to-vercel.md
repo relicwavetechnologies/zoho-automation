@@ -92,7 +92,9 @@ const CHANNEL_ONLY_TOOLS = { divo_artifact: ["web", "lark"], divo_publish: ["web
 
 ## 6. The shape
 
-Three modules, and the point of the split is that only the middle one knows about Vercel.
+The wrapper, port, Vercel adapter, and shared publish application service are the
+backend modules; the route and panel are callers of that one publish seam. Only the
+adapter knows about Vercel.
 
 **`domain/artifact/document.ts` (new)** — the wrapper, moved into the backend so both a panel and a page can be built from one place. Pure: markup in, markup out, no I/O.
 
@@ -136,6 +138,8 @@ export interface PublishedDocumentPort {
   publish(request: PublishRequest): Promise<Result<PublishedDocument, InfraError>>;
 }
 ```
+
+**`application/publishing/artifact-publishing.service.ts` (new)** — the ownership-scoped publish operation shared by `divo_publish` and the member panel route.
 
 **`infrastructure/publishing/vercel-publisher.ts` (new)** — the only file in the repo that knows the string `vercel`. One `fetch` to `POST /v13/deployments`, the token from env, `files: [{ file: 'index.html', data: html }]`. It maps a non-2xx into `InfraError` with the upstream reason preserved — read `advance-backend/src/application/runtime/runtime-failure.ts` before you write the error path, because it is the house rule for this and the rule is that a failure reports its *cause*, not its shape.
 
@@ -209,7 +213,7 @@ export interface PublishedDocumentPort {
 
 **Gate.** Publish a real stored artifact end to end with a throwaway script. Open the URL in a browser: the document loads directly with charts drawn and the theme intact. The gate-specific browser proof remains in the build log as a retained option, not as the active publish contract.
 
-### Phase 4 — The tool, on both channels
+### Phase 4 — The tool, on both channels ✅ *2026-08-21*
 
 **Goal.** The model can publish, on Lark and on the web, and Lark can author documents at all.
 
@@ -244,15 +248,16 @@ export interface PublishedDocumentPort {
 **Files.**
 
 - `advance-backend/src/http/member/artifacts.routes.ts` — `POST /:artifactId/publish`
+- `advance-backend/src/application/publishing/artifact-publishing.service.ts` — shared publish seam
 - `admin/src/pages/workspace/artifacts/publish.ts` (new) — the pure part
 - `admin/src/pages/workspace/artifacts/panel.tsx` — the control
 
 **Steps.**
 
-- [ ] Add the route, calling the same application service the tool calls. **Both callers share one path**; the route is a second door, not a second implementation
-- [ ] `publish.ts`: the states this control moves through (idle, publishing, published, failed) and what each shows, as a plain function with a colocated test
-- [ ] Add the control to `ArtifactPanel`'s header, next to the existing copy and source controls. Published state shows only the URL with a copy button; it must not mention a password while D8 stands
-- [ ] Read `AGENTS.md:140` first — colours come from the token files, never a one-off
+- [x] Add the route, calling the same application service the tool calls. **Both callers share one path**; the route is a second door, not a second implementation
+- [x] `publish.ts`: the states this control moves through (idle, publishing, published, failed) and what each shows, as a plain function with a colocated test
+- [x] Add the control to `ArtifactPanel`'s header, next to the existing copy and source controls. Published state shows only the URL with a copy button; it must not mention a password while D8 stands
+- [x] Read `AGENTS.md:140` first — colours come from the token files, never a one-off
 
 **Do not.** Do not build a modal, a settings drawer, or a password field. D8 publishes an unprotected URL; the control has one action. Do not touch `ArtifactWorkspace` or `Surface` — `panel.tsx`'s header comment sets out the three layers and this belongs to exactly one of them.
 
@@ -409,7 +414,7 @@ from `## Next action`.
 - Added `gate.ts` with a 12-character unambiguous password alphabet and SHA-256 hashing. Standalone output carries a title, both palettes, the CSP, and the chart runtime. Gated output stores only base64 body data and a hash in the page source. The browser decodes and injects the body after a matching `crypto.subtle.digest` result, then starts the chart runtime.
 - Unit gate: `node --import tsx --test 'tests/domain/artifact-*.test.ts'` passed with 29 tests. The parity test still passes because it strips only the marked standalone additions and the mode branch, not the panel copy.
 - Browser gate: published a real dark-themed chart artifact at `https://divo-artifacts-1ubtsdsxh-divo-2600s-projects.vercel.app/`. The page asked for a password, refused a wrong password, and revealed the report with one rendered chart SVG after the correct password. The title and dark theme remained intact. View-source still exposes the base64 body and script, as D5 requires.
-- The gated publish shipped and was genuinely browser-proven above; D8 now switches that behavior off in the publisher while retaining `gate.ts`, the gate branch, and its tests for a future decision. The switching commit is recorded with the Phase 4 implementation update.
+- The gated publish shipped and was genuinely browser-proven above; D8 now switches that behavior off in the publisher while retaining `gate.ts`, the gate branch, and its tests for a future decision. The switching commit is `34f0a4047` (`Supersede artifact link gate with unprotected publishing`).
 
 ### 2026-08-21 — Phase 4 in progress; Q1 resolved; D8 unprotected publish
 
@@ -421,8 +426,15 @@ from `## Next action`.
 - Typecheck remains red only at the known Phase 1 byte-port chart indexed accesses (`chart-geometry.ts:118-119,144`); no Phase 4 type errors were introduced.
 - Classified `artifactPublish` as an ownership-scoped company-inherited capability and bumped the existing permission-policy epoch so live Redis snapshots cannot retain the pre-capability decision. The permission service and department-template tests pass.
 - The first direct-Lark Cloud-Pi run reached `write` and `divo_artifact` successfully, then exposed the stale permission snapshot. D8 now removes that blocked password mint; the next run must confirm a working unprotected URL in the Lark card. No group-chat run is authorized by D9.
-- The first unprotected live runs eventually succeeded but showed the model guessing the artifact id after `divo_artifact`. The extension now includes the ownership-scoped `artifactId` in its result text as well as structured details, so `divo_publish` has an exact value to use instead of retrying guessed ids. A clean confirmation remains the last Phase 4 proof.
+- The first unprotected live runs eventually succeeded but showed the model guessing the artifact id after `divo_artifact`. The extension now includes the ownership-scoped `artifactId` in its result text as well as structured details, so `divo_publish` has an exact value to use instead of retrying guessed ids. The result-text fix is `7b757ea99`.
+
+### 2026-08-21 — Phase 4 gate and Phase 5 backend seam
+
+- Phase 4 direct-Lark gate: the clean run used `write → divo_artifact → divo_publish` in five steps and delivered URL-only final text to the configured DM. URL `https://divo-artifacts-b46e9jfxx-divo-2600s-projects.vercel.app/` returned `CURL_STATUS=200`; the body contained the report heading and no gate markers. The shared/unknown negative remains covered by the runtime manifest tests; no group run was fired because D9 keeps Q1 direct-message-only.
+- Phase 4 web gate: the clean `/api/web-chat/runs` run completed `WEB_CLEAN_STATUS=200` with `write → divo_artifact → divo_publish`. URL `https://divo-artifacts-puwy2fat3-divo-2600s-projects.vercel.app/` returned `CURL_STATUS=200`; the body contained the report heading and no gate markers. The controller returned to `activeRuns: 0` after both runs.
+- Phase 5 backend/UI implementation: added `ArtifactPublishingService` as the shared seam, `POST /api/artifacts/:artifactId/publish` with ownership and RBAC checks, URL-only admin data/state, and a panel header control with open/copy link actions. The live member route returned `PUBLISH_ROUTE_STATUS=200` and URL `https://divo-artifacts-hqy5xiro9-divo-2600s-projects.vercel.app/`; no password field or response value exists under D8.
+- Focused verification: backend publish/tool/permission/catalogue tests passed; admin publish-state and artifact-store tests passed; admin `tsc --noEmit` passed. Backend typecheck remains red only at the known Phase 1 chart indexed accesses (`chart-geometry.ts:118-119,144`). The panel browser click gate is the remaining Phase 5 proof.
 
 ## 12. Next action
 
-Rerun the short report prompt in direct Lark after the explicit artifact-id result fix, confirm the card carries a working unprotected URL with no panel wording, then close Phase 4 with the already-passing shared/unknown negative and web URL checks.
+Complete the Phase 5 browser gate against the signed-in admin panel: click Publish on an unpublished artifact, confirm URL-only published state and direct readability, then verify the Postgres publication row before moving to Phase 6.

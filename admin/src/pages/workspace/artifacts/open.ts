@@ -19,6 +19,7 @@ export type ArtifactAnnouncement = {
   readonly title: string
   readonly mime: string
   readonly version: number
+  readonly publishedUrl?: string
 }
 
 /**
@@ -39,11 +40,12 @@ export async function showArtifact(
     title: announced.title,
     mime: announced.mime,
     version: announced.version,
+    ...(announced.publishedUrl ? { publishedUrl: announced.publishedUrl } : {}),
     threadId,
   })
   if (!token) return
   const document = await getArtifact(announced.artifactId, token)
-  if (document) fillArtifact(document.artifactId, document.version, document.body)
+  if (document) fillArtifact(document.artifactId, document.version, document.body, document.publishedUrl)
   else failArtifact(announced.artifactId)
 }
 
@@ -60,6 +62,7 @@ export async function showSavedArtifact(
     readonly title: string
     readonly mime: string
     readonly version: number
+    readonly publishedUrl?: string
     readonly threadId?: string
   },
   token: string | null,
@@ -69,6 +72,7 @@ export async function showSavedArtifact(
     title: summary.title,
     mime: summary.mime,
     version: summary.version,
+    ...(summary.publishedUrl ? { publishedUrl: summary.publishedUrl } : {}),
     ...(summary.threadId ? { threadId: summary.threadId } : {}),
   })
   await loadArtifactBody(summary.artifactId, token)
@@ -78,7 +82,7 @@ export async function showSavedArtifact(
 export async function loadArtifactBody(artifactId: string, token: string | null): Promise<void> {
   if (!token) return
   const document = await getArtifact(artifactId, token)
-  if (document) fillArtifact(document.artifactId, document.version, document.body)
+  if (document) fillArtifact(document.artifactId, document.version, document.body, document.publishedUrl)
   else failArtifact(artifactId)
 }
 
@@ -92,6 +96,7 @@ export async function restoreThreadArtifacts(threadId: string, token: string | n
       title: summary.title,
       mime: summary.mime,
       version: summary.version,
+      ...(summary.publishedUrl ? { publishedUrl: summary.publishedUrl } : {}),
     })),
     threadId,
   )

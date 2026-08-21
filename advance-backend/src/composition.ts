@@ -275,6 +275,7 @@ import { createZohoCrmTool } from './application/tools/families/zoho-crm.tool';
 import { createZohoBooksTool } from './application/tools/families/zoho-books.tool';
 import { createWebSearchTool } from './application/tools/families/web-search.tool';
 import { createArtifactPublishingTool } from './application/tools/families/artifact-publishing.tool';
+import { ArtifactPublishingService } from './application/publishing/artifact-publishing.service';
 import { createKnowledgeTool } from './application/tools/families/knowledge.tool';
 import { createRunCommandTool } from './application/tools/families/run-command.tool';
 import { createScheduledWorkflowsTool } from './application/tools/families/scheduled-workflows.tool';
@@ -516,6 +517,8 @@ export interface Container {
   webThreads: import('./infrastructure/persistence/web-thread.repository').WebThreadRepository;
   /** Documents the agent wrote, kept after the container that wrote them is gone. */
   artifacts: import('./infrastructure/persistence/artifact.repository').ArtifactRepository;
+  /** Shared publish seam used by the Pi tool and the member panel route. */
+  artifactPublishing: ArtifactPublishingService;
   /** What a member still has to do, read from their own Lark account. */
   openTasks: import('./application/work/open-tasks').OpenTasksDeps;
 }
@@ -539,6 +542,14 @@ export async function buildContainer(
   // ── Infra ──────────────────────────────────────────────────────────────
   const prisma = getPrismaClient();
   const artifacts = new ArtifactRepository(prisma);
+  const artifactPublishing = new ArtifactPublishingService({
+    artifacts,
+    publisher: new VercelPublisher({
+      ...(env.VERCEL_TOKEN ? { token: env.VERCEL_TOKEN } : {}),
+      ...(env.VERCEL_PROJECT_NAME ? { projectName: env.VERCEL_PROJECT_NAME } : {}),
+      ...(env.VERCEL_TEAM_ID ? { teamId: env.VERCEL_TEAM_ID } : {}),
+    }),
+  });
 
   // Three purposeful Redis connections. Each falls back to REDIS_URL in local
   // dev so a single Redis instance continues to work with no config changes.
@@ -2124,12 +2135,7 @@ export async function buildContainer(
   }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
   toolRegistry.register(createArtifactPublishingTool({
-    artifacts,
-    publisher: new VercelPublisher({
-      ...(env.VERCEL_TOKEN ? { token: env.VERCEL_TOKEN } : {}),
-      ...(env.VERCEL_PROJECT_NAME ? { projectName: env.VERCEL_PROJECT_NAME } : {}),
-      ...(env.VERCEL_TEAM_ID ? { teamId: env.VERCEL_TEAM_ID } : {}),
-    }),
+    service: artifactPublishing,
   }));
   toolRegistry.register(createKnowledgeTool({
     mutations: knowledgeMutations,
@@ -3073,6 +3079,7 @@ export async function buildContainer(
     }),
     webThreads: new (await import('./infrastructure/persistence/web-thread.repository')).WebThreadRepository(prisma),
     artifacts,
+    artifactPublishing,
     /*
       The member's own Lark account, resolved from the connection they
       authorized rather than from a run context. `userExternalId` is an open_id

@@ -86,7 +86,7 @@ export function buildCanonicalToolContracts(): ReadonlyArray<Tool<unknown, unkno
     createSemrushTool(inert),
     createOmsSiteDataTool(inert),
     createMenhoodDataTool(inert),
-    createArtifactPublishingTool({ artifacts: inert, publisher: inert }),
+    createArtifactPublishingTool({ service: inert }),
   ];
   return tools as ReadonlyArray<Tool<unknown, unknown>>;
 }

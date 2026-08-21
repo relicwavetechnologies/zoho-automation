@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createArtifactPublishingTool } from '../../src/application/tools/families/artifact-publishing.tool.ts';
+import { ArtifactPublishingService } from '../../src/application/publishing/artifact-publishing.service.ts';
 import { err, ok } from '../../src/shared/result.ts';
 import { InfraError, ToolError } from '../../src/shared/errors.ts';
 import { makeAllowedPerm, makeCtx, makeDeniedPerm } from './tool-test.helpers.ts';
@@ -35,7 +36,12 @@ function makeTool(overrides: {
       return overrides.publisherResult ?? ok({ url: 'https://published.example/', deploymentId: 'dpl-1' });
     },
   };
-  return { tool: createArtifactPublishingTool({ artifacts, publisher }), calls };
+  return {
+    tool: createArtifactPublishingTool({
+      service: new ArtifactPublishingService({ artifacts, publisher }),
+    }),
+    calls,
+  };
 }
 
 describe('artifact publishing tool', () => {

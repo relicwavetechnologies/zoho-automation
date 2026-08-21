@@ -20,6 +20,9 @@ export type ArtifactSummary = {
   threadId?: string
   createdAt: string
   updatedAt: string
+  publishedUrl?: string
+  publishedAt?: string
+  publishDeploymentId?: string
   /**
    * The opening of the document, cut by the server.
    *
@@ -31,6 +34,8 @@ export type ArtifactSummary = {
 }
 
 export type ArtifactDocument = ArtifactSummary & { body: string }
+
+export type PublishedArtifact = { url: string }
 
 const base = `${API_BASE_URL}/api/artifacts`
 
@@ -78,4 +83,19 @@ export async function listArtifacts(threadId: string, token: string): Promise<Ar
 export async function recentArtifacts(token: string, limit: number): Promise<ArtifactSummary[]> {
   const found = await read<ArtifactSummary[]>(`${base}?limit=${limit}`, token, 'artifacts')
   return found ?? []
+}
+
+export async function publishArtifact(artifactId: string, token: string): Promise<PublishedArtifact> {
+  const response = await fetch(`${base}/${encodeURIComponent(artifactId)}/publish`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  const payload = await response.json().catch(() => ({})) as {
+    publication?: { url?: unknown }
+    message?: unknown
+  }
+  if (!response.ok || typeof payload.publication?.url !== 'string') {
+    throw new Error(typeof payload.message === 'string' ? payload.message : 'Could not publish document')
+  }
+  return { url: payload.publication.url }
 }

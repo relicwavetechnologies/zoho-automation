@@ -856,6 +856,8 @@ export const createServer = (c: Container): DivoServerApplication => {
     piRuntimeMemberAuth,
     createArtifactRoutes({
       artifacts: c.artifacts,
+      publishing: c.artifactPublishing,
+      permissions: c.permissions,
       logger:    c.logger,
     }),
   );

@@ -3,6 +3,10 @@ import { z } from 'zod';
 import type { Logger } from '../../shared/logger';
 import type { ArtifactRepoPort } from '../../infrastructure/persistence/artifact.repository';
 import { ARTIFACT_LIMITS, ARTIFACT_MIMES, type ArtifactMime } from '../../domain/artifact/artifact';
+import type { ArtifactPublishingService } from '../../application/publishing/artifact-publishing.service';
+import type { PermissionService } from '../../application/permissions/permission.service';
+import { asCompanyId, asToolId, asUserId } from '../../shared/ids';
+import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 
 /**
  * The artifact's way in and out.
@@ -51,6 +55,8 @@ const saveSchema = z.object({
 
 export function createArtifactRoutes(deps: {
   readonly artifacts: ArtifactRepoPort;
+  readonly publishing: ArtifactPublishingService;
+  readonly permissions: PermissionService;
   readonly logger: Logger;
 }) {
   const router = Router();
@@ -103,6 +109,53 @@ export function createArtifactRoutes(deps: {
       return;
     }
     res.json({ ok: true, artifacts: listed.value });
+  });
+
+  router.post('/:artifactId/publish', async (req, res) => {
+    const scope = scopeFrom(res);
+    if (!scope) return unauthenticated(res);
+    const artifactId = artifactIdSchema.safeParse(req.params['artifactId']);
+    if (!artifactId.success) {
+      res.status(400).json({ ok: false, error: 'invalid_artifact_id' });
+      return;
+    }
+
+    const permission = await deps.permissions.canInvoke(
+      {
+        companyId: asCompanyId(scope.companyId),
+        userId: asUserId(scope.userId),
+        companyRole: asCompanyRoleSlug(String(res.locals['aiRole'] ?? 'MEMBER')),
+        channel: 'web',
+      },
+      { toolId: asToolId('artifactPublish'), action: 'create' },
+    );
+    if (!permission.ok) {
+      res.status(403).json({ ok: false, error: 'forbidden', message: permission.error.message });
+      return;
+    }
+
+    const published = await deps.publishing.publish({
+      scope: { ...scope, artifactId: artifactId.data },
+      publishedAt: new Date().toISOString(),
+    });
+    if (!published.ok) {
+      if (published.error.kind === 'not_found') {
+        res.status(404).json({ ok: false, error: 'artifact_not_found' });
+        return;
+      }
+      if (published.error.kind === 'unsupported_mime') {
+        res.status(400).json({ ok: false, error: 'unsupported_artifact', message: published.error.message });
+        return;
+      }
+      log.error('artifacts.publish_failed', { artifactId: artifactId.data, error: published.error.error.message });
+      res.status(published.error.kind === 'upstream' ? 502 : 500).json({
+        ok: false,
+        error: published.error.kind === 'upstream' ? 'publish_failed' : 'publication_record_failed',
+        message: published.error.kind === 'partial' ? published.error.message : 'Could not publish artifact',
+      });
+      return;
+    }
+    res.json({ ok: true, publication: { url: published.value.url } });
   });
 
   router.get('/:artifactId', async (req, res) => {
