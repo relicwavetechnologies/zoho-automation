@@ -16,8 +16,12 @@
 import { useEffect, useState } from 'react'
 import { Check, Lock, PauseCircle } from 'lucide-react'
 import { ToolMark } from '@/pages/workspace/chat/tools'
-import { tintFor } from '@/pages/workspace/chat/mentions'
+import { tintFor } from '@/pages/workspace/chat/pebble'
+import '@/pages/workspace/chat/pebble.css'
 import { RUNS, frameAt, stopOf, tickOf, type Step, type StepTone } from './showcase'
+
+/** The row under the field. The same apps the real composer offers. */
+const MOCK_APPS = ['gmail', 'drive', 'sheets', 'calendar', 'lark', 'zohoBooks'] as const
 
 /** One step per second, which is about the pace of reading one. */
 const TICK_MS = 1100
@@ -72,9 +76,63 @@ export function Showcase() {
       <header className="lp-show-top">
         <span className="lp-show-tag">Example runs</span>
         <p>The same question, asked by three different people. Divo answers to whoever is asking.</p>
+        <nav className="lp-show-nav" aria-label="Pick a run">
+          {RUNS.map((candidate, index) => (
+            <button
+              key={candidate.id}
+              type="button"
+              className="lp-show-dot"
+              data-on={index === frame.run ? 'true' : undefined}
+              aria-label={candidate.ask}
+              aria-current={index === frame.run}
+              onClick={() => { setLive(true); setTick(tickOf(index)) }}
+            />
+          ))}
+        </nav>
       </header>
 
-      <div className="lp-show-body">
+      {/*
+       * One surface, oversized and cropped.
+       *
+       * It runs off the right edge and the bottom on purpose. A mockup that
+       * fits inside its panel is a picture of an app; one that carries on past
+       * the edge is a window onto an app that is bigger than the hole you are
+       * looking through. It also removes the dead rectangle that a contained
+       * mockup leaves under itself on a tall screen, which was the actual
+       * complaint.
+       */}
+      <div className="lp-stage">
+      {/*
+         * The composer, drawn rather than run.
+         *
+         * This is the one picture that explains the product without a sentence:
+         * you name the apps in the middle of a normal sentence and they become
+         * the things Divo is allowed to touch. It sits above the log deliberately
+         * — what you type, then what happens — so the panel reads as one motion
+         * instead of two unrelated exhibits.
+         *
+         * `aria-hidden` because it is a picture of a control, not a control. A
+         * screen reader offered a fake composer would be offered a dead end.
+         */}
+        <div className="lp-mock" aria-hidden="true">
+          <div className="lp-mock-field">
+            <span className="pebble" data-brand="true" style={{ ['--pebble-brand' as string]: tintFor('zohoBooks') }}>
+              <ToolMark name="zohoBooks" size={12} />Zoho Books
+            </span>
+            <span className="pebble" data-brand="true" style={{ ['--pebble-brand' as string]: tintFor('gmail') }}>
+              <ToolMark name="gmail" size={12} />Gmail
+            </span>
+            <span className="lp-mock-text">what did we bill last month?</span>
+            <span className="lp-mock-caret" />
+          </div>
+          <div className="lp-mock-apps">
+            {MOCK_APPS.map(app => (
+              <span key={app} className="lp-mock-app"><ToolMark name={app} size={14} /></span>
+            ))}
+          </div>
+        </div>
+
+        <div className="lp-show-body">
         <div className="lp-run" key={run.id}>
           <div className="lp-run-who">{run.who}</div>
           <p className="lp-run-ask">{run.ask}</p>
@@ -95,21 +153,8 @@ export function Showcase() {
             <p className="lp-run-lesson">{run.lesson}</p>
           </div>
         </div>
+        </div>
       </div>
-
-      <nav className="lp-show-nav" aria-label="Pick a run">
-        {RUNS.map((candidate, index) => (
-          <button
-            key={candidate.id}
-            type="button"
-            className="lp-show-dot"
-            data-on={index === frame.run ? 'true' : undefined}
-            aria-label={candidate.ask}
-            aria-current={index === frame.run}
-            onClick={() => { setLive(true); setTick(tickOf(index)) }}
-          />
-        ))}
-      </nav>
     </aside>
   )
 }
