@@ -34,7 +34,6 @@ export type ArtifactSummary = {
 }
 
 export type ArtifactDocument = ArtifactSummary & { body: string }
-export type ArtifactDocumentMarkup = { document: string }
 
 export function withDocumentTheme(markup: string, theme: 'light' | 'dark'): string {
   return markup.replace(
@@ -64,12 +63,21 @@ export function getArtifact(artifactId: string, token: string): Promise<Artifact
   return read<ArtifactDocument>(`${base}/${encodeURIComponent(artifactId)}`, token, 'artifact')
 }
 
+/**
+ * The finished page, wrapped by the backend and ready for the frame.
+ *
+ * `read` already returns the value at the key, so what comes back here is the
+ * markup itself. Naming a `{ document: string }` type and unwrapping a second
+ * time returned `undefined` for every document ever fetched, and the panel
+ * reported that as "could not be loaded" — a failure that looked like the
+ * network and was a shape.
+ */
 export function getArtifactDocument(artifactId: string, token: string): Promise<string | null> {
-  return read<ArtifactDocumentMarkup>(
+  return read<string>(
     `${base}/${encodeURIComponent(artifactId)}/document`,
     token,
     'document',
-  ).then(found => found?.document ?? null)
+  )
 }
 
 /**
