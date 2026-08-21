@@ -8,10 +8,14 @@ import type { ToolActionGroup } from '../../../domain/permissions/tool-action-gr
 import { asToolId } from '../../../shared/ids';
 import type { MailOpsRepository } from '../../../infrastructure/persistence/mail-ops.repository';
 import type {
-  BeginGoogleWorkspaceAuthorization,
   GoogleWorkspaceMcpConnectionChoice,
 } from './google-workspace-mcp.tool';
 import { SELF_SERVICE_CONNECT_HINT } from './google-workspace-mcp.tool';
+import {
+  connectionAskSentResult,
+  type ConnectionRequestService,
+} from '../../connections/connection-request/connection-request.service';
+import { googleConnectionScopeGap } from '../../connections/connection-request/google-scope-gap';
 import { mailRuleMatchSchema, parseMailRule } from '../../mail-ops/mail-rule.matcher';
 import {
   mailRuleActionGroup,
@@ -232,11 +236,12 @@ const resultSchema = z.object({
     'archive',
   ]),
   code: z.enum([
-    'google_workspace_authorization_pending',
+    'connection_ask_sent',
     'google_workspace_connection_selection_required',
     'mail_ops_configuration_required',
   ]).optional(),
   intentId: z.string().optional(),
+  provider: z.string().optional(),
   connections: z.array(z.object({
     connectionId: z.string(),
     label: z.string(),
@@ -577,7 +582,7 @@ export function createMailAutomationsTool(deps: {
     connectionId?: string;
     abortSignal?: AbortSignal;
   }): Promise<MailAutomationConnectionResolution>;
-  beginAuthorization?: BeginGoogleWorkspaceAuthorization;
+  connectionRequest?: Pick<ConnectionRequestService, 'request'>;
   /**
    * Grounds a named Lark chat against the company that would deliver into it.
    * Optional so the tool still constructs in tests and in deployments with no
@@ -859,21 +864,20 @@ export function createMailAutomationsTool(deps: {
           });
         }
         if (connection.status === 'unavailable') {
-          if (deps.beginAuthorization) {
-            const authorization = await deps.beginAuthorization({
-              toolId: 'mailAutomations',
-              reason: connection.reason,
+          if (deps.connectionRequest) {
+            const gap = googleConnectionScopeGap(
+              'mailAutomations',
+              connection.connectionState === 'none_accessible' ? 'no_connection' : 'missing_scope',
+            );
+            const authorization = await deps.connectionRequest.request({
+              gap,
               runContext: ctx.runContext,
             });
-            if (authorization.status !== 'unavailable') {
+            const sent = connectionAskSentResult('google_workspace', authorization);
+            if (sent) {
               return ok({
-                success: false,
                 operation: args.operation,
-                code: 'google_workspace_authorization_pending',
-                intentId: authorization.intentId,
-                message:
-                  'The Google connection card was sent. End this run now; '
-                  + 'Divo will start a fresh run automatically after OAuth completes.',
+                ...sent,
               });
             }
           }

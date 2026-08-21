@@ -44,3 +44,6 @@ plan-divo-*.html
 
 # Local-only handover/context notes. Never committed.
 *.local.md
+
+# Local dev stack pids and per-service logs.
+.dev-stack/

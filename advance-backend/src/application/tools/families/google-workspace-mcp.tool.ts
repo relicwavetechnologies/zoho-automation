@@ -18,10 +18,19 @@ import {
 import type { GoogleSheetReferenceParseResult } from '../../artifacts/google-sheet-resource-reference';
 import type { GoogleSheetResourceResolution } from '../../artifacts/google-sheet-resource-resolver';
 import {
-  parseGoogleDriveXlsxReference,
   type GoogleDriveXlsxReferenceParseResult,
 } from '../../artifacts/google-drive-xlsx-resource-reference';
 import type { GoogleDriveXlsxResourceResolution } from '../../artifacts/google-drive-xlsx-resource-resolver';
+import {
+  classifyGoogleScopeGap,
+  CONNECTIONS_SKILL_POINTER,
+  googleConnectionScopeGap,
+  googleScopeGapReasonText,
+} from '../../connections/connection-request/google-scope-gap';
+import {
+  connectionAskSentResult,
+  type ConnectionRequestService,
+} from '../../connections/connection-request/connection-request.service';
 
 function createNativeArgsSchema(nativeTool: z.ZodType<string>) {
   return z.discriminatedUnion('op', [
@@ -170,16 +179,6 @@ export type ResolveGoogleSheetReference = (input: {
     }
 >;
 
-export type BeginGoogleWorkspaceAuthorization = (input: {
-  readonly toolId: string;
-  readonly reason: string;
-  readonly runContext: import('../../../domain/orchestration/run-context').RunContext;
-}) => Promise<
-  | { readonly status: 'sent'; readonly intentId: string }
-  | { readonly status: 'already_pending'; readonly intentId: string }
-  | { readonly status: 'unavailable' }
->;
-
 /**
  * What to say when no Connect card can reach the member.
  *
@@ -195,7 +194,7 @@ export const SELF_SERVICE_CONNECT_HINT =
 export function createGoogleWorkspaceMcpTools(deps: {
   readonly getConnection: ResolveGoogleWorkspaceMcpConnection;
   readonly resolveSheetReference?: ResolveGoogleSheetReference;
-  readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
+  readonly connectionRequest?: Pick<ConnectionRequestService, 'request'>;
 }): Tool<Args, ToolResult>[] {
   return GOOGLE_WORKSPACE_PRODUCTS.map((product) => createProductTool(product, deps));
 }
@@ -205,7 +204,7 @@ function createProductTool(
   deps: {
     readonly getConnection: ResolveGoogleWorkspaceMcpConnection;
     readonly resolveSheetReference?: ResolveGoogleSheetReference;
-    readonly beginAuthorization?: BeginGoogleWorkspaceAuthorization;
+    readonly connectionRequest?: Pick<ConnectionRequestService, 'request'>;
   },
 ): Tool<Args, ToolResult> {
   const supportedActions = new Set<ToolActionGroup>(
@@ -366,30 +365,23 @@ function createProductTool(
           if (
             (resolution.status === 'no_connection' || resolution.status === 'missing_scope')
             && !args.connectionId
-            && deps.beginAuthorization
+            && deps.connectionRequest
           ) {
-            const authorization = await deps.beginAuthorization({
-              toolId: product.toolId,
-              reason: resolution.status === 'missing_scope'
-                ? `Reconnect Google to grant Drive and Sheets write access for this ${
-                    parseGoogleDriveXlsxReference(args.url).ok ? 'Excel workbook' : 'Sheet'
-                  }.`
-                : `Connect a writable personal Google account to open this ${
-                    parseGoogleDriveXlsxReference(args.url).ok ? 'Excel workbook' : 'Sheet'
-                  }.`,
+            const gap = googleConnectionScopeGap(
+              product.toolId,
+              resolution.status === 'missing_scope' ? 'missing_scope' : 'no_connection',
+            );
+            const authorization = await deps.connectionRequest.request({
+              gap,
               runContext: ctx.runContext,
             });
-            if (authorization.status !== 'unavailable') {
+            const sent = connectionAskSentResult('google_workspace', authorization);
+            if (sent) {
               return ok({
                 success: false,
                 nativeTool: 'resolve_sheet_reference',
-                data: {
-                  code: 'google_workspace_authorization_pending',
-                  intentId: authorization.intentId,
-                },
-                message:
-                  'The Google connection card was sent. End this run now; '
-                  + 'Divo will start a fresh run automatically after OAuth completes.',
+                data: sent,
+                message: sent.message,
               });
             }
           }
@@ -454,25 +446,24 @@ function createProductTool(
       if (connectionResolution.status === 'unavailable') {
         const reason = unavailableMessage(product, connectionResolution);
         if (
-          deps.beginAuthorization
+          deps.connectionRequest
           && (connectionResolution.accessible?.length ?? 0) === 0
         ) {
-          const authorization = await deps.beginAuthorization({
-            toolId: product.toolId,
-            reason,
+          const gap = googleConnectionScopeGap(
+            product.toolId,
+            connectionResolution.reason === 'none_accessible' ? 'no_connection' : 'missing_scope',
+          );
+          const authorization = await deps.connectionRequest.request({
+            gap,
             runContext: ctx.runContext,
           });
-          if (authorization.status !== 'unavailable') {
+          const sent = connectionAskSentResult('google_workspace', authorization);
+          if (sent) {
             return ok({
               success: false,
               nativeTool: args.nativeTool,
-              data: {
-                code: 'google_workspace_authorization_pending',
-                intentId: authorization.intentId,
-              },
-              message:
-                'The Google connection card was sent. End this run now; '
-                + 'Divo will start a fresh run automatically after OAuth completes.',
+              data: sent,
+              message: sent.message,
             });
           }
         }
@@ -526,6 +517,16 @@ function createProductTool(
           ...(delivery ? { delivery } : {}),
         });
       } catch (cause) {
+        const gap = classifyGoogleScopeGap(product.toolId, cause);
+        if (gap) {
+          return err(new ToolError({
+            toolId: product.toolId,
+            reason: 'permission_denied',
+            cause,
+            message: `${googleScopeGapReasonText(gap.reason)} [scope_gap:${gap.reason}] `
+              + `${CONNECTIONS_SKILL_POINTER}`,
+          }));
+        }
         return err(new ToolError({
           toolId: product.toolId,
           reason: 'upstream_failure',

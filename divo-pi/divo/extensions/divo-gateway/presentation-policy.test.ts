@@ -8,7 +8,8 @@ import {
 
 const LARK: DivoSurfaceCapabilities = {
 	key: "lark",
-	artifacts: "none",
+	audience: "private",
+	artifacts: "link",
 	charts: false,
 	tables: { maxRows: 15, maxPerMessage: 3 },
 	maxBlockChars: 1_200,
@@ -53,9 +54,13 @@ describe("presentation policy", () => {
 	// so a surface that gains file delivery flips one field instead of editing
 	// the model's instructions.
 	it("says not to write a file as the deliverable only when none can be delivered", () => {
-		assert.match(presentationPolicy(LARK), /cannot hand a file to the reader/);
+		assert.doesNotMatch(presentationPolicy(LARK), /cannot hand a file to the reader/);
 		assert.doesNotMatch(
 			presentationPolicy({ ...LARK, artifacts: "inline" }),
+			/cannot hand a file to the reader/,
+		);
+		assert.match(
+			presentationPolicy({ ...LARK, audience: "shared", artifacts: "none" }),
 			/cannot hand a file to the reader/,
 		);
 	});
@@ -70,6 +75,7 @@ describe("presentation policy", () => {
 		// model on a surface we could not read.
 		it("returns nothing rather than guessing at a malformed one", () => {
 			assert.equal(parseSurfaceCapabilities(undefined), null);
+			assert.equal(parseSurfaceCapabilities({ ...LARK, audience: undefined }), null);
 			assert.equal(parseSurfaceCapabilities({ ...LARK, artifacts: "attachment" }), null);
 			assert.equal(parseSurfaceCapabilities({ ...LARK, maxBlockChars: 0 }), null);
 			assert.equal(parseSurfaceCapabilities({ ...LARK, tables: { maxRows: 15 } }), null);

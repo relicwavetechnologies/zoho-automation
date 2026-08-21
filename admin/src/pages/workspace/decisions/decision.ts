@@ -12,6 +12,9 @@
  * and a browser that waits for the server to tell it a radio button replaced
  * its neighbour is a browser that feels broken.
  */
+import type { DecisionSubject } from './subject'
+
+export type { DecisionSubject, DecisionPreview } from './subject'
 
 export type DecisionOption = {
   value: string
@@ -20,6 +23,8 @@ export type DecisionOption = {
   tone?: 'default' | 'primary' | 'danger'
   /** Choosing this ends the whole decision, whatever comes after it. */
   settles?: 'approved' | 'rejected'
+  /** An option carrying this opens a URL and settles nothing. */
+  href?: string
 }
 
 export type DecisionQuestion =
@@ -43,6 +48,14 @@ export type Decision = {
   detail?: string
   /** Who is asking — a requester's name, a department, "Divo". */
   source: string
+  /**
+   * What the decision acts on, when it acts on a third-party product.
+   *
+   * Optional because plenty of asks have no product behind them: a choice of
+   * department, a name for a thread. Those keep the plain card, and that is the
+   * correct look for them rather than a gap where a logo should be.
+   */
+  subject?: DecisionSubject
   questions: DecisionQuestion[]
   requestedAt: string
   expiresAt: string | null

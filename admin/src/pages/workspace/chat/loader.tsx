@@ -10,7 +10,6 @@
  * workspace root, so they theme correctly anywhere inside the app and would
  * render as invisible ink outside it.
  */
-import { useId } from 'react'
 import '@/styles/beautiful.css'
 
 /**
@@ -169,35 +168,13 @@ export function DotsLoader({
   )
 }
 
-/**
- * Divo's mark — the desktop's, glyph for glyph.
+/*
+ * Divo's mark moved out.
  *
- * A `D` drawn as an open stroke with a diagonal cut through it. Ported rather
- * than approximated: this signs the run log on both surfaces, and two marks
- * that are nearly the same read as two products.
- *
- * Drawn in `currentColor`, so it takes the weight of whatever row it sits in
- * and brightens with it on hover. The mask id is per-instance — two of these on
- * one page sharing an id means the second one erases through the first.
+ * It was ported here first, because the work-log was the first surface that
+ * needed it, and then five shells drew a lucide `Diamond` instead because this
+ * was not where anybody would look for it. It lives in
+ * `components/admin/divo-mark` now and is re-exported so the trace's import
+ * keeps working. Same drawing, one copy.
  */
-export function DivoMark({ className }: { className?: string }) {
-  const maskId = useId().replace(/:/g, '')
-  return (
-    <svg viewBox="0 0 64 64" aria-hidden className={`shrink-0 ${className ?? ''}`}>
-      <defs>
-        <mask id={maskId} maskUnits="userSpaceOnUse" maskContentUnits="userSpaceOnUse">
-          <rect width="64" height="64" fill="#fff" />
-          <path d="M5 59 59 5" stroke="#000" strokeWidth="9.5" />
-        </mask>
-      </defs>
-      <path
-        d="M17 10h9a22 22 0 0 1 0 44h-9z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="7"
-        strokeLinejoin="round"
-        mask={`url(#${maskId})`}
-      />
-    </svg>
-  )
-}
+export { DivoMark } from '@/components/admin/divo-mark'

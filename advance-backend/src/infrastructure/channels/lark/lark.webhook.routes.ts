@@ -21,13 +21,10 @@ import type { ConversationRepoPort } from '../../persistence/conversation.reposi
 import type { Logger } from '../../../shared/logger';
 import type { TypedEnv } from '../../../config/env';
 import type { ApprovalGateService } from '../../../application/approval/approval-gate.service';
-import type {
-  LarkApprovalCardHandler,
-  LarkAuthenticatedCardActor,
-} from './lark-approval-card.handler';
 import type { LarkDecisionCardHandler } from './lark-decision-card.handler';
 import {
   isWorkbookConversionCardAction,
+  type LarkAuthenticatedCardActor,
   type LarkWorkbookConversionCardHandler,
 } from './lark-workbook-conversion-card.handler';
 import type { LarkKnowledgeReviewService } from '../../../application/knowledge/lark-knowledge-review.service';
@@ -169,7 +166,6 @@ export interface LarkWebhookDeps {
   logger: Logger;
   env: TypedEnv;
   approvalGate?: ApprovalGateService;
-  approvalCardHandler?: LarkApprovalCardHandler;
   /** Answers every question asked through the decision module. */
   decisionCardHandler?: LarkDecisionCardHandler;
   workbookConversionCardHandler?: LarkWorkbookConversionCardHandler;
@@ -341,6 +337,7 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
           // and as each of those migrates, its branch below simply goes away.
           if (deps.decisionCardHandler?.claims(cardEvent)) {
             const result = await deps.decisionCardHandler.handle(cardEvent, {
+              tenantKey: actor.tenantKey,
               openId: actor.openId,
               userId: actor.userId,
               companyId: actor.companyId,
@@ -367,11 +364,6 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
                 content: 'Divo always replies in threads inside groups.',
               },
             });
-            return;
-          }
-          if (deps.approvalCardHandler) {
-            const result = await deps.approvalCardHandler.handle(cardEvent, actor);
-            res.status(200).json(result.responseBody ?? { ok: true });
             return;
           }
           res.status(200).json({ ok: true });

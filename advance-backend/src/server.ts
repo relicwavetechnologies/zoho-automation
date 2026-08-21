@@ -60,7 +60,6 @@ import { createMemberTaskRoutes } from './http/member/tasks.routes';
 import { ExecutionRepository } from './infrastructure/persistence/execution.repository';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
-import { GoogleConnectionContinuationWorker } from './application/connections/google-connection-continuation';
 import { getGmailPubSubConfig } from './config/env';
 import { PersonaLearningWorker } from './application/persona-learning/persona-learning.worker';
 import { KnowledgeLearningWorker } from './application/knowledge/knowledge-learning.worker';
@@ -125,7 +124,6 @@ export const createServer = (c: Container): DivoServerApplication => {
     env:                   c.env,
     appBaseUrl:            c.env.APP_BASE_URL,
     approvalGate:          c.approvalGate,
-    approvalCardHandler:   c.approvalCardHandler,
     decisionCardHandler:   c.decisionCardHandler,
     workbookConversionCardHandler: c.workbookConversionCardHandler,
     knowledgeReviewService: c.larkKnowledgeReviewService,
@@ -156,32 +154,6 @@ export const createServer = (c: Container): DivoServerApplication => {
   });
   larkIngressWorker.start();
 
-  const googleConnectionContinuationWorker =
-    new GoogleConnectionContinuationWorker({
-      redisUrl: c.queueRedisUrl,
-      queue: c.googleConnectionContinuationQueue,
-      intentRepo: c.connectionAuthorizationRepo,
-      identityRepo: c.channelIdentityRepo,
-      connectionRepo: c.integrationConnectionRepo,
-      runPi: async input => (await runPiAndDeliver({
-        ...input,
-        deps: {
-          adapter: input.channelAdapter,
-          piRuntime: larkPiRuntime,
-          conversationRepo: c.conversationRepo,
-          channelDeliveryRepo: c.channelDeliveryRepo,
-          groupContextHydrator: c.groupContextHydrator,
-          chatContextService: c.chatContextService,
-        },
-        log: c.logger,
-        ...(input.abortSignal ? { signal: input.abortSignal } : {}),
-        rethrowRuntimeFailureAfterDelivery: true,
-      }))?.text ?? null,
-      channelAdapter: c.larkAdapter,
-      laneLeaseHolder: c.laneLeaseHolder,
-      logger: c.logger,
-    });
-  googleConnectionContinuationWorker.start();
   const recoverGoogleExchanges = () => {
     const staleBefore = new Date(Date.now() - 2 * 60_000);
     void c.googleConnectionAuthorization
@@ -524,7 +496,8 @@ export const createServer = (c: Container): DivoServerApplication => {
     '/api/google/connection',
     createGoogleConnectionRoutes({
       authorization: c.googleConnectionAuthorization,
-      continuationQueue: c.googleConnectionContinuationQueue,
+      askCourier: c.connectionAskCourier,
+      connectionResume: c.connectionResume,
       logger: c.logger,
     }),
   );
@@ -883,6 +856,8 @@ export const createServer = (c: Container): DivoServerApplication => {
     piRuntimeMemberAuth,
     createArtifactRoutes({
       artifacts: c.artifacts,
+      publishing: c.artifactPublishing,
+      permissions: c.permissions,
       logger:    c.logger,
     }),
   );
@@ -1092,7 +1067,6 @@ export const createServer = (c: Container): DivoServerApplication => {
       // producer queues and shared application Redis clients are closed.
       await closePhase([
         { name: 'lark-ingress-worker', close: () => larkIngressWorker.stop() },
-        { name: 'google-continuation-worker', close: () => googleConnectionContinuationWorker.stop() },
         { name: 'workbook-conversion-worker', close: () => c.workbookConversionWorker.stop() },
         { name: 'persona-learning-worker', close: () => personaLearningWorker.stop() },
         ...(knowledgeLearningWorker
@@ -1103,7 +1077,6 @@ export const createServer = (c: Container): DivoServerApplication => {
       ]);
       await closePhase([
         { name: 'lark-ingress-queue', close: () => c.larkIngressQueue.close() },
-        { name: 'google-continuation-queue', close: () => c.googleConnectionContinuationQueue.close() },
         { name: 'workbook-conversion-queue', close: () => c.workbookConversionQueue.close() },
         { name: 'persona-learning-queue', close: () => c.personaLearningQueue.close() },
         { name: 'knowledge-learning-queue', close: () => c.knowledgeLearningQueue.close() },

@@ -4,10 +4,6 @@ import type { Request, Response } from 'express';
 import { GOOGLE_WORKSPACE_OAUTH_SCOPES } from '../../src/domain/google/google-workspace-scope.ts';
 import { GoogleConnectionAuthorizationService } from '../../src/application/connections/google-connection-authorization.service.ts';
 import {
-  GoogleConnectionContinuationQueue,
-  GoogleConnectionContinuationWorker,
-} from '../../src/application/connections/google-connection-continuation.ts';
-import {
   buildGoogleConnectCard,
   googleConnectFallbackText,
 } from '../../src/infrastructure/channels/lark/lark-google-connect.ts';
@@ -91,6 +87,10 @@ describe('GoogleConnectionAuthorizationService', () => {
 
     const issued = await service.issue(TARGET);
 
+    /* Narrowed rather than cast: `already_pending` carries no URL, and a test
+       that reads one off it would be asserting against a shape the service
+       cannot return. */
+    assert.ok(issued.outcome === 'issued', 'expected a freshly issued authorization');
     assert.equal(issued.authorizeUrl, 'https://accounts.google.test/auth?state=opaque-state');
     assert.deepEqual(authorizeInput, {
       state: 'opaque-state',
@@ -419,254 +419,6 @@ describe('GoogleConnectionAuthorizationService', () => {
   });
 });
 
-describe('Google connection continuation', () => {
-  it('deduplicates queue admission by authorization intent', async () => {
-    let adds = 0;
-    const queue = new GoogleConnectionContinuationQueue(
-      'redis://unused',
-      'test',
-      {
-        getJob: async () => ({
-          id: 'google_oauth_intent-1',
-          getState: async () => 'waiting',
-          retry: async () => {},
-        }),
-        add: async () => {
-          adds += 1;
-          return { id: 'unexpected' };
-        },
-        close: async () => {},
-      } as any,
-    );
-
-    assert.equal(await queue.enqueue('intent-1'), 'google_oauth_intent-1');
-    assert.equal(adds, 0);
-  });
-
-  it('recovers a failed queue job instead of leaving a pending intent stranded', async () => {
-    let retried = false;
-    const queue = new GoogleConnectionContinuationQueue(
-      'redis://unused',
-      'test',
-      {
-        getJob: async () => ({
-          id: 'google_oauth_intent-1',
-          getState: async () => 'failed',
-          retry: async () => { retried = true; },
-        }),
-        add: async () => ({ id: 'unexpected' }),
-        close: async () => {},
-      } as any,
-    );
-
-    await queue.enqueue('intent-1');
-    assert.equal(retried, true);
-  });
-
-  it('starts one fresh Pi run from the stored request and current identity', async () => {
-    let piInput: any;
-    let finishInput: any;
-    const worker = new GoogleConnectionContinuationWorker({
-      redisUrl: 'redis://unused',
-      queue: { enqueue: async () => '' },
-      intentRepo: {
-        findPendingContinuation: async () => ({
-          ok: true,
-          value: { ...TARGET, connectionId: 'connection-1' },
-        }),
-        claimContinuation: async () => ({
-          ok: true,
-          value: { ...TARGET, connectionId: 'connection-1' },
-        }),
-        finishContinuation: async (...args: any[]) => {
-          finishInput = args;
-          return { ok: true, value: undefined };
-        },
-        listPendingContinuationIds: async () => ({ ok: true, value: [] }),
-      } as any,
-      identityRepo: {
-        resolveByLarkTenantIdentity: async () => ({
-          ok: true,
-          value: {
-            companyId: 'company-1',
-            userId: 'user-1',
-            aiRole: 'MEMBER',
-            activeDepartmentId: 'department-current',
-            email: 'member@example.com',
-            channel: 'lark',
-          },
-        }),
-      } as any,
-      connectionRepo: {
-        listAccessibleGoogleConnections: async () => ({
-          ok: true,
-          value: [{
-            connectionId: 'connection-1',
-            provider: 'google_workspace',
-            label: 'Google',
-            ownerType: 'user',
-            ownerUserId: 'user-1',
-            access: 'admin',
-            scopes: [...GOOGLE_WORKSPACE_OAUTH_SCOPES],
-            connectedAt: new Date(),
-          }],
-        }),
-      } as any,
-      runPi: async (input: any) => {
-        piInput = input;
-        return 'done';
-      },
-      channelAdapter: {
-        key: 'lark',
-      } as any,
-      logger: noopLogger,
-    });
-
-    await worker.process({ id: 'job-1', data: { intentId: 'intent-1' } });
-
-    assert.equal(piInput.incoming.text, TARGET.originalRequest);
-    assert.equal(piInput.incoming.messageId, 'oauth-continuation-intent-1');
-    assert.equal(piInput.incoming.raw.resumeReason, 'google_connected');
-    assert.equal(piInput.incoming.raw.connectionId, 'connection-1');
-    assert.equal(piInput.runContext.departmentId, 'department-current');
-    assert.equal(piInput.runContext.requestId, TARGET.continuationIdempotencyKey);
-    // The tool IDs stay on the incoming message as a record of what triggered
-    // this continuation. They used to be copied onto the run context too, with
-    // a comment promising an RBAC intersection that no code performed — every
-    // tool call in the fresh run resolves permissions the ordinary way, so the
-    // field granted nothing and guarded nothing.
-    assert.deepEqual(piInput.incoming.raw.requestedToolIds, ['mailAutomations']);
-    assert.equal('continuationToolIds' in piInput.runContext, false);
-    assert.equal(piInput.conversation.chatId, 'oc_chat');
-    assert.equal(piInput.conversation.replyToMessageId, 'om_original');
-    assert.equal(piInput.conversation.replyInThread, true);
-    assert.equal(piInput.channelAdapter.key, 'lark');
-    assert.deepEqual(finishInput, [
-      'intent-1',
-      { runId: TARGET.continuationIdempotencyKey },
-    ]);
-  });
-
-  it('records a visible Pi delivery failure without reporting completion', async () => {
-    let finishInput: any;
-    const worker = new GoogleConnectionContinuationWorker({
-      redisUrl: 'redis://unused',
-      queue: { enqueue: async () => '' },
-      intentRepo: {
-        findPendingContinuation: async () => ({
-          ok: true,
-          value: { ...TARGET, connectionId: 'connection-1' },
-        }),
-        claimContinuation: async () => ({
-          ok: true,
-          value: { ...TARGET, connectionId: 'connection-1' },
-        }),
-        finishContinuation: async (...args: any[]) => {
-          finishInput = args;
-          return { ok: true, value: undefined };
-        },
-      } as any,
-      identityRepo: {
-        resolveByLarkTenantIdentity: async () => ({
-          ok: true,
-          value: {
-            companyId: 'company-1',
-            userId: 'user-1',
-            aiRole: 'MEMBER',
-            channel: 'lark',
-          },
-        }),
-      } as any,
-      connectionRepo: {
-        listAccessibleGoogleConnections: async () => ({
-          ok: true,
-          value: [{
-            connectionId: 'connection-1',
-            ownerType: 'user',
-            ownerUserId: 'user-1',
-          }],
-        }),
-      } as any,
-      runPi: async () => null,
-      channelAdapter: { key: 'lark' } as any,
-      logger: noopLogger,
-    });
-
-    await worker.process({ id: 'job-1', data: { intentId: 'intent-1' } });
-
-    assert.deepEqual(finishInput, [
-      'intent-1',
-      { failureCode: 'continuation_delivery_failed' },
-    ]);
-  });
-
-  it('does not start a second run when the durable continuation claim is gone', async () => {
-    let runs = 0;
-    const worker = new GoogleConnectionContinuationWorker({
-      redisUrl: 'redis://unused',
-      queue: { enqueue: async () => '' },
-      intentRepo: {
-        findPendingContinuation: async () => ({
-          ok: true,
-          value: { ...TARGET, connectionId: 'connection-1' },
-        }),
-        claimContinuation: async () => ({ ok: true, value: null }),
-        finishContinuation: async () => ({ ok: true, value: undefined }),
-        listPendingContinuationIds: async () => ({ ok: true, value: [] }),
-      } as any,
-      identityRepo: {} as any,
-      connectionRepo: {} as any,
-      runPi: async () => {
-        runs += 1;
-        return 'done';
-      },
-      channelAdapter: { key: 'lark' } as any,
-      logger: noopLogger,
-    });
-
-    await worker.process({ id: 'job-2', data: { intentId: 'intent-1' } });
-    assert.equal(runs, 0);
-  });
-
-  it('leaves the intent pending when another replica owns the Lark lane', async () => {
-    let claims = 0;
-    const worker = new GoogleConnectionContinuationWorker({
-      redisUrl: 'redis://unused',
-      queue: { enqueue: async () => '' },
-      intentRepo: {
-        findPendingContinuation: async () => ({
-          ok: true,
-          value: { ...TARGET, connectionId: 'connection-1' },
-        }),
-        claimContinuation: async () => {
-          claims += 1;
-          return { ok: true, value: null };
-        },
-        finishContinuation: async () => ({ ok: true, value: undefined }),
-        listPendingContinuationIds: async () => ({ ok: true, value: [] }),
-      } as any,
-      identityRepo: {} as any,
-      connectionRepo: {} as any,
-      runPi: async () => 'done',
-      channelAdapter: { key: 'lark' } as any,
-      laneLeaseHolder: {
-        withLane: async () => ({
-          outcome: 'deferred',
-          ownerId: 'other-replica',
-          expiresAt: new Date(),
-        }),
-      } as any,
-      logger: noopLogger,
-    });
-
-    await assert.rejects(
-      worker.process({ id: 'job-3', data: { intentId: 'intent-1' } }),
-      /lane is held/,
-    );
-    assert.equal(claims, 0);
-  });
-});
-
 describe('Google connection card and callback route', () => {
   it('renders an open-url card and a plain-link fallback without identity data', () => {
     const input = {
@@ -682,8 +434,8 @@ describe('Google connection card and callback route', () => {
     assert.equal(JSON.stringify(card).includes('user-1'), false);
   });
 
-  it('returns callback success immediately after queue admission', async () => {
-    let enqueued: string | undefined;
+  it('answers the waiting run and says the request is being picked back up', async () => {
+    const answered: Array<{ askId: string; granted: boolean }> = [];
     const router = createGoogleConnectionRoutes({
       authorization: {
         complete: async () => ({
@@ -691,12 +443,18 @@ describe('Google connection card and callback route', () => {
           intentId: 'intent-1',
           connectionId: 'connection-1',
           accountName: '<user@example.com>',
+          channel: 'web',
         }),
       } as any,
-      continuationQueue: {
-        enqueue: async (intentId: string) => {
-          enqueued = intentId;
-          return 'job-1';
+      askCourier: {
+        answer: async (askId: string, granted: boolean) => {
+          answered.push({ askId, granted });
+          return 'answered' as const;
+        },
+      },
+      connectionResume: {
+        abandon: async () => {
+          throw new Error('a run that resumed must not also be abandoned');
         },
       },
       logger: noopLogger,
@@ -708,10 +466,51 @@ describe('Google connection card and callback route', () => {
     });
 
     assert.equal(response.status, 200);
-    assert.equal(enqueued, 'intent-1');
+    assert.deepEqual(answered, [{ askId: 'intent-1', granted: true }]);
     assert.match(String(response.body), /Google connected/);
+    assert.match(String(response.body), /picking your request back up/);
+    /* The account name reaches the page as text, never as markup. */
     assert.equal(String(response.body).includes('<user@example.com>'), false);
     assert.match(String(response.body), /&lt;user@example.com&gt;/);
+  });
+
+  it('says so plainly when the run had already stopped waiting', async () => {
+    /* The connection is real either way. Telling the member it is continuing
+       when nothing is would leave them watching a thread that never moves. */
+    const abandoned: Array<{ askId: string; reason: string }> = [];
+    const router = createGoogleConnectionRoutes({
+      authorization: {
+        complete: async () => ({
+          outcome: 'connected',
+          intentId: 'intent-2',
+          connectionId: 'connection-2',
+          accountName: 'user@example.com',
+          channel: 'web',
+        }),
+      } as any,
+      askCourier: { answer: async () => 'no_pending_ask' as const },
+      connectionResume: {
+        abandon: async (askId: string, reason: string) => {
+          abandoned.push({ askId, reason });
+          return true;
+        },
+      },
+      logger: noopLogger,
+    });
+
+    const response = await callRoute(router, '/callback', {
+      state: 'opaque',
+      code: 'google-code',
+    });
+
+    assert.equal(response.status, 200);
+    assert.match(String(response.body), /Google connected/);
+    assert.match(String(response.body), /stopped waiting, so ask Divo again/);
+    /* Nothing sweeps intents any more, so the callback closes the one nobody
+       picked up. Left open it sits pending for good. */
+    assert.deepEqual(abandoned, [
+      { askId: 'intent-2', reason: 'resume_no_pending_ask' },
+    ]);
   });
 });
 

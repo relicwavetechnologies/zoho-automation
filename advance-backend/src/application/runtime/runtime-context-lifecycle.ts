@@ -1,7 +1,10 @@
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import type { ChannelKey } from '../../domain/channel/incoming-message';
-import { surfaceCapabilities } from '../../domain/channel/surface-capabilities';
+import {
+  surfaceCapabilities,
+  type SurfaceAudience,
+} from '../../domain/channel/surface-capabilities';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { zohoServicesForScopes } from '../../domain/zoho/zoho-scope';
@@ -69,6 +72,8 @@ export interface RuntimeContextLifecycleInput {
   readonly companyId: string;
   readonly companyRole: string;
   readonly channel: ChannelKey;
+  /** Trusted from the signed Pi runtime lease when present. */
+  readonly audience?: SurfaceAudience;
   readonly departmentId?: string;
   readonly capabilityVersion: 2 | 3;
   /** Present only after the HTTP adapter validates the pinned Pi runtime lease. */
@@ -134,7 +139,7 @@ export class RuntimeContextLifecycle {
           personaPrompt: '',
           version: null,
           personalMemory: await personalMemoryLoad,
-          surface: surfaceCapabilities(input.channel),
+          surface: surfaceCapabilities(input.channel, input.audience),
         },
       };
     }
@@ -356,7 +361,7 @@ export class RuntimeContextLifecycle {
           managerPersonaVersion,
         ].filter((value): value is string => Boolean(value)).join('|') || null,
         personalMemory,
-        surface: surfaceCapabilities(input.channel),
+        surface: surfaceCapabilities(input.channel, input.audience),
         ...(capabilityBootstrap ? { capabilityBootstrap } : {}),
         ...(nativeSkillBootstrap ? { nativeSkillBootstrap } : {}),
         ...(currentNativeSkillBinding ? { nativeSkillBinding: currentNativeSkillBinding } : {}),

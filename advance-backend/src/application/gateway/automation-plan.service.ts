@@ -4,14 +4,13 @@ import type {
   ApprovalAuthority,
   ApprovalRequirement,
 } from '../approval/approval-gate.service';
-import { buildAutomationPlanApprovalCard } from '../approval/approval-card-builder';
 import type { PermissionService } from '../permissions/permission.service';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { sha256, sha256CanonicalJson } from '../../shared/hash';
 import type { Logger } from '../../shared/logger';
-import type { LarkChannelAdapter } from '../../infrastructure/channels/lark/lark.adapter';
 import type { RuntimeApprovalRepository, RuntimeApprovalRow } from '../../infrastructure/persistence/runtime-approval.repository';
+import type { DecisionService } from '../decision/decision.service';
 import type { GatewayExecutionContext, GatewayMemberContext, GatewayResponse } from './gateway.types';
 import { gatewayFailure, gatewaySuccess } from './gateway.types';
 import type { ToolExecutor, PreflightedToolInvocation } from './tool-executor';
@@ -21,11 +20,6 @@ import { withWorkDiscoveryPermissions } from './work-resolution.service';
 import { buildArgsSummary } from './args-summary';
 import { SCHEDULED_SESSION_AUTH_PROVIDER } from '../scheduling/scheduled-runtime-session';
 import { z } from 'zod';
-import {
-  approvalDeliveryFailedCheckpoint,
-  approvalDeliveryUnknownCheckpoint,
-  isDefiniteApprovalNonDelivery,
-} from '../approval/approval-delivery';
 
 const AUTOMATION_PLAN_KIND = 'automation_script_plan';
 const AUTOMATION_PLAN_VERSION = 2;
@@ -108,7 +102,7 @@ export interface AutomationPlanServiceDeps {
   readonly approvalRepo: RuntimeApprovalRepository;
   readonly approvalResolver: ApprovalResolverService;
   readonly approvalGate: ApprovalGateService;
-  readonly larkAdapter: LarkChannelAdapter;
+  readonly decisions: Pick<DecisionService, 'ask'>;
   readonly logger: Logger;
 }
 
@@ -293,18 +287,24 @@ export class AutomationPlanService {
       planHash,
     ].join(':'));
     const actionCounts = countActions(stored);
-    const create = await this.deps.approvalRepo.createOrReuseActive({
-      // This is only a durable approval conversation key. It is intentionally
-      // not a Lark chat ID: the approval card is delivered directly to the
-      // manager, and there is no desktop bearer-token path to resume it.
-      chatId: automationApprovalChatId(input.member, input.execution),
+    const callPreview = stored.invocations.map(invocation => invocation.callSummary);
+    const decisionDetail = automationDecisionDetail(stored.summary, callPreview);
+    const asked = await this.deps.decisions.ask({
+      kind: 'tool_action',
+      rowKind: AUTOMATION_PLAN_KIND,
       companyId: input.member.companyId,
-      toolId: 'automationScript',
-      actionGroup: 'execute',
-      kind: AUTOMATION_PLAN_KIND,
+      approver,
+      requestedBy: {
+        userId: input.member.userId,
+        displayName: input.member.email ?? input.member.userId,
+      },
       summary: `${input.title}: ${input.summary}`,
+      toolId: 'automationScript',
+      action: 'execute',
+      args: stored,
+      argsHash: planHash,
       payloadJson: stored,
-      metadataJson: {
+      metadata: {
         requesterId: input.member.userId,
         requesterLarkOpenId: input.member.larkOpenId,
         requesterEmail: input.member.email,
@@ -312,113 +312,52 @@ export class AutomationPlanService {
         departmentId,
         execution: input.execution ?? null,
         approvalOrigin: 'automation',
+        sourceChannel: 'desktop',
         // Same reason as the single-tool approval path: this batch is approved
         // before any of it runs, so the delivery restriction of the run that
         // prepared it has to survive until someone accepts.
         deliveryMode: input.member.authProvider === SCHEDULED_SESSION_AUTH_PROVIDER
           ? 'scheduled_runtime_delivery'
           : null,
-        resolvedManagerOpenId: approver.larkOpenId,
-        resolvedManagerUserId: approver.userId,
-        resolvedManagerName: approver.displayName,
         approvalAuthority,
         planHash,
         actionCounts,
+        detail: decisionDetail,
       },
-      channel: 'desktop',
-      requestedBy: input.member.userId,
+      channel: approver.larkOpenId ? 'lark' : 'desktop',
+      conversationKey: automationApprovalChatId(input.member, input.execution),
       idempotencyKey,
-      expiresAt: new Date(Date.now() + AUTOMATION_PLAN_TTL_MS),
+      initialStatus: approver.larkOpenId ? 'dispatching' : 'pending',
+      deliveryMessages: {
+        unknown: planId =>
+          `Divo lost confirmation while delivering the ${approvalAuthority.replaceAll('_', ' ')} approval card. It may still be actionable, so this exact batch is blocked from automatic retry. Contact your administrator with plan ID ${planId}.`,
+        failed: planId =>
+          `The batch was not approved because its ${approvalAuthority.replaceAll('_', ' ')} approval card could not be delivered. Nothing was executed (plan ID: ${planId}).`,
+      },
     });
-    if (!create.ok) {
-      this.deps.logger.error('automation_plan.create_or_reuse_failed', { error: create.error.message });
-      return gatewayFailure('tool_error', 'Could not store the automation plan. Please try again.');
-    }
-    if (!create.value.created) {
-      return gatewaySuccess(this.present(create.value.approval, {
-        idempotent: true,
-        requestState: create.value.approval.status === 'dispatching' ? 'dispatching' : 'reused',
-      }));
-    }
-    const approval = create.value.approval;
-
-    // No card address for the approver. The plan is stored and live; it waits
-    // in their Divo approval inbox rather than failing for want of a Lark DM.
-    if (!approver.larkOpenId) {
-      this.deps.logger.info('automation_plan.created_inbox', {
-        planId: approval.id,
-        approver: approver.userId,
+    if (!asked.ok) {
+      this.deps.logger.error('automation_plan.decision_ask_failed', {
+        reason: asked.reason,
+        planId: asked.rowId,
       });
-      return gatewaySuccess(this.present(approval, { actionCounts, requestState: 'created' }));
-    }
-
-    const card = buildAutomationPlanApprovalCard({
-      approvalId: approval.id,
-      title: stored.title,
-      summary: stored.summary,
-      requesterName: input.member.email ?? input.member.userId,
-      departmentName: permResult.value.department?.name ?? 'your department',
-      actionCounts,
-      invocationCount: stored.invocations.length,
-      callPreview: stored.invocations.map((invocation) => invocation.callSummary),
-    });
-    const sent = await this.deps.larkAdapter.sendDirectCard(approver.larkOpenId, card);
-    if (!sent.ok) {
-      this.deps.logger.warn('automation_plan.card_send_failed', { planId: approval.id, error: sent.error.message });
-      if (!isDefiniteApprovalNonDelivery(sent.error)) {
-        const checkpoint = await this.deps.approvalRepo.persistResult(
-          approval.id,
-          approvalDeliveryUnknownCheckpoint(sent.error.message),
-        );
-        if (!checkpoint.ok) {
-          this.deps.logger.error('automation_plan.delivery_unknown_checkpoint_failed', {
-            planId: approval.id,
-            error: checkpoint.error.message,
-          });
-        }
-        return gatewayFailure(
-          'approval_misconfigured',
-          `Divo lost confirmation while delivering the ${approvalAuthority.replaceAll('_', ' ')} approval card. It may still be actionable, so this exact batch is blocked from automatic retry. Contact your administrator with plan ID ${approval.id}.`,
-        );
-      }
-      const markFailed = await this.deps.approvalRepo.markFailed(
-        approval.id,
-        `card_send_failed:${sent.error.message}`,
-      );
-      if (!markFailed.ok) {
-        this.deps.logger.error('automation_plan.mark_failed_failed', {
-          planId: approval.id,
-          error: markFailed.error.message,
-        });
-        const checkpoint = await this.deps.approvalRepo.persistResult(
-          approval.id,
-          approvalDeliveryFailedCheckpoint(sent.error.message),
-        );
-        if (!checkpoint.ok) {
-          this.deps.logger.error('automation_plan.delivery_failure_checkpoint_failed', {
-            planId: approval.id,
-            error: checkpoint.error.message,
-          });
-        }
-      }
       return gatewayFailure(
-        'approval_misconfigured',
-        `The batch was not approved because its ${approvalAuthority.replaceAll('_', ' ')} approval card could not be delivered. Nothing was executed.`,
+        asked.reason === 'delivery_failed' || asked.reason === 'delivery_unknown'
+          ? 'approval_misconfigured'
+          : 'tool_error',
+        asked.message,
       );
     }
-    const delivered = await this.deps.approvalRepo.setDecisionMessageId(approval.id, sent.value.messageId);
-    if (!delivered.ok) {
-      this.deps.logger.error('automation_plan.delivery_persist_failed', {
-        planId: approval.id,
-        error: delivered.error.message,
-      });
-      // Sending succeeded. Keep the dispatching row as the exact-request
-      // barrier: the card contains its approval ID and remains actionable,
-      // while an exact retry must not deliver a duplicate card.
-      return gatewaySuccess(this.present(approval, {
-        actionCounts,
-        requestState: 'dispatching',
+    if (!asked.created) {
+      return gatewaySuccess(this.present(asked.row, {
+        idempotent: true,
+        requestState: asked.requestState === 'dispatching' || asked.row.status === 'dispatching'
+          ? 'dispatching'
+          : 'reused',
       }));
+    }
+    const approval = asked.row;
+    if (asked.requestState === 'dispatching') {
+      return gatewaySuccess(this.present(approval, { actionCounts, requestState: 'dispatching' }));
     }
 
     this.deps.logger.info('automation_plan.created', {
@@ -432,7 +371,7 @@ export class AutomationPlanService {
     });
     return gatewaySuccess(this.present(approval, {
       actionCounts,
-      requestState: create.value.replacedExpired ? 'replaced_expired' : 'created',
+      requestState: asked.requestState === 'replaced_expired' ? 'replaced_expired' : 'created',
     }));
   }
 
@@ -596,6 +535,19 @@ function countActions(plan: AutomationPlanStoredPayload): Record<string, number>
     counts[invocation.action] = (counts[invocation.action] ?? 0) + 1;
     return counts;
   }, {});
+}
+
+function automationDecisionDetail(summary: string, callPreview: readonly string[]): string {
+  const preview = callPreview
+    .slice(0, 12)
+    .map((call, index) => `${index + 1}. ${call}`)
+    .join('\n');
+  const remaining = callPreview.length - 12;
+  return [
+    `**What will happen**\n${summary}`,
+    `**Exact preflighted calls**\n${preview || 'No calls'}${remaining > 0 ? `\n… and ${remaining} more exact calls` : ''}`,
+    'Approval permits only this preflighted batch. New, changed, or unplanned actions need a new approval.',
+  ].join('\n\n');
 }
 
 function normalizePlanStatus(

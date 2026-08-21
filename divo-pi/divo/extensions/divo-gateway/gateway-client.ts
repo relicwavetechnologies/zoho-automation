@@ -246,6 +246,27 @@ export function formatGatewayResponse(body: GatewayResponseBody): {
 		};
 	}
 
+	/*
+	 * Reaching the formatter at all means the wait already happened and ended
+	 * without a connection: `executeGatewayRequest` resumes on its own when the
+	 * member connects, and only hands this status on when they did not. So this
+	 * text is about a finished wait, never a starting one.
+	 */
+	if (body.status === "connection_pending") {
+		const provider = (body.data as { provider?: string } | undefined)?.provider ?? "the account";
+		return {
+			text: [
+				"Not connected.",
+				"",
+				`Divo asked the member to connect ${provider} and waited. They did not finish, or the request expired.`,
+				"",
+				"Next action: tell them plainly that the connection is still missing and what it was needed for.",
+				"Do not send another connect request in this run, and do not retry the call that needed it.",
+			].join("\n"),
+			isError: true,
+		};
+	}
+
 	if (body.status === "approval_required") {
 		const approvalId = body.approval?.approvalId ?? "unknown";
 		const approver = body.approval?.approverName ?? "the configured approver";

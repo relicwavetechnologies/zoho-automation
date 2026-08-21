@@ -15,8 +15,11 @@ export const LARK_CARD_LIMITS = {
   maxTablesPerCard: 3,
 } as const;
 
+export const SURFACE_AUDIENCES = ['private', 'shared'] as const;
+export type SurfaceAudience = typeof SURFACE_AUDIENCES[number];
+
 /**
- * What a surface can carry.
+ * What a surface can carry for one audience.
  *
  * This is the whole of the difference between Lark and the web. Not a branch, a
  * record — so "what exactly differs between the two?" is answered by diffing two
@@ -28,6 +31,7 @@ export const LARK_CARD_LIMITS = {
  */
 export interface SurfaceCapabilities {
   readonly key: ChannelKey;
+  readonly audience: SurfaceAudience;
   /** Can a generated file be handed back, and how? */
   readonly artifacts: 'none' | 'link' | 'inline';
   /** Can a chart render, or must it become a table? */
@@ -58,9 +62,11 @@ export interface SurfaceCapabilities {
   readonly handoff: boolean;
 }
 
-const LARK: SurfaceCapabilities = {
+/** A direct Lark message can receive a published document as a link. */
+const LARK_PRIVATE: SurfaceCapabilities = {
   key: 'lark',
-  artifacts: 'none',
+  audience: 'private',
+  artifacts: 'link',
   charts: false,
   tables: {
     maxRows: LARK_CARD_LIMITS.maxTableRows,
@@ -72,6 +78,12 @@ const LARK: SurfaceCapabilities = {
   citations: 'compact',
   decisions: 'buttons',
   handoff: false,
+};
+
+const LARK_SHARED: SurfaceCapabilities = {
+  ...LARK_PRIVATE,
+  audience: 'shared',
+  artifacts: 'none',
 };
 
 /**
@@ -86,9 +98,10 @@ const LARK: SurfaceCapabilities = {
  * a card. It changes nothing the model decides.
  *
  * `artifacts: 'inline'` — the web has a panel beside the thread that renders a
- * document, and the runtime gives a web run the badge tool that fills it. A Lark
- * run is never given that tool, so its `'none'` is enforced by absence and not
- * by a rule the model is asked to remember.
+ * document, and the runtime gives a web run the badge tool that fills it.
+ * `artifacts: 'link'` — a private Lark message can receive a published page.
+ * A shared Lark run keeps `'none'`: the descriptor and the manifest agree that
+ * the room has no artifact owner or delivery surface.
  *
  * `decisions: 'form'` — the composer band swaps to the decision card, which can
  * hold every question shape at once. Lark answers the same decision one card at
@@ -104,7 +117,7 @@ const LARK: SurfaceCapabilities = {
  * the shortcut this record exists to prevent.
  */
 const WEB: SurfaceCapabilities = {
-  ...LARK,
+  ...LARK_PRIVATE,
   key: 'web',
   worklog: 'streamed',
   citations: 'claim-level',
@@ -114,13 +127,26 @@ const WEB: SurfaceCapabilities = {
 
 /** A desktop run answers into a terminal that owns its own rendering. */
 const DESKTOP: SurfaceCapabilities = {
-  ...LARK,
+  ...LARK_SHARED,
   key: 'desktop',
   worklog: 'streamed',
 };
 
-export function surfaceCapabilities(channel: ChannelKey): SurfaceCapabilities {
-  if (channel === 'lark') return LARK;
-  if (channel === 'web') return WEB;
-  return { ...DESKTOP, key: channel };
+const SURFACES: Readonly<Record<string, SurfaceCapabilities>> = {
+  'lark:private': LARK_PRIVATE,
+  'lark:shared': LARK_SHARED,
+  'web:private': WEB,
+  'web:shared': { ...WEB, audience: 'shared' },
+  'desktop:private': DESKTOP,
+  'desktop:shared': { ...DESKTOP, audience: 'shared' },
+};
+
+export function surfaceCapabilities(
+  channel: ChannelKey,
+  audience: SurfaceAudience = 'private',
+): SurfaceCapabilities {
+  const surface = SURFACES[`${channel}:${audience}`] ?? SURFACES[`desktop:${audience}`] ?? DESKTOP;
+  return surface.key === channel && surface.audience === audience
+    ? surface
+    : { ...surface, key: channel, audience };
 }

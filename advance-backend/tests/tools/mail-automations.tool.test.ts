@@ -488,9 +488,11 @@ describe('mailAutomations tool', () => {
         status: 'unavailable',
         reason: 'Connect Google to continue.',
       }),
-      beginAuthorization: async input => {
+      connectionRequest: {
+        request: async input => {
         authorizationInput = input;
         return { status: 'sent', intentId: 'intent-1' };
+        },
       },
     });
     const result = await tool.execute({
@@ -507,9 +509,9 @@ describe('mailAutomations tool', () => {
     assert.equal(result.ok, true);
     assert.equal(
       result.ok && result.value.code,
-      'google_workspace_authorization_pending',
+      'connection_ask_sent',
     );
-    assert.equal(authorizationInput.toolId, 'mailAutomations');
+    assert.equal(authorizationInput.gap.toolId, 'mailAutomations');
     // The tool's only job here is to hand the live run context over intact.
     // Whether an authorization can actually be started from it is decided by
     // createBeginGoogleAuthorization, and is asserted against the real closure
@@ -688,7 +690,7 @@ describe('mailAutomations tool', () => {
   });
 
   it('tells an off-Lark member how to connect Google themselves', async () => {
-    // No beginAuthorization means no card can be sent — a desktop run has no
+    // No connectionRequest means no card can be sent. A desktop run has no
     // conversation to put one in. Returning only the connection problem read as
     // a dead end; the member can connect Google perfectly well on their own.
     const tool = createMailAutomationsTool({

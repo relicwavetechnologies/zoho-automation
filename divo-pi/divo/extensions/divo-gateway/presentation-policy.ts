@@ -9,6 +9,7 @@
  */
 export interface DivoSurfaceCapabilities {
 	key: string;
+	audience: "private" | "shared";
 	/** Can a generated file be handed back, and how? */
 	artifacts: "none" | "link" | "inline";
 	/** Can a chart render, or must it become a table? */
@@ -30,6 +31,7 @@ const PRESENTATION_POLICY_OPEN_TAG = "<divo_presentation_policy>";
 const PRESENTATION_POLICY_CLOSE_TAG = "</divo_presentation_policy>";
 
 const ARTIFACT_MODES = new Set(["none", "link", "inline"]);
+const AUDIENCES = new Set(["private", "shared"]);
 const WORKLOG_MODES = new Set(["patched-card", "streamed"]);
 const CITATION_MODES = new Set(["compact", "claim-level"]);
 const DECISION_MODES = new Set(["buttons", "form"]);
@@ -51,6 +53,7 @@ export function parseSurfaceCapabilities(value: unknown): DivoSurfaceCapabilitie
 	const tables = data.tables as Record<string, unknown> | undefined;
 
 	const key = typeof data.key === "string" ? data.key.trim().slice(0, 40) : "";
+	const audience = typeof data.audience === "string" ? data.audience : "";
 	const maxRows = positiveInt(tables?.maxRows);
 	const maxPerMessage = positiveInt(tables?.maxPerMessage);
 	const maxBlockChars = positiveInt(data.maxBlockChars);
@@ -58,6 +61,7 @@ export function parseSurfaceCapabilities(value: unknown): DivoSurfaceCapabilitie
 
 	if (
 		!key
+		|| !AUDIENCES.has(audience)
 		|| typeof data.artifacts !== "string" || !ARTIFACT_MODES.has(data.artifacts)
 		|| typeof data.charts !== "boolean"
 		|| typeof data.handoff !== "boolean"
@@ -70,6 +74,7 @@ export function parseSurfaceCapabilities(value: unknown): DivoSurfaceCapabilitie
 
 	return {
 		key,
+		audience: audience as DivoSurfaceCapabilities["audience"],
 		artifacts: data.artifacts as DivoSurfaceCapabilities["artifacts"],
 		charts: data.charts,
 		tables: { maxRows, maxPerMessage },
@@ -95,6 +100,7 @@ export function presentationPolicy(caps: DivoSurfaceCapabilities): string {
 		`You are answering on the "${caps.key}" surface. This changes how you present`,
 		"work. It never changes what you are willing to do, what you are allowed to",
 		"do, or how carefully you do it.",
+		`This answer is for a ${caps.audience} audience.`,
 		"",
 	];
 

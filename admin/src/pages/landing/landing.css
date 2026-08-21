@@ -1,0 +1,786 @@
+/*
+ * The signed-out front door, and the onboarding that opens over it.
+ *
+ * Its own stylesheet rather than more lines in `workspace.css`: nothing here is
+ * reachable once somebody is signed in, so it has no business loading with the
+ * app shell, and keeping it separate means the two can be changed without
+ * reading each other.
+ *
+ * Everything is scoped under `.cur` and spends only `--cur-*` tokens, so light
+ * and dark come for free from the same place the rest of the app gets them.
+ */
+
+/* ── The page ─────────────────────────────────────────── */
+
+/*
+ * The shell's own classes do the frame: `app`, `workspace-app`, `sidebar`,
+ * `workspace-sidebar`, `brand`, `ws-new-chat`, `nav-label`, `nav-item`,
+ * `sidebar-foot`. Nothing here restates them. What is below is only the parts
+ * a signed-out rail has and a signed-in one does not.
+ */
+
+.cur.lp { background: var(--cur-canvas); color: var(--cur-ink); }
+
+/* Where the account rows go once there is an account. */
+.cur .lp-signin {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: var(--cur-r-card);
+  background: var(--cur-canvas-soft);
+  box-shadow: inset 0 0 0 1px var(--cur-hairline);
+}
+
+.cur .lp-signin b {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--cur-ink);
+}
+
+.cur .lp-signin p {
+  margin-top: 4px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--cur-muted);
+}
+
+.cur .lp-signin-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 30px;
+  margin-top: 10px;
+  border-radius: var(--cur-r-cta);
+  background: var(--cur-cta);
+  color: var(--cur-on-cta);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background-color .15s ease;
+}
+
+.cur .lp-signin-btn:hover { background: var(--cur-cta-hover); }
+
+/* ── Everything right of the rail ─────────────────────── */
+
+.cur .lp-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cur .lp-top {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 18px;
+}
+
+/* Carries the wordmark only when the rail is not there to carry it.
+   Selector is `.cur.lp` rather than `.cur` so it outweighs `.cur .brand` in
+   cursor.css, which sets `display: flex` and loads after this file. Matched on
+   one class it lost, and the wordmark drew twice a centimetre apart. */
+.cur.lp .lp-top-brand { display: none; }
+
+.cur .lp-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--cur-hairline);
+  border-radius: var(--cur-r-cta);
+  background: transparent;
+  color: var(--cur-body);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease;
+}
+
+.cur .lp-btn:hover {
+  background: var(--cur-canvas-soft);
+  border-color: var(--cur-hairline-hover);
+  color: var(--cur-ink);
+}
+
+.cur .lp-btn-solid {
+  border-color: transparent;
+  background: var(--cur-cta);
+  color: var(--cur-on-cta);
+}
+
+.cur .lp-btn-solid:hover {
+  border-color: transparent;
+  background: var(--cur-cta-hover);
+  color: var(--cur-on-cta);
+}
+
+/*
+ * The composer sits above centre, not on it.
+ *
+ * Dead centre puts it level with the eye and leaves the page bottom-heavy with
+ * nothing in it. A little above reads as the top of a conversation, which is
+ * what it is about to become. The column is left-aligned and 720px wide, the
+ * same as signed-in Home, so nothing moves after somebody signs up.
+ */
+.cur .lp-main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px 10vh;
+  overflow-y: auto;
+}
+
+.cur .lp-centre {
+  width: 100%;
+  max-width: 720px;
+}
+
+.cur .lp-centre h1 {
+  font-size: 30px;
+  font-weight: 500;
+  letter-spacing: -0.022em;
+  line-height: 1.16;
+  color: var(--cur-ink);
+}
+
+.cur .lp-lede {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--cur-muted);
+  max-width: 560px;
+}
+
+.cur .lp-comp { margin-top: 26px; }
+
+.cur .lp-foot {
+  margin-top: 14px;
+  font-size: 12px;
+  color: var(--cur-muted);
+}
+
+/* ── The onboarding takeover ──────────────────────────── */
+
+.cur .lp-modal-wrap {
+  position: fixed;
+  inset: 0;
+  z-index: 62;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: none;
+}
+
+/* Big on purpose, and two columns wide. This is the only thing between a typed
+   sentence and an answer, so it takes the screen rather than perching on it as
+   a dialog — and the room it takes is spent on showing what Divo does, not on
+   padding around four short questions. */
+.cur .lp-modal {
+  pointer-events: auto;
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  width: min(92vw, 1240px);
+  height: min(84vh, 820px);
+  min-height: 560px;
+  background: var(--cur-surface);
+  border: 1px solid var(--cur-hairline);
+  border-radius: var(--cur-r-card);
+  box-shadow: var(--cur-shadow-card);
+  overflow: hidden;
+  animation: lp-rise .2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* The questions column. It was the whole modal a moment ago, so everything
+   below it still assumes a flex column — this keeps that true. */
+.cur .lp-ask {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ── The reel ─────────────────────────────────────────── */
+
+/*
+ * A stage, not a second form.
+ *
+ * The first version put the reel on `--cur-canvas` and the questions on
+ * `--cur-surface`. In dark mode those are close; in light mode they are two
+ * whites a couple of percent apart, and the modal read as one wide panel with
+ * an inexplicable line down the middle. Nobody could tell which half they were
+ * meant to be doing something in.
+ *
+ * So the halves stop being the same material. The reel sits on the page tone —
+ * the same ground the app's rail uses — with the step cards floating on it in
+ * surface white. The questions keep the surface. One side is something you
+ * watch; the other is something you fill in, and now they look it.
+ */
+.cur .lp-show {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  padding: 24px 26px;
+  /* Mixed off the surface rather than taken from a token, because every
+     recessed token in the system lands within five points of white in light
+     mode — `--cur-sidebar` is #fafafb against #ffffff, which is not a
+     difference anybody can see. This is a deliberate step down from whatever
+     the modal is made of. */
+  background: color-mix(in oklab, var(--cur-ink) 7%, var(--cur-surface));
+  border-right: 1px solid var(--cur-hairline);
+  /* A trace of the brand, so the stage has a light source instead of being a
+     flat grey rectangle. */
+  background-image: radial-gradient(
+    120% 80% at 8% 0%,
+    color-mix(in oklab, var(--cur-primary) 9%, transparent),
+    transparent 64%
+  );
+}
+
+/* Down, not up. In dark mode the ink is nearly white, so the same mix would
+   lift the stage above the form and invert the whole arrangement. */
+.dark .cur .lp-show {
+  background: color-mix(in oklab, #000 42%, var(--cur-surface));
+}
+
+.cur .lp-show-top { flex: 0 0 auto; }
+
+.cur .lp-show-tag {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--cur-muted);
+}
+
+.cur .lp-show-top p {
+  margin-top: 6px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--cur-body);
+  max-width: 44ch;
+}
+
+/*
+ * Top-aligned, not centred.
+ *
+ * Centring looked more composed with one run on screen and worse with four: a
+ * two-step run and a three-step run centre at different heights, so the ask
+ * slid up and down the panel every time the reel advanced. Anchored to the top,
+ * the question always begins in the same place and only the log below it grows.
+ */
+.cur .lp-show-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 30px 0 18px;
+}
+
+/*
+ * The fade is decoration, never the difference between readable and blank.
+ *
+ * These carried `animation-fill-mode: both` from `opacity: 0`, which means the
+ * resting state of an un-run animation is invisible. Anything that stops the
+ * animation from starting — a throttled background tab, a paint the compositor
+ * skipped — left the whole panel blank with the text still in the DOM. Without
+ * the fill, an animation that never runs simply shows the element.
+ */
+.cur .lp-run { animation: lp-in .32s ease; }
+
+.cur .lp-run-who {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: .02em;
+  color: var(--cur-muted);
+}
+
+.cur .lp-run-ask {
+  margin-top: 6px;
+  font-size: 16px;
+  font-weight: 500;
+  letter-spacing: -0.012em;
+  line-height: 1.35;
+  color: var(--cur-ink);
+}
+
+/* ── The log ──────────────────────────────────────────── */
+
+.cur .lp-run-log {
+  margin-top: 16px;
+  display: grid;
+  gap: 8px;
+  list-style: none;
+}
+
+.cur .lp-step {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: start;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: var(--cur-surface);
+  box-shadow: inset 0 0 0 1px var(--cur-hairline), var(--cur-shadow-card);
+  animation: lp-in .28s ease;
+}
+
+/* A refused step is the one row on this panel somebody must not skim past. */
+.cur .lp-step[data-tone='denied'] {
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--cur-error) 34%, transparent);
+}
+
+.cur .lp-step[data-tone='held'] {
+  box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--cur-accent) 34%, transparent);
+}
+
+.cur .lp-step-mark {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  /* The tool's own colour, the same tint the composer puts behind a mention of
+     it. One vocabulary in two places. */
+  background: color-mix(in oklab, var(--lp-tint, var(--cur-ink)) 14%, transparent);
+}
+
+.cur .lp-step-text {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--cur-body);
+  min-width: 0;
+}
+
+/* The reason, under the step it belongs to. Every stop on this panel carries
+   one, because a refusal with no reason is the confusion Divo exists to end. */
+.cur .lp-step-text em {
+  display: block;
+  margin-top: 3px;
+  font-style: normal;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--cur-muted);
+}
+
+.cur .lp-step-badge {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.cur .lp-step-badge[data-tone='ran'] {
+  padding: 0;
+  width: 18px;
+  justify-content: center;
+  background: color-mix(in oklab, var(--cur-success) 18%, transparent);
+  color: var(--cur-success-ink);
+}
+
+.cur .lp-step-badge[data-tone='held'] {
+  background: color-mix(in oklab, var(--cur-accent) 18%, transparent);
+  color: var(--cur-accent-ink);
+}
+
+.cur .lp-step-badge[data-tone='denied'] {
+  background: color-mix(in oklab, var(--cur-error) 18%, transparent);
+  color: var(--cur-error-ink);
+}
+
+/* ── What it came to ──────────────────────────────────── */
+
+/* Kept out of the way until the log has finished, so the verdict never lands
+   before the work it is a verdict on. */
+.cur .lp-run-end {
+  margin-top: 16px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity .3s ease, transform .3s ease;
+}
+
+.cur .lp-run-end[data-on] { opacity: 1; transform: none; }
+
+.cur .lp-run-outcome {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--cur-ink);
+}
+
+.cur .lp-run-outcome[data-tone='held'] { color: var(--cur-accent-ink); }
+.cur .lp-run-outcome[data-tone='denied'] { color: var(--cur-error-ink); }
+
+.cur .lp-run-lesson {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--cur-hairline);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--cur-body);
+  max-width: 46ch;
+}
+
+.cur .lp-show-nav {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.cur .lp-show-dot {
+  width: 26px;
+  height: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: var(--cur-hairline-strong);
+  cursor: pointer;
+  transition: background-color .2s ease;
+}
+
+.cur .lp-show-dot[data-on] { background: var(--cur-ink); }
+.cur .lp-show-dot:hover { background: var(--cur-muted); }
+
+/*
+ * Movement only. Nothing here fades in from nothing.
+ *
+ * The first version animated opacity from 0, which makes an un-run animation
+ * indistinguishable from an empty panel — and animations do not always run. A
+ * throttled or hidden tab freezes them at their first frame, and this panel is
+ * the one thing on the modal that has to be legible at a glance. Sliding into
+ * place still reads as arriving; failing to slide reads as already arrived,
+ * which is the correct failure.
+ */
+@keyframes lp-in {
+  from { transform: translateY(6px); }
+  to { transform: none; }
+}
+
+/* Same rule for the outcome, which fades in on a class rather than a keyframe:
+   its resting state is visible and the transition only delays it. */
+
+@media (prefers-reduced-motion: reduce) {
+  .cur .lp-run,
+  .cur .lp-step { animation: none; }
+  .cur .lp-run-end { transition: none; }
+}
+
+@keyframes lp-rise {
+  from { opacity: 0; transform: translateY(8px) scale(.99); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cur .lp-modal { animation: none; }
+}
+
+.cur .lp-modal-top {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.cur .lp-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.cur .lp-dots span {
+  width: 22px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--cur-hairline-strong);
+  transition: background-color .22s ease;
+}
+
+.cur .lp-dots span[data-on] {
+  background: var(--cur-ink);
+}
+
+/*
+ * Their sentence, kept in view.
+ *
+ * The single most important element on the modal and it is not a control. It is
+ * the difference between "sign up to continue" and "we still have what you
+ * asked for".
+ */
+.cur .lp-held {
+  flex: 0 0 auto;
+  margin: 0 auto;
+  width: min(560px, 100%);
+  padding: 0 24px;
+}
+
+.cur .lp-held-tag {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 500;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--cur-muted);
+}
+
+.cur .lp-held p {
+  margin-top: 5px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--cur-primary);
+  background: var(--cur-canvas-soft);
+  border-radius: 0 8px 8px 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--cur-body);
+  /* Long asks are common and a modal that grows with one is a modal that
+     jumps. Three lines, then it stops. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/*
+ * Centred when it fits, scrolled from the top when it does not.
+ *
+ * `safe center` rather than `center`, and the difference is a real bug: the
+ * role card is the tallest of the four, and plain centring on an overflowing
+ * flex column pushes the first line off the top edge where no amount of
+ * scrolling reaches it. The heading disappeared under the held prompt and the
+ * second choice was cut off at the bottom, both at once.
+ */
+.cur .lp-card {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  justify-content: safe center;
+  margin: 0 auto;
+  width: min(560px, 100%);
+  padding: 24px;
+}
+
+.cur .lp-card h2 {
+  font-size: 21px;
+  font-weight: 500;
+  letter-spacing: -0.018em;
+  color: var(--cur-ink);
+}
+
+.cur .lp-sub {
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--cur-muted);
+}
+
+.cur .lp-sub + .lp-sub {
+  margin-top: 10px;
+}
+
+.cur .lp-lbl {
+  display: block;
+  margin-top: 18px;
+  margin-bottom: 6px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--cur-body);
+}
+
+.cur .lp-input {
+  width: 100%;
+  height: 40px;
+  padding: 0 12px;
+  font-size: 13.5px;
+  color: var(--cur-ink);
+  background: var(--cur-canvas);
+  border: 1px solid var(--cur-hairline-strong);
+  border-radius: var(--cur-r-cta);
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.cur .lp-card h2 + .lp-sub + .lp-input,
+.cur .lp-sub + .lp-input {
+  margin-top: 18px;
+}
+
+.cur .lp-input::placeholder { color: var(--cur-muted); }
+
+.cur .lp-input:focus {
+  border-color: var(--cur-ink);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--cur-ink) 10%, transparent);
+}
+
+/* ── The role fork ────────────────────────────────────── */
+
+.cur .lp-choices {
+  margin-top: 18px;
+  display: grid;
+  gap: 10px;
+}
+
+.cur .lp-choice {
+  display: block;
+  text-align: left;
+  padding: 14px 16px;
+  border: 1px solid var(--cur-hairline-strong);
+  border-radius: var(--cur-r-card);
+  background: var(--cur-canvas);
+  cursor: pointer;
+  transition: border-color .15s ease, background-color .15s ease;
+}
+
+.cur .lp-choice:hover { border-color: var(--cur-hairline-hover); }
+
+.cur .lp-choice[data-on] {
+  border-color: var(--cur-ink);
+  background: var(--cur-canvas-soft);
+}
+
+.cur .lp-choice-t {
+  display: block;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--cur-ink);
+}
+
+.cur .lp-choice-b {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--cur-muted);
+}
+
+.cur .lp-stop-ic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 14px;
+  border-radius: 9px;
+  background: var(--cur-canvas-soft);
+  color: var(--cur-muted);
+}
+
+/* ── What went wrong ──────────────────────────────────── */
+
+/* A note is guidance and a failure is a refusal, so they do not look alike. */
+.cur .lp-note {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--cur-muted);
+}
+
+.cur .lp-fail {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--cur-error-ink);
+}
+
+/* ── Footer ───────────────────────────────────────────── */
+
+.cur .lp-modal-foot {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 18px 24px 24px;
+  border-top: 1px solid var(--cur-hairline);
+}
+
+.cur .lp-go {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 200px;
+  height: 38px;
+  padding: 0 18px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--cur-on-cta);
+  background: var(--cur-cta);
+  border: 0;
+  border-radius: var(--cur-r-cta);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color .15s ease, opacity .15s ease;
+}
+
+.cur .lp-go:hover:not(:disabled) { background: var(--cur-cta-hover); }
+
+.cur .lp-go:disabled {
+  opacity: .4;
+  cursor: default;
+}
+
+.cur .lp-foot-note {
+  font-size: 11.5px;
+  color: var(--cur-muted);
+}
+
+.cur .lp-foot-note a {
+  color: var(--cur-ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--cur-hairline-strong);
+}
+
+/* ── Small screens ────────────────────────────────────── */
+
+/* The real shell turns its rail into a drawer below 900px, behind a trigger
+   button. There is nothing in this rail somebody needs mid-task — six app names
+   and a sign-in card that the top bar already offers — so it goes away rather
+   than growing a control to open it. */
+@media (max-width: 900px) {
+  .cur.lp .workspace-sidebar { display: none; }
+  .cur.lp .lp-top-brand {
+    display: flex;
+    flex: 1;
+    padding: 0;
+  }
+}
+
+/* One column below this, and the reel is what goes. The questions are the only
+   half somebody cannot finish signing up without, and a run log squeezed to
+   half a phone screen proves nothing anyway. */
+@media (max-width: 1020px) {
+  .cur .lp-modal { grid-template-columns: 1fr; }
+  .cur .lp-show { display: none; }
+}
+
+@media (max-width: 720px) {
+  .cur .lp-centre h1 { font-size: 24px; }
+  .cur .lp-main { padding-bottom: 6vh; }
+  .cur .lp-modal {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    border-radius: 0;
+    border: 0;
+  }
+  .cur .lp-modal-wrap { padding: 0; }
+}

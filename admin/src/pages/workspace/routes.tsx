@@ -19,20 +19,17 @@ import type { Toast } from './ui'
 /** Screen ids used inside the screens map onto real paths here. */
 const PATHS: Record<string, string> = {
   /* Work — the app shell. */
-  home: '/me',
+  home: '/',
   chat: '/chat',
   'mail-rules': '/me/mail',
-  /* Retired. A decision is answered in the thread that asked it, and Home
-     lists what is waiting — see `answerAt` in decisions/decision.ts. */
-  approvals: '/me',
   /* Retired — the real artifacts are read from the chat panel and Home's
      "Made" band. Any caller still naming this lands on Home. */
-  artifacts: '/me',
+  artifacts: '/',
   /* Retired: no HTTP route reaches scheduled workflows, and the backend
      refuses to create one from the web channel at all. The drill-in key goes
      rather than being pointed at Home — it appends an id, so a retired one
-     would resolve to `/me/<id>` instead of falling through to the default. */
-  automations: '/me',
+     would resolve to `/<id>` instead of falling through to the default. */
+  automations: '/',
   'team-home': '/team',
   'co-home': '/home',
   'co-aiops': '/ai-ops',
@@ -43,7 +40,7 @@ const PATHS: Record<string, string> = {
   connections: '/settings/connections',
   'connect-flow': '/settings/connections/lark-flow',
   /* Retired screens. The keys stay so any caller still naming one lands on
-     Connected apps rather than falling through to the `/me` default, which is
+     Connected apps rather than falling through to the `/` default, which is
      how a button once quietly took a manager to their own home page. */
   access: '/settings/connections',
   skills: '/settings/connections',
@@ -52,11 +49,17 @@ const PATHS: Record<string, string> = {
   settings: '/settings/profile',
   'team-people': '/settings/team/people',
   /* TeamHome's "Manage" button passes `people`, not `team-people`. There has
-     never been an entry for it, so `resolvePath` fell through to its `/me`
+     never been an entry for it, so `resolvePath` fell through to its `/`
      default and the button quietly took a manager to their own home page. */
   people: '/settings/team/people',
   'team-roles': '/settings/team/roles',
-  'team-approvals': '/settings/team/approvals',
+  /* Points at the new home directly rather than at the redirect, so a
+     caller does not pay a second navigation to land in the same place. */
+  'team-approvals': '/settings/approvals',
+  /* One page for both keys. A decision raised in a thread is answered in that
+     thread; this is the page that says what will stop and ask, which is the
+     only thing "approvals" can usefully mean as a destination. */
+  approvals: '/settings/approvals',
   'team-usage': '/settings/team/usage',
   'co-people': '/settings/company/people',
   'co-departments': '/settings/company/departments',
@@ -97,9 +100,9 @@ const LIST_FALLBACK: Record<string, string> = {
  */
 export function resolvePath(screen: string): string {
   const [key, id] = screen.split(':')
-  if (!key) return '/me'
+  if (!key) return '/'
   const base = PATHS[key]
-  if (!base) return '/me'
+  if (!base) return '/'
   if (!id) return LIST_FALLBACK[key] ?? base
   return `${base}/${id}`
 }

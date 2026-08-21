@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createBeginGoogleAuthorization } from '../../src/application/connections/begin-google-authorization';
+import { createGoogleConnectionRequestAdapter } from '../../src/application/connections/connection-request/google.adapter';
+import { ConnectionRequestService } from '../../src/application/connections/connection-request/connection-request.service';
 import { RunOriginStore, type RunOrigin } from '../../src/application/connections/run-origin.store';
 import type { CachePort } from '../../src/shared/cache';
 import type { RunContext } from '../../src/domain/orchestration/run-context';
@@ -37,17 +39,21 @@ function silentLogger() {
 
 const ORIGIN: RunOrigin = {
   version: 1,
+  channel: 'lark',
   companyId: 'co-1',
   userId: 'user-1',
-  larkOpenId: 'ou_user',
-  larkTenantKey: 'tenant-1',
-  chatId: 'oc_chat',
-  chatType: 'group',
-  originalMessageId: 'om_request',
-  rootMessageId: 'om_root',
-  replyInThread: true,
-  groupReplyMode: 'threaded',
   originalRequest: 'Forward every invoice to finance@example.com',
+  conversationKey: 'oc_chat',
+  lark: {
+    larkOpenId: 'ou_user',
+    larkTenantKey: 'tenant-1',
+    chatId: 'oc_chat',
+    chatType: 'group',
+    originalMessageId: 'om_request',
+    rootMessageId: 'om_root',
+    replyInThread: true,
+    groupReplyMode: 'threaded',
+  },
 };
 
 function runContext(overrides: Partial<RunContext> = {}): RunContext {
@@ -111,7 +117,8 @@ describe('createBeginGoogleAuthorization', () => {
       runId: 'run-1',
       companyId: 'co-1',
       userId: 'user-1',
-    }))?.googleAuthorization, {
+    }))?.pendingAuthorization, {
+      provider: 'google_workspace',
       intentId: 'intent-1',
       authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=abc',
     });
@@ -196,7 +203,7 @@ describe('createBeginGoogleAuthorization', () => {
     const cache = memoryCache();
     const store = cache.set.bind(cache);
     cache.set = async (key, value, ttlSeconds) => (
-      (value as any)?.googleAuthorization
+      (value as any)?.pendingAuthorization
         ? err(wrapInfra('redis', 'set', new Error('down')))
         : store(key, value, ttlSeconds)
     );
@@ -223,7 +230,7 @@ describe('createBeginGoogleAuthorization', () => {
     const cache = memoryCache();
     const store = cache.set.bind(cache);
     cache.set = async (key, value, ttlSeconds) => (
-      (value as any)?.googleAuthorization
+      (value as any)?.pendingAuthorization
         ? err(wrapInfra('redis', 'set', new Error('down')))
         : store(key, value, ttlSeconds)
     );
@@ -271,5 +278,93 @@ describe('createBeginGoogleAuthorization', () => {
     assert.deepEqual(result, { status: 'unavailable' });
     assert.ok(h.logger.lines.some((line: any) =>
       line.event === 'google.authorization.run_origin_missing'));
+  });
+
+  it('routes a Google ScopeGap through the shared asker and maps an unreachable Lark surface', async () => {
+    const h = harness({ deliver: undefined });
+    const asker = new ConnectionRequestService(new Map([
+      ['google_workspace', createGoogleConnectionRequestAdapter({
+        runOrigins: h.runOrigins,
+        authorization: {
+          issue: async () => ({
+            outcome: 'issued' as const,
+            intentId: 'intent-1',
+            authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=abc',
+          }),
+        } as any,
+        deliverConnectCard: () => undefined,
+        logger: h.logger,
+      })],
+    ]));
+
+    assert.equal(
+      asker.classify({
+        provider: 'google_workspace',
+        toolId: 'googleGmail',
+        error: new Error('HttpError 403: Request had insufficient authentication scopes.'),
+      })?.reason,
+      'insufficient_scope',
+    );
+
+    const result = await asker.request({
+      gap: {
+        provider: 'google_workspace',
+        toolId: 'googleGmail',
+        missingScopeGroups: [],
+        reason: 'not_connected',
+      },
+      runContext: runContext(),
+    });
+
+    assert.deepEqual(result, { status: 'unreachable' });
+  });
+
+  it('returns a named unreachable outcome for an unsupported provider', async () => {
+    const asker = new ConnectionRequestService(new Map());
+    const result = await asker.request({
+      gap: {
+        provider: 'shopify',
+        toolId: 'shopify',
+        missingScopeGroups: [],
+        reason: 'not_connected',
+      },
+      runContext: runContext(),
+    });
+    assert.deepEqual(result, { status: 'unreachable' });
+  });
+
+  it('keeps every requested tool id on one Google authorization intent', async () => {
+    const h = harness();
+    await h.runOrigins.remember('run-1', ORIGIN);
+    const issuedWith: any[] = [];
+    const adapter = createGoogleConnectionRequestAdapter({
+      runOrigins: h.runOrigins,
+      authorization: {
+        issue: async (input: any) => {
+          issuedWith.push(input);
+          return {
+            outcome: 'issued' as const,
+            intentId: 'intent-1',
+            authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=abc',
+          };
+        },
+      } as any,
+      deliverConnectCard: () => undefined,
+      logger: h.logger,
+    });
+
+    const result = await adapter.request({
+      gap: {
+        provider: 'google_workspace',
+        toolId: 'googleDrive',
+        toolIds: ['googleDrive', 'googleSheets'],
+        missingScopeGroups: [],
+        reason: 'insufficient_scope',
+      },
+      runContext: runContext({ runtimeRunId: 'run-1' }),
+    });
+
+    assert.deepEqual(result, { status: 'sent', intentId: 'intent-1' });
+    assert.deepEqual(issuedWith[0].requestedToolIds, ['googleDrive', 'googleSheets']);
   });
 });

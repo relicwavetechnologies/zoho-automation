@@ -34,13 +34,13 @@ function captureCatalogue() {
 }
 
 describe("complete Pi-native Divo tool catalogue", () => {
-	it("registers all 38 canonical business tools without bootstrap or RBAC input", () => {
+	it("registers all 40 canonical business tools without bootstrap or RBAC input", () => {
 		const { tools, generated, semrush } = captureCatalogue();
-		assert.equal(GENERATED_NATIVE_TOOL_SPECS.length, 37);
-		assert.equal(generated.registered.length, 37);
-		assert.equal(tools.length, 38);
+		assert.equal(GENERATED_NATIVE_TOOL_SPECS.length, 39);
+		assert.equal(generated.registered.length, 39);
+		assert.equal(tools.length, 40);
 		assert.equal(semrush, DIVO_SEMRUSH_TOOL_NAME);
-		assert.equal(new Set(tools.map(tool => tool.name)).size, 38);
+		assert.equal(new Set(tools.map(tool => tool.name)).size, 40);
 	});
 
 	it("compiles every committed model-facing JSON Schema with Pi's validator", () => {
@@ -57,7 +57,7 @@ describe("complete Pi-native Divo tool catalogue", () => {
 		for (const tool of tools) {
 			await tool.execute(`call-${tool.name}`, { marker: tool.name }, undefined, undefined, {});
 		}
-		assert.equal(calls.length, 38);
+		assert.equal(calls.length, 40);
 		assert.deepEqual(
 			calls.map(call => call.toolId).sort(),
 			[...GENERATED_NATIVE_TOOL_SPECS.map(spec => spec.toolId), "semrush"].sort(),

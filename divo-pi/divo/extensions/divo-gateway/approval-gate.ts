@@ -7,6 +7,15 @@ import type {
 import { readDivoRunCorrelation, type DivoRunCorrelationV1 } from "./run-correlation.ts";
 
 export const DIVO_APPROVAL_PROTOCOL_TITLE = "divo_approval_v1";
+/**
+ * The wire title for "tell me when the member has connected this account".
+ *
+ * Separate from the approval title on purpose. An approval asks permission for
+ * something Divo is about to do and is answered by a judgement. This asks
+ * whether something out in the world has happened yet, and is answered by the
+ * world. The controller keeps them apart by this string.
+ */
+export const DIVO_CONNECT_PROTOCOL_TITLE = "divo_connect_v1";
 type JsonRecord = Record<string, unknown>;
 
 export interface ApprovalPresentationV1 {
@@ -232,6 +241,68 @@ export async function approvePreparedDivoIntent(
 	});
 	if (blocked) throw new Error(blocked.reason);
 	return intentId;
+}
+
+export interface ConnectionAskV1 {
+	version: 1;
+	askId: string;
+	provider: string;
+	expiresAt?: string;
+	presentation: unknown;
+}
+
+export interface ConnectionAskOutcome {
+	readonly askId: string;
+	readonly granted: boolean;
+}
+
+/**
+ * Stop here until the member has connected the account, or until waiting stops
+ * being worth it.
+ *
+ * This is the whole point of the connect flow: the run does not end and get
+ * rebuilt later, it stands still. `ctx.ui.confirm` blocks the turn, and the
+ * controller holds the question open rather than answering it from a policy,
+ * so the answer can come from the OAuth callback minutes from now.
+ *
+ * A false answer is not an error. The member may have closed the window, or the
+ * ask may have expired, and both are things the model should say plainly rather
+ * than retry.
+ */
+export async function awaitConnectionAsk(
+	value: unknown,
+	ctx: ApprovalContext,
+): Promise<ConnectionAskOutcome> {
+	const data = asRecord(value);
+	const askId = nonEmptyString(data?.askId);
+	const provider = nonEmptyString(data?.provider);
+	if (!data || !askId || !provider) {
+		throw new Error(
+			"The backend did not return a complete connection ask; nothing was sent to the member.",
+		);
+	}
+
+	const ask: ConnectionAskV1 = {
+		version: 1,
+		askId,
+		provider,
+		...(nonEmptyString(data.expiresAt) ? { expiresAt: nonEmptyString(data.expiresAt) } : {}),
+		presentation: data.presentation ?? null,
+	};
+
+	try {
+		const granted = await ctx.ui.confirm(
+			DIVO_CONNECT_PROTOCOL_TITLE,
+			JSON.stringify(ask),
+			ctx.signal ? { signal: ctx.signal } : undefined,
+		);
+		return { askId, granted };
+	} catch {
+		// A failed wait is a wait that produced no connection. Reported as such
+		// rather than as a transport fault, because the member's next move is
+		// the same either way.
+		return { askId, granted: false };
+	}
 }
 
 export async function handleApprovalToolCall(

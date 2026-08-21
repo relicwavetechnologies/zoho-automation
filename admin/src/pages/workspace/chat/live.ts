@@ -302,6 +302,15 @@ export type ThreadRun = {
   error: string | null
 }
 
+/**
+ * How often an idle thread asks whether a run has begun without it.
+ *
+ * Six seconds because the thing being waited for is a person coming back from
+ * an OAuth consent screen, where a few seconds of nothing reads as broken. It
+ * costs one request per interval and only while a thread is open, idle, and
+ * visible.
+ */
+
 export function useThreadRun(input: {
   threadId: string
   token: string | null
@@ -354,6 +363,9 @@ export function useThreadRun(input: {
      is a second reader of one stream. */
   const currentToken = useRef(input.token)
   currentToken.current = input.token
+  /* The newest turn this thread has been shown, by sequence. The idle poll
+     compares the server against it to notice turns that arrived from somewhere
+     other than this browser. */
 
   /**
    * Consume a run's events, however it was reached.

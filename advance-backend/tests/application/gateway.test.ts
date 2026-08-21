@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { GatewayDispatcher } from '../../src/application/gateway/gateway-dispatcher.ts';
 import { ToolExecutor } from '../../src/application/gateway/tool-executor.ts';
 import { BusinessActionService } from '../../src/application/approval/business-action.service.ts';
+import { DecisionService } from '../../src/application/decision/decision.service.ts';
 import { ToolRegistry } from '../../src/application/tools/tool-registry.ts';
 import type { Tool } from '../../src/application/tools/tool.contract.ts';
 import { createWebSearchTool } from '../../src/application/tools/families/web-search.tool.ts';
@@ -133,8 +134,15 @@ function makeSkillCatalog(skills: CatalogSkill[]): SkillCatalogService {
 function makeBusinessActions(
   toolExecutor: ToolExecutor,
 ): BusinessActionService {
+  const approvals = new InMemoryBusinessActionApprovals();
+  const decisions = new DecisionService({
+    approvals: approvals.asRepository(),
+    resumer: { resume: async () => {} } as never,
+    logger: noopLogger,
+  });
   return new BusinessActionService({
-    approvals: new InMemoryBusinessActionApprovals().asRepository(),
+    approvals: approvals.asRepository(),
+    decisions,
     toolExecutor,
     logger: noopLogger,
   });

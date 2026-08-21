@@ -15,7 +15,7 @@
  * decorative.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Check, Code2, Copy, Eye, FileText, PanelRight, X } from 'lucide-react'
+import { Check, Code2, Copy, ExternalLink, Eye, FileText, LoaderCircle, PanelRight, X } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import {
   activeTab, closeTab, focusTab, setOpen, setWidth, useArtifacts,
@@ -24,6 +24,12 @@ import {
 import { formatFor } from './formats'
 import { DocumentSkeleton } from '../chat/loading.view'
 import { loadArtifactBody } from './open'
+import { publishArtifact } from './data'
+import {
+  initialArtifactPublishState,
+  reduceArtifactPublishState,
+  type ArtifactPublishState,
+} from './publish'
 
 /**
  * Below this the split stops being a split — two columns of 300px are two
@@ -103,7 +109,14 @@ export function ArtifactWorkspace({ children }: { children: React.ReactNode }) {
             aria-orientation="vertical"
             aria-label="Resize document panel"
             onPointerDown={onDrag}
-            className="w-px shrink-0 cursor-col-resize bg-line transition-colors hover:bg-ink-3"
+            /*
+              The line is one pixel and the grab zone is not. A separator drawn
+              at its own hit size is either a fat rule or an unhittable one, so
+              the pseudo-element reaches six pixels either side while the rule
+              itself stays hairline and the flex row keeps its measurements.
+              `touch-none` stops a trackpad drag being read as a scroll.
+            */
+            className="relative w-px shrink-0 cursor-col-resize touch-none bg-line transition-colors hover:bg-ink-3 after:absolute after:inset-y-0 after:-left-1.5 after:-right-1.5 after:content-['']"
           />
           <div
             className="min-h-0 min-w-0 shrink-0"
@@ -213,11 +226,20 @@ function ArtifactSurface({ tab, token }: { tab: ArtifactTab; token: string | nul
   const readable = format !== undefined
   const [source, setSource] = useState(!readable)
   const [copied, setCopied] = useState(false)
+  const [publishedCopied, setPublishedCopied] = useState(false)
+  const [publishState, setPublishState] = useState<ArtifactPublishState>(() => (
+    tab.publishedUrl ? { kind: 'published', url: tab.publishedUrl } : initialArtifactPublishState
+  ))
 
   // A revision is a different document in the same tab. Reading its source and
   // then having it replaced would leave the reader looking at the old text under
   // a new version number, so the view resets with the body.
   useEffect(() => { setSource(!readable) }, [tab.version, readable])
+  useEffect(() => {
+    setPublishState(tab.publishedUrl
+      ? { kind: 'published', url: tab.publishedUrl }
+      : initialArtifactPublishState)
+  }, [tab.artifactId, tab.publishedUrl, tab.version])
 
   /* A restored tab has no body until somebody looks at it. Fetching every one on
      thread open would cost a round trip per document for documents nobody
@@ -235,6 +257,29 @@ function ArtifactSurface({ tab, token }: { tab: ArtifactTab; token: string | nul
       await navigator.clipboard.writeText(tab.body)
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1600)
+    } catch { /* denied clipboard permission; the button simply does nothing */ }
+  }
+
+  const publish = async () => {
+    if (!token || publishState.kind === 'publishing') return
+    setPublishState(reduceArtifactPublishState(publishState, { type: 'start' }))
+    try {
+      const result = await publishArtifact(tab.artifactId, token)
+      setPublishState(reduceArtifactPublishState(publishState, { type: 'success', url: result.url }))
+    } catch (error) {
+      setPublishState(reduceArtifactPublishState(publishState, {
+        type: 'failure',
+        message: error instanceof Error ? error.message : 'Could not publish document',
+      }))
+    }
+  }
+
+  const copyPublishedLink = async () => {
+    if (publishState.kind !== 'published') return
+    try {
+      await navigator.clipboard.writeText(publishState.url)
+      setPublishedCopied(true)
+      window.setTimeout(() => setPublishedCopied(false), 1600)
     } catch { /* denied clipboard permission; the button simply does nothing */ }
   }
 
@@ -261,8 +306,49 @@ function ArtifactSurface({ tab, token }: { tab: ArtifactTab; token: string | nul
           >
             {copied ? <Check size={13} /> : <Copy size={13} />}
           </button>
+          {publishState.kind === 'published' ? (
+            <div className="flex items-center gap-0.5 border-l border-line pl-1">
+              <a
+                href={publishState.url}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Open published document"
+                title="Open published document"
+                className="rounded-control p-1.5 text-ink-3 hover:bg-fill hover:text-ink"
+              >
+                <ExternalLink size={13} />
+              </a>
+              <button
+                type="button"
+                onClick={() => void copyPublishedLink()}
+                aria-label={publishedCopied ? 'Copied' : 'Copy published link'}
+                className="rounded-control p-1.5 text-ink-3 hover:bg-fill hover:text-ink"
+              >
+                {publishedCopied ? <Check size={13} /> : <Copy size={13} />}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void publish()}
+              disabled={!token || publishState.kind === 'publishing'}
+              aria-label={publishState.kind === 'publishing' ? 'Publishing document' : 'Publish document'}
+              className="flex items-center gap-1 rounded-control px-2 py-1.5 text-[11px] text-ink-3 hover:bg-fill hover:text-ink disabled:opacity-40"
+            >
+              {publishState.kind === 'publishing'
+                ? <LoaderCircle size={13} className="animate-spin" />
+                : <ExternalLink size={13} />}
+              <span>{publishState.kind === 'publishing' ? 'Publishing…' : 'Publish'}</span>
+            </button>
+          )}
         </div>
       </div>
+
+      {publishState.kind === 'failed' && (
+        <p role="alert" className="border-b border-line px-3 py-1.5 text-[11px] text-ink-3">
+          {publishState.message}
+        </p>
+      )}
 
       {/*
         A frame scrolls its own document. Wrapping one in a scrolling container
@@ -288,7 +374,7 @@ function ArtifactSurface({ tab, token }: { tab: ArtifactTab; token: string | nul
             </pre>
           </>
         ) : (
-          format.render(tab.body)
+          format.render(tab.body, { artifactId: tab.artifactId, token, version: tab.version })
         )}
       </div>
     </div>

@@ -2,16 +2,14 @@
  * A decision, as a Lark card.
  *
  * One builder and one callback kind, `decision_answer`, for every question
- * asked through the decision module. It is meant to replace four of each —
- * `approval_decision` from the manager gate, `knowledge_review_publish` from
- * the review flow, `workbook_conversion_confirm` from the offer, and
- * `set_group_mode` — four vocabularies arriving at one webhook, dispatched by
- * an if-chain that every new feature extended.
+ * asked through the decision module. It is meant to replace the old pattern of
+ * one callback family per workflow — manager approvals, knowledge review,
+ * workbook conversion, and group mode — all arriving at one webhook, dispatched
+ * by an if-chain that every new feature extended.
  *
- * None of those has been migrated yet. Nothing calls `DecisionService.ask`, so
- * no card built here has been sent in production and the four older branches
- * are all still in `lark.webhook.routes.ts` below this one's. What is here is
- * proven by its tests and is waiting for its first caller.
+ * Manager tool approvals and automation plans now call `DecisionService.ask`
+ * through this builder. The remaining older feature branches are still in
+ * `lark.webhook.routes.ts` below this one and will migrate separately.
  *
  * The interesting part is the degradation. A card is a row of buttons: it can
  * carry a single choice and cannot carry a text field or a multi-select that

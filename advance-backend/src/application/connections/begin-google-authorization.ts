@@ -1,8 +1,25 @@
 import type { Logger } from '../../shared/logger';
 import type { RunContext } from '../../domain/orchestration/run-context';
-import type { BeginGoogleWorkspaceAuthorization } from '../tools/families/google-workspace-mcp.tool';
+import type { ConnectAskOutcome } from './connection-request/connection-request.service';
 import type { GoogleConnectionAuthorizationService } from './google-connection-authorization.service';
 import type { RunOriginStore } from './run-origin.store';
+import type { ScopeGap } from '../../domain/connections/scope-gap';
+import {
+  WEB_CONNECTION_AUTHORIZATION_CHAT_TYPE,
+} from './connection-authorization-intent';
+import type { WebConnectionAskCourier } from './connection-request/web.courier';
+
+export interface BeginGoogleAuthorizationInput {
+  readonly toolId?: string;
+  readonly toolIds?: readonly string[];
+  readonly gap?: ScopeGap;
+  readonly reason: string;
+  readonly runContext: RunContext;
+}
+
+export type BeginGoogleAuthorization = (
+  input: BeginGoogleAuthorizationInput,
+) => Promise<ConnectAskOutcome | { readonly status: 'unavailable' }>;
 
 export interface DeliverGoogleConnectCard {
   (input: {
@@ -15,8 +32,9 @@ export interface DeliverGoogleConnectCard {
 }
 
 export interface BeginGoogleAuthorizationDeps {
-  readonly runOrigins: Pick<RunOriginStore, 'recall' | 'attachGoogleAuthorization'>;
+  readonly runOrigins: Pick<RunOriginStore, 'recall' | 'attachPendingAuthorization'>;
   readonly authorization: Pick<GoogleConnectionAuthorizationService, 'issue'>;
+  readonly webCourier?: () => Pick<WebConnectionAskCourier, 'deliver'> | undefined;
   /**
    * Resolved per call, not captured: the Lark adapter that delivers the card is
    * built long after this closure, and a card that cannot be delivered is the
@@ -37,9 +55,22 @@ export interface BeginGoogleAuthorizationDeps {
  * sent. It is a standalone unit now because the only test that covered it stubbed
  * this exact seam, which is why nobody noticed.
  */
+/**
+ * The deadline the waiting run should hold to, when there is one.
+ *
+ * Absent means "no stated deadline", not a fault. The run that waits already
+ * caps itself, so a missing expiry costs a few extra minutes of patience, while
+ * reading `.toISOString()` off nothing costs the member their Connect ask.
+ */
+function askDeadline(issued: { expiresAt?: Date }): { expiresAt?: string } {
+  return issued.expiresAt instanceof Date && !Number.isNaN(issued.expiresAt.getTime())
+    ? { expiresAt: issued.expiresAt.toISOString() }
+    : {};
+}
+
 export function createBeginGoogleAuthorization(
   deps: BeginGoogleAuthorizationDeps,
-): BeginGoogleWorkspaceAuthorization {
+): BeginGoogleAuthorization {
   return async (input) => {
     const companyId = String(input.runContext.companyId);
     const userId = String(input.runContext.userId);
@@ -50,6 +81,16 @@ export function createBeginGoogleAuthorization(
     if (!origin) {
       return { status: 'unavailable' as const };
     }
+    const requestedToolIds = input.gap?.toolIds?.length
+      ? [...input.gap.toolIds]
+      : input.toolIds?.length
+      ? [...input.toolIds]
+      : input.toolId
+        ? [input.toolId]
+        : [];
+    if (requestedToolIds.length === 0) {
+      throw new Error('Google authorization requires at least one Divo tool id.');
+    }
 
     const issued = await deps.authorization.issue({
       companyId,
@@ -57,32 +98,57 @@ export function createBeginGoogleAuthorization(
       ...(input.runContext.departmentId
         ? { departmentId: String(input.runContext.departmentId) }
         : {}),
-      larkOpenId: origin.larkOpenId,
-      larkTenantKey: origin.larkTenantKey,
-      chatId: origin.chatId,
-      chatType: origin.chatType,
-      originalMessageId: origin.originalMessageId,
-      ...(origin.rootMessageId ? { rootMessageId: origin.rootMessageId } : {}),
-      replyInThread: origin.replyInThread,
-      ...(origin.groupReplyMode ? { groupReplyMode: origin.groupReplyMode } : {}),
+      ...(origin.channel === 'lark'
+        ? {
+            larkOpenId: origin.lark.larkOpenId,
+            larkTenantKey: origin.lark.larkTenantKey,
+            chatId: origin.lark.chatId,
+            chatType: origin.lark.chatType,
+            originalMessageId: origin.lark.originalMessageId,
+            ...(origin.lark.rootMessageId ? { rootMessageId: origin.lark.rootMessageId } : {}),
+            replyInThread: origin.lark.replyInThread,
+            ...(origin.lark.groupReplyMode ? { groupReplyMode: origin.lark.groupReplyMode } : {}),
+          }
+        : {
+            // The intent table's original address fields are Lark-shaped. A web
+            // target uses the same durable row with an explicit chatType marker;
+            // continuation resolves the member and delivery from the web origin.
+            larkOpenId: origin.web.userExternalId,
+            larkTenantKey: WEB_CONNECTION_AUTHORIZATION_CHAT_TYPE,
+            chatId: origin.web.threadId,
+            chatType: WEB_CONNECTION_AUTHORIZATION_CHAT_TYPE,
+            originalMessageId: String(input.runContext.runtimeRunId),
+            replyInThread: false,
+          }),
       originalRequest: origin.originalRequest,
-      requestedToolIds: [input.toolId],
+      requestedToolIds,
     });
     // A Connect action for this exact request is already pending. Issuing a
     // second URL would give the member two continuations for the same ask.
     if (issued.outcome === 'already_pending') {
-      return { status: 'already_pending' as const, intentId: issued.intentId };
+      return { status: 'already_pending' as const, intentId: issued.intentId, ...askDeadline(issued) };
     }
 
     try {
-      const attached = await deps.runOrigins.attachGoogleAuthorization({
+      const attached = await deps.runOrigins.attachPendingAuthorization({
         runId: String(input.runContext.runtimeRunId),
         companyId,
         userId,
+        provider: 'google_workspace',
         intentId: issued.intentId,
         authorizeUrl: issued.authorizeUrl,
       });
-      if (attached) return { status: 'sent' as const, intentId: issued.intentId };
+      if (attached && origin.channel === 'lark') {
+        return { status: 'sent' as const, intentId: issued.intentId, ...askDeadline(issued) };
+      }
+      if (!attached && origin.channel === 'web') {
+        deps.logger.error('google.authorization.web_origin_store_failed', {
+          intentId: issued.intentId,
+          companyId,
+          userId,
+        });
+        return { status: 'unavailable' as const };
+      }
     } catch (error) {
       deps.logger.error('google.authorization.final_action_store_failed', {
         intentId: issued.intentId,
@@ -90,6 +156,36 @@ export function createBeginGoogleAuthorization(
         userId,
         error: error instanceof Error ? error.message : String(error),
       });
+      if (origin.channel === 'web') return { status: 'unavailable' as const };
+    }
+
+    if (origin.channel === 'web') {
+      const courier = deps.webCourier?.();
+      if (!courier) {
+        deps.logger.error('google.authorization.web_decision_unavailable', {
+          intentId: issued.intentId,
+          companyId,
+          userId,
+        });
+        return { status: 'unavailable' as const };
+      }
+      const delivered = await courier.deliver({
+        gap: input.gap ?? {
+          provider: 'google_workspace',
+          toolId: requestedToolIds[0]!,
+          toolIds: requestedToolIds,
+          missingScopeGroups: [],
+          reason: input.reason.toLowerCase().includes('missing')
+            ? 'insufficient_scope'
+            : 'not_connected',
+        },
+        runContext: input.runContext,
+        intentId: issued.intentId,
+        authorizeUrl: issued.authorizeUrl,
+      });
+      return delivered.status === 'unreachable'
+        ? { status: 'unavailable' as const }
+        : delivered;
     }
 
     const deliver = deps.deliverConnectCard();
@@ -98,9 +194,9 @@ export function createBeginGoogleAuthorization(
     const delivered = await deliver({
       url: issued.authorizeUrl,
       reason: input.reason,
-      chatId: origin.chatId,
-      replyToMessageId: origin.originalMessageId,
-      replyInThread: origin.replyInThread,
+      chatId: origin.lark.chatId,
+      replyToMessageId: origin.lark.originalMessageId,
+      replyInThread: origin.lark.replyInThread,
     });
     if (!delivered) {
       deps.logger.error('google.authorization.card_delivery_failed', {
@@ -110,7 +206,7 @@ export function createBeginGoogleAuthorization(
       });
       return { status: 'unavailable' as const };
     }
-    return { status: 'sent' as const, intentId: issued.intentId };
+    return { status: 'sent' as const, intentId: issued.intentId, ...askDeadline(issued) };
   };
 }
 

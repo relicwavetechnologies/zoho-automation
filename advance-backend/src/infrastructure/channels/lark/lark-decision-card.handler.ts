@@ -17,6 +17,7 @@ import {
 } from './lark-decision-card';
 
 export interface LarkDecisionCardActor {
+  readonly tenantKey: string;
   readonly openId: string;
   readonly userId: string;
   readonly companyId: string;
@@ -48,7 +49,12 @@ export class LarkDecisionCardHandler {
     if (!isDecisionCardAction(action)) return { responseBody: { ok: true } };
 
     const outcome = await this.decisions.answerOne(
-      { userId: actor.userId, companyId: actor.companyId, ...(actor.displayName ? { displayName: actor.displayName } : {}) },
+      {
+        userId: actor.userId,
+        companyId: actor.companyId,
+        ...(actor.displayName ? { displayName: actor.displayName } : {}),
+        lark: { openId: actor.openId, tenantKey: actor.tenantKey },
+      },
       action.decisionId,
       action.questionId,
       action.value,
@@ -88,12 +94,19 @@ export class LarkDecisionCardHandler {
       byName: actor.displayName ?? actor.openId,
       at: new Date(),
     });
+    const toastContent = outcome.followUp === 'retry'
+      ? (outcome.verdict === 'approved'
+          ? 'Approved — the requester can now retry the exact action.'
+          : 'Rejected — the exact action will remain blocked.')
+      : (outcome.verdict === 'approved'
+          ? 'Done — Divo is carrying on.'
+          : 'Stopped. Nothing was changed.');
     this.log.info('decision_card.settled', { decisionId: action.decisionId, verdict: outcome.verdict });
     return {
       responseBody: {
         toast: {
           type: 'success',
-          content: outcome.verdict === 'approved' ? 'Done — Divo is carrying on.' : 'Stopped. Nothing was changed.',
+          content: toastContent,
         },
         card: { type: 'raw', data: resolved },
       },

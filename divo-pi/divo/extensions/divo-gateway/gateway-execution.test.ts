@@ -30,6 +30,76 @@ describe("gateway execution protocol", () => {
 		assert.equal(requests.length, 1);
 	});
 
+	it("waits for a connect ask, then resumes carrying the run's own provenance", async () => {
+		/* The execution context is the reason this test exists. Under a Pi runtime
+		   lease the backend refuses any call whose execution does not match the
+		   signed run and thread, so a resume that drops it is rejected after the
+		   member has already connected — the worst possible moment to lose a run.
+		   `runtimeChannel` is set here on purpose: backend channels skip requester
+		   confirmation, and the connect wait must happen anyway. */
+		const requests: GatewayRequestBody[] = [];
+		const execution = { version: 1 as const, threadId: "thread-1", runId: "run-1", actionId: "call-1" };
+		let asked: unknown;
+
+		const result = await executeGatewayRequest(
+			config,
+			{ op: "tools.invoke", payload: { toolId: "connectApp", args: {} }, execution },
+			"call-connect",
+			{ ...ctx, runtimeChannel: "web" },
+			{
+				callGateway: async (_config, request) => {
+					requests.push(request);
+					return request.op === "connections.resume"
+						? { body: { ok: true, status: "success", data: { connected: true } }, httpStatus: 200 }
+						: {
+							body: {
+								ok: false,
+								status: "connection_pending",
+								data: { askId: "intent-1", provider: "google_workspace" },
+							},
+							httpStatus: 200,
+						};
+				},
+				awaitConnection: async value => {
+					asked = value;
+					return { askId: "intent-1", granted: true };
+				},
+			},
+		);
+
+		assert.deepEqual(asked, { askId: "intent-1", provider: "google_workspace" });
+		assert.equal(requests.length, 2);
+		assert.equal(requests[1]?.op, "connections.resume");
+		assert.deepEqual(requests[1]?.payload, { askId: "intent-1" });
+		assert.deepEqual(requests[1]?.execution, execution);
+		assert.equal(result.body.status, "success");
+	});
+
+	it("hands back the pending status when the member never connected", async () => {
+		/* Not an exception. The formatter turns this into "not connected", which
+		   is something the model can say plainly rather than retry. */
+		const requests: GatewayRequestBody[] = [];
+		const result = await executeGatewayRequest(
+			config,
+			{ op: "tools.invoke", payload: { toolId: "connectApp", args: {} } },
+			"call-connect-declined",
+			{ ...ctx, runtimeChannel: "web" },
+			{
+				callGateway: async (_config, request) => {
+					requests.push(request);
+					return {
+						body: { ok: false, status: "connection_pending", data: { askId: "intent-2" } },
+						httpStatus: 200,
+					};
+				},
+				awaitConnection: async () => ({ askId: "intent-2", granted: false }),
+			},
+		);
+
+		assert.equal(requests.length, 1, "a declined wait must not resume");
+		assert.equal(result.body.status, "connection_pending");
+	});
+
 	it("forwards the broker-owned local-file result mode", async () => {
 		let resultMode: unknown;
 		await executeGatewayRequest(

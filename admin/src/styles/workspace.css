@@ -1318,11 +1318,11 @@
 }
 .cur .ws-comp-plate > * { position: relative; }
 .cur .ws-comp-tray { overflow: hidden; }
-/* The tray's own row. It sets no gap and no spacing of any kind: what goes in
-   it is one composed thing — today a deck of app marks that overlap on purpose
-   — so the spacing belongs to whatever is put here, not to the strip holding
-   it. Scrolls rather than squashes, because a flex row's default is to shrink
-   its children and a squashed logo is not a logo. */
+/* The tray's own row. The chips tuck together, but only into the icon padding:
+   close enough to read as one connected set, not so far that one brand's art
+   borrows pixels from its neighbour. Scrolls rather than squashes, because a
+   flex row's default is to shrink its children and a squashed logo is not a
+   logo. */
 .cur .ws-comp-tray-in {
   display: flex; align-items: center; padding: 9px 8px 4px;
   overflow-x: auto; scrollbar-width: none;
@@ -1331,7 +1331,7 @@
 .cur .ws-comp-tray-in > * { flex: none; }
 
 /* ── The app deck ─────────────────────────────────────
-   A stack of marks, overlapping by roughly a third.
+   Compact app marks, overlapped only by the safe padding around each logo.
 
    It was a row of pills reading Gmail · Drive · Sheets · Calendar, which spanned
    the whole box and read as a toolbar — eight things of equal weight competing
@@ -1341,19 +1341,16 @@
    as the button's own label, which is also what a screen reader announces.
 
    Nothing here runs anything. A press types the app's name into the box, which
-   is why these are marks the way a stack of avatars is, not a row of buttons. */
+   is why these are marks rather than a row of labelled buttons. */
 .cur .ws-app-chip {
   width: 30px; height: 30px; flex: none; display: grid; place-items: center;
   border-radius: 999px; cursor: pointer; position: relative;
   border: 1px solid var(--cur-hairline); background: var(--cur-surface);
   transition: transform .12s ease, border-color .12s ease;
 }
-/* A third of a mark. Enough that the set reads as one object rather than eight,
-   and not so much that any single logo becomes a sliver. */
-.cur .ws-app-chip + .ws-app-chip { margin-left: -10px; }
-/* Out of the deck rather than merely tinted. Without the z-index the mark you
-   are pointing at stays half-buried under its neighbour, which reads as a
-   control that did not notice you. */
+.cur .ws-app-chip + .ws-app-chip { margin-left: -6px; }
+/* Lift on hover/focus so the focused chip reads as active without colliding
+   with the neighbouring marks. */
 .cur .ws-app-chip:hover,
 .cur .ws-app-chip:focus-visible {
   z-index: 2; transform: translateY(-2px); border-color: var(--cur-hairline-strong);

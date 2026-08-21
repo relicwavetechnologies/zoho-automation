@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { ApprovalGateService } from '../../src/application/approval/approval-gate.service.ts';
 import { asCompanyId, asDepartmentId, asUserId } from '../../src/shared/ids.ts';
 import { asCompanyRoleSlug } from '../../src/domain/permissions/company-role.ts';
+import { DecisionService } from '../../src/application/decision/decision.service.ts';
 import { makeDeniedPerm } from '../tools/tool-test.helpers.ts';
 import type { KnowledgeMutationRecord } from '../../src/domain/knowledge/knowledge-mutation.ts';
 
@@ -135,6 +136,15 @@ describe('central knowledge approval gate', () => {
           },
         },
       },
+      undefined,
+      new DecisionService({
+        approvals: {
+          createOrReuseActive: async () => ({ ok: true as const, value: { approval, created: true, replacedExpired: false } }),
+          markFailed: async () => ({ ok: true as const, value: undefined }),
+        } as never,
+        resumer: { resume: async () => {} } as never,
+        logger: logger() as never,
+      }),
     );
 
     const result = await gate.check({

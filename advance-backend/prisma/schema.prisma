@@ -368,6 +368,21 @@ model UserDepartmentPreference {
   userId             String   @unique
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   activeDepartmentId String?
+  /// "Ask me before Divo does this", chosen by the person themselves, per action.
+  ///
+  /// A preference rather than a policy: the department's approval gate decides
+  /// what a *manager* must see, and this decides what *you* want to see of your
+  /// own work. The two are independent — somebody can want confirming on
+  /// everything in a team that gates nothing, and the approver of a heavily
+  /// gated team still sees none of it without this, because their own yes is
+  /// implied by the gate.
+  ///
+  /// Shaped `{ all: boolean, actions: [{ toolId, actions[] }] }`, the same shape
+  /// as the department policy beside it. It replaced a single boolean, which
+  /// only ever offered a choice between no interruptions and all of them.
+  /// `domain/approval/personal-gate.ts` owns reading and writing it; nothing
+  /// else should touch the raw column.
+  personalApprovalsJson Json?
   updatedAt          DateTime @updatedAt
   createdAt          DateTime @default(now())
 
@@ -3135,6 +3150,10 @@ model Artifact {
   version        Int      @default(1)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+  publishedUrl   String?
+  publishedAt   DateTime?
+  publishGateHash String?
+  publishDeploymentId String?
 
   @@unique([companyId, userId, artifactId])
   @@index([companyId, userId, updatedAt])

@@ -48,6 +48,9 @@ export interface Artifact {
   readonly threadId?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
+  readonly publishedUrl?: string;
+  readonly publishedAt?: string;
+  readonly publishDeploymentId?: string;
 }
 
 /**
@@ -68,6 +71,14 @@ export interface ArtifactWrite {
   readonly body: string;
   readonly threadId?: string;
   readonly executionRunId?: string;
+}
+
+/** Publication state written after a deployment succeeds. The gate hash remains write-only and is null for unprotected D8 links. */
+export interface ArtifactPublicationWrite {
+  readonly publishedUrl: string;
+  readonly publishedAt: string;
+  readonly publishGateHash: string | null;
+  readonly publishDeploymentId: string;
 }
 
 export function isArtifactMime(value: unknown): value is ArtifactMime {

@@ -172,6 +172,10 @@ export const EnvSchema = z.object({
   // retrieval that will never be possible.
 
   // ── Web / context search ──────────────────────────────────────────────────
+  // ── Artifact publishing ───────────────────────────────────────────────────
+  VERCEL_TOKEN:        z.string().optional(),
+  VERCEL_PROJECT_NAME: z.string().optional(),
+  VERCEL_TEAM_ID:      z.string().optional(),
   SERPER_API_KEY:                z.string().optional(),
   // Encrypts company-owned Serper credentials. Falls back to the existing OAuth key.
   SERPER_CONNECTION_ENCRYPTION_KEY: z.string().optional(),

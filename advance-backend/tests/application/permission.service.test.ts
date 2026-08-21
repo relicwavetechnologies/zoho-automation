@@ -197,7 +197,9 @@ describe('PermissionService', () => {
         'googleTasks',
         'googleContacts',
         'googleChat',
+        'artifactPublish',
         'webSearch',
+        'connectApp',
         'knowledge',
         'mailAutomations',
       ]);
@@ -588,8 +590,8 @@ describe('PermissionService', () => {
       assert.equal(taskActions.length, 0, 'larkTask must be denied when no dept-role grant exists');
       assert.deepEqual(
         [...result.value.allowedToolIds].map(String),
-        ['knowledge'],
-        'only the explicitly company-inherited knowledge authority remains available',
+        ['artifactPublish', 'connectApp', 'knowledge'],
+        'only the explicitly company-inherited authorities remain available',
       );
     });
 

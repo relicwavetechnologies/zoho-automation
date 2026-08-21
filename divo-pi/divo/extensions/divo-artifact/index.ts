@@ -23,6 +23,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { readRuntimeRunContext } from "../../runtime-run-context.mjs";
 import { resolveMemberCredentials } from "../../runtime-member-credentials.mjs";
+import { readDepartmentPersonaContext } from "../divo-gateway/department-persona.ts";
 
 export const DIVO_ARTIFACT_TOOL_NAME = "divo_artifact";
 export const DIVO_ARTIFACT_DETAILS_VERSION = 2 as const;
@@ -195,21 +196,6 @@ export function buildArtifactDetails(input: {
 }
 
 /**
- * Surfaces with somewhere to show a document.
- *
- * The runtime already withholds this whole extension from any other surface, and
- * this is the same rule asked again at the moment of the call. That is not
- * belt-and-braces: the two questions have different granularity. The manifest is
- * read when Pi is *launched*, and one warm process serves many turns — so a
- * container started for one surface would otherwise carry its tool list into
- * every later turn, whatever surface those arrived on.
- *
- * A run context is rewritten per prompt, so reading the channel here is the only
- * check that is true of *this* turn.
- */
-const SURFACES_WITH_A_PANEL = new Set(["web"]);
-
-/**
  * The store's address, or nothing.
  *
  * Read from the runtime's held credentials rather than from `process.env`. The
@@ -288,9 +274,9 @@ export default function divoArtifactExtension(pi: ExtensionAPI) {
 		name: DIVO_ARTIFACT_TOOL_NAME,
 		label: "Divo artifact",
 		description:
-			"Badge an existing workspace file so the desktop sidebar opens and renders it. Create or revise the file first with write/edit; do not pass file contents here.",
+			"File an existing workspace document so the current surface can render or link it. Create or revise the file first with write/edit; do not pass file contents here.",
 		promptSnippet:
-			"Create/revise durable deliverables with write/edit (prefer artifacts/<name>.html), then call divo_artifact with the file path to open it in the sidebar. Read the divo-artifact skill's DESIGN.md before writing the first HTML document. Prefer edit for small revisions. Keep ordinary short answers in chat.",
+			"Create/revise durable deliverables with write/edit (prefer artifacts/<name>.html), then call divo_artifact with the file path to file it for the current surface. Read the divo-artifact skill's DESIGN.md before writing the first HTML document. Prefer edit for small revisions. Keep ordinary short answers in chat.",
 		promptGuidelines: [
 			"Durable multi-section deliverables (research briefs, reports, plans, comparisons, file-like docs) are normal workspace files — create them with write, revise with edit, inspect with read.",
 			"Prefer paths under artifacts/ (for example artifacts/q4-flavour-review.html). DIVO_ARTIFACTS_DIR points at that folder when configured.",
@@ -298,7 +284,7 @@ export default function divoArtifactExtension(pi: ExtensionAPI) {
 			"Before writing the first .html document in a conversation, read DESIGN.md in the divo-artifact skill. It carries the colour tokens, type scale and component recipes that make a document look like Divo.",
 			"An .html document is body markup only: no doctype, html, head or body tags. The panel supplies the wrapper, the design tokens and the chart function at render time. Put the document's own CSS in one <style> block and any interaction in a <script> at the end.",
 			"In .html documents never write a hex colour — every colour is var(--ink), var(--surface), var(--line), var(--green) and the rest, so the document follows the reader's theme. Never hand-write chart SVG; emit <div class=\"chart\" data-chart='{...}'> and let the panel draw it.",
-			"After creating or meaningfully editing such a file, call divo_artifact with its path (and optional title/summaryForChat) so the sidebar opens it. This tool does not write content.",
+			"After creating or meaningfully editing such a file, call divo_artifact with its path (and optional title/summaryForChat) so the current surface can receive it. This tool does not write content.",
 			"Prefer edit for small revisions; do not rewrite the whole file with write or by pasting the full body into divo_artifact.",
 			"Write real links so the sidebar can render them: [label](https://…) in markdown, <a href=\"https://…\"> in HTML, and a Sources section with matching numbered URLs when using [1]/[2] citations.",
 			"Stay in chat for short Q&A, status, confirmations, a single next step, mid-task tool chatter, or ordinary web lookups that only need a few bullets.",
@@ -358,9 +344,11 @@ export default function divoArtifactExtension(pi: ExtensionAPI) {
 			if (!store) return failure("this run has no document store to file it in", "no store");
 
 			const context = await readRuntimeRunContext().catch(() => undefined);
-			if (!SURFACES_WITH_A_PANEL.has(String(context?.channel))) {
+			const surface = await readDepartmentPersonaContext();
+			const artifactMode = surface?.surface?.artifacts;
+			if (!artifactMode || artifactMode === "none") {
 				return failure(
-					"this surface has nowhere to show a document — put the result in the reply instead",
+					"this surface cannot receive a document — put the result in the reply instead",
 					"no surface",
 				);
 			}
@@ -384,9 +372,11 @@ export default function divoArtifactExtension(pi: ExtensionAPI) {
 				storedVersion: stored.version,
 			});
 
-			const pointer =
-				summaryForChat ??
-				`Opened "${title}" beside the conversation, from ${basename(resolved.path)}. Keep the chat reply to a short pointer; do not paste the full body.`;
+			const pointer = `${summaryForChat ?? (
+				artifactMode === "inline"
+					? `Opened "${title}" beside the conversation, from ${basename(resolved.path)}. Keep the chat reply to a short pointer; do not paste the full body.`
+					: `Filed "${title}" for link delivery, from ${basename(resolved.path)}. Keep the chat reply to a short pointer; do not paste the full body.`
+			)} Artifact id: ${artifactId}.`;
 
 			return {
 				content: [{ type: "text" as const, text: pointer }],

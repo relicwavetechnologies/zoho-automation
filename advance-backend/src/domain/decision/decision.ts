@@ -20,6 +20,9 @@
  * can carry), and everything with I/O in it lives in the module above. The rules
  * are the part that can be wrong quietly.
  */
+import type { DecisionSubject } from './decision-subject';
+
+export type { DecisionSubject, DecisionPreview, DecisionBrand } from './decision-subject';
 
 /**
  * One thing a person can pick.
@@ -36,6 +39,8 @@ export interface DecisionOption {
   readonly tone?: 'default' | 'primary' | 'danger';
   /** Choosing this ends the decision here, with this verdict. */
   readonly settles?: DecisionVerdict;
+  /** An option carrying this opens a URL and settles nothing. */
+  readonly href?: string;
 }
 
 /**
@@ -125,6 +130,14 @@ export interface Decision {
   readonly detail?: string;
   /** Who or what is asking. A requester's name, a department, "Divo". */
   readonly source: string;
+  /**
+   * What the decision acts on, when it acts on a third-party product.
+   *
+   * Optional because plenty of asks have no product behind them — a choice of
+   * department, a name for a thread. Those draw as the plain card, which is the
+   * correct look for them rather than a gap where a logo should be.
+   */
+  readonly subject?: DecisionSubject;
   readonly questions: readonly DecisionQuestion[];
   readonly requestedAt: string;
   readonly expiresAt: string | null;

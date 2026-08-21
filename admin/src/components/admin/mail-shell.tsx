@@ -23,8 +23,9 @@
 import { useEffect, useRef } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
-  Diamond, House, Inbox, LogOut, Mail, Moon, Settings, Sun, type LucideIcon,
+  House, Inbox, LogOut, Mail, Moon, Settings, Sun, type LucideIcon,
 } from 'lucide-react'
+import { DivoMark } from '@/components/admin/divo-mark'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
 import { RoleProvider } from '@/cursor/role-context'
 import { useTheme } from '@/lib/use-theme'
@@ -75,7 +76,7 @@ export function MailShell() {
           <div className="ws-scope">
             <button type="button" className="ws-scope-btn" data-static="true">
               <span className="ws-scope-ic" data-tone="brand">
-                <Diamond size={12} fill="currentColor" strokeWidth={0} />
+                <DivoMark size={14} />
               </span>
               <span className="ws-scope-txt">
                 <b>Divo Mail</b>

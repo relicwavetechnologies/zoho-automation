@@ -73,7 +73,7 @@ describe('Google Workspace system skills', () => {
       // One describe, on whichever path the work is running. Doing it through
       // the registered tool and again inside the script pays for it twice.
       assert.match(skill.markdown, /Never describe through the registered tool and then repeat the describe inside the script/);
-      assert.match(skill.markdown, /google_workspace_authorization_pending/);
+      assert.match(skill.markdown, /connection_ask_sent/);
       assert.doesNotMatch(skill.markdown, /Divo (injects|derives) user_google_email/);
     }
     const sheets = GOOGLE_WORKSPACE_SYSTEM_SKILLS.find((skill) => skill.slug === 'google-sheets')!;

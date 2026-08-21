@@ -20,6 +20,7 @@ import type {
   LarkPiRuntimeService,
 } from './lark-pi-runtime.service';
 import { LarkPiRuntimeError } from './lark-pi-runtime.service';
+import type { RunOrigin, RunOriginStore } from '../connections/run-origin.store';
 import { createLiveAnswerPublisher } from './live-answer-publisher';
 import type { RuntimeModelSelection } from '../observability/pricing';
 import type { ConversationVideoService } from '../conversation-video/conversation-video.service';
@@ -140,6 +141,8 @@ export interface WebRunServiceDeps {
   readonly identity?: Pick<ChannelIdentityRepoPort, 'resolveByUserId'>;
   /** Rejects a stale preference before it can be minted into a runtime lease. */
   readonly departments?: Pick<DepartmentRepoPort, 'getMembership'>;
+  /** Keeps enough of a web turn to replay it after deferred OAuth. */
+  readonly runOrigins?: Pick<RunOriginStore, 'remember'>;
   /**
    * Where a run that produced no answer is written down.
    *
@@ -359,7 +362,38 @@ export class WebRunService {
       threadId: input.threadId,
       text: askText,
       userExternalId: input.userExternalId,
+      timestamp: new Date(startedAtMs).toISOString(),
     });
+    if (this.deps.runOrigins) {
+      const origin: RunOrigin = {
+        version: 1,
+        channel: 'web',
+        companyId: String(runContext.companyId),
+        userId: String(runContext.userId),
+        originalRequest: askText,
+        conversationKey: input.threadId,
+        web: {
+          threadId: input.threadId,
+          userExternalId: input.userExternalId,
+          sessionId: input.sessionId,
+          timestamp: incoming.timestamp,
+        },
+      };
+      try {
+        const remembered = await this.deps.runOrigins.remember(runId, origin);
+        if (!remembered) {
+          log.warn('web_run.origin_not_retained', {
+            runId,
+            reason: 'request_too_long',
+          });
+        }
+      } catch (error) {
+        log.warn('web_run.origin_write_failed', {
+          runId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     let answerStarted = false;
 
     const settled = this.deps.piRuntime.run({
@@ -615,11 +649,12 @@ function runRecord(
  * have meant a second code path through the runtime, and a second code path is
  * how two surfaces stop being one agent.
  */
-function webIncomingMessage(input: {
+export function webIncomingMessage(input: {
   readonly runId: string;
   readonly threadId: string;
   readonly text: string;
   readonly userExternalId: string;
+  readonly timestamp: string;
 }): IncomingMessage {
   return {
     channel: 'web',
@@ -629,7 +664,7 @@ function webIncomingMessage(input: {
     userExternalId: input.userExternalId,
     text: input.text,
     attachments: [],
-    timestamp: new Date().toISOString(),
+    timestamp: input.timestamp,
     traceId: asCorrelationId(input.runId),
     // Addressing Divo directly is the only way to reach it here, so the turn is
     // always meant for it and never mentions anybody else.

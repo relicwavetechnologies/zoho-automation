@@ -6,6 +6,8 @@ import {
   parseAutomationPlanPayload,
 } from '../../src/application/gateway/automation-plan.service.ts';
 import { AutomationPlanExecutor } from '../../src/application/gateway/automation-plan.executor.ts';
+import { DecisionService } from '../../src/application/decision/decision.service.ts';
+import { LarkDecisionCourier } from '../../src/infrastructure/channels/lark/lark-decision.courier.ts';
 import { gatewaySuccess } from '../../src/application/gateway/gateway.types.ts';
 import { err, ok } from '../../src/shared/result.ts';
 import { ChannelError } from '../../src/shared/errors.ts';
@@ -47,6 +49,14 @@ function createHarness(
   const created: any[] = [];
   const cards: any[] = [];
   let storedApproval: any;
+  let approvalRepo: any;
+  const larkAdapter = {
+    sendDirectCard: async (openId: string, card: string) => {
+      cards.push({ openId, card });
+      if (sendCard) return sendCard(openId, card);
+      return ok({ messageId: 'message-1' });
+    },
+  };
   const service = new AutomationPlanService({
     toolExecutor: {
       preflight: async ({ toolId, args }: { toolId: string; args: Record<string, unknown> }) =>
@@ -57,7 +67,7 @@ function createHarness(
     } as any,
     skillCatalog: { authorizesTool } as any,
     skillAccessEnforcement,
-    approvalRepo: {
+    approvalRepo: approvalRepo = {
       createOrReuseActive: async (input: any) => {
         if (
           storedApproval?.status === 'dispatching'
@@ -94,13 +104,25 @@ function createHarness(
         storedApproval = {
           id: `7c2b4c47-6b8d-4ee4-ae1c-${String(created.length).padStart(12, '0')}`,
           status: 'dispatching',
+          companyId: input.companyId,
+          conversationId: 'conversation-1',
+          runId: 'run-1',
+          toolId: input.toolId,
+          actionGroup: input.actionGroup,
+          summary: input.summary,
           kind: input.kind,
           payloadJson: input.payloadJson,
           metadataJson: input.metadataJson,
+          channel: input.channel,
           requestedBy: input.requestedBy,
           expiresAt: input.expiresAt,
           executionResultJson: null,
+          responseJson: null,
           idempotencyKey: input.idempotencyKey,
+          decisionMessageId: null,
+          resolutionReason: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
         };
         return ok({
           created: true,
@@ -137,13 +159,12 @@ function createHarness(
         ? approvalRequirement(input)
         : approvalRequirement,
     } as any,
-    larkAdapter: {
-      sendDirectCard: async (openId: string, card: string) => {
-        cards.push({ openId, card });
-        if (sendCard) return sendCard(openId, card);
-        return ok({ messageId: 'message-1' });
-      },
-    } as any,
+    decisions: new DecisionService({
+      approvals: approvalRepo,
+      resumer: { resume: async () => {} } as never,
+      logger: noopLogger,
+      courier: new LarkDecisionCourier(larkAdapter, noopLogger),
+    }),
     logger: noopLogger,
   });
   return {
@@ -218,7 +239,7 @@ describe('AutomationPlanService', () => {
     });
     assert.deepEqual(created[0].payloadJson.invocations[0].approvalSignature, { kind: 'allowed' });
     assert.match(created[0].payloadJson.invocations[0].callSummary, /googleSheets/);
-    assert.match(cards[0].card, /Approve exact batch/);
+    assert.match(cards[0].card, /decision_answer/);
     assert.match(cards[0].card, /googleSheets/);
   });
 
