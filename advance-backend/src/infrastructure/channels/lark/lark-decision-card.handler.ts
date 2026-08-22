@@ -94,7 +94,9 @@ export class LarkDecisionCardHandler {
       byName: actor.displayName ?? actor.openId,
       at: new Date(),
     });
-    const toastContent = outcome.followUp === 'retry'
+    const toastContent = outcome.followUp === 'waiting'
+      ? 'Reviewed. The exact skill change is waiting for its authority decision.'
+      : outcome.followUp === 'retry'
       ? (outcome.verdict === 'approved'
           ? 'Approved — the requester can now retry the exact action.'
           : 'Rejected — the exact action will remain blocked.')

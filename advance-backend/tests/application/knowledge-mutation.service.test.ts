@@ -51,7 +51,7 @@ class FakeKnowledgeStore implements KnowledgeMutationStore {
 
   async createProposal(input: CreateKnowledgeProposalInput): Promise<KnowledgeMutationRecord> {
     const replay = [...this.mutations.values()].find(row => row.idempotencyKey === input.idempotencyKey);
-    if (replay) return replay;
+    if (replay && !['rejected', 'cancelled', 'failed', 'superseded'].includes(replay.status)) return replay;
     const id = `mutation-${this.nextId++}`;
     const row: KnowledgeMutationRecord = {
       id,
@@ -77,7 +77,7 @@ class FakeKnowledgeStore implements KnowledgeMutationStore {
       runtimeApprovalId: null,
       appliedVersionId: null,
       status: input.initialStatus,
-      idempotencyKey: input.idempotencyKey,
+      idempotencyKey: replay ? `${input.idempotencyKey}:${id}` : input.idempotencyKey,
       createdAt: NOW,
       updatedAt: NOW,
     };
@@ -95,6 +95,35 @@ class FakeKnowledgeStore implements KnowledgeMutationStore {
       requesterReviewedAt: NOW,
       status: input.nextStatus,
     });
+  }
+
+  async settleRequesterDecision(input: Parameters<KnowledgeMutationStore['settleRequesterDecision']>[0]) {
+    const mutation = input.decision === 'approved'
+      ? this.replace(input.mutationId, { requesterReviewedAt: NOW, status: input.nextStatus })
+      : this.replace(input.mutationId, { status: 'cancelled' });
+    return {
+      mutation,
+      decisionStatus: input.decision === 'approved' ? 'executing' as const : 'rejected' as const,
+      replayed: false,
+    };
+  }
+
+  async settleAuthorityDecision(input: Parameters<KnowledgeMutationStore['settleAuthorityDecision']>[0]) {
+    const nextStatus = input.status === 'completed' ? 'applied'
+      : input.status === 'rejected' ? 'rejected'
+        : 'failed';
+    const mutation = this.replace(input.mutationId, { status: nextStatus });
+    return {
+      mutation,
+      parentStatus: input.status === 'completed' ? 'consumed' as const
+        : input.status === 'rejected' ? 'rejected' as const
+          : 'failed' as const,
+      replayed: false,
+    };
+  }
+
+  async expireRequesterDecisions() {
+    return 0;
   }
 
   async attachRuntimeApproval(input: Parameters<KnowledgeMutationStore['attachRuntimeApproval']>[0]) {

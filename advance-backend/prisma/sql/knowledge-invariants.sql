@@ -3,6 +3,20 @@
 -- has been synchronized. Existing invalid data deliberately fails deployment.
 DO $$
 BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'KnowledgeMutation_scope_policy'
+      AND pg_get_constraintdef(oid) NOT LIKE '%kind%skill%'
+  ) THEN
+    ALTER TABLE "KnowledgeMutation" DROP CONSTRAINT "KnowledgeMutation_scope_policy";
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'KnowledgePolicy_scope_policy'
+      AND pg_get_constraintdef(oid) NOT LIKE '%kind%skill%'
+  ) THEN
+    ALTER TABLE "KnowledgePolicy" DROP CONSTRAINT "KnowledgePolicy_scope_policy";
+  END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'KnowledgeResource_target_shape') THEN
     ALTER TABLE "KnowledgeResource" ADD CONSTRAINT "KnowledgeResource_target_shape" CHECK (
       ("scope" = 'personal' AND "ownerUserId" IS NOT NULL AND "departmentId" IS NULL AND "targetKey" = 'personal:' || "ownerUserId") OR
@@ -29,7 +43,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'KnowledgeMutation_scope_policy') THEN
     ALTER TABLE "KnowledgeMutation" ADD CONSTRAINT "KnowledgeMutation_scope_policy" CHECK (
       ("scope" = 'personal' AND "requiredAuthority" = 'none') OR
-      ("scope" = 'department' AND "requiredAuthority" = 'department_manager' AND "requesterReviewRequired" AND "distinctApprover") OR
+      ("scope" = 'department' AND "requiredAuthority" = 'department_manager' AND "requesterReviewRequired" AND ("distinctApprover" OR "kind" = 'skill')) OR
       ("scope" = 'company' AND "requiredAuthority" = 'company_admin' AND "requesterReviewRequired" AND "distinctApprover")
     );
   END IF;
@@ -48,7 +62,7 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'KnowledgePolicy_scope_policy') THEN
     ALTER TABLE "KnowledgePolicy" ADD CONSTRAINT "KnowledgePolicy_scope_policy" CHECK (
       ("scope" = 'personal' AND "requiredAuthority" = 'none') OR
-      ("scope" = 'department' AND "requiredAuthority" = 'department_manager' AND "requesterReviewRequired" AND "distinctApprover") OR
+      ("scope" = 'department' AND "requiredAuthority" = 'department_manager' AND "requesterReviewRequired" AND ("distinctApprover" OR "kind" = 'skill')) OR
       ("scope" = 'company' AND "requiredAuthority" = 'company_admin' AND "requesterReviewRequired" AND "distinctApprover")
     );
   END IF;

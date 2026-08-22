@@ -70,8 +70,8 @@ export interface ToolExecutorInput {
   readonly expectedAction?: ToolActionGroup;
   /** A human decision should finish this exact stored action without an agent retry. */
   readonly resumeOnApproval?: boolean;
-  /** Requester-confirmed business action that owns any subsequent governance decision. */
-  readonly parentBusinessActionId?: string;
+  /** Requester-owned Decision that owns any subsequent governance decision. */
+  readonly parentDecisionId?: string;
   /** Request-local timing only; it carries no identity or policy authority. */
   readonly latencyTrace?: RunLatencyTrace;
 }
@@ -132,6 +132,9 @@ export interface RuntimeToolExecutionInput {
   readonly latencyTrace?: RunLatencyTrace;
   readonly expectedAction?: ToolActionGroup;
   readonly abortSignal?: AbortSignal;
+  /** A human authority decision should finish this exact requester-owned Decision. */
+  readonly resumeOnApproval?: boolean;
+  readonly parentDecisionId?: string;
 }
 
 export interface RuntimeToolExecutionOutcome {
@@ -233,7 +236,7 @@ interface GovernedInvocationInput {
     /** Explicit approval provenance; derived provider provenance is not authoritative here. */
     readonly execution?: GatewayExecutionContext;
     readonly resumeOnApproval?: boolean;
-    readonly parentBusinessActionId?: string;
+    readonly parentDecisionId?: string;
   };
   readonly correlationId: string;
   readonly resultAudience?: ToolExecutionContext['resultAudience'];
@@ -315,8 +318,8 @@ export class ToolExecutor {
           chatId: gatewayApprovalChatId(member, input.execution),
           ...(input.execution ? { execution: input.execution } : {}),
           ...(input.resumeOnApproval ? { resumeOnApproval: true } : {}),
-          ...(input.parentBusinessActionId
-            ? { parentBusinessActionId: input.parentBusinessActionId }
+          ...(input.parentDecisionId
+            ? { parentDecisionId: input.parentDecisionId }
             : {}),
         },
       } : {}),
@@ -398,6 +401,8 @@ export class ToolExecutor {
           gate: input.approvalGate,
           chatId: input.chatId,
           ...(input.execution ? { execution: input.execution } : {}),
+          ...(input.resumeOnApproval ? { resumeOnApproval: true } : {}),
+          ...(input.parentDecisionId ? { parentDecisionId: input.parentDecisionId } : {}),
         },
       } : {}),
       // A tool ID is global and would make a per-run provider budget shared by
@@ -457,8 +462,8 @@ export class ToolExecutor {
         chatId: input.approval.chatId,
         argsSummary: buildArgsSummary(tool.id, action, args),
         ...(input.approval.resumeOnApproval ? { resumeOnApproval: true } : {}),
-        ...(input.approval.parentBusinessActionId
-          ? { parentBusinessActionId: input.approval.parentBusinessActionId }
+        ...(input.approval.parentDecisionId
+          ? { parentDecisionId: input.approval.parentDecisionId }
           : {}),
         ...(input.approval.execution ? { execution: input.approval.execution } : {}),
       });

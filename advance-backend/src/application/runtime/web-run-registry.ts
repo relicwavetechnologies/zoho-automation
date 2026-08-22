@@ -156,7 +156,13 @@ export class WebRunRegistry {
     try {
       for await (const event of events) {
         let published: WebRunEvent | undefined = event;
-        if (event.type === 'final' || event.type === 'error') entry.terminal = event;
+        if (event.type === 'final' || event.type === 'error' || event.type === 'interrupted') {
+          entry.terminal = event;
+          if (event.type === 'interrupted') {
+            entry.latestAnswer = undefined;
+            entry.answerOverflowed = false;
+          }
+        }
         else if (event.type === 'timeline') entry.latestTimeline = event;
         else if (event.type === 'answer_delta') {
           if (entry.answerOverflowed) {
@@ -308,7 +314,7 @@ const SETTLED = { type: 'error', code: '__settled__', message: '' } as const sat
  * was too slow to paint. Compact only events whose newer form is equivalent.
  */
 function enqueueViewEvent(queue: WebRunEvent[], event: WebRunEvent): void {
-  if (event.type === 'final') {
+  if (event.type === 'final' || event.type === 'interrupted') {
     queue.splice(0, queue.length, event);
     return;
   }

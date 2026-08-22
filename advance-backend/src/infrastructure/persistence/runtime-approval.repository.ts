@@ -33,6 +33,8 @@ export interface RuntimeApprovalRow {
   updatedAt:           Date;
 }
 
+const LINKED_DECISION_KINDS = ['business_action', 'knowledge_skill_review'] as const;
+
 export interface CreateApprovalInput {
   /** Lark chat ID (used to upsert RuntimeConversation). */
   chatId:           string;
@@ -67,8 +69,63 @@ export interface CreateOrReuseApprovalOptions {
   readonly isCompatibleApproval?: (approval: RuntimeApprovalRow) => boolean;
 }
 
+export interface LinkedDecisionTerminalOutcome {
+  readonly parentDecisionId: string;
+  readonly approvalId: string;
+  readonly status: 'completed' | 'rejected' | 'failed';
+  readonly result: unknown;
+}
+
 export class RuntimeApprovalRepository {
   constructor(private readonly prisma: PrismaClient) {}
+
+  /**
+   * Terminal authority rows whose requester-owned skill Decision still needs
+   * closing. The authority row is the durable retry source; no cache or user
+   * command is required to recover the linked lifecycle.
+   */
+  async listPendingLinkedSkillOutcomes(limit = 100): Promise<LinkedDecisionTerminalOutcome[]> {
+    const rows = await this.prisma.$queryRaw<Array<{
+      parentDecisionId: string;
+      approvalId: string;
+      status: string;
+      result: unknown;
+      expired: boolean;
+    }>>`
+      SELECT
+        authority."metadataJson"->>'parentDecisionId' AS "parentDecisionId",
+        authority."id" AS "approvalId",
+        authority."status" AS "status",
+        authority."executionResultJson" AS "result",
+        (authority."expiresAt" <= CURRENT_TIMESTAMP) AS "expired"
+      FROM "RuntimeApproval" AS authority
+      INNER JOIN "RuntimeApproval" AS parent
+        ON parent."id" = authority."metadataJson"->>'parentDecisionId'
+      WHERE (
+          authority."status" IN ('consumed', 'rejected', 'failed')
+          OR (
+            authority."status" IN ('dispatching', 'pending')
+            AND authority."expiresAt" <= CURRENT_TIMESTAMP
+          )
+        )
+        AND parent."kind" = 'knowledge_skill_review'
+        AND parent."status" IN ('executing', 'awaiting_governance')
+      ORDER BY authority."updatedAt" ASC
+      LIMIT ${Math.max(1, Math.min(limit, 500))}
+    `;
+    return rows.flatMap(row => {
+      const status = row.status === 'consumed' ? 'completed'
+        : row.status === 'rejected' ? 'rejected'
+          : row.status === 'failed' || row.expired ? 'failed'
+            : null;
+      return status ? [{
+        parentDecisionId: row.parentDecisionId,
+        approvalId: row.approvalId,
+        status,
+        result: row.result ?? { status: row.expired ? 'approval_expired' : row.status },
+      }] : [];
+    });
+  }
 
   /**
    * Create a RuntimeApproval, transparently upserting the required
@@ -390,7 +447,7 @@ export class RuntimeApprovalRepository {
   async markAwaitingGovernance(id: string, resultJson: unknown): Promise<Result<boolean, Error>> {
     try {
       const changed = await this.prisma.runtimeApproval.updateMany({
-        where: { id, status: 'executing', kind: 'business_action' },
+        where: { id, status: 'executing', kind: { in: [...LINKED_DECISION_KINDS] } },
         data: {
           status: 'awaiting_governance',
           executionResultJson: resultJson as any,
@@ -402,11 +459,11 @@ export class RuntimeApprovalRepository {
     }
   }
 
-  /** Finish the requester-owned action after its linked manager decision runs. */
-  async completeLinkedBusinessAction(id: string, resultJson: unknown): Promise<Result<boolean, Error>> {
+  /** Finish a requester-owned Decision after its linked authority decision runs. */
+  async completeLinkedDecision(id: string, resultJson: unknown): Promise<Result<boolean, Error>> {
     try {
       const changed = await this.prisma.runtimeApproval.updateMany({
-        where: { id, status: 'awaiting_governance', kind: 'business_action' },
+        where: { id, status: 'awaiting_governance', kind: { in: [...LINKED_DECISION_KINDS] } },
         data: {
           status: 'consumed',
           executionResultJson: resultJson as any,
@@ -414,19 +471,19 @@ export class RuntimeApprovalRepository {
       });
       return ok(changed.count === 1);
     } catch (e) {
-      return err(wrapInfra('prisma', 'runtime-approval.completeLinkedBusinessAction', e));
+      return err(wrapInfra('prisma', 'runtime-approval.completeLinkedDecision', e));
     }
   }
 
   /** Reject or fail a requester-owned action whose governance decision ended it. */
-  async failLinkedBusinessAction(
+  async failLinkedDecision(
     id: string,
     status: 'rejected' | 'failed',
     resultJson: unknown,
   ): Promise<Result<boolean, Error>> {
     try {
       const changed = await this.prisma.runtimeApproval.updateMany({
-        where: { id, status: 'awaiting_governance', kind: 'business_action' },
+        where: { id, status: 'awaiting_governance', kind: { in: [...LINKED_DECISION_KINDS] } },
         data: {
           status,
           executionResultJson: resultJson as any,
@@ -434,7 +491,7 @@ export class RuntimeApprovalRepository {
       });
       return ok(changed.count === 1);
     } catch (e) {
-      return err(wrapInfra('prisma', 'runtime-approval.failLinkedBusinessAction', e));
+      return err(wrapInfra('prisma', 'runtime-approval.failLinkedDecision', e));
     }
   }
 

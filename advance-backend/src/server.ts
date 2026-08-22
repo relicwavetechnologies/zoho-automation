@@ -65,6 +65,7 @@ import { PersonaLearningWorker } from './application/persona-learning/persona-le
 import { KnowledgeLearningWorker } from './application/knowledge/knowledge-learning.worker';
 import { ManagerTeachWorker } from './application/persona-learning/manager-teach.worker';
 import { KnowledgeReviewDecisionWorker } from './application/knowledge/knowledge-review-decision.worker';
+import { KnowledgeSkillReviewWorker } from './application/knowledge/knowledge-skill-review.worker';
 import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
 import { createKnowledgeFileRoutes } from './http/desktop/knowledge-files.routes';
 import { createWebChatRoutes } from './http/desktop/web-chat.routes';
@@ -216,6 +217,12 @@ export const createServer = (c: Container): DivoServerApplication => {
     logger: c.logger,
   });
   knowledgeReviewDecisionWorker.start();
+
+  const knowledgeSkillReviewWorker = new KnowledgeSkillReviewWorker({
+    reviews: c.knowledgeSkillReviews,
+    logger: c.logger,
+  });
+  knowledgeSkillReviewWorker.start();
 
   const drainKnowledgeOutbox = () => {
     void c.knowledgeProjections.drain().catch(error => {
@@ -1074,6 +1081,7 @@ export const createServer = (c: Container): DivoServerApplication => {
           : []),
         { name: 'manager-teach-worker', close: () => managerTeachWorker.close() },
         { name: 'knowledge-review-worker', close: () => knowledgeReviewDecisionWorker.stop() },
+        { name: 'knowledge-skill-review-worker', close: () => knowledgeSkillReviewWorker.stop() },
       ]);
       await closePhase([
         { name: 'lark-ingress-queue', close: () => c.larkIngressQueue.close() },

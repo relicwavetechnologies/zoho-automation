@@ -67,6 +67,15 @@ export interface ApprovalResumerDeps {
   permissions:         PermissionService;
   /** Handles immutable multi-call batches that were approved in a Lark DM. */
   automationPlanExecutor?: AutomationPlanExecutor;
+  /** Producer-owned terminal work for a requester Decision linked to this approval. */
+  linkedDecisions?: {
+    settleLinkedOutcome(input: {
+      parentDecisionId: string;
+      approvalId: string;
+      status: 'completed' | 'rejected' | 'failed';
+      result: unknown;
+    }): Promise<boolean>;
+  };
   /**
    * Where the outcome of a web-raised approval is written down.
    *
@@ -145,7 +154,10 @@ export class ApprovalResumerService {
     const approvalOrigin = asNonEmptyString(meta['approvalOrigin']);
     const sourceChannel = asChannel(meta['sourceChannel'])
       ?? (approvalOrigin === 'cloud_pi' || approvalOrigin === 'lark' ? 'lark' : 'desktop');
-    const parentBusinessActionId = asNonEmptyString(meta['parentBusinessActionId']);
+    // The old key remains readable until every approval written before this
+    // rename has passed its TTL. New rows use the domain-neutral key.
+    const parentDecisionId = asNonEmptyString(meta['parentDecisionId'])
+      ?? asNonEmptyString(meta['parentBusinessActionId']);
     const execution = asExecutionContext(meta['execution']);
     const approvalCompanyId = asNonEmptyString(approval.companyId);
 
@@ -198,16 +210,20 @@ export class ApprovalResumerService {
     if (decision === 'rejected') {
       await this.deliverFinal(delivery, 'The requested action was not approved by the manager, so nothing was changed.');
       await this.deps.approvalRepo.persistResult(approvalId, { decision: 'rejected' });
-      if (parentBusinessActionId) {
+      if (parentDecisionId) {
         const response = { ok: false, status: 'approval_rejected', error: {
           code: 'approval_rejected',
           message: 'The manager did not approve this action, so nothing was changed.',
         } } as const;
-        await this.deps.approvalRepo.failLinkedBusinessAction(
-          parentBusinessActionId,
-          'rejected',
-          response,
-        );
+        const handled = await this.deps.linkedDecisions?.settleLinkedOutcome({
+          parentDecisionId,
+          approvalId,
+          status: 'rejected',
+          result: response,
+        }) ?? false;
+        if (!handled) {
+          await this.deps.approvalRepo.failLinkedDecision(parentDecisionId, 'rejected', response);
+        }
       }
       return;
     }
@@ -328,14 +344,14 @@ export class ApprovalResumerService {
       expectedAction: approval.actionGroup as ToolActionGroup,
       ...(execution ? { execution } : {}),
     });
-    await this.finishApprovedAction(approvalId, delivery, outcome, parentBusinessActionId);
+    await this.finishApprovedAction(approvalId, delivery, outcome, parentDecisionId);
   }
 
   private async finishApprovedAction(
     approvalId: string,
     delivery: FinalDelivery | null,
     outcome: RuntimeToolExecutionOutcome,
-    parentBusinessActionId?: string,
+    parentDecisionId?: string,
   ): Promise<void> {
     if (outcome.status === 'success') {
       const response = {
@@ -343,13 +359,23 @@ export class ApprovalResumerService {
         status: 'success',
         data: { toolId: outcome.toolId, action: outcome.action, result: outcome.result },
       } as const;
-      if (parentBusinessActionId) {
-        await this.deps.approvalRepo.completeLinkedBusinessAction(
-          parentBusinessActionId,
-          response,
-        );
+      if (parentDecisionId) {
+        const handled = await this.deps.linkedDecisions?.settleLinkedOutcome({
+          parentDecisionId,
+          approvalId,
+          status: 'completed',
+          result: response,
+        }) ?? false;
+        if (!handled) {
+          await this.deps.approvalRepo.completeLinkedDecision(parentDecisionId, response);
+        }
       }
-      const text = ['Approved action completed.', renderResult(outcome.result)].filter(Boolean).join('\n\n');
+      const text = [
+        isQueuedKnowledgeProjection(outcome)
+          ? 'The approved skill change is committed, but its runtime projection is still queued.'
+          : 'Approved action completed.',
+        renderResult(outcome.result),
+      ].filter(Boolean).join('\n\n');
       await this.deliverFinal(delivery, text);
       return;
     }
@@ -402,10 +428,11 @@ export class ApprovalResumerService {
     const persisted = await this.deps.approvalRepo.failApprovedExecution(approvalId, result);
     if (persisted.ok && persisted.value) {
       const found = await this.deps.approvalRepo.findById(approvalId);
-      const parentBusinessActionId = found.ok && found.value
-        ? asNonEmptyString(asRecord(found.value.metadataJson)['parentBusinessActionId'])
+      const parentDecisionId = found.ok && found.value
+        ? asNonEmptyString(asRecord(found.value.metadataJson)['parentDecisionId'])
+          ?? asNonEmptyString(asRecord(found.value.metadataJson)['parentBusinessActionId'])
         : undefined;
-      if (parentBusinessActionId) {
+      if (parentDecisionId) {
         const response = {
           ok: false,
           status: 'approval_execution_failed',
@@ -416,11 +443,15 @@ export class ApprovalResumerService {
               : 'The approved action could not be completed.',
           },
         } as const;
-        await this.deps.approvalRepo.failLinkedBusinessAction(
-          parentBusinessActionId,
-          'failed',
-          response,
-        );
+        const handled = await this.deps.linkedDecisions?.settleLinkedOutcome({
+          parentDecisionId,
+          approvalId,
+          status: 'failed',
+          result: response,
+        }) ?? false;
+        if (!handled) {
+          await this.deps.approvalRepo.failLinkedDecision(parentDecisionId, 'failed', response);
+        }
       }
       return true;
     }
@@ -431,6 +462,12 @@ export class ApprovalResumerService {
     return false;
   }
 
+}
+
+function isQueuedKnowledgeProjection(outcome: RuntimeToolExecutionOutcome): boolean {
+  if (outcome.toolId !== 'knowledge') return false;
+  const result = asRecord(outcome.result);
+  return result['operation'] === 'apply' && result['projection'] === 'queued';
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

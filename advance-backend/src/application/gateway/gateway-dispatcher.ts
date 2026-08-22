@@ -24,6 +24,7 @@ import type {
 } from '../knowledge/lark-knowledge-review.service';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import type { KnowledgeMutationService } from '../knowledge/knowledge-mutation.service';
+import type { KnowledgeSkillReviewService } from '../knowledge/knowledge-skill-review.service';
 import type { PersonalMemoryCommandService } from '../knowledge/personal-memory-command.service';
 import { KnowledgeMutationError } from '../knowledge/knowledge-mutation.errors';
 import type {
@@ -139,6 +140,7 @@ export interface GatewayDispatcherDeps {
   readonly managerTeachService?: ManagerTeachService;
   readonly automationPlanService?: AutomationPlanService;
   readonly larkKnowledgeReview?: Pick<LarkKnowledgeReviewService, 'openMemoryForRuntime' | 'openResourceForRuntime'>;
+  readonly knowledgeSkillReviews?: Pick<KnowledgeSkillReviewService, 'open'>;
   readonly knowledgeMutations?: KnowledgeMutationService;
   readonly personalMemoryCommands?: PersonalMemoryCommandService;
   readonly resolveGoogleSheetReference?: (input: {
@@ -1597,6 +1599,42 @@ export class GatewayDispatcher {
     if (resourceReview.scope === 'department' && !departmentId) {
       return this.permissionDenied('Select an authenticated department before reviewing department knowledge.');
     }
+    if (resourceReview.kind === 'skill') {
+      if (!execution) {
+        return gatewayFailure('bad_request', 'Skill review requires exact run execution provenance.');
+      }
+      if (!this.deps.knowledgeSkillReviews) {
+        return gatewayFailure('tool_error', 'Durable skill review is not configured.');
+      }
+      const opened = await this.deps.knowledgeSkillReviews.open({
+        member,
+        ...(departmentId ? { departmentId } : {}),
+        execution,
+        request: {
+          requestId: resourceReview.requestId,
+          action: resourceReview.action,
+          scope: resourceReview.scope,
+          logicalKey: resourceReview.logicalKey,
+          ...(resourceReview.baseVersion ? { baseVersion: resourceReview.baseVersion } : {}),
+          ...(resourceReview.content !== undefined ? { content: resourceReview.content } : {}),
+        },
+      });
+      if (!opened.ok) {
+        return gatewayFailure(
+          opened.reason === 'permission_denied' ? 'permission_denied'
+            : opened.reason === 'invalid' ? 'bad_request'
+              : 'tool_error',
+          opened.message,
+        );
+      }
+      return gatewaySuccess({
+        status: opened.state,
+        mutationId: opened.mutationId,
+        decisionId: opened.decisionId,
+        message: opened.message,
+        reused: opened.reused,
+      });
+    }
     return this.openVerifiedLarkKnowledgeReview({
       label: 'Knowledge',
       effectKind: 'knowledge_review_opened',
@@ -1606,7 +1644,7 @@ export class GatewayDispatcher {
       execution,
       open: context => this.deps.larkKnowledgeReview!.openResourceForRuntime({
         requestId: resourceReview.requestId,
-        kind: resourceReview.kind,
+        kind: 'file',
         action: resourceReview.action,
         scope: resourceReview.scope,
         logicalKey: resourceReview.logicalKey,
@@ -1615,7 +1653,7 @@ export class GatewayDispatcher {
         ...context,
       }),
       logFields: {
-        kind: resourceReview.kind,
+        kind: 'file',
         action: resourceReview.action,
         scope: resourceReview.scope,
       },

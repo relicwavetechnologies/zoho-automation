@@ -42,8 +42,8 @@ export interface ApprovalGateInput {
    * form that has since been closed.
    */
   resumeOnApproval?: boolean;
-  /** Requester-confirmed action whose lifecycle continues through this decision. */
-  parentBusinessActionId?: string;
+  /** Requester-owned Decision whose lifecycle continues through this authority decision. */
+  parentDecisionId?: string;
   /** Optional, non-authoritative runtime execution provenance for audit/match checks. */
   execution?: {
     readonly version: 1;
@@ -208,6 +208,20 @@ export class ApprovalGateService {
       return { kind: 'misconfigured', message: 'The decision module is not configured. Please try again.' };
     }
 
+    let linkedDecisionEvidence: unknown;
+    if (input.parentDecisionId) {
+      const parent = await this.approvalRepo.findById(input.parentDecisionId);
+      if (
+        parent.ok
+        && parent.value
+        && parent.value.companyId === String(runContext.companyId)
+      ) {
+        linkedDecisionEvidence = isRecord(parent.value.metadataJson)
+          ? parent.value.metadataJson['decisionEvidence']
+          : undefined;
+      }
+    }
+
     const asked = await this.decisions.ask({
       kind: 'tool_action',
       companyId: String(runContext.companyId),
@@ -249,7 +263,8 @@ export class ApprovalGateService {
         // Whether a yes finishes this or merely unblocks a retry. Read by
         // both decision surfaces; absent means the old behaviour.
         autoResume: input.resumeOnApproval === true,
-        parentBusinessActionId: input.parentBusinessActionId ?? null,
+        parentDecisionId: input.parentDecisionId ?? null,
+        ...(linkedDecisionEvidence !== undefined ? { decisionEvidence: linkedDecisionEvidence } : {}),
         execution: execution ?? null,
       },
       beforeDelivery: async approval => {
@@ -529,9 +544,10 @@ export class ApprovalGateService {
     if (input.toolId !== 'knowledge') return null;
     const parsed = knowledgeApplyArgs(input.args);
     if (!parsed) {
-      // Target discovery and proposal creation have no provider side effect and
-      // never enter the authority-approval stage.
-      return isKnowledgeNonApply(input.args)
+      // The tool owns operation-to-action classification. Reads and proposal
+      // creation have no provider side effect and never enter the authority
+      // approval stage.
+      return input.action === 'read' || isKnowledgeProposal(input.args)
         ? { kind: 'allowed' }
         : { kind: 'misconfigured', message: 'Invalid knowledge apply request.' };
     }
@@ -587,7 +603,7 @@ export class ApprovalGateService {
         mutation.departmentId,
         mutation.companyId,
         {
-          excludeUserId: mutation.requesterId,
+          ...(mutation.distinctApprover ? { excludeUserId: mutation.requesterId } : {}),
           allowCompanyAdminFallback: false,
         },
       );
@@ -595,7 +611,9 @@ export class ApprovalGateService {
         ? { kind: 'required', approver, authority: 'department_manager' }
         : {
             kind: 'misconfigured',
-            message: 'A different active department manager is required, but none is configured.',
+            message: mutation.distinctApprover
+              ? 'A different active department manager is required, but none is configured.'
+              : 'An active department manager is required, but none is configured.',
           };
     }
 
@@ -977,10 +995,10 @@ function knowledgeApplyArgs(value: unknown): KnowledgeApplyArgs | null {
   };
 }
 
-function isKnowledgeNonApply(value: unknown): boolean {
+function isKnowledgeProposal(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const operation = (value as Record<string, unknown>)['operation'];
-  return operation === 'check_targets' || operation === 'recall' || operation === 'propose';
+  return operation === 'propose';
 }
 
 function completedDecision(

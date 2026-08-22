@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { ArrowLeft, ArrowRight, Loader2, Mail, X } from 'lucide-react'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { DivoMark } from '@/components/admin/divo-mark'
 import { Showcase } from './showcase.view'
 import { api } from '@/lib/api'
 import {
@@ -100,71 +101,99 @@ export function Onboarding({ prompt, onClose, onDone }: {
       <div className="ws-scrim" onClick={busy ? undefined : onClose} />
       <div className="lp-modal-wrap">
         <div className="lp-modal" role="dialog" aria-modal="true" aria-label="Create your workspace">
-          {/* Divo working, next to the reason somebody is being asked to sign
-              up for it. Four short runs, three of which stop — because what a
-              buyer cannot tell from a happy-path demo is whether the thing will
-              quietly email a customer. Hidden on a narrow screen, where there
-              is only room for one column and the questions are the one that
-              has to be there. */}
-          <Showcase />
 
-          <div className="lp-ask">
+          {/*
+           * One rail across the top, carrying the three things that are true of
+           * every step: where you are, whose product this is, and the way out.
+           *
+           * It used to sit inside the questions column, which put the back
+           * arrow and the close button at opposite ends of one half while the
+           * other half had its own edge — and on the first step, where there is
+           * nothing to go back to, the arrow became a second X sitting a few
+           * hundred pixels from the first. Two identical close buttons is not a
+           * layout problem, it is the reader asking which one is the real one.
+           */}
           <header className="lp-modal-top">
-            <button
-              type="button"
-              className="lp-icon-btn"
-              onClick={back}
-              disabled={busy}
-              aria-label={retreat(step) ? 'Back' : 'Close'}
-            >
-              {retreat(step) ? <ArrowLeft size={15} /> : <X size={15} />}
-            </button>
-            <div className="lp-dots" aria-hidden="true">
-              {Array.from({ length: TOTAL_STEPS }, (_, i) => (
-                <span key={i} data-on={i <= stepIndex(step) ? 'true' : undefined} />
-              ))}
+            <div className="lp-modal-id">
+              {retreat(step) ? (
+                <button type="button" className="lp-icon-btn" onClick={back} disabled={busy} aria-label="Back">
+                  <ArrowLeft size={15} />
+                </button>
+              ) : null}
+              <span className="lp-modal-mark"><DivoMark size={15} /></span>
+              <b className="display">Divo</b>
             </div>
-            <button type="button" className="lp-icon-btn" onClick={onClose} disabled={busy} aria-label="Close">
-              <X size={15} />
-            </button>
+            <div className="lp-modal-id">
+              {step === 'invite' ? null : (
+                <span className="lp-step-count">Step {stepIndex(step) + 1} of {TOTAL_STEPS}</span>
+              )}
+              <button type="button" className="lp-icon-btn" onClick={onClose} disabled={busy} aria-label="Close">
+                <X size={15} />
+              </button>
+            </div>
           </header>
 
-          {/* Their sentence, held where they can see it. The one thing on this
-              modal that is not a question. */}
-          {prompt ? (
-            <div className="lp-held">
-              <span className="lp-held-tag">Waiting to run</span>
-              <p>{prompt}</p>
+          <div className="lp-modal-body">
+            {/*
+             * Questions first, on the left, where reading starts.
+             *
+             * The reel was on this side and it had the argument backwards: the
+             * thing you have to do was the thing you reached second. Now the
+             * column you act in is the one your eye lands on, and the product
+             * runs beside it as evidence rather than as an obstacle.
+             */}
+            <div className="lp-ask">
+              <div className="lp-ask-body">
+                {/* Their sentence, held where they can see it. The one thing
+                    here that is not a question. */}
+                {prompt ? (
+                  <div className="lp-held">
+                    <span className="lp-held-tag">Waiting to run</span>
+                    <p>{prompt}</p>
+                  </div>
+                ) : null}
+
+                <div className="lp-card">
+                  <Card step={step} draft={draft} set={set} onEnter={forward} />
+                  {note ? <p className="lp-note">{note}</p> : null}
+                  {failure ? <p className="lp-fail">{failure}</p> : null}
+                </div>
+              </div>
+
+              {/* Anchored to the bottom of its own column rather than floating
+                  under whichever card happens to be showing. The action is in
+                  the same place on all five steps, so it stops being something
+                  to look for. */}
+              <footer className="lp-modal-foot">
+                {step === 'invite' ? (
+                  <Link className="lp-go" to="/login">
+                    Go to sign in
+                    <ArrowRight size={14} />
+                  </Link>
+                ) : (
+                  <button type="button" className="lp-go" onClick={forward} disabled={!ready || busy}>
+                    {busy ? <Loader2 size={14} className="ws-spin" /> : null}
+                    {busy ? 'Creating your workspace' : step === 'password' ? 'Create workspace and run it' : 'Continue'}
+                    {busy ? null : <ArrowRight size={14} />}
+                  </button>
+                )}
+                <p className="lp-foot-note">
+                  {step === 'invite' ? (
+                    'Nothing has been created.'
+                  ) : (
+                    <>Already have an account? <Link to="/login">Sign in</Link></>
+                  )}
+                </p>
+              </footer>
             </div>
-          ) : null}
 
-          <div className="lp-card">
-            <Card step={step} draft={draft} set={set} onEnter={forward} />
-            {note ? <p className="lp-note">{note}</p> : null}
-            {failure ? <p className="lp-fail">{failure}</p> : null}
-          </div>
-
-          <footer className="lp-modal-foot">
-            {step === 'invite' ? (
-              <Link className="lp-go" to="/login">
-                Go to sign in
-                <ArrowRight size={14} />
-              </Link>
-            ) : (
-              <button type="button" className="lp-go" onClick={forward} disabled={!ready || busy}>
-                {busy ? <Loader2 size={14} className="ws-spin" /> : null}
-                {busy ? 'Creating your workspace' : step === 'password' ? 'Create workspace and run it' : 'Continue'}
-                {busy ? null : <ArrowRight size={14} />}
-              </button>
-            )}
-            <p className="lp-foot-note">
-              {step === 'invite' ? (
-                'Nothing has been created.'
-              ) : (
-                <>Already have an account? <Link to="/login">Sign in</Link></>
-              )}
-            </p>
-          </footer>
+            {/* Divo working, beside the reason somebody is being asked to sign
+                up for it. Four short runs, three of which stop — because what a
+                buyer cannot tell from a happy-path demo is whether the thing
+                will quietly email a customer. Hidden on a narrow screen, where
+                there is room for one column and the questions are the one that
+                has to be there. */}
+            <Showcase />
           </div>
         </div>
       </div>

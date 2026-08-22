@@ -262,7 +262,7 @@ export class BusinessActionService {
       expectedAction: expectedAction as PreparedToolInvocation['action'],
       ...(execution ? { execution } : {}),
       resumeOnApproval: true,
-      parentBusinessActionId: action.id,
+      parentDecisionId: action.id,
     });
 
     if (response.status === 'approval_required') {

@@ -14,9 +14,24 @@
  * mention's compromises for no reason.
  */
 
+/*
+ * One tile, one set of numbers.
+ *
+ * The padding, the radius, the gap between a mark and its name — all of it is
+ * declared here and nowhere else, so the tile in the composer and the tile in a
+ * transcript link cannot end up two different sizes. Callers vary the tint and,
+ * where they genuinely must, `--pebble-pad-x`.
+ */
 .pebble {
   /* The neutral, for something with no brand of its own. */
   --pebble-tint: color-mix(in oklab, var(--bui-ink) 11%, transparent);
+  --pebble-pad-x: 7px;
+  --pebble-pad-y: 2px;
+  --pebble-gap: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pebble-gap);
+  padding: var(--pebble-pad-y) var(--pebble-pad-x);
   border-radius: 6px;
   background: var(--pebble-tint);
 }

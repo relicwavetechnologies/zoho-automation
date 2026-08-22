@@ -23,6 +23,7 @@ import {
   confirmQuestion,
   type Decision,
   type DecisionContinuation,
+  type DecisionEvidence,
   type DecisionQuestion,
 } from '../../domain/decision/decision';
 import { describeToolAction, type ToolActionDescription } from '../approval/describe-tool-action';
@@ -93,6 +94,11 @@ export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
   const native = row.kind === DECISION_ROW_KIND ? readPayload(payload) : null;
   const automation = row.kind === 'automation_script_plan' ? readAutomationPayload(payload) : null;
   const args = 'args' in payload ? payload['args'] : payload;
+  const skillEvidence = row.toolId === 'knowledge'
+    && asRecord(args)['operation'] === 'apply'
+    && asRecord(args)['kind'] === 'skill'
+    ? readStoredSkillEvidence(meta['decisionEvidence'])
+    : undefined;
   const requesterName = readString(meta['requesterName'])
     ?? readString(meta['requesterEmail'])
     ?? row.requestedBy
@@ -103,17 +109,20 @@ export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
     ? native.questions
     : automation
       ? [confirmQuestion({ ask: `Approve this exact ${automation.invocationCount}-call automation plan?` })]
+      : skillEvidence
+        ? [confirmQuestion({ ask: skillQuestion(skillEvidence.action) })]
       : [confirmQuestion({ ask: described!.title })];
   const title = native
     ? (readString(meta['title']) ?? row.summary)
-    : automation?.title ?? described!.title;
+    : automation?.title ?? (skillEvidence ? skillTitle(skillEvidence) : described!.title);
+  const detail = skillEvidence?.summary ?? detailOf(native, automation, meta, described);
   /* A native ask declares its own subject when it has one; a tool approval has
      never declared anything, so its subject is read back out of the call it
      already stores. That is what gives every approval written before this
      existed a logo and a preview without a migration or a new producer. */
   const subject = native
     ? readSubject(meta['subject'])
-    : automation
+    : automation || skillEvidence
       ? undefined
       : subjectFromToolAction(row.toolId, row.actionGroup, args);
 
@@ -121,9 +130,10 @@ export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
     decision: {
       id: row.id,
       title,
-      ...(detailOf(native, automation, meta, described) ? { detail: detailOf(native, automation, meta, described)! } : {}),
+      ...(detail ? { detail } : {}),
       source: native ? (readString(meta['source']) ?? 'Divo') : requesterName,
       ...(subject ? { subject } : {}),
+      ...(skillEvidence ? { evidence: skillEvidence } : {}),
       questions,
       requestedAt: row.createdAt.toISOString(),
       expiresAt: row.expiresAt ? row.expiresAt.toISOString() : null,
@@ -148,20 +158,102 @@ export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
     requestedByUserId: row.requestedBy,
     payload: args,
     presentation: {
-      description: described ?? {
+      description: skillEvidence
+        ? {
+            tool: 'Divo Knowledge',
+            title,
+            details: [{ label: 'Change', value: skillEvidence.summary }],
+          }
+        : described ?? {
         tool: 'Divo',
         title,
         /* A native decision has no tool call to describe, so its questions are
            the detail. Written as label/value pairs because that is what the
            shape promises and what the old client lays out in rows. */
         details: questions.map(question => ({ label: 'Asks', value: question.ask })),
-      },
+          },
       requestedByName: requesterName,
       approverName: readString(meta['resolvedManagerName']) ?? 'your approver',
       departmentName: readString(meta['departmentName']) ?? null,
       deliveredVia: row.channel,
     },
   };
+}
+
+function readStoredSkillEvidence(value: unknown): DecisionEvidence | undefined {
+  const evidence = asRecord(value);
+  const name = readString(evidence['name']);
+  const summary = readString(evidence['summary']);
+  const action = evidence['action'];
+  const contentHash = evidence['contentHash'] === null ? null : readString(evidence['contentHash']);
+  const fieldChanges = readSkillFieldChanges(evidence['fieldChanges']);
+  const instructionChanges = readSkillDiffLines(evidence['instructionChanges']);
+  if (
+    evidence['kind'] !== 'skill'
+    || (action !== 'create' && action !== 'update' && action !== 'publish' && action !== 'delete')
+    || !name
+    || !summary
+    || !fieldChanges
+    || !instructionChanges
+    || (action !== 'delete' && !contentHash)
+  ) {
+    return undefined;
+  }
+  return {
+    kind: 'skill',
+    action,
+    name,
+    summary,
+    fieldChanges,
+    instructionChanges,
+    contentHash: action === 'delete' ? null : contentHash!,
+  };
+}
+
+function readSkillFieldChanges(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  const changes = value.map(entry => asRecord(entry));
+  return changes.every(change =>
+    readString(change['label'])
+    && typeof change['before'] === 'string'
+    && typeof change['after'] === 'string')
+    ? changes.map(change => ({
+        label: readString(change['label'])!,
+        before: String(change['before']),
+        after: String(change['after']),
+      }))
+    : undefined;
+}
+
+function readSkillDiffLines(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  const lines = value.map(entry => asRecord(entry));
+  if (!lines.every(line => {
+    const kind = line['kind'];
+    return kind === 'omitted'
+      ? Number.isInteger(line['count']) && Number(line['count']) > 0
+      : (kind === 'context' || kind === 'added' || kind === 'removed')
+        && typeof line['text'] === 'string';
+  })) return undefined;
+  return lines.map(line => line['kind'] === 'omitted'
+    ? { kind: 'omitted' as const, count: Number(line['count']) }
+    : {
+        kind: line['kind'] as 'context' | 'added' | 'removed',
+        text: String(line['text']),
+      });
+}
+
+function skillTitle(evidence: Extract<DecisionEvidence, { kind: 'skill' }>): string {
+  const verb = evidence.action === 'delete' ? 'Remove'
+    : evidence.action === 'update' ? 'Update'
+      : 'Add';
+  return `${verb} ${evidence.name}`;
+}
+
+function skillQuestion(action: Extract<DecisionEvidence, { kind: 'skill' }>['action']): string {
+  if (action === 'delete') return 'Remove this skill from future turns?';
+  if (action === 'update') return 'Apply this change from the next turn?';
+  return 'Add this skill for future turns?';
 }
 
 /**
@@ -184,7 +276,7 @@ export function projectDecision(row: RuntimeApprovalRow): ProjectedDecision {
  * is an open-chat id and a scheduled run's is a synthetic key; treating either
  * as a thread would put an unrelated approval in front of somebody's composer,
  * which is exactly what this exists to stop. Anything unrecognised is null, and
- * a null decision simply lives on the Approvals page.
+ * a null decision simply stays on the shared Home, You, and Team Decision lists.
  */
 const WEB_THREAD_ID = /^web_[A-Za-z0-9-]{8,64}$/;
 

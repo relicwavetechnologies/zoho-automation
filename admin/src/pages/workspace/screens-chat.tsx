@@ -408,7 +408,7 @@ function ChatThread({ threadId }: { threadId: string }) {
               banner over a live text box says "when you get a minute", and this
               says the true thing — nothing else is going to happen here until
               you answer. Putting it aside is still allowed, and the request
-              stays open on the Approvals page either way. */}
+              stays open on the shared Decision lists either way. */}
           {open ? (
             <DecisionCard
               /* Keyed, so a second decision arriving in this slot is a new card
@@ -421,13 +421,17 @@ function ChatThread({ threadId }: { threadId: string }) {
               decision={open}
               sending={decisions.sending === open.id}
               onDismiss={() => setDeferred(open.id)}
-              onSend={(answer) => void decisions.settle(open.id, answer).then((outcome) => {
+              onSend={(answer) => void decisions.settle(open.id, answer).then(async (outcome) => {
                 /* Said out loud, because every refusal here looks exactly like
                    success otherwise: the card disappears either way. A request
                    answered on a Lark card two seconds earlier comes back 409,
                    the row leaves `awaitingMe`, the composer returns — and the
                    reader has no way to tell that from their own answer landing. */
-                if (!outcome.ok) notify.refused('That could not be recorded', outcome.message)
+                if (!outcome.ok) {
+                  notify.refused('That could not be recorded', outcome.message)
+                  return
+                }
+                await live.refresh()
               })}
             />
           ) : (
@@ -631,6 +635,10 @@ const Exchanged = memo(function Exchanged({
 
         {exchange.error && (
           <p className="text-[13px] text-rose-600 dark:text-rose-400">{exchange.error}</p>
+        )}
+
+        {exchange.interruption && (
+          <p className="text-[13px] text-ink-3">{exchange.interruption}</p>
         )}
       </div>
     </div>

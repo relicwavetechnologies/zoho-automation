@@ -357,10 +357,7 @@ describe('web run', () => {
     assert.equal('attachments' in seen[0]!, false);
   });
 
-  // Stopping is the reader's, and what they want is to hear that it stopped.
-  // The runtime answers "Stopped." on an abort, so the stream must stay open
-  // long enough to carry it.
-  it("carries the runtime's stopped answer instead of dying with the signal", async () => {
+  it('reports a user stop as an interruption even if the runtime returns during its abort', async () => {
     const controller = new AbortController();
     const { piRuntime } = fakeRuntime({
       emit: async report => {
@@ -373,11 +370,22 @@ describe('web run', () => {
 
     const events = await collect(service.run({ ...ask, abortSignal: controller.signal }));
 
-    assert.equal(events.at(-1)?.type, 'final');
-    assert.match(
-      events.at(-1)?.type === 'final' ? events.at(-1)!.text : '',
-      /Stopped/,
+    assert.equal(events.at(-1)?.type, 'interrupted');
+    assert.equal(
+      events.at(-1)?.type === 'interrupted' ? events.at(-1)!.message : '',
+      'Interrupted by user.',
     );
+  });
+
+  it('reports the runtime AbortError as an interruption rather than a failure', async () => {
+    const { piRuntime } = fakeRuntime({
+      fail: new DOMException('The Pi run was interrupted.', 'AbortError'),
+    });
+    const service = new WebRunService({ piRuntime, logger: noopLogger });
+
+    const events = await collect(service.run(ask));
+
+    assert.equal(events.at(-1)?.type, 'interrupted');
   });
 
 });

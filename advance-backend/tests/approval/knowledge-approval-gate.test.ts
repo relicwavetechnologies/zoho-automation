@@ -8,6 +8,64 @@ import { makeDeniedPerm } from '../tools/tool-test.helpers.ts';
 import type { KnowledgeMutationRecord } from '../../src/domain/knowledge/knowledge-mutation.ts';
 
 describe('central knowledge approval gate', () => {
+  it('does not claim a distinct manager is required for manager-self skill policy', async () => {
+    const mutation = knowledgeMutation({
+      scope: 'department',
+      departmentId: 'dept-1',
+      requiredAuthority: 'department_manager',
+      distinctApprover: false,
+      requesterReviewedAt: new Date(),
+      status: 'awaiting_approval',
+    });
+    const gate = new ApprovalGateService(
+      {} as never,
+      { resolveManager: async () => null } as never,
+      {} as never,
+      logger() as never,
+      { knowledgeMutations: { get: async () => mutation, attachRuntimeApproval: async () => mutation } },
+    );
+
+    const requirement = await gate.inspect({
+      toolId: 'knowledge',
+      action: 'create',
+      args: applyArgs(mutation),
+      perm: departmentPerm(),
+      runContext: runContext(),
+    });
+
+    assert.equal(requirement.kind, 'misconfigured');
+    assert.match(requirement.kind === 'misconfigured' ? requirement.message : '', /an active department manager/i);
+    assert.doesNotMatch(requirement.kind === 'misconfigured' ? requirement.message : '', /different/i);
+  });
+
+  it('allows canonical knowledge reads without treating them as malformed apply requests', async () => {
+    const gate = new ApprovalGateService(
+      {} as never,
+      {} as never,
+      {} as never,
+      logger() as never,
+    );
+
+    for (const operation of [
+      'check_targets',
+      'recall',
+      'resources.list',
+      'resources.get',
+      'files.download',
+      'documents.search',
+    ]) {
+      const requirement = await gate.inspect({
+        toolId: 'knowledge',
+        action: 'read',
+        args: { operation },
+        perm: makeDeniedPerm(),
+        runContext: runContext(),
+      });
+
+      assert.deepEqual(requirement, { kind: 'allowed' }, operation);
+    }
+  });
+
   it('derives department-manager authority from the durable mutation and excludes self', async () => {
     const mutation = knowledgeMutation({
       scope: 'department',

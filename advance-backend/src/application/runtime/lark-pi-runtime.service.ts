@@ -806,10 +806,10 @@ export class LarkPiRuntimeService {
           status: 'running',
         },
         data: {
-          status: 'failed',
+          status: 'interrupted',
           finishedAt: new Date(),
           errorCode: 'interrupted',
-          errorMessage: 'The Pi run was interrupted.',
+          errorMessage: 'Interrupted by user.',
         },
       });
     } catch (error) {

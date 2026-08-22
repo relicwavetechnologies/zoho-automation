@@ -364,7 +364,7 @@ describe('ManagerTeachPersonaProcessor', () => {
         companyId: 'company-1', managerId: 'manager-1', departmentId: 'department-1', sessionId: 'teach-1',
         mutationKey: 'teach-1-direct-skill-write', patch,
       }),
-      /cannot write shared skills directly.*governed knowledge review.*different department manager/i,
+      /cannot write shared skills directly.*governed knowledge review.*current manager may confirm their own department skill/i,
     );
     const personaOnlyPatch = managerTeachLearningPatchSchema.parse({
       ...patch,

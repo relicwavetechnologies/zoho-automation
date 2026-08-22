@@ -233,6 +233,7 @@ import { LarkKnowledgeReviewService } from './application/knowledge/lark-knowled
 import { RunEffectReceiptStore } from './application/runtime/run-effect-receipt.store';
 import { KnowledgeReviewDecisionQueue } from './application/knowledge/knowledge-review-decision.queue';
 import { KnowledgeMutationService } from './application/knowledge/knowledge-mutation.service';
+import { KnowledgeSkillReviewService } from './application/knowledge/knowledge-skill-review.service';
 import { KnowledgeProjectionService } from './application/knowledge/knowledge-projection.service';
 import { KnowledgeOperationsService } from './application/knowledge/knowledge-operations.service';
 import { KnowledgeRecallService } from './application/knowledge/knowledge-recall.service';
@@ -476,6 +477,7 @@ export interface Container {
   memoryService: MemoryService | null;
   knowledgeMutations: KnowledgeMutationService;
   knowledgeProjections: KnowledgeProjectionService;
+  knowledgeSkillReviews: KnowledgeSkillReviewService;
   knowledgeOperations: KnowledgeOperationsService;
   knowledgeRecall: KnowledgeRecallService;
   knowledgeResources: KnowledgeResourceQueryService;
@@ -2587,6 +2589,20 @@ export async function buildContainer(
     logger: logger.child({ service: 'gateway-tool-executor' }),
     clock:  systemClock,
   });
+  const knowledgeSkillReviews = new KnowledgeSkillReviewService({
+    mutations: knowledgeMutations,
+    projections: knowledgeProjections,
+    resources: knowledgeResources,
+    decisions: decisionAsk,
+    approvals: approvalRepo,
+    permissions,
+    tools: gatewayToolExecutor,
+    approvalGate,
+    approvalResolver,
+    identities: channelIdentityRepo,
+    transcript: conversationRepo,
+    logger,
+  });
   const automationPlanExecutor = new AutomationPlanExecutor({
     approvalRepo,
     channelIdentityRepo,
@@ -2722,6 +2738,7 @@ export async function buildContainer(
     toolExecutor: gatewayToolExecutor,
     permissions,
     automationPlanExecutor,
+    linkedDecisions: knowledgeSkillReviews,
     /* The same store the web run writes its own turns through, so a resumed
        approval lands in the thread as an ordinary message. Without it a web
        approval executed correctly and reported into the void. */
@@ -2859,6 +2876,7 @@ export async function buildContainer(
     approvals: approvalRepo,
     resumer: approvalResumer,
     businessActions,
+    knowledgeSkillReviews,
     logger: logger.child({ service: 'decision' }),
     audit: auditService,
     courier: new LarkDecisionCourier(larkAdapter, logger, env.APP_BASE_URL),
@@ -2937,6 +2955,7 @@ export async function buildContainer(
     skillAccessEnforcement,
     auditService,
     larkKnowledgeReview: larkKnowledgeReviewService,
+    knowledgeSkillReviews,
     knowledgeMutations,
     personalMemoryCommands,
     resolveGoogleSheetReference,
@@ -3038,6 +3057,7 @@ export async function buildContainer(
     memoryService,
     knowledgeMutations,
     knowledgeProjections,
+    knowledgeSkillReviews,
     knowledgeOperations,
     knowledgeRecall,
     knowledgeResources,

@@ -115,6 +115,23 @@ describe('web run registry', () => {
     assert.equal(runs.find('u1', 'web_t1')?.settled, true);
   });
 
+  it('replays an interruption as a terminal outcome without replaying partial prose', async () => {
+    const runs = registry();
+    const run = controlled();
+    runs.start({
+      runId: 'r1', threadId: 'web_t1', userId: 'u1', prompt: 'hi',
+      controller: new AbortController(), events: run.events,
+    });
+    run.push({ type: 'answer_delta', delta: 'unfinished' });
+    run.push({ type: 'interrupted', message: 'Interrupted by user.', timeline: {} });
+    run.end();
+    await settle();
+
+    assert.deepEqual(await collect(runs.attach('u1', 'web_t1'), 1), [
+      { type: 'interrupted', message: 'Interrupted by user.', timeline: {} },
+    ]);
+  });
+
   it('feeds two views of the same run the same frames', async () => {
     const runs = registry();
     const run = controlled();

@@ -23,6 +23,7 @@ import { PermissionCache } from '../src/application/permissions/permission.cache
 import { RedisCache } from '../src/infrastructure/cache/redis-cache';
 import { disconnectAllRedis, getRedisClient } from '../src/infrastructure/cache/redis.client';
 import { retireDataExportCapability } from '../src/application/skills/retired-data-export-capability';
+import { adoptLegacySkillsIntoKnowledge } from '../src/application/knowledge/knowledge-skill-adoption';
 
 export async function provisionConnectedProviderSkillsForExistingCompanies(prisma: PrismaClient) {
   const totals = { companies: 0, created: 0, updated: 0, existing: 0, skipped: 0 };
@@ -58,13 +59,21 @@ export async function reconcileCapabilities(
     filesAndDocuments: await provisionFilesAndDocumentsForExistingCompanies(prisma),
     localPython: await provisionDivoLocalPythonForExistingCompanies(prisma),
   };
+  const knowledgeSkillAdoption = await adoptLegacySkillsIntoKnowledge(prisma);
   const skillRoutes = await provisionSystemSkillRoutesForExistingCompanies(prisma);
   const permissions = {
     mailOps: await provisionMailOpsPermissionsForExistingCompanies(prisma, {
       invalidateDept: invalidator,
     }),
   };
-  return { retiredDataExport, registeredTools, skills, skillRoutes, permissions };
+  return {
+    retiredDataExport,
+    registeredTools,
+    skills,
+    knowledgeSkillAdoption,
+    skillRoutes,
+    permissions,
+  };
 }
 
 /**

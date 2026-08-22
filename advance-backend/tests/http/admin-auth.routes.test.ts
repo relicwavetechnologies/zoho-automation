@@ -148,7 +148,8 @@ describe('admin auth company signup provisioning', () => {
     assert.deepEqual(capturedUpsert.create.toolIds, ['knowledge']);
     assert.match(capturedUpsert.create.markdown, /divo_memory_review/);
     assert.match(capturedUpsert.create.markdown, /divo_knowledge_review/);
-    assert.match(capturedUpsert.create.markdown, /different active manager/);
+    assert.match(capturedUpsert.create.markdown, /current manager may confirm their own department skill change/);
+    assert.match(capturedUpsert.create.markdown, /department memory, files, and ordinary-member skill changes still require/);
     assert.match(capturedUpsert.create.markdown, /different active company administrator/);
     assert.match(capturedUpsert.create.markdown, /Never downgrade, redirect, duplicate/);
     for (const slug of [
