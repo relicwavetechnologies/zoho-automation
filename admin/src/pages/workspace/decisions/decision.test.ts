@@ -148,7 +148,7 @@ describe('which decision the thread shows', () => {
   })
 
   it('still takes everything when no thread is named', () => {
-    /* The Approvals page asks for the whole list, and gets it. */
+    /* Shared Decision lists ask for the whole list, and get it. */
     assert.equal(firstOpen([decision('lark', '2026-08-17T08:00:00Z', null)])?.id, 'lark')
   })
 })

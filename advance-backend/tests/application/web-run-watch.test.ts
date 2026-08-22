@@ -142,7 +142,10 @@ describe('WebRunService video watching', () => {
     setTimeout(() => controller.abort(), 30);
     const events = await drain(service, inputFor({ abortSignal: controller.signal }));
     assert.equal(ran, false, 'a cancelled wait must not spend a model turn');
-    assert.equal(events.at(-1)?.type, 'error');
+    assert.deepEqual(events.at(-1), {
+      type: 'interrupted',
+      message: 'Interrupted by user.',
+    });
     // A stop still leaves the question in the thread. Losing both halves means
     // a reader comes back to no evidence they ever sent the recording.
     assert.ok(turns.length > 0, 'the ask is written down even when stopped');
@@ -270,4 +273,3 @@ describe('hostile file names', () => {
     assert.equal(notice.slice(0, notice.indexOf('NOT WATCHED')).includes(']'), false);
   });
 });
-

@@ -15,7 +15,7 @@ export const KNOWLEDGE_REGISTERED_TOOL = {
   guardrails: [
     'Personal writes can target only the authenticated user',
     'Personal procedures and files require exact owner review',
-    'Department and company writes require exact requester review and a different approver',
+    'Department and company writes require exact requester review; department managers may confirm their own skill changes',
     'RBAC and policy are re-evaluated before every apply',
     'Denied targets are never downgraded or redirected',
   ],
@@ -44,9 +44,9 @@ export const DEFAULT_KNOWLEDGE_POLICIES = KNOWLEDGE_KINDS.flatMap(kind =>
       : scope === 'company'
         ? 'company_admin' as const
         : 'none' as const,
-    distinctApprover: scope !== 'personal',
+    distinctApprover: scope !== 'personal' && !(kind === 'skill' && scope === 'department'),
     enabled: true,
-    version: 1,
+    version: kind === 'skill' && scope === 'department' ? 2 : 1,
   }))),
 );
 
@@ -55,6 +55,7 @@ export async function provisionKnowledgeForExistingCompanies(
 ): Promise<{
   registeredToolCreated: boolean;
   policiesCreated: number;
+  policiesUpdated: number;
   legacySkillsArchived: number;
   retiredToolsDeleted: number;
   skillsCreated: number;
@@ -92,6 +93,21 @@ export async function provisionKnowledgeForExistingCompanies(
   const policies = await db.knowledgePolicy.createMany({
     data: DEFAULT_KNOWLEDGE_POLICIES,
     skipDuplicates: true,
+  });
+  const policyUpdates = await db.knowledgePolicy.updateMany({
+    where: {
+      tenantKey: 'global',
+      kind: 'skill',
+      scope: 'department',
+      OR: [
+        { distinctApprover: true },
+        { version: { lt: 2 } },
+      ],
+    },
+    data: {
+      distinctApprover: false,
+      version: 2,
+    },
   });
   const existingTool = await db.registeredTool.findUnique({
     where: { toolId: KNOWLEDGE_REGISTERED_TOOL.toolId },
@@ -136,6 +152,7 @@ export async function provisionKnowledgeForExistingCompanies(
   return {
     registeredToolCreated: !existingTool,
     policiesCreated: policies.count,
+    policiesUpdated: policyUpdates.count,
     ...retired,
     skillsCreated,
     skillsUpdated,

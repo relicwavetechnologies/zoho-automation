@@ -297,8 +297,9 @@ export async function executeKnowledgeReview(
 		const reviewedContent = preparedFile
 			? await (deps.stageFile ?? stagePreparedFile)(config, preparedFile)
 			: request.content;
-		// The backend owns review on every channel it drives; only an installed
-		// Desktop run renders its adapter locally.
+		// Web and Lark skill reviews are durable backend Decisions. Governed-file
+		// review has not migrated on web and is refused there by name; installed
+		// Desktop runs still render their local confirmation adapter.
 		if (correlation.channel) {
 			const requestId = `knowledge:${createHash("sha256").update(JSON.stringify({
 				kind: request.kind,
@@ -448,7 +449,7 @@ export function registerKnowledgeReviewTool(
 			"For file create/update/publish, pass only content { localPath } for the exact workspace file. The tool stages it privately and verifies its backend descriptor after requester confirmation.",
 			"Never provide departmentId. Choose only personal, department, or company; the backend supplies the authenticated target.",
 			"The content must be the complete replacement version the user should review. Never summarize away decision rules or silently add facts.",
-			"Personal changes apply after owner review. Shared changes remain pending until the backend confirms distinct manager/admin approval.",
+			"Personal changes apply after owner review. A department manager may confirm their own department skill; other shared changes wait for the configured authority.",
 		],
 		parameters: KnowledgeReviewParams,
 		async execute(toolCallId, params, _signal, _onUpdate, ctx) {

@@ -44,6 +44,18 @@ export interface AppliedKnowledgeMutation {
   readonly outboxEventId: string;
 }
 
+export interface SettledKnowledgeRequesterDecision {
+  readonly mutation: KnowledgeMutationRecord;
+  readonly decisionStatus: 'executing' | 'rejected';
+  readonly replayed: boolean;
+}
+
+export interface SettledKnowledgeAuthorityDecision {
+  readonly mutation: KnowledgeMutationRecord;
+  readonly parentStatus: 'consumed' | 'rejected' | 'failed';
+  readonly replayed: boolean;
+}
+
 export interface KnowledgeMutationStore {
   resolveResourceId?(input: {
     companyId: string;
@@ -51,6 +63,15 @@ export interface KnowledgeMutationStore {
     targetKey: string;
     logicalKey: string;
   }): Promise<string | null>;
+
+  /** Projection-known slug ownership checked before a person reviews a skill. */
+  findSkillSlugConflict?(input: {
+    companyId: string;
+    scope: KnowledgeTargetIdentity['scope'];
+    departmentId: string | null;
+    slug: string;
+    existingResourceId: string | null;
+  }): Promise<{ readonly skillId: string; readonly isSystem: boolean } | null>;
 
   resolvePolicy(input: {
     companyId: string;
@@ -81,6 +102,31 @@ export interface KnowledgeMutationStore {
     expectedContentHash: string | null;
     nextStatus: Extract<KnowledgeMutationStatus, 'awaiting_approval' | 'approved'>;
   }): Promise<KnowledgeMutationRecord>;
+
+  /** Atomically records the requester Decision and its mutation transition. */
+  settleRequesterDecision(input: {
+    mutationId: string;
+    decisionId: string;
+    companyId: string;
+    requesterId: string;
+    expectedContentHash: string | null;
+    decision: 'approved' | 'rejected';
+    summary: string;
+    nextStatus: Extract<KnowledgeMutationStatus, 'awaiting_approval' | 'approved'>;
+  }): Promise<SettledKnowledgeRequesterDecision>;
+
+  /** Atomically closes a linked requester Decision with its authority outcome. */
+  settleAuthorityDecision(input: {
+    mutationId: string;
+    parentDecisionId: string;
+    approvalId: string;
+    companyId: string;
+    status: 'completed' | 'rejected' | 'failed';
+    result: unknown;
+  }): Promise<SettledKnowledgeAuthorityDecision>;
+
+  /** Cancels expired requester Decisions and their still-unreviewed mutations. */
+  expireRequesterDecisions(limit: number): Promise<number>;
 
   attachRuntimeApproval(input: {
     mutationId: string;

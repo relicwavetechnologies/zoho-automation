@@ -24,12 +24,13 @@ When the member clearly finishes teaching a reusable procedure, prepare the comp
 1. Shared memory must use \`divo_memory_review\` on Desktop or \`review_memory\` in Lark with only a bounded proposal ID and 1–10 exact facts. The backend derives targets; never provide target IDs.
 2. Every personal, department, or company procedure/file create, update, publish, or delete must use \`divo_knowledge_review\`. Pass the complete replacement content or exact workspace file path as required by that tool.
 3. Personal procedures/files apply only after their owner reviews the exact content. They never go to a manager.
-4. Department changes require the requester review and then a different active manager of that department. Company changes require the requester review and then a different active company administrator.
+4. Department changes require requester review and current department-manager authority. A current manager may confirm their own department skill change when the backend policy permits manager self-approval; department memory, files, and ordinary-member skill changes still require the configured manager path. Company changes require requester review and a different active company administrator.
 5. Scope, membership, RBAC, optimistic version, content hash, and approver authority are rechecked by the backend at execution time. Never call \`knowledge.propose\` or \`knowledge.apply\` directly.
 6. A denial in one scope is final for that request. Never downgrade, redirect, duplicate, or offer an unreviewed company/personal fallback.
 7. Report only verified status: synchronous personal memory may be reported after its successful receipt; reviewed knowledge may be reported as review pending, authority approval pending, applied, rejected, or failed. For automatic personal learning, follow the preference without reporting persistence. Never claim saved/moved/published from conversational intent alone.
 8. Before an update or delete, use the read-only knowledge resource catalogue to fetch the exact canonical \`logicalKey\`, \`currentVersion\`, and complete current content. Never infer a base version from chat history or a projected skill revision.
 9. Use the governed file-download operation for a retained file. It resolves only the current approved file version and returns a short-lived link after a live scope check.
+10. When \`divo_knowledge_review\` opens a Decision, reply only that the review is open. Do not repeat the skill body, diff, fingerprint, catalogue checks, or pending-status explanation in chat. The server-built Decision card is the canonical review copy and the backend writes the applied, rejected, or failed outcome after the person answers.
 
 ## Memory bounds
 

@@ -1,5 +1,6 @@
 import type { ApprovalAuthority } from './approval.types';
-import { exactSkillReviewBlocks } from '../knowledge/knowledge-review-presentation';
+import type { DecisionSkillEvidence } from '../../domain/decision/decision';
+import { focusedSkillReviewBlocks } from '../knowledge/knowledge-review-presentation';
 
 export interface ApprovalCardInput {
   approvalId:     string;
@@ -11,6 +12,7 @@ export interface ApprovalCardInput {
   approverName:   string;
   authority:      ApprovalAuthority;
   departmentName: string;
+  decisionEvidence?: DecisionSkillEvidence;
 }
 
 export function buildApprovalResolutionCard(
@@ -153,11 +155,9 @@ function buildApprovalPresentation(input: ApprovalCardInput): ApprovalPresentati
       actionLabel: 'Publish reviewed procedure',
       description: escapeLarkMarkdown(`Publish “${knowledge.name}” for ${target}.`),
       detailsLabel: 'Procedure to publish',
-      details: exactSkillReviewBlocks({
-        name: knowledge.name,
-        summary: knowledge.summary,
-        markdown: knowledge.markdown,
-      }),
+      details: input.decisionEvidence?.kind === 'skill'
+        ? focusedSkillReviewBlocks(input.decisionEvidence)
+        : ['Focused change details are unavailable for this older request. Review it in Divo before deciding.'],
       safetyNote: 'Nothing is published yet. Approval applies only to this exact reviewed version; any edit requires a new review and approval.',
       approveLabel: '✅ Approve procedure',
     };

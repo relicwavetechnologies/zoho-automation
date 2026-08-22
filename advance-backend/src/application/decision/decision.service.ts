@@ -6,6 +6,7 @@ import type {
 } from '../../infrastructure/persistence/runtime-approval.repository';
 import type { ApprovalResumerService } from '../approval/approval-resumer.service';
 import type { BusinessActionService } from '../approval/business-action.service';
+import type { KnowledgeSkillReviewService } from '../knowledge/knowledge-skill-review.service';
 import type { ApprovalCardInput } from '../approval/approval-card-builder';
 import type { GatewayMemberContext } from '../gateway/gateway.types';
 import type { ToolActionGroup } from '../../domain/permissions/tool-action-group';
@@ -47,7 +48,7 @@ import {
  *
  * WHAT IS AND IS NOT MIGRATED. Every existing approval is *read* and *settled*
  * through here: the projection turns any stored row into questions, so the web
- * card, the Approvals page, the Desktop route, and the compatibility handler for
+ * card, the Home/You/Team Decision lists, the Desktop route, and the compatibility handler for
  * old Lark approval cards all come through this module. Manager approval opening
  * now comes through `ask` too. The other older producers still write their own
  * rows and draw their own cards until their phases migrate them. Said plainly
@@ -157,7 +158,7 @@ export interface ToolActionDecisionAsk {
   readonly toolId: string;
   readonly action: ToolActionGroup;
   /** Stored row kind, kept explicit for requester-owned execution routing. */
-  readonly rowKind?: 'tool_action' | 'business_action' | 'automation_script_plan';
+  readonly rowKind?: 'tool_action' | 'business_action' | 'automation_script_plan' | 'knowledge_skill_review';
   readonly args: unknown;
   readonly argsHash: string;
   /** Optional immutable payload for a domain-specific row such as an automation plan. */
@@ -215,7 +216,7 @@ export type SettleOutcome =
        * keep its existing toast without deciding whether a gateway request
        * resumes or waits for the requester to retry.
        */
-      readonly followUp: 'resumed' | 'retry' | 'none';
+      readonly followUp: 'resumed' | 'retry' | 'waiting' | 'none';
       /** Present when settling ran something: the requester-confirmation path. */
       readonly execution?: unknown;
     }
@@ -262,6 +263,8 @@ export interface DecisionServiceDeps {
   readonly audit?: Pick<AuditService, 'record'>;
   /** Owns requester confirmations end to end, including their execution. */
   readonly businessActions?: Pick<BusinessActionService, 'decide'>;
+  /** Owns the cross-row skill review lifecycle; Decision keeps only ask mechanics. */
+  readonly knowledgeSkillReviews?: Pick<KnowledgeSkillReviewService, 'decide'>;
   readonly courier?: DecisionCourier;
   /**
    * Stops a delivered card offering buttons for a decision settled elsewhere.
@@ -680,6 +683,23 @@ export class DecisionService {
     if (projected.rowKind === 'business_action') {
       return this.settleBusinessAction(actor, projected, verdict, summary);
     }
+    if (projected.rowKind === 'knowledge_skill_review') {
+      if (!this.deps.knowledgeSkillReviews) {
+        return { ok: false, reason: 'failed', message: 'Skill review settlement is not configured.' };
+      }
+      const outcome = await this.deps.knowledgeSkillReviews.decide({
+        actor,
+        row,
+        answer,
+        verdict,
+        summary,
+      });
+      if (outcome.ok) {
+        this.updateDeliveredCard(row, projected, outcome.verdict, outcome.summary, actor);
+        return { ...outcome, decision: projected.decision };
+      }
+      return outcome;
+    }
 
     const resolved = await this.deps.approvals.atomicResolve(decisionId, verdict, actor.userId, summary || undefined);
     if (!resolved.ok || !resolved.value) {
@@ -915,7 +935,7 @@ export class DecisionService {
       byName: actor.displayName ?? actor.userId,
       title: projected.decision.title,
       summary,
-      native: projected.rowKind === DECISION_ROW_KIND,
+      native: projected.rowKind === DECISION_ROW_KIND || projected.rowKind === 'knowledge_skill_review',
       request: {
         toolId: row.toolId,
         action: row.actionGroup,
@@ -926,6 +946,9 @@ export class DecisionService {
           ? authority
           : 'department_manager',
         departmentName: readString(meta['departmentName']) ?? 'Company-wide',
+        ...(projected.decision.evidence?.kind === 'skill'
+          ? { decisionEvidence: projected.decision.evidence }
+          : {}),
       },
     }).catch(error => this.deps.logger.warn('decision.card_update_failed', { id: row.id, error: String(error) }));
   }

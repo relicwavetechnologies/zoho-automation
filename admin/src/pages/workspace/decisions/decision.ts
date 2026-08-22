@@ -41,6 +41,18 @@ export type DecisionQuestion =
 
 export type DecisionResponse = { questionId: string; chose: string[]; said?: string }
 export type DecisionAnswer = { responses: DecisionResponse[] }
+export type DecisionEvidence = {
+  kind: 'skill'
+  action: 'create' | 'update' | 'publish' | 'delete'
+  name: string
+  summary: string
+  fieldChanges: Array<{ label: string; before: string; after: string }>
+  instructionChanges: Array<
+    | { kind: 'context' | 'added' | 'removed'; text: string }
+    | { kind: 'omitted'; count: number }
+  >
+  contentHash: string | null
+}
 
 export type Decision = {
   id: string
@@ -56,6 +68,7 @@ export type Decision = {
    * correct look for them rather than a gap where a logo should be.
    */
   subject?: DecisionSubject
+  evidence?: DecisionEvidence
   questions: DecisionQuestion[]
   requestedAt: string
   expiresAt: string | null
@@ -72,12 +85,9 @@ export type Decision = {
 /**
  * Where an open decision can still be answered.
  *
- * There is no approvals page any more, so this is the whole answer. A decision
- * raised in a web thread is answered in that thread — the composer swaps itself
- * for the same card, which is why one renderer was worth having. A decision
- * raised from Lark, or from a run nobody was watching, carries no thread at
- * all; the Lark card it was already sent to is the only surface it has, and
- * `null` says so rather than offering a button that leads nowhere.
+ * A decision raised in a web thread is answered in that thread. Decisions with
+ * no thread remain visible on the shared Home, You, and Team surfaces, and a
+ * Lark-delivered Decision can also be answered from its card.
  */
 export const answerAt = (decision: Decision): string | null =>
   decision.threadId ? `chat:${decision.threadId}` : null
@@ -181,7 +191,7 @@ export function firstOpen(decisions: readonly Decision[], threadId?: string): De
   /* A thread shows only what it raised. Anything else — an approval from
      somebody's Lark run, a request made on another thread — is somebody
      waiting on you, not this conversation waiting on you, and it belongs on
-     the Approvals page rather than in front of a text box you were using. */
+     the shared Decision lists rather than in front of a text box you were using. */
   const mine = threadId === undefined
     ? decisions
     : decisions.filter((decision) => decision.threadId === threadId)

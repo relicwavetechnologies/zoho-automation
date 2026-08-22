@@ -10,11 +10,14 @@ import {
   validateKnowledgePolicy,
 } from '../../domain/knowledge/knowledge-mutation';
 import { KnowledgeMutationError } from '../../application/knowledge/knowledge-mutation.errors';
+import { sha256CanonicalJson } from '../../shared/hash';
 import type {
   AppliedKnowledgeMutation,
   CreateKnowledgeProposalInput,
   KnowledgeApprovalReceipt,
   KnowledgeMutationStore,
+  SettledKnowledgeAuthorityDecision,
+  SettledKnowledgeRequesterDecision,
 } from '../../application/knowledge/knowledge-mutation.store';
 
 const LIVE_MUTATION_STATUSES: KnowledgeMutationStatus[] = [
@@ -55,6 +58,33 @@ export class PrismaKnowledgeMutationStore implements KnowledgeMutationStore {
     }
   }
 
+  async findSkillSlugConflict(input: {
+    companyId: string;
+    scope: 'personal' | 'department' | 'company';
+    departmentId: string | null;
+    slug: string;
+    existingResourceId: string | null;
+  }): Promise<{ skillId: string; isSystem: boolean } | null> {
+    try {
+      const skill = await this.prisma.skill.findFirst({
+        where: {
+          companyId: input.companyId,
+          scope: input.scope,
+          departmentId: input.departmentId,
+          slug: input.slug,
+          status: { not: 'archived' },
+          ...(input.existingResourceId
+            ? { NOT: { knowledgeResourceId: input.existingResourceId } }
+            : {}),
+        },
+        select: { id: true, isSystem: true },
+      });
+      return skill ? { skillId: skill.id, isSystem: skill.isSystem } : null;
+    } catch (cause) {
+      throw storageFailure('check skill slug ownership', cause);
+    }
+  }
+
   async resolvePolicy(input: {
     companyId: string;
     kind: KnowledgeResourceKind;
@@ -84,10 +114,26 @@ export class PrismaKnowledgeMutationStore implements KnowledgeMutationStore {
         await advisoryLock(tx, 'knowledge-idempotency', input.idempotencyKey);
         await lockAutomaticLearningSource(tx, input);
         await assertLiveKnowledgeAuthority(tx, input);
-        const existing = await tx.knowledgeMutation.findUnique({
-          where: { idempotencyKey: input.idempotencyKey },
-        });
-        if (existing) return toMutation(existing);
+        let effectiveIdempotencyKey = input.idempotencyKey;
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          const existing = await tx.knowledgeMutation.findUnique({
+            where: { idempotencyKey: effectiveIdempotencyKey },
+          });
+          if (!existing) break;
+          if (!['rejected', 'cancelled', 'failed', 'superseded'].includes(existing.status)) {
+            return toMutation(existing);
+          }
+          // A terminal review must not block a later explicit correction with
+          // the same exact content. Chain a deterministic attempt key while the
+          // base lock keeps two retries from creating the same successor.
+          effectiveIdempotencyKey = sha256CanonicalJson({
+            previousKey: effectiveIdempotencyKey,
+            terminalMutationId: existing.id,
+          });
+          if (attempt === 19) {
+            throw new KnowledgeMutationError('conflict', 'Too many terminal retries exist for this exact proposal.');
+          }
+        }
 
         await advisoryLock(
           tx,
@@ -147,7 +193,7 @@ export class PrismaKnowledgeMutationStore implements KnowledgeMutationStore {
             policyId: input.policy.id,
             policyVersion: input.policy.version,
             status: input.initialStatus,
-            idempotencyKey: input.idempotencyKey,
+            idempotencyKey: effectiveIdempotencyKey,
           },
         });
         return toMutation(created);
@@ -227,6 +273,277 @@ export class PrismaKnowledgeMutationStore implements KnowledgeMutationStore {
       });
     } catch (cause) {
       throw preserveOrWrap('confirm requester review', cause);
+    }
+  }
+
+  async settleRequesterDecision(input: {
+    mutationId: string;
+    decisionId: string;
+    companyId: string;
+    requesterId: string;
+    expectedContentHash: string | null;
+    decision: 'approved' | 'rejected';
+    summary: string;
+    nextStatus: 'awaiting_approval' | 'approved';
+  }): Promise<SettledKnowledgeRequesterDecision> {
+    try {
+      return await this.prisma.$transaction(async tx => {
+        await advisoryLock(tx, 'knowledge-mutation', input.mutationId);
+        await advisoryLock(tx, 'runtime-approval', input.decisionId);
+        const mutation = await requireMutation(tx, input.mutationId, input.companyId);
+        if (mutation.requesterId !== input.requesterId) deny('Only the requester may decide this proposal.');
+        if (mutation.proposedContentHash !== input.expectedContentHash) staleContent();
+
+        const decision = await tx.runtimeApproval.findUnique({
+          where: { id: input.decisionId },
+          include: { conversation: { select: { companyId: true } } },
+        });
+        const payload = asRecord(decision?.payloadJson);
+        const args = asRecord(payload['args']);
+        if (
+          !decision
+          || decision.kind !== 'knowledge_skill_review'
+          || decision.conversation.companyId !== input.companyId
+          || decision.requestedBy !== input.requesterId
+          || args['mutationId'] !== input.mutationId
+          || args['contentHash'] !== input.expectedContentHash
+        ) {
+          throw new KnowledgeMutationError('approval_mismatch', 'Requester Decision is not bound to this proposal.');
+        }
+
+        const replayStatus = input.decision === 'approved' ? 'executing' : 'rejected';
+        const replayMutationStatuses = input.decision === 'approved'
+          ? ['awaiting_approval', 'approved', 'applied']
+          : ['cancelled'];
+        if (
+          decision.status === replayStatus
+          && decision.approvedBy === input.requesterId
+          && replayMutationStatuses.includes(mutation.status)
+        ) {
+          return { mutation: toMutation(mutation), decisionStatus: replayStatus, replayed: true };
+        }
+        if (!['dispatching', 'pending'].includes(decision.status)) {
+          invalidState(`Requester Decision is already ${decision.status}.`);
+        }
+        if (decision.expiresAt && decision.expiresAt.getTime() <= Date.now()) {
+          invalidState('Requester Decision has expired.');
+        }
+        if (mutation.status !== 'awaiting_requester_review') {
+          invalidState('Proposal is no longer awaiting requester review.');
+        }
+        await assertLiveKnowledgeAuthority(tx, mutation);
+
+        const now = new Date();
+        if (input.decision === 'rejected') {
+          await tx.runtimeApproval.update({
+            where: { id: decision.id },
+            data: {
+              status: 'rejected',
+              approvedBy: input.requesterId,
+              rejectedAt: now,
+              resolutionReason: input.summary,
+            },
+          });
+          const cancelled = await tx.knowledgeMutation.update({
+            where: { id: mutation.id },
+            data: { status: 'cancelled', decidedAt: now },
+          });
+          return { mutation: toMutation(cancelled), decisionStatus: 'rejected', replayed: false };
+        }
+
+        await tx.runtimeApproval.update({
+          where: { id: decision.id },
+          data: {
+            status: 'executing',
+            approvedBy: input.requesterId,
+            approvedAt: now,
+            resolutionReason: input.summary,
+          },
+        });
+        const confirmed = await tx.knowledgeMutation.update({
+          where: { id: mutation.id },
+          data: { requesterReviewedAt: now, status: input.nextStatus },
+        });
+        return { mutation: toMutation(confirmed), decisionStatus: 'executing', replayed: false };
+      });
+    } catch (cause) {
+      throw preserveOrWrap('settle requester decision', cause);
+    }
+  }
+
+  async expireRequesterDecisions(limit: number): Promise<number> {
+    const candidates = await this.prisma.$queryRaw<Array<{
+      decisionId: string;
+      mutationId: string;
+      companyId: string;
+    }>>`
+      SELECT
+        decision."id" AS "decisionId",
+        mutation."id" AS "mutationId",
+        mutation."companyId" AS "companyId"
+      FROM "RuntimeApproval" AS decision
+      INNER JOIN "KnowledgeMutation" AS mutation
+        ON mutation."id" = decision."payloadJson"->'args'->>'mutationId'
+      WHERE decision."kind" = 'knowledge_skill_review'
+        AND decision."status" IN ('dispatching', 'pending')
+        AND decision."expiresAt" <= CURRENT_TIMESTAMP
+        AND mutation."status" = 'awaiting_requester_review'
+      ORDER BY decision."expiresAt" ASC
+      LIMIT ${Math.max(1, Math.min(limit, 500))}
+    `;
+    let expired = 0;
+    for (const candidate of candidates) {
+      const changed = await this.prisma.$transaction(async tx => {
+        await advisoryLock(tx, 'knowledge-mutation', candidate.mutationId);
+        await advisoryLock(tx, 'runtime-approval', candidate.decisionId);
+        const decision = await tx.runtimeApproval.findUnique({ where: { id: candidate.decisionId } });
+        const mutation = await requireMutation(tx, candidate.mutationId, candidate.companyId);
+        if (
+          !decision
+          || !['dispatching', 'pending'].includes(decision.status)
+          || !decision.expiresAt
+          || decision.expiresAt.getTime() > Date.now()
+          || mutation.status !== 'awaiting_requester_review'
+        ) return false;
+        const now = new Date();
+        await tx.runtimeApproval.update({
+          where: { id: decision.id },
+          data: {
+            status: 'failed',
+            resolutionReason: 'Requester skill review expired before it was answered.',
+            executionResultJson: { status: 'expired' },
+          },
+        });
+        await tx.knowledgeMutation.update({
+          where: { id: mutation.id },
+          data: { status: 'cancelled', decidedAt: now },
+        });
+        return true;
+      });
+      if (changed) expired += 1;
+    }
+    return expired;
+  }
+
+  async settleAuthorityDecision(input: {
+    mutationId: string;
+    parentDecisionId: string;
+    approvalId: string;
+    companyId: string;
+    status: 'completed' | 'rejected' | 'failed';
+    result: unknown;
+  }): Promise<SettledKnowledgeAuthorityDecision> {
+    try {
+      return await this.prisma.$transaction(async tx => {
+        await advisoryLock(tx, 'knowledge-mutation', input.mutationId);
+        await advisoryLock(tx, 'runtime-approval', input.parentDecisionId);
+        const mutation = await requireMutation(tx, input.mutationId, input.companyId);
+        const parent = await tx.runtimeApproval.findUnique({
+          where: { id: input.parentDecisionId },
+          include: { conversation: { select: { companyId: true } } },
+        });
+        const parentArgs = asRecord(asRecord(parent?.payloadJson)['args']);
+        if (
+          !parent
+          || parent.kind !== 'knowledge_skill_review'
+          || parent.conversation.companyId !== input.companyId
+          || parentArgs['mutationId'] !== input.mutationId
+          || mutation.runtimeApprovalId !== input.approvalId
+        ) {
+          throw new KnowledgeMutationError('approval_mismatch', 'Authority outcome is not linked to this skill review.');
+        }
+        const terminalParent = input.status === 'completed' ? 'consumed' : input.status;
+        const terminalMutation = input.status === 'completed' ? 'applied' : input.status;
+        if (parent.status === terminalParent && mutation.status === terminalMutation) {
+          return {
+            mutation: toMutation(mutation),
+            parentStatus: terminalParent,
+            replayed: true,
+          };
+        }
+        // `executing` covers a crash after the authority row was durably bound
+        // but before the requester row recorded `awaiting_governance`.
+        if (!['executing', 'awaiting_governance'].includes(parent.status)) {
+          invalidState(`Linked requester Decision is already ${parent.status}.`);
+        }
+
+        if (input.status === 'completed') {
+          if (mutation.status !== 'applied') {
+            invalidState('Authority execution completed without an applied mutation.');
+          }
+        } else if (input.status === 'rejected') {
+          const authority = await tx.runtimeApproval.findUnique({
+            where: { id: input.approvalId },
+            select: { status: true, approvedBy: true },
+          });
+          if (authority?.status !== 'rejected' || !authority.approvedBy) {
+            throw new KnowledgeMutationError('approval_mismatch', 'Authority rejection is not durable.');
+          }
+          if (mutation.status !== 'awaiting_approval') {
+            invalidState('Mutation is not awaiting authority rejection.');
+          }
+          await assertLiveKnowledgeAuthority(tx, mutation, authority.approvedBy);
+        } else {
+          const authority = await tx.runtimeApproval.findUnique({
+            where: { id: input.approvalId },
+            select: { status: true, expiresAt: true },
+          });
+          const expiredOpenAuthority = Boolean(
+            authority
+            && ['dispatching', 'pending'].includes(authority.status)
+            && authority.expiresAt
+            && authority.expiresAt.getTime() <= Date.now(),
+          );
+          if (authority?.status !== 'failed' && !expiredOpenAuthority) {
+            throw new KnowledgeMutationError('approval_mismatch', 'Authority failure is not durable or expired.');
+          }
+          if (!['awaiting_approval', 'approved'].includes(mutation.status)) {
+            invalidState('Mutation cannot be failed from its current state.');
+          }
+          if (expiredOpenAuthority) {
+            await tx.runtimeApproval.update({
+              where: { id: input.approvalId },
+              data: {
+                status: 'failed',
+                resolutionReason: 'Authority decision expired before it was answered.',
+                executionResultJson: input.result as Prisma.InputJsonValue,
+              },
+            });
+          }
+        }
+
+        const updatedMutation = input.status === 'completed'
+          ? mutation
+          : await tx.knowledgeMutation.update({
+              where: { id: mutation.id },
+              data: input.status === 'rejected'
+                ? {
+                    status: 'rejected',
+                    rejectionReason: 'The configured authority rejected the skill change.',
+                    decidedAt: new Date(),
+                  }
+                : {
+                    status: 'failed',
+                    failureCode: 'authority_execution_failed',
+                    failureMessage: 'The approved skill change could not be applied.',
+                    decidedAt: new Date(),
+                  },
+            });
+        await tx.runtimeApproval.update({
+          where: { id: parent.id },
+          data: {
+            status: terminalParent,
+            executionResultJson: input.result as Prisma.InputJsonValue,
+          },
+        });
+        return {
+          mutation: toMutation(updatedMutation),
+          parentStatus: terminalParent,
+          replayed: false,
+        };
+      });
+    } catch (cause) {
+      throw preserveOrWrap('settle authority decision', cause);
     }
   }
 

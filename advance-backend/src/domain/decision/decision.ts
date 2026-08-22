@@ -69,6 +69,31 @@ export type DecisionQuestion =
 
 export type DecisionVerdict = 'approved' | 'rejected';
 
+export interface DecisionSkillFieldChange {
+  readonly label: string;
+  readonly before: string;
+  readonly after: string;
+}
+
+export type DecisionSkillDiffLine =
+  | { readonly kind: 'context' | 'added' | 'removed'; readonly text: string }
+  | { readonly kind: 'omitted'; readonly count: number };
+
+/** Focused, server-derived view of the exact skill content being approved. */
+export interface DecisionSkillEvidence {
+  readonly kind: 'skill';
+  readonly action: 'create' | 'update' | 'publish' | 'delete';
+  readonly name: string;
+  /** Plain-language count of what changed. */
+  readonly summary: string;
+  readonly fieldChanges: readonly DecisionSkillFieldChange[];
+  readonly instructionChanges: readonly DecisionSkillDiffLine[];
+  /** Hash of the complete canonical proposed object. Never rendered as review copy. */
+  readonly contentHash: string | null;
+}
+
+export type DecisionEvidence = DecisionSkillEvidence;
+
 /** What one person said to one question. */
 export interface DecisionResponse {
   readonly questionId: string;
@@ -138,6 +163,8 @@ export interface Decision {
    * correct look for them rather than a gap where a logo should be.
    */
   readonly subject?: DecisionSubject;
+  /** Exact evidence the person must inspect before answering, when present. */
+  readonly evidence?: DecisionEvidence;
   readonly questions: readonly DecisionQuestion[];
   readonly requestedAt: string;
   readonly expiresAt: string | null;
@@ -148,8 +175,8 @@ export interface Decision {
    * from "somebody, somewhere, is waiting on you". Without it the chat had only
    * the second and treated it as the first: every open request replaced the
    * composer of every thread, including approvals raised by other people's Lark
-   * runs. Null for anything not asked in a browser, which belongs on the
-   * Approvals page and nowhere else.
+   * runs. Null for anything not asked in a browser; other surfaces may still
+   * show it in their own Decision lists.
    */
   readonly threadId: string | null;
 }

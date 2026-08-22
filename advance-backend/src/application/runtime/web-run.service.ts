@@ -69,6 +69,12 @@ export type WebRunEvent =
       readonly actions?: readonly InteractiveAction[];
       readonly timeline: ChannelTimeline;
     }
+  /** The member deliberately stopped the run. Terminal, but not an error. */
+  | {
+      readonly type: 'interrupted';
+      readonly message: string;
+      readonly timeline?: ChannelTimeline;
+    }
   /**
    * Divo is still taking in a video that came with the ask.
    *
@@ -316,9 +322,11 @@ export class WebRunService {
     // stop path writes one: a thread that loses the question as well as the
     // answer leaves the reader no evidence they ever asked.
     if (input.abortSignal?.aborted) {
-      const message = 'Stopped before Divo finished watching.';
-      await this.recordFailure(input, runId, { code: 'cancelled', message }, [], startedAtMs, askText);
-      yield { type: 'error', code: 'cancelled', message };
+      const message = 'Interrupted by user.';
+      await this.recordUnanswered(
+        input, runId, { kind: 'interrupted', message }, [], startedAtMs, askText,
+      );
+      yield { type: 'interrupted', message };
       return;
     }
     const timeline = createRunTimelineReducer({ startedAtMs });
@@ -483,6 +491,23 @@ export class WebRunService {
 
     timeline.finishing();
 
+    const interrupted = input.abortSignal?.aborted
+      || (!done.ok && isInterruption(done.error));
+    if (interrupted) {
+      const message = 'Interrupted by user.';
+      log.info('web_run.interrupted', { runId });
+      await this.recordUnanswered(
+        input,
+        runId,
+        { kind: 'interrupted', message },
+        timeline.timeline().ledger ?? [],
+        startedAtMs,
+        askText,
+      );
+      yield { type: 'interrupted', message, timeline: timeline.timeline() };
+      return;
+    }
+
     if (!done.ok) {
       const error = done.error;
       const code = error instanceof LarkPiRuntimeError ? error.code : 'run_failed';
@@ -490,8 +515,13 @@ export class WebRunService {
         ? error.userMessage
         : 'Divo hit a temporary problem while finishing this request. Please try again.';
       log.error('web_run.failed', { code, error: String(error), runId });
-      await this.recordFailure(
-        input, runId, { code, message }, timeline.timeline().ledger ?? [], startedAtMs, askText,
+      await this.recordUnanswered(
+        input,
+        runId,
+        { kind: 'failure', code, message },
+        timeline.timeline().ledger ?? [],
+        startedAtMs,
+        askText,
       );
       yield { type: 'error', message, code };
       return;
@@ -554,24 +584,22 @@ export class WebRunService {
    * Write down a run that produced no answer.
    *
    * The runtime persists the exchange only once a run succeeds, which is right
-   * for Lark — a failure there was posted into the chat as a message, so the
-   * conversation already holds it. The web has no such second copy: without
-   * this, a failed run leaves the thread empty and the reader comes back to no
-   * evidence they ever asked anything.
+   * for Lark: its chat already holds a failure or stop notice. The web has no
+   * such second copy. Without this, a failed or interrupted run leaves the
+   * thread empty and the reader comes back to no evidence they asked anything.
    *
    * Both turns, because half an exchange is worse than none: an answer with no
    * question above it reads as Divo talking to itself. Written with exactly the
    * dedupe keys the successful path uses, so these can never end up alongside a
    * real answer for the same turn.
    *
-   * Failing to record a failure is logged and dropped — the reader has already
-   * been told what happened on the stream, and a second failure behind the
-   * first helps nobody.
+   * A persistence failure is logged and dropped. The reader has already seen
+   * the terminal event on the stream, and hiding that event would be worse.
    */
-  private async recordFailure(
+  private async recordUnanswered(
     input: WebRunInput,
     runId: string,
-    failure: { readonly code: string; readonly message: string },
+    terminal: WebRunTerminalRecord,
     ledger: readonly ChannelLedgerRow[],
     startedAtMs: number,
     /* What the model was given, not what the person typed — the same string the
@@ -581,9 +609,9 @@ export class WebRunService {
     if (!this.deps.transcript) return;
     const scope = { companyId: String(input.runContext.companyId), channel: 'web' };
     try {
-      /* The same turn the runtime would have written, files included — a run
-         that failed is the case where the reader most needs their own message
-         back intact, since there is no answer to read it against. */
+      /* The same turn the runtime would have written, files included. A run
+         without an answer is when the reader most needs their own message back
+         intact, because there is no completed response to read it against. */
       /* Compared against what was *stored*, not against what the person typed.
          `askFor` returns nothing when the two are equal and no file came with
          the ask — and for a video-only message the multipart text is unchanged,
@@ -607,16 +635,20 @@ export class WebRunService {
       );
       await this.deps.transcript.appendTurn(
         input.threadId,
-        { role: 'assistant', content: failure.message, timestamp: new Date().toISOString() },
+        { role: 'assistant', content: terminal.message, timestamp: new Date().toISOString() },
         scope,
         {
           dedupeKey: `web:${runId}:assistant`,
           sourceRunId: runId,
-          contentJson: runRecord(ledger, startedAtMs, failure),
+          contentJson: runRecord(ledger, startedAtMs, terminal),
         },
       );
     } catch (error) {
-      this.deps.logger.warn('web_run.failure_not_recorded', { runId, error: String(error) });
+      this.deps.logger.warn('web_run.unanswered_not_recorded', {
+        runId,
+        outcome: terminal.kind,
+        error: String(error),
+      });
     }
   }
 
@@ -631,14 +663,28 @@ export class WebRunService {
 function runRecord(
   ledger: readonly ChannelLedgerRow[],
   startedAtMs: number,
-  failure?: { readonly code: string; readonly message: string },
+  terminal?: WebRunTerminalRecord,
 ): WebThreadRunRecord & { readonly kind: typeof WEB_RUN_CONTENT_KIND } {
   return {
     kind: WEB_RUN_CONTENT_KIND,
     ledger,
     elapsedMs: Date.now() - startedAtMs,
-    ...(failure ? { failure } : {}),
+    ...(terminal?.kind === 'failure'
+      ? { failure: { code: terminal.code, message: terminal.message } }
+      : {}),
+    ...(terminal?.kind === 'interrupted'
+      ? { interruption: { message: terminal.message } }
+      : {}),
   };
+}
+
+type WebRunTerminalRecord =
+  | { readonly kind: 'failure'; readonly code: string; readonly message: string }
+  | { readonly kind: 'interrupted'; readonly message: string };
+
+function isInterruption(error: unknown): boolean {
+  return (error instanceof LarkPiRuntimeError && error.code === 'interrupted')
+    || (error instanceof DOMException && error.name === 'AbortError');
 }
 
 /**

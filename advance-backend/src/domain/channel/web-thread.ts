@@ -39,6 +39,8 @@ export interface WebThreadRunRecord {
   readonly elapsedMs: number;
   /** Set when the run ended without an answer, carrying what the reader saw. */
   readonly failure?: { readonly code: string; readonly message: string };
+  /** Set when the member deliberately stopped the run. This is not a failure. */
+  readonly interruption?: { readonly message: string };
 }
 
 /**
@@ -195,6 +197,7 @@ export function webThreadRun(contentJson: unknown): WebThreadRunRecord | undefin
   const ledger = Array.isArray(value['ledger']) ? value['ledger'] as ChannelLedgerRow[] : [];
   const elapsedMs = typeof value['elapsedMs'] === 'number' ? value['elapsedMs'] : 0;
   const failure = value['failure'];
+  const interruption = value['interruption'];
   const record: WebThreadRunRecord = {
     ledger,
     elapsedMs,
@@ -203,6 +206,13 @@ export function webThreadRun(contentJson: unknown): WebThreadRunRecord | undefin
         failure: {
           code: String((failure as Record<string, unknown>)['code'] ?? 'run_failed'),
           message: String((failure as Record<string, unknown>)['message'] ?? ''),
+        },
+      }
+      : {}),
+    ...(typeof interruption === 'object' && interruption !== null
+      ? {
+        interruption: {
+          message: String((interruption as Record<string, unknown>)['message'] ?? 'Interrupted by user.'),
         },
       }
       : {}),

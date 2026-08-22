@@ -109,7 +109,7 @@ describe('BusinessActionService', () => {
     assert.equal(decided.handled && decided.response.status, 'approval_required');
     assert.equal(approvals.rows.get(actionId)?.status, 'awaiting_governance');
     assert.equal(invoked[0]?.resumeOnApproval, true);
-    assert.equal(invoked[0]?.parentBusinessActionId, actionId);
+    assert.equal(invoked[0]?.parentDecisionId, actionId);
   });
 
   it('allows only the requester to decide and records cancellation without execution', async () => {

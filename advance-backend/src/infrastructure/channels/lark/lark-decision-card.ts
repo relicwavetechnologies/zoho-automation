@@ -27,6 +27,7 @@ import {
   type DecisionQuestion,
 } from '../../../domain/decision/decision';
 import { buildCallbackCardData } from './lark-card.builder';
+import { focusedSkillReviewBlocks } from '../../../application/knowledge/knowledge-review-presentation';
 
 /** The one callback kind a decision card sends back. */
 export const DECISION_CARD_KIND = 'decision_answer';
@@ -89,7 +90,11 @@ export function buildDecisionCardData(input: DecisionCardInput): Record<string, 
   if (!question) return null;
 
   const blocks: string[] = [];
-  if (input.decision.detail) blocks.push(input.decision.detail);
+  if (input.decision.evidence?.kind === 'skill') {
+    blocks.push(...focusedSkillReviewBlocks(input.decision.evidence));
+  } else if (input.decision.detail) {
+    blocks.push(input.decision.detail);
+  }
   blocks.push(`**${question.ask}**`);
 
   /* More than one question means the reader is part-way through something, and

@@ -19,6 +19,7 @@ export type ThreadRunRecord = {
   ledger: LedgerRow[]
   elapsedMs: number
   failure?: { code: string; message: string }
+  interruption?: { message: string }
 }
 
 export type ThreadTurn = {

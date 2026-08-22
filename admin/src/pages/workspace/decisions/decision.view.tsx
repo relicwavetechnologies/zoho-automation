@@ -28,6 +28,7 @@ import {
   write,
   type Decision,
   type DecisionAnswer,
+  type DecisionEvidence,
   type DecisionQuestion,
 } from './decision'
 import { chromeFor } from './subject'
@@ -46,7 +47,7 @@ export function DecisionCard({
    * control at all rather than offering an Approve that the server would refuse.
    */
   onSend?: (answer: DecisionAnswer) => void
-  /** Put it aside for now. It stays open, and stays on the Approvals page. */
+  /** Put it aside for now. It stays open on the shared Decision lists. */
   onDismiss?: () => void
   /** Injected by tests that pin a clock; the app never passes it. */
   now?: number
@@ -59,11 +60,15 @@ export function DecisionCard({
   const question = decision.questions[Math.min(index, decision.questions.length - 1)]
   const last = index >= decision.questions.length - 1
   const ready = complete(decision.questions, answer)
+  const sendLabel = decision.evidence?.kind === 'skill'
+    ? skillSendLabel(question, answer)
+    : 'Confirm'
   const expiry = expiryLabel(decision.expiresAt, now)
   /* One accent for the whole card, and it belongs to the product being acted
      on. An ask with no product keeps ink, which is the right look for "which
      department?" rather than a colour borrowed from nowhere. */
-  const accent = decision.subject ? chromeFor(decision.subject).accent : 'var(--bui-ink)'
+  const accent = decision.subject ? chromeFor(decision.subject).accent : 'var(--cur-primary)'
+  const actionText = decision.subject ? '#fff' : 'var(--cur-on-primary)'
 
   if (!question) return null
 
@@ -130,6 +135,8 @@ export function DecisionCard({
         {decision.detail ? (
           <p className="mt-2 whitespace-pre-line text-[12px] leading-snug text-ink-2">{decision.detail}</p>
         ) : null}
+
+        {decision.evidence?.kind === 'skill' ? <SkillEvidence evidence={decision.evidence} /> : null}
 
         {/* The evidence sits above the question on purpose. A person reads what
             is about to happen, then answers — not the other way around. */}
@@ -200,7 +207,7 @@ export function DecisionCard({
                      duration-200 enabled:active:scale-[0.96] disabled:cursor-default"
           style={{
             background: ready ? accent : 'var(--bui-field)',
-            color: ready ? '#fff' : 'var(--bui-ink-3)',
+            color: ready ? actionText : 'var(--bui-ink-3)',
             boxShadow: ready ? 'inset 0 1px 0 rgb(255 255 255 / 0.14)' : 'var(--bui-shadow-btn)',
             gridAutoFlow: 'column',
             alignItems: 'center',
@@ -213,7 +220,7 @@ export function DecisionCard({
           {sending ? (
             <span className="text-[11.5px] font-medium leading-none">Sending</span>
           ) : ready ? (
-            <span className="text-[11.5px] font-medium leading-none">Confirm</span>
+            <span className="text-[11.5px] font-medium leading-none">{sendLabel}</span>
           ) : null}
         </button>
         ) : (
@@ -222,6 +229,58 @@ export function DecisionCard({
       </div>
     </div>
   )
+}
+
+function SkillEvidence({ evidence }: { evidence: Extract<DecisionEvidence, { kind: 'skill' }> }) {
+  return (
+    <div className="mt-2.5 overflow-hidden rounded-control border border-line bg-inset">
+      {evidence.fieldChanges.length ? (
+        <div className="divide-y divide-line border-b border-line">
+          {evidence.fieldChanges.map(change => (
+            <div key={change.label} className="px-2.5 py-2 text-[11.5px] leading-relaxed">
+              <p className="mb-1 text-ink-3">{change.label}</p>
+              <p className="[overflow-wrap:anywhere] text-ink-3 line-through">{change.before}</p>
+              <p className="[overflow-wrap:anywhere] text-ink">{change.after}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {evidence.instructionChanges.length ? (
+        <div className="max-h-72 overflow-y-auto py-1.5 font-mono text-[11.5px] leading-relaxed">
+          {evidence.instructionChanges.map((line, index) => line.kind === 'omitted' ? (
+            <p key={`omitted:${index}`} className="px-2.5 py-0.5 text-ink-3">
+              … {line.count} unchanged line{line.count === 1 ? '' : 's'}
+            </p>
+          ) : (
+            <p
+              key={`${line.kind}:${index}`}
+              className="whitespace-pre-wrap px-2.5 py-0.5 [overflow-wrap:anywhere]"
+              style={line.kind === 'added'
+                ? { color: 'var(--cur-success)', background: 'var(--bui-green-tint)' }
+                : line.kind === 'removed'
+                  ? { color: 'var(--cur-error)', background: 'var(--bui-red-tint)' }
+                  : { color: 'var(--bui-ink-3)' }}
+            >
+              {line.kind === 'added' ? '+' : line.kind === 'removed' ? '−' : ' '}{' '}
+              {line.text || '(blank line)'}
+            </p>
+          ))}
+        </div>
+      ) : null}
+      {!evidence.fieldChanges.length && !evidence.instructionChanges.length ? (
+        <p className="px-2.5 py-2 text-[12px] text-ink-2">{evidence.summary}</p>
+      ) : null}
+    </div>
+  )
+}
+
+function skillSendLabel(question: DecisionQuestion, answer: DecisionAnswer): string {
+  if ('text' in question) return 'Confirm change'
+  const picked = responseFor(answer, question.id)?.chose[0]
+  const option = question.options.find(candidate => candidate.value === picked)
+  if (option?.settles === 'approved') return 'Approve change'
+  if (option?.settles === 'rejected') return 'Reject change'
+  return 'Confirm change'
 }
 
 function Choices({

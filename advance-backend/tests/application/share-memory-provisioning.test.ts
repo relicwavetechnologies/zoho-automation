@@ -28,6 +28,7 @@ describe('Share Memory provisioning', () => {
           createdPolicies.push(...data);
           return { count: data.length };
         },
+        updateMany: async () => ({ count: 4 }),
       },
       registeredTool: {
         findUnique: async () => null,
@@ -64,6 +65,7 @@ describe('Share Memory provisioning', () => {
     assert.deepEqual(result, {
       registeredToolCreated: true,
       policiesCreated: 36,
+      policiesUpdated: 4,
       legacySkillsArchived: 2,
       retiredToolsDeleted: 3,
       skillsCreated: 1,

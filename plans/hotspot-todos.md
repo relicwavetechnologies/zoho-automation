@@ -17,13 +17,16 @@ small on purpose.
 
 ## 2. Self-Updating Skill Proof
 
+- Implementation is present on `dev`; local web behavior proof is still pending.
+- Follow `plans/teach-on-web-architecture.md` from `## Next action` and record Decision and mutation IDs.
 - Prove whether Divo actually updates a skill after explicit learning.
 - Trigger the loop with a clear correction, not silent model self-opinion.
 - Watch for: `KnowledgeMutation`, `KnowledgeOutbox`, updated `Skill`,
   `SkillVersion`, `SkillRegistryRevision`, changed Pi bootstrap digest, and the
   next turn using the new instruction.
-- If the proof fails, inspect `divo_knowledge_review` and the
-  `openVerifiedLarkKnowledgeReview` channel guard first.
+- If the proof fails before a Decision appears, inspect `divo_knowledge_review`
+  and `KnowledgeSkillReviewService.open` first. The old
+  `openVerifiedLarkKnowledgeReview` guard now owns only memory and files.
 
 Guardrail: Divo should propose skill updates after explicit correction and human
 approval. It should not silently rewrite live skills on its own.

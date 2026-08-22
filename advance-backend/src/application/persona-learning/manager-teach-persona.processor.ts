@@ -212,7 +212,7 @@ export class ManagerTeachPersonaProcessor {
     }
     if (input.patch.skills.length > 0) {
       throw new Error(
-        'Teach cannot write shared skills directly. Submit the exact skill through the governed knowledge review flow so the requester and a different department manager approve it.',
+        'Teach cannot write shared skills directly. Submit the exact skill through the governed knowledge review flow. The requester reviews it, then the backend resolves current department-manager authority; a current manager may confirm their own department skill when policy permits.',
       );
     }
 

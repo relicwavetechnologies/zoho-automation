@@ -109,6 +109,7 @@ export type RunEvent =
   | { type: 'answer_delta'; delta: string }
   | { type: 'answer_reset' }
   | { type: 'final'; text: string; timeline: Timeline }
+  | { type: 'interrupted'; message: string; timeline?: Timeline }
   /**
    * A document is ready to read beside the thread.
    *
@@ -324,7 +325,8 @@ function parseFrame(frame: string): RunEvent | null {
     // `open` is a handshake frame, not part of the run.
     return parsed.type === 'timeline' || parsed.type === 'answer'
       || parsed.type === 'answer_delta' || parsed.type === 'answer_reset'
-      || parsed.type === 'final' || parsed.type === 'artifact' || parsed.type === 'error'
+      || parsed.type === 'final' || parsed.type === 'interrupted'
+      || parsed.type === 'artifact' || parsed.type === 'error'
       || parsed.type === 'watching'
       ? parsed
       : null
