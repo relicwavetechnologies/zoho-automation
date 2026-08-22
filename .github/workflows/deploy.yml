@@ -511,6 +511,11 @@ jobs:
             trap - EXIT
           fi
 
+          docker compose --env-file .env.production.local run --rm --no-deps \
+            divo-backend pnpm prisma db execute \
+            --file prisma/migrations/20260822_department_skill_manager_self_approval/migration.sql \
+            --schema prisma/schema.prisma </dev/null
+
           if [[ "${APPLY_SCHEMA}" == "true" ]]; then
             docker compose --env-file .env.production.local run --rm --no-deps \
               divo-backend pnpm prisma db push --skip-generate </dev/null

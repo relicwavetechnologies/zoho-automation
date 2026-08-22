@@ -1205,10 +1205,10 @@ test('propagates caller interruption instead of converting it to a Pi failure', 
     userId: 'user-1',
     status: 'running',
   });
-  assert.equal(update.data.status, 'failed');
+  assert.equal(update.data.status, 'interrupted');
   assert.ok(update.data.finishedAt instanceof Date);
   assert.equal(update.data.errorCode, 'interrupted');
-  assert.equal(update.data.errorMessage, 'The Pi run was interrupted.');
+  assert.equal(update.data.errorMessage, 'Interrupted by user.');
 });
 
 // ── Attachment staging ──────────────────────────────────────────────────────

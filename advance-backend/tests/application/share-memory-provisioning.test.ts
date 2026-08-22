@@ -140,22 +140,20 @@ describe('Lark Share Memory review', () => {
     assert.equal(buttons.some(button => button.text.content === 'Save to Company'), false);
   });
 
-  it('reviews and submits an exact shared procedure through the same central Lark flow', async () => {
+  it('reviews and submits an exact shared file through the legacy Lark file flow', async () => {
     const fixture = createMemoryReviewFixture();
     const content = {
-      name: 'Document creation',
-      slug: 'document-creation',
-      summary: 'Create documents consistently.',
-      markdown: '# Document creation\n\nRollback before Owners.',
-      toolIds: [],
-      tags: ['documents'],
+      fileName: 'finance-runbook.md',
+      mimeType: 'text/markdown',
+      sizeBytes: 42,
+      storageKey: 'company-1/finance-runbook.md',
     };
     const opened = await fixture.service.openResourceForRuntime({
-      requestId: 'knowledge:skill-1',
-      kind: 'skill',
+      requestId: 'knowledge:file-1',
+      kind: 'file',
       action: 'publish',
       scope: 'department',
-      logicalKey: 'document-creation',
+      logicalKey: 'finance-runbook',
       content,
       runContext: fixture.runContext,
       perm: fixture.permission,
@@ -163,7 +161,8 @@ describe('Lark Share Memory review', () => {
     });
     assert.equal(opened.opened, true);
     const card = parseCard(fixture.sentCards[0]);
-    assert.match(JSON.stringify(card), /Rollback before Owners/);
+    assert.match(JSON.stringify(card), /finance-runbook\.md/);
+    assert.doesNotMatch(JSON.stringify(card), /company-1\/finance-runbook\.md/);
     const button = findCardButtons(card)
       .find(candidate => candidate.text.content === 'Send to Department: Finance');
     assert.ok(button);
@@ -176,7 +175,7 @@ describe('Lark Share Memory review', () => {
       operation: 'apply',
       mutationId: 'mutation-1',
       contentHash: 'a'.repeat(64),
-      kind: 'skill',
+      kind: 'file',
       action: 'publish',
       scope: 'department',
       departmentId: 'dept-1',
@@ -184,19 +183,17 @@ describe('Lark Share Memory review', () => {
     });
   });
 
-  it('reviews a personal procedure and applies it without creating shared approval', async () => {
+  it('reviews a personal file and applies it without creating shared approval', async () => {
     const fixture = createMemoryReviewFixture();
     const content = {
-      name: 'My document style',
-      slug: 'my-document-style',
-      summary: 'My private document procedure.',
-      markdown: '# My document style\n\nUse a two-column summary.',
-      toolIds: [],
-      tags: ['documents'],
+      fileName: 'my-document-style.md',
+      mimeType: 'text/markdown',
+      sizeBytes: 38,
+      storageKey: 'user-1/my-document-style.md',
     };
     const opened = await fixture.service.openResourceForRuntime({
-      requestId: 'knowledge:personal-skill-1',
-      kind: 'skill',
+      requestId: 'knowledge:personal-file-1',
+      kind: 'file',
       action: 'publish',
       scope: 'personal',
       logicalKey: 'my-document-style',
@@ -206,7 +203,7 @@ describe('Lark Share Memory review', () => {
       chatId: 'chat-1',
     });
     assert.equal(opened.opened, true);
-    assert.match(opened.message, /exact procedure change/i);
+    assert.match(opened.message, /exact file change/i);
     const button = findCardButtons(parseCard(fixture.sentCards[0]))
       .find(candidate => candidate.text.content === 'Save to Personal');
     assert.ok(button);
@@ -221,7 +218,7 @@ describe('Lark Share Memory review', () => {
       operation: 'apply',
       mutationId: 'mutation-1',
       contentHash: 'a'.repeat(64),
-      kind: 'skill',
+      kind: 'file',
       action: 'publish',
       scope: 'personal',
       content,

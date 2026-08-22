@@ -2357,7 +2357,7 @@ describe('GatewayDispatcher', () => {
     assert.equal(recordAttempts, 2);
   });
 
-  it('opens exact shared skill review through the backend-owned Lark card flow', async () => {
+  it('opens exact shared skill review through the backend-owned durable Decision flow', async () => {
     const opened: unknown[] = [];
     const perm = makeAllowedPerm('knowledge', ['create']);
     const registry = new ToolRegistry();
@@ -2381,20 +2381,22 @@ describe('GatewayDispatcher', () => {
       }),
       larkKnowledgeReview: {
         openMemoryForRuntime: async () => ({ opened: false, message: 'unexpected memory review' }),
-        openResourceForRuntime: async input => {
-          opened.push(input);
-          await input.onOpened?.({
-            reviewId: 'review-skill-1',
-            cardMessageId: 'om_skill_card',
-            message: 'Knowledge review card sent',
-          });
-          return { opened: true, message: 'Knowledge review card sent' };
+        openResourceForRuntime: async () => {
+          throw new Error('skills must not use the legacy Lark review adapter');
         },
       },
-      runEffectReceipts: {
-        reserveKnowledgeReview: async () => ({ status: 'claimed' }),
-        completeKnowledgeReview: async () => ({} as any),
-        releaseKnowledgeReview: async () => {},
+      knowledgeSkillReviews: {
+        open: async input => {
+          opened.push(input);
+          return {
+            ok: true,
+            mutationId: 'mutation-1',
+            decisionId: 'decision-1',
+            reused: false,
+            state: 'review_pending',
+            message: 'The exact skill change is waiting for your review.',
+          } as const;
+        },
       },
       logger: noopLogger,
     });
@@ -2429,9 +2431,19 @@ describe('GatewayDispatcher', () => {
     assert.equal(result.ok, true);
     assert.equal(opened.length, 1);
     const input = opened[0] as Record<string, unknown>;
-    assert.equal(input.kind, 'skill');
-    assert.equal(input.scope, 'department');
-    assert.deepEqual(input.content, content);
+    assert.deepEqual(input.execution, {
+      version: 1,
+      runId: 'run-1',
+      threadId: 'thread-1',
+      actionId: 'knowledge-review:1',
+    });
+    assert.deepEqual(input.request, {
+      requestId: 'knowledge:request-1',
+      action: 'publish',
+      scope: 'department',
+      logicalKey: 'document-creation',
+      content,
+    });
   });
 
   it('rejects memory review from desktop, malformed payloads, and an unbound runtime', async () => {
