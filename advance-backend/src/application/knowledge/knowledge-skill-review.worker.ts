@@ -1,7 +1,7 @@
 import type { Logger } from '../../shared/logger';
 import type { KnowledgeSkillReviewService } from './knowledge-skill-review.service';
 
-/** Periodically repairs linked authority outcomes from their durable DB rows. */
+/** Repairs linked authority state and terminal Lark delivery from durable DB rows. */
 export class KnowledgeSkillReviewWorker {
   private timer: NodeJS.Timeout | undefined;
   private readonly log: Logger;

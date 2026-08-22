@@ -76,6 +76,21 @@ describe('durable knowledge skill review lifecycle', () => {
     );
   });
 
+  it('hands a terminal Lark result to recoverable outcome delivery', async () => {
+    const test = setup({ managerId: 'user-1' });
+
+    const outcome = await test.service.decide({
+      actor: actor('lark'),
+      row: reviewRow('lark'),
+      answer: approvedAnswer(),
+      verdict: 'approved',
+      summary: 'Approve',
+    });
+
+    assert.equal(outcome.ok, true);
+    assert.deepEqual(test.deliveredDecisions, ['decision-1']);
+  });
+
   it('forwards completed, rejected, and failed authority outcomes to the mutation owner', async () => {
     const test = setup({ managerId: 'manager-2' });
     for (const status of ['completed', 'rejected', 'failed'] as const) {
@@ -94,6 +109,7 @@ describe('durable knowledge skill review lifecycle', () => {
 function setup(options: { managerId: string; projectionFails?: boolean }) {
   const calls: string[] = [];
   const authorityStatuses: string[] = [];
+  const deliveredDecisions: string[] = [];
   const mutation = reviewMutation();
   const accepted = { ...mutation, status: 'approved' as const };
   const service = new KnowledgeSkillReviewService({
@@ -165,9 +181,13 @@ function setup(options: { managerId: string; projectionFails?: boolean }) {
     decisions: {},
     resources: {},
     approvalGate: {},
+    outcomeDelivery: {
+      deliver: async (decisionId: string) => { deliveredDecisions.push(decisionId); },
+      deliverPending: async () => {},
+    },
     logger: noopLogger,
   } as never);
-  return { service, calls, authorityStatuses };
+  return { service, calls, authorityStatuses, deliveredDecisions };
 }
 
 function reviewMutation(): KnowledgeMutationRecord {
@@ -208,7 +228,8 @@ function reviewMutation(): KnowledgeMutationRecord {
   };
 }
 
-function reviewRow() {
+function reviewRow(channel: 'web' | 'lark' = 'web') {
+  const sourceChatId = channel === 'lark' ? 'oc_finance' : 'web_thread-1';
   return {
     id: 'decision-1',
     companyId: 'company-1',
@@ -231,24 +252,25 @@ function reviewRow() {
     },
     metadataJson: {
       departmentId: 'dept-1',
-      sourceChannel: 'web',
-      sourceChatId: 'web_thread-1',
+      sourceChannel: channel,
+      sourceChatId,
+      ...(channel === 'lark' ? { requesterLarkOpenId: 'ou_manager' } : {}),
       execution: {
         version: 1,
-        threadId: 'web_thread-1',
+        threadId: channel === 'lark' ? 'lark_thread-1' : 'web_thread-1',
         runId: 'run-1',
         actionId: 'action-1',
       },
     },
     status: 'pending',
-    channel: 'web',
+    channel,
     requestedBy: 'user-1',
     createdAt: new Date(),
     updatedAt: new Date(),
   } as never;
 }
 
-function actor() {
+function actor(channel: 'web' | 'lark' = 'web') {
   return {
     userId: 'user-1',
     companyId: 'company-1',
@@ -257,11 +279,12 @@ function actor() {
       companyId: 'company-1',
       userId: 'user-1',
       aiRole: 'COMPANY_ADMIN',
-      channel: 'web',
+      channel,
       email: 'manager@example.com',
-      runtimeChatId: 'web_thread-1',
+      runtimeChatId: channel === 'lark' ? 'oc_finance' : 'web_thread-1',
       runtimeRunId: 'run-1',
-      runtimeThreadId: 'web_thread-1',
+      runtimeThreadId: channel === 'lark' ? 'lark_thread-1' : 'web_thread-1',
+      ...(channel === 'lark' ? { larkOpenId: 'ou_manager', larkTenantKey: 'tenant-1' } : {}),
       sessionId: 'session-1',
     },
   } as never;

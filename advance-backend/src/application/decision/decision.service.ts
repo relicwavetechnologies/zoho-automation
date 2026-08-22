@@ -659,8 +659,13 @@ export class DecisionService {
    * then resolve. Resolving first and validating after is how a malformed
    * answer used to close a request nobody had actually answered.
    */
-  async settle(actor: DecisionActor, decisionId: string, answer: DecisionAnswer): Promise<SettleOutcome> {
-    const loaded = await this.load(actor, decisionId);
+  async settle(
+    actor: DecisionActor,
+    decisionId: string,
+    answer: DecisionAnswer,
+    allowExecutingSkillRecovery = false,
+  ): Promise<SettleOutcome> {
+    const loaded = await this.load(actor, decisionId, { allowExecutingSkillRecovery });
     if (!loaded.ok) return loaded.outcome;
     const { row, projected } = loaded;
 
@@ -695,7 +700,6 @@ export class DecisionService {
         summary,
       });
       if (outcome.ok) {
-        this.updateDeliveredCard(row, projected, outcome.verdict, outcome.summary, actor);
         return { ...outcome, decision: projected.decision };
       }
       return outcome;
@@ -752,7 +756,7 @@ export class DecisionService {
     | ({ readonly settled: true } & SettleOutcome)
     | { readonly ok: false; readonly settled: false; readonly reason: string; readonly message: string }
   > {
-    const loaded = await this.load(actor, decisionId);
+    const loaded = await this.load(actor, decisionId, { allowExecutingSkillRecovery: true });
     if (!loaded.ok) return { settled: true, ...loaded.outcome };
     const { row, projected } = loaded;
 
@@ -785,12 +789,16 @@ export class DecisionService {
       }
       return { ok: true, settled: false, decision: projected.decision, answer };
     }
-    return { settled: true, ...await this.settle(actor, decisionId, answer) };
+    return { settled: true, ...await this.settle(actor, decisionId, answer, true) };
   }
 
   // ── internals ─────────────────────────────────────────────────────────────
 
-  private async load(actor: DecisionActor, decisionId: string): Promise<
+  private async load(
+    actor: DecisionActor,
+    decisionId: string,
+    options: { allowExecutingSkillRecovery?: boolean } = {},
+  ): Promise<
     | { readonly ok: true; readonly row: RuntimeApprovalRow; readonly projected: ProjectedDecision }
     | { readonly ok: false; readonly outcome: Extract<SettleOutcome, { ok: false }> }
   > {
@@ -804,13 +812,16 @@ export class DecisionService {
 
     // `dispatching` is live for the same reason the card handler accepts it: a
     // request can be delivered before its message id is stored.
-    if (!['dispatching', 'pending'].includes(row.status)) {
+    const recoveringExecutingSkill = options.allowExecutingSkillRecovery
+      && row.kind === 'knowledge_skill_review'
+      && row.status === 'executing';
+    if (!['dispatching', 'pending'].includes(row.status) && !recoveringExecutingSkill) {
       return {
         ok: false,
         outcome: { ok: false, reason: 'already_resolved', message: `This request was already ${row.status}.` },
       };
     }
-    if (!isOpen(projected.decision, new Date())) {
+    if (!recoveringExecutingSkill && !isOpen(projected.decision, new Date())) {
       return {
         ok: false,
         outcome: { ok: false, reason: 'expired', message: 'This request expired. Ask for it again.' },
@@ -925,6 +936,10 @@ export class DecisionService {
     summary: string,
     actor: DecisionActor,
   ): void {
+    // Skill Decisions have a recoverable two-part Lark delivery (card + exact
+    // completion DM). Let that module own the settled card so two updates
+    // cannot race with different timestamps or result copy.
+    if (projected.rowKind === 'knowledge_skill_review') return;
     if (!row.decisionMessageId || !this.deps.onResolvedCard) return;
     const meta = asRecord(row.metadataJson);
     const payload = asRecord(row.payloadJson);
@@ -935,7 +950,7 @@ export class DecisionService {
       byName: actor.displayName ?? actor.userId,
       title: projected.decision.title,
       summary,
-      native: projected.rowKind === DECISION_ROW_KIND || projected.rowKind === 'knowledge_skill_review',
+      native: projected.rowKind === DECISION_ROW_KIND,
       request: {
         toolId: row.toolId,
         action: row.actionGroup,

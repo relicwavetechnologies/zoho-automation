@@ -97,6 +97,10 @@ export class KnowledgeSkillReviewService {
         metadata?: { dedupeKey?: string },
       ): Promise<unknown>;
     };
+    readonly outcomeDelivery?: {
+      deliver(decisionId: string): Promise<void>;
+      deliverPending(limit?: number): Promise<void>;
+    };
     readonly logger: Logger;
   }) {
     this.log = deps.logger.child({ module: 'knowledge-skill-review' });
@@ -499,7 +503,11 @@ export class KnowledgeSkillReviewService {
         if (!marked.ok || !marked.value) {
           throw new Error('Authority approval opened, but the requester Decision could not be linked safely.');
         }
-        await this.recordOutcome(input.row, 'Reviewed. The exact skill change is waiting for its authority decision.');
+        await this.recordOutcome(
+          input.row,
+          'Reviewed. The exact skill change is waiting for its authority decision.',
+          'waiting',
+        );
         return settledOutcome(input.row, input.summary, result, 'waiting');
       }
       if (governed.status === 'success') {
@@ -525,7 +533,7 @@ export class KnowledgeSkillReviewService {
     const args = asRecord(asRecord(parent.value.payloadJson)['args']);
     const mutationId = asString(args['mutationId']);
     if (!mutationId || !parent.value.companyId) return false;
-    await this.deps.mutations.settleAuthorityDecision({
+    const settled = await this.deps.mutations.settleAuthorityDecision({
       mutationId,
       parentDecisionId: input.parentDecisionId,
       approvalId: input.approvalId,
@@ -533,6 +541,12 @@ export class KnowledgeSkillReviewService {
       status: input.status,
       result: input.result,
     });
+    if (!settled.replayed) {
+      await this.recordOutcome(
+        parent.value,
+        linkedOutcomeMessage(input.status, input.result),
+      );
+    }
     return true;
   }
 
@@ -555,6 +569,7 @@ export class KnowledgeSkillReviewService {
         });
       }
     }
+    await this.deps.outcomeDelivery?.deliverPending(limit);
   }
 
   private async runtimeFor(
@@ -702,22 +717,58 @@ export class KnowledgeSkillReviewService {
     }
   }
 
-  private async recordOutcome(row: RuntimeApprovalRow, content: string): Promise<void> {
-    if (!this.deps.transcript) return;
+  private async recordOutcome(
+    row: RuntimeApprovalRow,
+    content: string,
+    phase: 'waiting' | 'terminal' = 'terminal',
+  ): Promise<void> {
     const metadata = asRecord(row.metadataJson);
-    if (metadata['sourceChannel'] !== 'web') return;
+    if (metadata['sourceChannel'] === 'lark') {
+      if (phase === 'waiting') return;
+      if (!this.deps.outcomeDelivery) {
+        this.log.error('knowledge_skill_review.lark_outcome_unavailable', {
+          decisionId: row.id,
+        });
+        return;
+      }
+      try {
+        await this.deps.outcomeDelivery.deliver(row.id);
+      } catch (error) {
+        this.log.error('knowledge_skill_review.lark_outcome_failed', {
+          decisionId: row.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return;
+    }
+    if (metadata['sourceChannel'] !== 'web' || !this.deps.transcript) return;
     const threadId = readExecution(metadata['execution'])?.threadId;
     if (!threadId) return;
     await this.deps.transcript.appendTurn(
       threadId,
       { role: 'assistant', content, timestamp: new Date().toISOString() },
       { companyId: row.companyId!, channel: 'web' },
-      { dedupeKey: `knowledge_skill_review:${row.id}:outcome` },
+      { dedupeKey: `knowledge_skill_review:${row.id}:${phase}` },
     ).catch(error => this.log.error('knowledge_skill_review.outcome_write_failed', {
       decisionId: row.id,
       error: String(error),
     }));
   }
+}
+
+function linkedOutcomeMessage(
+  status: LinkedDecisionOutcome['status'],
+  result: unknown,
+): string {
+  const exact = asString(asRecord(result)['message'])
+    ?? asString(asRecord(asRecord(result)['result'])['message'])
+    ?? asString(asRecord(asRecord(result)['data'])['message'])
+    ?? asString(asRecord(asRecord(asRecord(result)['data'])['result'])['message']);
+  if (status === 'completed') return exact ?? 'The reviewed skill change was applied.';
+  if (status === 'rejected') return 'The required authority rejected the reviewed skill change. Nothing was changed.';
+  return exact
+    ? `The reviewed skill change could not be completed: ${exact}`
+    : 'The reviewed skill change could not be completed because its authority step failed.';
 }
 
 function applyArgs(mutation: KnowledgeMutationRecord): Record<string, unknown> {

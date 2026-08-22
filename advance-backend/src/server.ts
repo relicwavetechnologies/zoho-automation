@@ -66,6 +66,7 @@ import { KnowledgeLearningWorker } from './application/knowledge/knowledge-learn
 import { ManagerTeachWorker } from './application/persona-learning/manager-teach.worker';
 import { KnowledgeReviewDecisionWorker } from './application/knowledge/knowledge-review-decision.worker';
 import { KnowledgeSkillReviewWorker } from './application/knowledge/knowledge-skill-review.worker';
+import { LarkDecisionActionWorker } from './infrastructure/channels/lark/lark-decision-action.worker';
 import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
 import { createKnowledgeFileRoutes } from './http/desktop/knowledge-files.routes';
 import { createWebChatRoutes } from './http/desktop/web-chat.routes';
@@ -126,6 +127,7 @@ export const createServer = (c: Container): DivoServerApplication => {
     appBaseUrl:            c.env.APP_BASE_URL,
     approvalGate:          c.approvalGate,
     decisionCardHandler:   c.decisionCardHandler,
+    decisionActionQueue:    c.larkDecisionActionQueue,
     workbookConversionCardHandler: c.workbookConversionCardHandler,
     knowledgeReviewService: c.larkKnowledgeReviewService,
     larkOAuthService:      c.larkOAuthService,
@@ -217,6 +219,13 @@ export const createServer = (c: Container): DivoServerApplication => {
     logger: c.logger,
   });
   knowledgeReviewDecisionWorker.start();
+
+  const larkDecisionActionWorker = new LarkDecisionActionWorker({
+    redisUrl: c.queueRedisUrl,
+    processor: c.larkDecisionActionProcessor,
+    logger: c.logger,
+  });
+  larkDecisionActionWorker.start();
 
   const knowledgeSkillReviewWorker = new KnowledgeSkillReviewWorker({
     reviews: c.knowledgeSkillReviews,
@@ -1081,6 +1090,7 @@ export const createServer = (c: Container): DivoServerApplication => {
           : []),
         { name: 'manager-teach-worker', close: () => managerTeachWorker.close() },
         { name: 'knowledge-review-worker', close: () => knowledgeReviewDecisionWorker.stop() },
+        { name: 'lark-decision-action-worker', close: () => larkDecisionActionWorker.stop() },
         { name: 'knowledge-skill-review-worker', close: () => knowledgeSkillReviewWorker.stop() },
       ]);
       await closePhase([
@@ -1090,6 +1100,7 @@ export const createServer = (c: Container): DivoServerApplication => {
         { name: 'knowledge-learning-queue', close: () => c.knowledgeLearningQueue.close() },
         { name: 'manager-teach-queue', close: () => c.managerTeachQueue.close() },
         { name: 'knowledge-review-queue', close: () => c.knowledgeReviewDecisionQueue.close() },
+        { name: 'lark-decision-action-queue', close: () => c.larkDecisionActionQueue.close() },
         { name: 'menhood-query-pool', close: () => c.menhoodQueryService.close() },
       ]);
 

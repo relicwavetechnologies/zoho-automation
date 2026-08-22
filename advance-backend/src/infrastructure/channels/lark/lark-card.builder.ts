@@ -878,6 +878,8 @@ export interface CallbackCardAction {
 export interface CallbackCardInput {
   title: string;
   template?: 'default' | 'blue' | 'green' | 'grey' | 'red' | 'orange' | 'purple' | 'turquoise';
+  /** Keep the title in body copy when a colored header strip would overpower a compact workflow. */
+  headerless?: boolean;
   markdownBlocks: readonly string[];
   note?: string;
   actions?: readonly CallbackCardAction[];
@@ -948,10 +950,12 @@ export function buildCallbackCardData(input: CallbackCardInput): Record<string, 
       enable_forward: false,
       summary: { content: buildSummary(input.title, input.markdownBlocks.join('\n\n')) },
     },
-    header: {
-      title: { tag: 'plain_text', content: input.title },
-      template: input.template ?? 'default',
-    },
+    ...(input.headerless ? {} : {
+      header: {
+        title: { tag: 'plain_text', content: input.title },
+        template: input.template ?? 'default',
+      },
+    }),
     body: {
       vertical_spacing: '8px',
       padding: '12px 12px 12px 12px',

@@ -4,9 +4,9 @@
  * Deliberately thin. The manager-approval handler beside it is three hundred
  * lines because it owns the whole settlement — load, authorize, expiry, resolve,
  * resume — and every other card flow grew its own copy of the same shape. Here
- * that all lives in `DecisionService`, and this file does the two things that
- * are genuinely Lark's: read the press, and answer within the three seconds
- * Feishu allows before it gives up on the callback.
+ * that all lives in `DecisionService`, and this file does the one thing that is
+ * genuinely Lark's: translate the authenticated press. The webhook ACKs first
+ * and runs this handler after the callback response has already gone out.
  */
 import type { Logger } from '../../../shared/logger';
 import type { DecisionService } from '../../../application/decision/decision.service';
@@ -22,6 +22,12 @@ export interface LarkDecisionCardActor {
   readonly userId: string;
   readonly companyId: string;
   readonly displayName?: string;
+}
+
+export interface LarkDecisionCardResult {
+  readonly responseBody: unknown;
+  /** Only a partial multi-question answer needs the callback worker to redraw. */
+  readonly replaceSourceCard: boolean;
 }
 
 export class LarkDecisionCardHandler {
@@ -44,9 +50,11 @@ export class LarkDecisionCardHandler {
   async handle(
     cardEvent: unknown,
     actor: LarkDecisionCardActor,
-  ): Promise<{ readonly responseBody: unknown }> {
+  ): Promise<LarkDecisionCardResult> {
     const action = actionValue(cardEvent);
-    if (!isDecisionCardAction(action)) return { responseBody: { ok: true } };
+    if (!isDecisionCardAction(action)) {
+      return { responseBody: { ok: true }, replaceSourceCard: false };
+    }
 
     const outcome = await this.decisions.answerOne(
       {
@@ -72,6 +80,7 @@ export class LarkDecisionCardHandler {
       });
       this.log.info('decision_card.advanced', { decisionId: action.decisionId, questionId: action.questionId });
       return {
+        replaceSourceCard: true,
         responseBody: {
           toast: { type: 'success', content: 'Got it.' },
           ...(card ? { card: { type: 'raw', data: card } } : {}),
@@ -80,20 +89,33 @@ export class LarkDecisionCardHandler {
     }
 
     if (!outcome.settled) {
-      return { responseBody: { toast: { type: 'error', content: outcome.message } } };
+      return {
+        responseBody: { toast: { type: 'error', content: outcome.message } },
+        replaceSourceCard: false,
+      };
     }
     if (!outcome.ok) {
       this.log.info('decision_card.refused', { decisionId: action.decisionId, reason: outcome.reason });
-      return { responseBody: { toast: { type: 'error', content: outcome.message } } };
+      return {
+        responseBody: { toast: { type: 'error', content: outcome.message } },
+        replaceSourceCard: false,
+      };
     }
 
-    const resolved = buildDecisionResolvedCardData({
-      title: outcome.decision.title,
-      verdict: outcome.verdict,
-      summary: outcome.summary,
-      byName: actor.displayName ?? actor.openId,
-      at: new Date(),
-    });
+    const waiting = outcome.followUp === 'waiting';
+    const resultMessage = waiting && outcome.decision.evidence?.kind === 'skill'
+      ? executionMessage(outcome.execution)
+      : undefined;
+    const resolved = waiting
+      ? buildDecisionResolvedCardData({
+          title: outcome.decision.title,
+          verdict: outcome.verdict,
+          summary: outcome.summary,
+          ...(resultMessage ? { result: resultMessage, resultLabel: 'Waiting for approval' } : {}),
+          byName: actor.displayName ?? actor.openId,
+          at: new Date(),
+        })
+      : undefined;
     const toastContent = outcome.followUp === 'waiting'
       ? 'Reviewed. The exact skill change is waiting for its authority decision.'
       : outcome.followUp === 'retry'
@@ -105,15 +127,34 @@ export class LarkDecisionCardHandler {
           : 'Stopped. Nothing was changed.');
     this.log.info('decision_card.settled', { decisionId: action.decisionId, verdict: outcome.verdict });
     return {
+      replaceSourceCard: waiting,
       responseBody: {
         toast: {
           type: 'success',
           content: toastContent,
         },
-        card: { type: 'raw', data: resolved },
+        ...(resolved ? { card: { type: 'raw', data: resolved } } : {}),
       },
     };
   }
+}
+
+function executionMessage(execution: unknown): string | undefined {
+  const record = asRecord(execution);
+  const direct = asString(record['message']);
+  if (direct) return direct;
+  const data = asRecord(record['data']);
+  return asString(data['message']) ?? asString(asRecord(data['result'])['message']);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 /**
