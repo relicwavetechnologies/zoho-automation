@@ -234,6 +234,9 @@ import { RunEffectReceiptStore } from './application/runtime/run-effect-receipt.
 import { KnowledgeReviewDecisionQueue } from './application/knowledge/knowledge-review-decision.queue';
 import { KnowledgeMutationService } from './application/knowledge/knowledge-mutation.service';
 import { KnowledgeSkillReviewService } from './application/knowledge/knowledge-skill-review.service';
+import { LarkKnowledgeSkillOutcomeDelivery } from './infrastructure/channels/lark/lark-knowledge-skill-outcome.delivery';
+import { LarkDecisionActionQueue } from './infrastructure/channels/lark/lark-decision-action.queue';
+import { LarkDecisionActionProcessor } from './infrastructure/channels/lark/lark-decision-action.processor';
 import { KnowledgeProjectionService } from './application/knowledge/knowledge-projection.service';
 import { KnowledgeOperationsService } from './application/knowledge/knowledge-operations.service';
 import { KnowledgeRecallService } from './application/knowledge/knowledge-recall.service';
@@ -458,6 +461,8 @@ export interface Container {
   /** The one place Divo asks a person something and hears back. */
   decisions: DecisionService;
   decisionCardHandler: LarkDecisionCardHandler;
+  larkDecisionActionQueue: LarkDecisionActionQueue;
+  larkDecisionActionProcessor: LarkDecisionActionProcessor;
   businessActions: BusinessActionService;
   workbookConversionQueue: WorkbookConversionQueue;
   workbookConversionWorker: GoogleDriveXlsxConversionConsumer;
@@ -2589,6 +2594,12 @@ export async function buildContainer(
     logger: logger.child({ service: 'gateway-tool-executor' }),
     clock:  systemClock,
   });
+  const knowledgeSkillOutcomeDelivery = new LarkKnowledgeSkillOutcomeDelivery({
+    approvals: approvalRepo,
+    deliveries: channelDeliveryRepo,
+    lark: larkAdapter,
+    logger,
+  });
   const knowledgeSkillReviews = new KnowledgeSkillReviewService({
     mutations: knowledgeMutations,
     projections: knowledgeProjections,
@@ -2601,6 +2612,7 @@ export async function buildContainer(
     approvalResolver,
     identities: channelIdentityRepo,
     transcript: conversationRepo,
+    outcomeDelivery: knowledgeSkillOutcomeDelivery,
     logger,
   });
   const automationPlanExecutor = new AutomationPlanExecutor({
@@ -2885,7 +2897,13 @@ export async function buildContainer(
        card has no field for it — it can only say approved or rejected. */
     onResolvedCard: async ({ messageId, verdict, byName, title, summary, native }) => {
       const card = native
-        ? buildDecisionResolvedCard({ title, verdict, summary, byName, at: new Date() })
+        ? buildDecisionResolvedCard({
+            title,
+            verdict,
+            summary,
+            byName,
+            at: new Date(),
+          })
         : buildApprovalResolutionCard(verdict, byName, new Date());
       await larkAdapter.updateMessageById(messageId, card);
     },
@@ -2901,6 +2919,13 @@ export async function buildContainer(
     logger,
   });
   const decisionCardHandler = new LarkDecisionCardHandler(decisions, logger, env.APP_BASE_URL);
+  const larkDecisionActionQueue = new LarkDecisionActionQueue(queueRedisUrl);
+  const larkDecisionActionProcessor = new LarkDecisionActionProcessor({
+    handler: decisionCardHandler,
+    identities: channelIdentityRepo,
+    lark: larkAdapter,
+    logger,
+  });
   const automationPlanService = new AutomationPlanService({
     toolExecutor: gatewayToolExecutor,
     permissions,
@@ -3038,6 +3063,8 @@ export async function buildContainer(
     approvalResumer,
     decisions,
     decisionCardHandler,
+    larkDecisionActionQueue,
+    larkDecisionActionProcessor,
     businessActions,
     // Workbook conversion and async ingress
     workbookConversionQueue,

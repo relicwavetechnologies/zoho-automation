@@ -89,7 +89,7 @@ export function buildDecisionCardData(input: DecisionCardInput): Record<string, 
   const question = nextQuestion(input.questions, answer);
   if (!question) return null;
 
-  const blocks: string[] = [];
+  const blocks: string[] = [`**${input.decision.title}**`];
   if (input.decision.evidence?.kind === 'skill') {
     blocks.push(...focusedSkillReviewBlocks(input.decision.evidence));
   } else if (input.decision.detail) {
@@ -106,7 +106,7 @@ export function buildDecisionCardData(input: DecisionCardInput): Record<string, 
   if ('text' in question || !answerableWithButtons([question])) {
     return buildCallbackCardData({
       title: input.decision.title,
-      template: 'blue',
+      headerless: true,
       markdownBlocks: input.webUrl
         ? [...blocks, `[Answer this in Divo](${input.webUrl})`]
         : blocks,
@@ -116,7 +116,7 @@ export function buildDecisionCardData(input: DecisionCardInput): Record<string, 
 
   return buildCallbackCardData({
     title: input.decision.title,
-    template: 'blue',
+    headerless: true,
     markdownBlocks: blocks,
     ...(position ? { note: position } : {}),
     actions: question.options.map(option => ({
@@ -145,6 +145,9 @@ export interface DecisionResolvedCardInput {
   readonly title: string;
   readonly verdict: 'approved' | 'rejected';
   readonly summary: string;
+  /** Exact terminal result when answering the decision also executed work. */
+  readonly result?: string;
+  readonly resultLabel?: string;
   readonly byName: string;
   readonly at: Date;
 }
@@ -162,11 +165,14 @@ export function buildDecisionResolvedCardData(
   const when = input.at.toISOString().replace('T', ' ').slice(0, 16);
   return buildCallbackCardData({
     title: input.title,
-    template: input.verdict === 'approved' ? 'green' : 'grey',
+    headerless: true,
     markdownBlocks: [
-      input.summary
-        ? `**${input.verdict === 'approved' ? 'Answered' : 'Declined'}**\n${input.summary}`
-        : `**${input.verdict === 'approved' ? 'Approved' : 'Rejected'}**`,
+      `**${input.title}**`,
+      input.result
+        ? `**${input.resultLabel ?? 'Result'}**\n${input.result}`
+        : input.summary
+          ? `**${input.verdict === 'approved' ? 'Answered' : 'Declined'}**\n${input.summary}`
+          : `**${input.verdict === 'approved' ? 'Approved' : 'Rejected'}**`,
     ],
     note: `${input.byName} · ${when} UTC`,
   });

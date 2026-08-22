@@ -127,6 +127,52 @@ export class RuntimeApprovalRepository {
     });
   }
 
+  /** Terminal Lark skill Decisions whose resolved card or completion DM still needs delivery. */
+  async listDeliverableLarkSkillOutcomeIds(limit = 100): Promise<string[]> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT approval."id"
+      FROM "RuntimeApproval" AS approval
+      LEFT JOIN "ChannelDelivery" AS card_delivery
+        ON card_delivery."channel" = 'lark'
+       AND card_delivery."idempotencyKey" = 'knowledge-skill-review:' || approval."id" || ':card'
+      LEFT JOIN "ChannelDelivery" AS message_delivery
+        ON message_delivery."channel" = 'lark'
+       AND message_delivery."idempotencyKey" = 'knowledge-skill-review:' || approval."id" || ':message'
+      WHERE approval."kind" = 'knowledge_skill_review'
+        AND approval."status" IN ('consumed', 'rejected', 'failed')
+        AND approval."metadataJson"->>'sourceChannel' = 'lark'
+        AND COALESCE(approval."metadataJson"->>'requesterLarkOpenId', '') <> ''
+        AND (
+          (
+            approval."decisionMessageId" IS NOT NULL
+            AND (
+              card_delivery."id" IS NULL
+              OR (
+                card_delivery."status" IN ('pending', 'failed')
+                AND (card_delivery."nextAttemptAt" IS NULL OR card_delivery."nextAttemptAt" <= CURRENT_TIMESTAMP)
+              )
+              OR (
+                card_delivery."status" = 'sending'
+                AND card_delivery."startedAt" <= CURRENT_TIMESTAMP - INTERVAL '60 seconds'
+              )
+            )
+          )
+          OR message_delivery."id" IS NULL
+          OR (
+            message_delivery."status" IN ('pending', 'failed')
+            AND (message_delivery."nextAttemptAt" IS NULL OR message_delivery."nextAttemptAt" <= CURRENT_TIMESTAMP)
+          )
+          OR (
+            message_delivery."status" = 'sending'
+            AND message_delivery."startedAt" <= CURRENT_TIMESTAMP - INTERVAL '60 seconds'
+          )
+        )
+      ORDER BY approval."updatedAt" ASC
+      LIMIT ${Math.max(1, Math.min(limit, 500))}
+    `;
+    return rows.map(row => row.id);
+  }
+
   /**
    * Create a RuntimeApproval, transparently upserting the required
    * RuntimeConversation + RuntimeRun stub records first.

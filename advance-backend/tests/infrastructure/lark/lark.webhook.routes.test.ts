@@ -166,6 +166,13 @@ async function runWebhook(body: unknown, options: {
     isKnowledgeReviewAction(cardEvent: unknown): boolean;
     handle(cardEvent: unknown, actor: unknown): Promise<{ responseBody: Record<string, unknown> }>;
   };
+  decisionCardHandler?: {
+    claims(cardEvent: unknown): boolean;
+    handle(cardEvent: unknown, actor: unknown): Promise<{ responseBody: unknown }>;
+  };
+  decisionActionQueue?: {
+    enqueue(payload: unknown): Promise<string>;
+  };
   workbookConversionCardHandler?: {
     handle(cardEvent: unknown, actor: unknown): Promise<{ handled: boolean; responseBody?: unknown }>;
   };
@@ -243,6 +250,7 @@ async function runWebhook(body: unknown, options: {
   const background: Promise<void>[] = [];
   const logEvents: Array<{ event: string; fields: Record<string, unknown> }> = [];
   const cacheWrites: Array<{ key: string; value: string; ttlSeconds: number }> = [];
+  const queuedDecisionActions: unknown[] = [];
   const ownedThreadKeys = options.ownedThreadKeys ?? new Set<string>();
   const runtimeSessionRefs = options.runtimeSessionRefs ?? new Map<string, Record<string, unknown>>();
   const runtimeConversation = {
@@ -555,6 +563,18 @@ async function runWebhook(body: unknown, options: {
     ...(options.knowledgeReviewService
       ? { knowledgeReviewService: options.knowledgeReviewService as any }
       : {}),
+    ...(options.decisionCardHandler
+      ? {
+          decisionCardHandler: options.decisionCardHandler as any,
+          decisionActionQueue: options.decisionActionQueue ?? {
+            enqueue: async (payload: unknown) => {
+              order.push('decision-queue');
+              queuedDecisionActions.push(payload);
+              return 'decision-job-1';
+            },
+          },
+        }
+      : {}),
     ...(options.workbookConversionCardHandler
       ? { workbookConversionCardHandler: options.workbookConversionCardHandler as any }
       : {}),
@@ -633,6 +653,7 @@ async function runWebhook(body: unknown, options: {
     ownedThreadKeys,
     runtimeSessionRefs,
     cacheWrites,
+    queuedDecisionActions,
     processQueuedReceipt,
   };
 }
@@ -1812,6 +1833,48 @@ describe('Lark webhook card authorization', () => {
     assert.equal(result.responseBody?.ok, true);
     assert.equal(receivedActor.openId, 'ou_admin');
     assert.equal(receivedActor.userId, 'admin-1');
+  });
+
+  it('durably queues a Decision before ACK without waiting for identity or settlement', async () => {
+    let handlerCalled = false;
+    const result = await runWebhook({
+      header: {
+        event_type: 'card.action.trigger',
+        token: 'verify',
+        tenant_key: 'tenant-1',
+      },
+      event: {
+        operator: { open_id: 'ou_admin', name: 'Admin' },
+        context: { open_chat_id: 'oc_decision', open_message_id: 'om_decision_card' },
+        action: {
+          value: {
+            kind: 'decision_answer',
+            decisionId: 'decision-1',
+            questionId: 'confirm',
+            value: 'yes',
+          },
+        },
+      },
+    }, {
+      identity: {
+        userId: 'admin-1',
+        companyId: 'company-1',
+        aiRole: 'COMPANY_ADMIN',
+        channel: 'lark',
+      },
+      decisionCardHandler: {
+        claims: () => true,
+        handle: async () => {
+          handlerCalled = true;
+          throw new Error('webhook must not settle inline');
+        },
+      },
+    });
+
+    assert.equal((result.responseBody as any).toast.content, 'Decision received. Divo is continuing now.');
+    assert.equal(handlerCalled, false);
+    assert.deepEqual(result.order.slice(-2), ['decision-queue', 'ack']);
+    assert.equal(result.queuedDecisionActions.length, 1);
   });
 
   it('acknowledges and locks an authenticated workbook conversion action', async () => {
@@ -3872,4 +3935,3 @@ it('an undecodable quoted image is dropped rather than staged empty', () => {
     [],
   );
 });
-
