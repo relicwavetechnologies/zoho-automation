@@ -53,8 +53,11 @@ export function nativeContractQuery(query: string): string | undefined {
 }
 
 export interface NativeContractBootstrapOptions {
-	readonly contractMode?: "suggested" | "complete";
+	readonly contractMode?: "suggested" | "complete" | "complete_cached";
 }
+
+/** Speculative preload warms durable schemas but never blocks a turn on an external catalogue. */
+export const SPECULATIVE_NATIVE_CONTRACT_MODE = "complete_cached" as const;
 
 /**
  * Fetch prompt-relevant provider-native input schemas and run account context.

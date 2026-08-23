@@ -63,6 +63,8 @@ import { CanvaMcpClient } from './infrastructure/canva/canva-mcp.client';
 import { AirtableMcpOAuthService } from './infrastructure/airtable/airtable-mcp-oauth.service';
 import { AirtableMcpClient } from './infrastructure/airtable/airtable-mcp.client';
 import { AirtableMcpSchemaCatalog } from './infrastructure/airtable/airtable-mcp-schema.catalog';
+import { ProviderSchemaArtifactRepository } from './infrastructure/persistence/provider-schema-artifact.repository';
+import { providerSchemaArtifactPartitionKey } from './application/gateway/provider-schema-artifact-catalogue';
 import { AitableClient } from './infrastructure/aitable/aitable.client';
 import { ShopifyOAuthService } from './infrastructure/shopify/shopify-oauth.service';
 import { ShopifyAdminClient } from './infrastructure/shopify/shopify-admin.client';
@@ -976,10 +978,19 @@ export async function buildContainer(
       logger,
     })],
   ]));
-  const googleWorkspaceMcpSchemas = new GoogleWorkspaceMcpSchemaCatalog();
+  const providerSchemaArtifacts = new ProviderSchemaArtifactRepository(prisma);
+  const googleWorkspaceMcpSchemas = new GoogleWorkspaceMcpSchemaCatalog({
+    store: providerSchemaArtifacts,
+    logger: logger.child({ service: 'google-workspace-schema-artifacts' }),
+    partitionKey: providerSchemaArtifactPartitionKey(env.GOOGLE_WORKSPACE_MCP_URL),
+  });
   const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: ephemeralCache, logger });
   const airtableMcpOAuthService   = new AirtableMcpOAuthService({ env, cache: ephemeralCache, logger });
-  const airtableMcpSchemas        = new AirtableMcpSchemaCatalog();
+  const airtableMcpSchemas        = new AirtableMcpSchemaCatalog({
+    store: providerSchemaArtifacts,
+    logger: logger.child({ service: 'airtable-schema-artifacts' }),
+    partitionKey: providerSchemaArtifactPartitionKey(env.AIRTABLE_MCP_URL),
+  });
   // AITable authenticates with a personal API key, so there is no OAuth service
   // to construct — only the check that proves a pasted key before it is stored.
   const aitableKeyVerifier        = createAitableKeyVerifier({ baseUrl: env.AITABLE_BASE_URL });

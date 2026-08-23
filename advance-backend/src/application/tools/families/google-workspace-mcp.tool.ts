@@ -117,7 +117,11 @@ export interface GoogleWorkspaceMcpToolDescription {
 }
 
 export interface GoogleWorkspaceMcpPort {
-  describeTool(name: string, abortSignal?: AbortSignal): Promise<GoogleWorkspaceMcpToolDescription | null>;
+  describeTool(
+    name: string,
+    abortSignal?: AbortSignal,
+    options?: { readonly waitForProvider?: boolean },
+  ): Promise<GoogleWorkspaceMcpToolDescription | null>;
   callTool(
     name: string,
     input: Readonly<Record<string, unknown>>,

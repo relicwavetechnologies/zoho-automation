@@ -7,10 +7,10 @@ import type {
 	TypedToolResult,
 } from "../typed-tool-runtime.ts";
 import {
-	bindNativeContractsToCatalogue,
 	cacheNativeContracts,
 	markCompleteNativeContractCoverage,
 	missingCompleteNativeContractToolIds,
+	NativeContractBindings,
 	providerNativeContractToolIds,
 	registerGeneratedNativeToolCatalogue,
 } from "./catalogue.ts";
@@ -129,11 +129,12 @@ describe("complete Pi-native Divo tool catalogue", () => {
 		], coverage), ["airtableRecords"]);
 	});
 
-	it("enriches a permanent provider wrapper without letting bootstrap redefine its identity or handler", () => {
+	it("reconciles exact contracts across turns without repeated registration or stale schemas", () => {
 		const tools: Registered[] = [];
 		const host: TypedToolHost = { registerTool: definition => void tools.push(definition) };
 		const invoke = async (): Promise<TypedToolResult> => ({ content: [], details: {} });
-		registerGeneratedNativeToolCatalogue(host, invoke);
+		const generated = registerGeneratedNativeToolCatalogue(host, invoke);
+		const bindings = new NativeContractBindings(host, invoke, generated.toolIds);
 		const baseCount = tools.length;
 		const cache = new Map();
 		const contracts = [{
@@ -148,7 +149,7 @@ describe("complete Pi-native Divo tool catalogue", () => {
 			},
 		}];
 		assert.deepEqual(cacheNativeContracts(contracts, cache), ["googleSheets"]);
-		const refreshed = bindNativeContractsToCatalogue(host, invoke, contracts);
+		const refreshed = bindings.reconcile(["googleSheets"], contracts);
 
 		assert.deepEqual(refreshed, ["divo_google_sheets"]);
 		assert.equal(tools.length, baseCount + 1);
@@ -157,5 +158,17 @@ describe("complete Pi-native Divo tool catalogue", () => {
 		assert.equal(enriched.executionMode, "sequential");
 		assert.match(JSON.stringify(enriched.parameters), /create_spreadsheet/);
 		assert.match(JSON.stringify(enriched.parameters), /"title"/);
+
+		assert.deepEqual(bindings.reconcile(["googleSheets"], contracts), []);
+		assert.equal(tools.length, baseCount + 1);
+
+		assert.deepEqual(bindings.reconcile([], []), ["divo_google_sheets"]);
+		assert.equal(tools.length, baseCount + 2);
+		const reset = tools.at(-1)!;
+		const base = GENERATED_NATIVE_TOOL_SPECS.find(spec => spec.toolId === "googleSheets")!;
+		assert.deepEqual(reset.parameters, base.parameters);
+
+		assert.deepEqual(bindings.reconcile(["googleSheets"], []), []);
+		assert.equal(tools.length, baseCount + 2);
 	});
 });

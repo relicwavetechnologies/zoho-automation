@@ -1222,6 +1222,40 @@ model AiModelTargetConfig {
   @@index([updatedAt])
 }
 
+// Sanitized provider tool schemas are stable contract data, not member data or
+// execution authority. A versioned artifact survives backend and Pi process
+// loss; the head selects the current projection for one provider endpoint.
+model ProviderSchemaArtifact {
+  id                 String                       @id @default(uuid())
+  provider           String
+  partitionKey       String
+  projectionRevision String
+  digest             String
+  payload            String
+  byteLength         Int
+  schemaCount        Int
+  createdAt          DateTime                     @default(now())
+  heads              ProviderSchemaArtifactHead[]
+
+  @@unique([provider, partitionKey, projectionRevision, digest], map: "ProviderSchemaArtifact_identity_digest_key")
+  @@index([provider, projectionRevision])
+}
+
+model ProviderSchemaArtifactHead {
+  provider           String
+  partitionKey       String
+  projectionRevision String
+  artifactId         String
+  artifact           ProviderSchemaArtifact @relation(fields: [artifactId], references: [id], onDelete: Restrict)
+  checkedAt          DateTime
+  expiresAt          DateTime
+  updatedAt          DateTime               @updatedAt
+
+  @@id([provider, partitionKey, projectionRevision])
+  @@index([artifactId])
+  @@index([expiresAt])
+}
+
 // ─── Desktop / Member models ───
 
 model MemberSession {

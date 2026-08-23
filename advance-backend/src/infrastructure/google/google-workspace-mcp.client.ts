@@ -20,6 +20,7 @@ export class GoogleWorkspaceMcpClient implements GoogleWorkspaceMcpPort {
   async describeTool(
     name: string,
     abortSignal?: AbortSignal,
+    options: { readonly waitForProvider?: boolean } = {},
   ): Promise<GoogleWorkspaceMcpToolDescription | null> {
     abortSignal?.throwIfAborted();
     return this.schemaCatalog.describe(name, () => this.withClient(async (client) => {
@@ -29,7 +30,7 @@ export class GoogleWorkspaceMcpClient implements GoogleWorkspaceMcpPort {
         ...(tool.description ? { description: tool.description } : {}),
         inputSchema: tool.inputSchema,
       }));
-    }, abortSignal));
+    }, abortSignal), options);
   }
 
   async callTool(

@@ -23,10 +23,11 @@ export class GoogleWorkspaceGatewayClient implements GoogleWorkspaceMcpPort {
   async describeTool(
     name: string,
     abortSignal?: AbortSignal,
+    options: { readonly waitForProvider?: boolean } = {},
   ): Promise<GoogleWorkspaceMcpToolDescription | null> {
     abortSignal?.throwIfAborted();
     return this.sheetsDataValidation.describeTool(name)
-      ?? this.mcp.describeTool(name, abortSignal);
+      ?? this.mcp.describeTool(name, abortSignal, options);
   }
 
   async callTool(

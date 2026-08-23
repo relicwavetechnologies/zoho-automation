@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { IntegrationConnectionRepository } from '../../src/infrastructure/persistence/integration-connection.repository.ts';
+import { createMemberGrantScope } from '../../src/domain/permissions/member-grant-scope.ts';
 
 const now = new Date();
 
@@ -191,5 +192,92 @@ describe('IntegrationConnectionRepository.findLarkConnectionOwner', () => {
     });
 
     assert.deepEqual(result, { ok: true, value: { userId: 'user-2' } });
+  });
+});
+
+describe('IntegrationConnectionRepository accessible grant scope', () => {
+  it('reuses one complete fresh grant scope without loading membership axes again', async () => {
+    let connectionWhere: any;
+    const repo = new IntegrationConnectionRepository({
+      departmentMembership: {
+        findMany: async () => { throw new Error('membership must not be loaded twice'); },
+      },
+      adminMembership: {
+        findFirst: async () => { throw new Error('admin membership must not be loaded twice'); },
+      },
+      integrationConnection: {
+        findMany: async (input: any) => { connectionWhere = input.where; return []; },
+      },
+    } as any, { ZOHO_TOKEN_ENCRYPTION_KEY: 'test-key' } as any);
+    const memberGrantScope = createMemberGrantScope({
+      companyId: 'company-1',
+      userId: 'user-1',
+      departmentIds: ['department-1'],
+      departmentRoleIds: ['role-1'],
+      adminRole: 'COMPANY_ADMIN',
+    });
+
+    const result = await repo.listAccessibleZohoConnections({
+      companyId: 'company-1',
+      userId: 'user-1',
+      memberGrantScope,
+    });
+
+    assert.deepEqual(result, { ok: true, value: [] });
+    assert.deepEqual(connectionWhere.OR[1].grants.some.OR, [
+      { granteeType: 'user', granteeId: 'user-1' },
+      { granteeType: 'company', granteeId: 'company-1' },
+      { granteeType: 'department', granteeId: { in: ['department-1'] } },
+      { granteeType: 'role', granteeId: { in: ['role-1'] } },
+      { granteeType: 'role', granteeId: 'COMPANY_ADMIN' },
+    ]);
+  });
+
+  it('starts membership and admin reads in parallel when no scope is supplied', async () => {
+    let membershipStarted = false;
+    let adminStarted = false;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const repo = new IntegrationConnectionRepository({
+      departmentMembership: {
+        findMany: async () => { membershipStarted = true; await gate; return []; },
+      },
+      adminMembership: {
+        findFirst: async () => { adminStarted = true; await gate; return null; },
+      },
+      integrationConnection: { findMany: async () => [] },
+    } as any, { ZOHO_TOKEN_ENCRYPTION_KEY: 'test-key' } as any);
+
+    const pending = repo.listAccessibleZohoConnections({
+      companyId: 'company-1',
+      userId: 'user-1',
+    });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(membershipStarted, true);
+    assert.equal(adminStarted, true);
+
+    release();
+    assert.deepEqual(await pending, { ok: true, value: [] });
+  });
+
+  it('rejects a pre-resolved scope for another principal', async () => {
+    const repo = new IntegrationConnectionRepository({} as any, {
+      ZOHO_TOKEN_ENCRYPTION_KEY: 'test-key',
+    } as any);
+
+    const result = await repo.listAccessibleZohoConnections({
+      companyId: 'company-1',
+      userId: 'user-1',
+      memberGrantScope: createMemberGrantScope({
+        companyId: 'other-company',
+        userId: 'user-1',
+        departmentIds: [],
+        departmentRoleIds: [],
+        adminRole: null,
+      }),
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.match(result.error.message, /does not match the requested principal/);
   });
 });

@@ -132,6 +132,38 @@ describe('Airtable work-contract bootstrap', () => {
     assert.equal(result.contracts.length, described.length);
   });
 
+  it('starts complete cache refresh without blocking speculative Pi preload', async () => {
+    const waits: Array<boolean | undefined> = [];
+    const service = new AirtableContractBootstrapService(async () => ({
+      status: 'resolved' as const,
+      connection: {
+        client: {
+          describeTool: async (
+            _name: string,
+            options?: { readonly waitForProvider?: boolean },
+          ) => {
+            waits.push(options?.waitForProvider);
+            return null;
+          },
+          callTool: async () => null,
+        },
+      },
+    }));
+
+    const result = await service.load({
+      member,
+      query: '',
+      contractMode: 'complete_cached',
+      toolIds: ['airtableRecords'],
+      connections: [connection],
+    });
+
+    assert.ok(waits.length > 1);
+    assert.equal(waits.every(wait => wait === false), true);
+    assert.equal(result.contracts.length, 0);
+    assert.equal(result.unavailableNativeTools.length, waits.length);
+  });
+
   it('reports operations as unavailable rather than inventing a schema', async () => {
     const noConnection = new AirtableContractBootstrapService(resolverReturning(async () => null));
     const withoutAccount = await noConnection.load({

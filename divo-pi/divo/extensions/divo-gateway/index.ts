@@ -33,15 +33,16 @@ import {
 	createGatewayPlatformInvoker,
 	createGatewayTypedToolInvoker,
 	fetchNativeContractBootstrap,
+	SPECULATIVE_NATIVE_CONTRACT_MODE,
 } from "./typed-tool-runtime.ts";
 import { registerTypedPlatformTools } from "./typed-platform-tools.ts";
 import { registerDivoLlmProviders } from "../divo-llm/index.ts";
 import { registerLocalDivoBroker, localCliAvailable } from "./local-broker.ts";
 import {
-	bindNativeContractsToCatalogue,
 	cacheNativeContracts,
 	markCompleteNativeContractCoverage,
 	missingCompleteNativeContractToolIds,
+	NativeContractBindings,
 	providerNativeContractToolIds,
 	registerGeneratedNativeToolCatalogue,
 	type NativeContractCache,
@@ -129,6 +130,11 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 	// schema, but it can never define or remove an outer Pi tool.
 	const semrushToolName = registerNativeSemrushTool(pi, typedToolInvoker);
 	const nativeCatalogue = registerGeneratedNativeToolCatalogue(pi, typedToolInvoker);
+	const nativeContractBindings = new NativeContractBindings(
+		pi,
+		typedToolInvoker,
+		nativeCatalogue.toolIds,
+	);
 	const nativeToolNames = [semrushToolName, ...nativeCatalogue.registered];
 	const deepseekToolSurface = registerDeepSeekToolSurface(pi);
 	// Capabilities that are not a governed tool call and would otherwise vanish
@@ -171,9 +177,8 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 				cacheNativeContracts(result.bootstrap.nativeContracts, nativeContractCache);
 				// A resolution already asked the backend for this workflow's operations,
 				// so its contracts are the turn's selection rather than a whole family.
-				const refreshed = bindNativeContractsToCatalogue(
-					pi,
-					typedToolInvoker,
+				const refreshed = nativeContractBindings.reconcile(
+					result.bootstrap.nativeContracts.map(contract => contract.toolId),
 					result.bootstrap.nativeContracts,
 				);
 				if (refreshed.length > 0) {
@@ -215,6 +220,13 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		const reachableToolIds = providerNativeContractToolIds(
 			toolIdsForDeepSeekPreload(permittedToolIds, selection),
 		);
+		if (reachableToolIds.length === 0) {
+			const reset = nativeContractBindings.reconcile([], []);
+			if (reset.length > 0) {
+				console.error(`[divo-native-tools] reset stale contracts for ${reset.join(",")}`);
+			}
+			return;
+		}
 		const missingContractToolIds = missingCompleteNativeContractToolIds(
 			reachableToolIds,
 			completeNativeContractCoverage,
@@ -222,18 +234,19 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 		if (reachableToolIds.length > 0 && missingContractToolIds.length === 0) {
 			console.error(`[divo-native-tools] complete contract preload already cached for ${reachableToolIds.length} tools`);
 		}
-		if (missingContractToolIds.length === 0) return;
 		try {
 			const { covered, fetched, refreshed, tiered } = await preparationTrace.measure(
 				"pi.prepare.contracts",
 				"gateway",
 				async () => {
-					const fetched = await fetchNativeContractBootstrap(
-						missingContractToolIds,
-						"native-inputs-eager",
-						prompt,
-						{ contractMode: "complete" },
-					);
+					const fetched = missingContractToolIds.length > 0
+						? await fetchNativeContractBootstrap(
+							missingContractToolIds,
+							"native-inputs-eager",
+							prompt,
+							{ contractMode: SPECULATIVE_NATIVE_CONTRACT_MODE },
+						)
+						: { failed: [] };
 					if (fetched.bootstrap) {
 						cacheNativeContracts(fetched.bootstrap.nativeContracts, nativeContractCache);
 					}
@@ -242,9 +255,8 @@ export default function divoGatewayExtension(pi: ExtensionAPI) {
 						visibleToolIds: reachableToolIds,
 						query: prompt,
 					});
-					const refreshed = bindNativeContractsToCatalogue(
-						pi,
-						typedToolInvoker,
+					const refreshed = nativeContractBindings.reconcile(
+						reachableToolIds,
 						tiered.bound,
 					);
 					const hasUnavailableContract = fetched.bootstrap?.advisories

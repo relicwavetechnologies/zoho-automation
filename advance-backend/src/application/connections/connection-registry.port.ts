@@ -1,6 +1,7 @@
 import type { InfraError } from '../../shared/errors';
 import type { Result } from '../../shared/result';
 import type { ConnectionProvider } from '../../domain/connections/connection-provider';
+import type { MemberGrantScope } from '../../domain/permissions/member-grant-scope';
 
 export type { ConnectionProvider } from '../../domain/connections/connection-provider';
 export type ConnectionAccess = 'read_only' | 'read_write' | 'admin';
@@ -36,35 +37,42 @@ export interface ConnectionRegistryPort {
     /** Include accounts whose grant Google revoked, so they can be reconnected. */
     readonly includeReauthorizationRequired?: boolean;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleZohoConnections(input: {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleCanvaConnections(input: {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleAirtableConnections(input: {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleAitableConnections(input: {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleLarkConnections(input: {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
   listAccessibleShopifyConnections(input: {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<AccessibleConnection[], InfraError>>;
 }

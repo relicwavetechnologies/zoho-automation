@@ -27,10 +27,23 @@ export const AIRTABLE_MCP_SOURCE = Object.freeze({
 export const AIRTABLE_MCP_AUTH_CONTRACT = Object.freeze({
   mode: 'external_bearer' as const,
   identitySource: 'access_token' as const,
+  forbiddenToolArguments: [
+    'access_token',
+    'accessToken',
+    'api_key',
+    'apiKey',
+    'authorization',
+    'bearer_token',
+    'bearerToken',
+    'connection_id',
+    'connectionId',
+    'token',
+  ] as const,
+  forbiddenLocalFileArguments: ['path', 'file_path'] as const,
   agentGuidance:
     'The selected Divo connection authenticates the request with its backend-owned bearer token. ' +
     'Airtable derives the account from that token and still enforces its own base permissions, ' +
-    'so never send identity, token, or API-key fields in native tool input.',
+    'so never send identity, token, or API-key fields in native tool input; sidecar-local file fields are also forbidden.',
 });
 
 /**
