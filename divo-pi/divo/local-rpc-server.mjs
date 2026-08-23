@@ -7,7 +7,11 @@ import {
 	resolveRuntimeLease,
 	runRuntimeSessionLifecycle,
 } from "./local-rpc-controller.mjs";
-import { createHeadlessExtensionResponder } from "./approval-responder.mjs";
+import {
+	createHeadlessExtensionResponder,
+	createRuntimeExtensionResponder,
+} from "./approval-responder.mjs";
+import { createRuntimeAskRegistry } from "./runtime-ask-registry.mjs";
 import { createNdjsonStreamWriter } from "./ndjson-stream-writer.mjs";
 import {
 	MAX_RUNTIME_ATTACHMENTS,
@@ -124,6 +128,7 @@ export function createAdmissionController({
 	resolveLease = resolveRuntimeLease,
 	cleanupProtectedSession,
 	maxActiveRuns = DEFAULT_MAX_ACTIVE_RUNS,
+	asks = createRuntimeAskRegistry(),
 } = {}) {
 	const limit = positiveInteger(maxActiveRuns, DEFAULT_MAX_ACTIVE_RUNS, "maxActiveRuns");
 	const activeProfiles = new Set();
@@ -184,6 +189,8 @@ export function createAdmissionController({
 		get activeProfileNames() {
 			return [...activeProfiles];
 		},
+		/** The questions admitted runs are currently sitting on. */
+		asks,
 		async run({ profile: profileName, message, thread, signal }) {
 			const profile = validateProfileName(profileName);
 			const normalizedMessage = validateMessage(message);
@@ -270,6 +277,10 @@ export function createAdmissionController({
 					result = await executeRuntime(runtime, normalizedMessage, {
 						signal,
 						sessionScope: normalizedSessionScope,
+						// The one answerer that can wait for a person. Scoped to this
+						// run's signal, so a run the caller abandons releases the
+						// question it was sitting on instead of holding its slot.
+						answerRequest: createRuntimeExtensionResponder({ asks, signal }),
 						...(model ? { model } : {}),
 						...(normalizedThinkingLevel ? { thinkingLevel: normalizedThinkingLevel } : {}),
 						...(stagedAttachments.length > 0 ? { attachments: stagedAttachments } : {}),
@@ -545,6 +556,35 @@ export function createControllerServer(options = {}) {
 				status: "ok",
 				activeRuns: admission.activeCount,
 				maxActiveRuns: admission.maxActiveRuns,
+				pendingAsks: admission.asks.pendingCount,
+			});
+			return;
+		}
+		/*
+		 * The one way into a run that is already going.
+		 *
+		 * Every other route here starts work. This one reaches a run that is
+		 * already admitted and sitting on a question, which is what lets a
+		 * connect ask be answered by the OAuth callback rather than by a second
+		 * run started afterwards. It answers the question and returns; the run
+		 * carries on inside its own original request.
+		 */
+		if (request.method === "POST" && request.url?.startsWith("/v1/runtime-asks/")) {
+			const askId = decodeURIComponent(request.url.slice("/v1/runtime-asks/".length));
+			let body;
+			try {
+				body = await readJson(request);
+			} catch {
+				sendJson(response, 400, { error: { code: "invalid_request", message: "Body must be JSON" } });
+				return;
+			}
+			const answered = admission.asks.answer(askId, body?.granted === true);
+			// 404 rather than 200 when nothing was waiting: the caller needs to
+			// tell "the run heard me" from "the run had already given up", and
+			// both are ordinary outcomes here rather than faults.
+			sendJson(response, answered ? 200 : 404, {
+				status: answered ? "answered" : "no_pending_ask",
+				askId,
 			});
 			return;
 		}

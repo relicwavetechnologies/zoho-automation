@@ -1,7 +1,10 @@
 import type { PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 import type { ChannelKey } from '../../domain/channel/incoming-message';
-import { surfaceCapabilities } from '../../domain/channel/surface-capabilities';
+import {
+  surfaceCapabilities,
+  type SurfaceAudience,
+} from '../../domain/channel/surface-capabilities';
 import { asCompanyId, asDepartmentId, asUserId } from '../../shared/ids';
 import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import { zohoServicesForScopes } from '../../domain/zoho/zoho-scope';
@@ -21,6 +24,7 @@ import {
   measureRunLatency,
   type RunLatencyTrace,
 } from '../observability/run-latency-recorder';
+import { createMemberGrantScope } from '../../domain/permissions/member-grant-scope';
 
 const NATIVE_SKILL_LIMIT = 100;
 const NATIVE_SKILL_DESCRIPTION_BYTES = 1_024;
@@ -69,6 +73,8 @@ export interface RuntimeContextLifecycleInput {
   readonly companyId: string;
   readonly companyRole: string;
   readonly channel: ChannelKey;
+  /** Trusted from the signed Pi runtime lease when present. */
+  readonly audience?: SurfaceAudience;
   readonly departmentId?: string;
   readonly capabilityVersion: 2 | 3;
   /** Present only after the HTTP adapter validates the pinned Pi runtime lease. */
@@ -134,42 +140,54 @@ export class RuntimeContextLifecycle {
           personaPrompt: '',
           version: null,
           personalMemory: await personalMemoryLoad,
-          surface: surfaceCapabilities(input.channel),
+          surface: surfaceCapabilities(input.channel, input.audience),
         },
       };
     }
     const departmentId = input.departmentId;
 
-    const [personalMemory, membership] = await Promise.all([
+    const [personalMemory, [memberships, adminMembership]] = await Promise.all([
       personalMemoryLoad,
       measureRunLatency(input.trace, {
         name: 'runtime.context.membership',
         category: 'persistence',
-      }, () => this.deps.prisma.departmentMembership.findFirst({
-        where: {
-          userId: input.userId,
-          departmentId,
-          status: 'active',
-          department: { companyId: input.companyId, status: 'active' },
-        },
-        select: {
-          department: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
-              agentConfig: {
-                select: {
-                  desktopPersonaPrompt: true,
-                  isActive: true,
-                  updatedAt: true,
+      }, () => Promise.all([
+        this.deps.prisma.departmentMembership.findMany({
+          where: {
+            userId: input.userId,
+            status: 'active',
+            department: { companyId: input.companyId, status: 'active' },
+          },
+          select: {
+            departmentId: true,
+            roleId: true,
+            department: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+                agentConfig: {
+                  select: {
+                    desktopPersonaPrompt: true,
+                    isActive: true,
+                    updatedAt: true,
+                  },
                 },
               },
             },
           },
-        },
-      })),
+        }),
+        this.deps.prisma.adminMembership.findFirst({
+          where: {
+            userId: input.userId,
+            companyId: input.companyId,
+            isActive: true,
+          },
+          select: { role: true },
+        }),
+      ])),
     ]);
+    const membership = memberships.find(candidate => candidate.departmentId === departmentId);
 
     if (!membership) {
       return {
@@ -180,6 +198,13 @@ export class RuntimeContextLifecycle {
     }
 
     const department = membership.department;
+    const memberGrantScope = createMemberGrantScope({
+      companyId: input.companyId,
+      userId: input.userId,
+      departmentIds: memberships.map(candidate => candidate.departmentId),
+      departmentRoleIds: memberships.map(candidate => candidate.roleId),
+      adminRole: adminMembership?.role ?? null,
+    });
     const config = department.agentConfig;
     const active = config?.isActive === true;
     const financeDepartment = isFinanceDepartment(department.name, department.slug);
@@ -206,6 +231,8 @@ export class RuntimeContextLifecycle {
       }, () => this.deps.skillAccessEnforcement.listGrantedSkillIds(
         input.companyId,
         input.userId,
+        undefined,
+        memberGrantScope,
       )),
       measureRunLatency(input.trace, {
         name: 'runtime.context.registry-revision',
@@ -234,6 +261,7 @@ export class RuntimeContextLifecycle {
         }, () => this.deps.connectionRegistry.listAccessibleZohoConnections({
           userId: input.userId,
           companyId: input.companyId,
+          memberGrantScope,
         }))
       : undefined;
     zohoConnectionsLoad?.catch(() => undefined);
@@ -356,7 +384,7 @@ export class RuntimeContextLifecycle {
           managerPersonaVersion,
         ].filter((value): value is string => Boolean(value)).join('|') || null,
         personalMemory,
-        surface: surfaceCapabilities(input.channel),
+        surface: surfaceCapabilities(input.channel, input.audience),
         ...(capabilityBootstrap ? { capabilityBootstrap } : {}),
         ...(nativeSkillBootstrap ? { nativeSkillBootstrap } : {}),
         ...(currentNativeSkillBinding ? { nativeSkillBinding: currentNativeSkillBinding } : {}),

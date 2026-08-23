@@ -96,11 +96,11 @@ export class InMemoryBusinessActionApprovals {
     return this.transition(id, ['executing'], 'awaiting_governance', result);
   }
 
-  async completeLinkedBusinessAction(id: string, result: unknown) {
+  async completeLinkedDecision(id: string, result: unknown) {
     return this.transition(id, ['awaiting_governance'], 'consumed', result);
   }
 
-  async failLinkedBusinessAction(id: string, status: 'rejected' | 'failed', result: unknown) {
+  async failLinkedDecision(id: string, status: 'rejected' | 'failed', result: unknown) {
     return this.transition(id, ['awaiting_governance'], status, result);
   }
 

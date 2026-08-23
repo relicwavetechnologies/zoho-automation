@@ -15,6 +15,7 @@ import {
   type AirtableOperationDefinition,
   type AirtableProductDefinition,
 } from '../../airtable/airtable-mcp-manifest';
+import { findForbiddenProviderInputPath } from '../../../shared/provider-schema-safety';
 
 function nativeArgsBranches(nativeTool: z.ZodType<string>) {
   return [
@@ -55,6 +56,10 @@ const ResultSchema = z.object({
 export type AirtableMcpToolResult = z.infer<typeof ResultSchema>;
 
 const nativeSchemaValidator = new Ajv({ strict: false, allErrors: true });
+const FORBIDDEN_NATIVE_INPUT_PROPERTIES = [
+  ...AIRTABLE_MCP_AUTH_CONTRACT.forbiddenToolArguments,
+  ...AIRTABLE_MCP_AUTH_CONTRACT.forbiddenLocalFileArguments,
+];
 const RECORD_READ_OPERATIONS = new Set(['list_records_for_table', 'search_records']);
 const RECORD_READ_DEFAULT_ROWS = 100;
 export const AIRTABLE_RECORD_READ_MAX_ROWS = 200;
@@ -88,7 +93,10 @@ export interface AirtableMcpToolDescription {
 }
 
 export interface AirtableMcpPort {
-  describeTool(name: string): Promise<AirtableMcpToolDescription | null>;
+  describeTool(
+    name: string,
+    options?: { readonly waitForProvider?: boolean },
+  ): Promise<AirtableMcpToolDescription | null>;
   callTool(
     name: string,
     input: Readonly<Record<string, unknown>>,
@@ -204,6 +212,10 @@ function createProductTool(
     },
 
     async preflight(args, ctx) {
+      if (args.op === 'call') {
+        const safetyIssue = airtableNativeInputSafetyIssue(args.input ?? {});
+        if (safetyIssue) return badArgs(product.toolId, safetyIssue);
+      }
       const resolved = await resolveForRequest(product, deps, args, ctx);
       if (!resolved.ok) return resolved;
       const { operation, action, connection } = resolved.value;
@@ -229,6 +241,10 @@ function createProductTool(
     },
 
     async execute(args, ctx): Promise<Result<AirtableMcpToolResult, ToolError>> {
+      if (args.op === 'call') {
+        const safetyIssue = airtableNativeInputSafetyIssue(args.input ?? {});
+        if (safetyIssue) return badArgs(product.toolId, safetyIssue);
+      }
       const resolved = await resolveForRequest(product, deps, args, ctx);
       if (!resolved.ok) {
         // A pending account choice is a normal, recoverable turn — surface the
@@ -522,6 +538,8 @@ function validateOperationInput(
   nativeTool: string,
   input: Readonly<Record<string, unknown>>,
 ): string | undefined {
+  const safetyIssue = airtableNativeInputSafetyIssue(input);
+  if (safetyIssue) return safetyIssue;
   if (nativeTool === LIST_FIELDS_TOOL) {
     const parsed = ListFieldsInputSchema.safeParse(input);
     return parsed.success
@@ -531,6 +549,16 @@ function validateOperationInput(
         .join('; ');
   }
   return validateNativeInput(inputSchema, nativeTool, input);
+}
+
+function airtableNativeInputSafetyIssue(input: Readonly<Record<string, unknown>>): string | undefined {
+  const forbiddenPath = findForbiddenProviderInputPath(
+    input,
+    FORBIDDEN_NATIVE_INPUT_PROPERTIES,
+  );
+  return forbiddenPath
+    ? `${forbiddenPath} is not allowed; Airtable identity and credentials come from the selected backend-owned connection`
+    : undefined;
 }
 
 async function describeOperation(

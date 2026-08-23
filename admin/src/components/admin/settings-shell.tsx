@@ -36,6 +36,7 @@ export const RAIL: RailGroup[] = [
       { to: '/settings/profile', label: 'Profile', icon: UserSquare },
       { to: '/settings/preferences', label: 'Preferences', icon: SlidersHorizontal },
       { to: '/settings/connections', label: 'Connected apps', icon: Link2 },
+      { to: '/settings/approvals', label: 'What needs a yes', icon: ShieldCheck },
       { to: '/settings/usage', label: 'Your usage', icon: Gauge },
       /* Memory was the last of the 'Agent' group once Access, Skills and
          Models were retired, and a heading over one row reads as a mistake.
@@ -49,7 +50,6 @@ export const RAIL: RailGroup[] = [
     items: [
       { to: '/settings/team/people', label: 'People', icon: Users },
       { to: '/settings/team/roles', label: 'Roles', icon: UserSquare },
-      { to: '/settings/team/approvals', label: 'Ask me first', icon: ShieldCheck },
       /* "Team usage", not "Usage". The rail carried the word twice — once under
          Account for your own spend and once here for the team's — so the two
          were told apart only by which heading you had scrolled past. This is

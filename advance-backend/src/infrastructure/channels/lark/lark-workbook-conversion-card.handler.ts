@@ -1,6 +1,14 @@
 import type { WorkbookConversionConfirmationService } from '../../../application/artifacts/workbook-conversion.service';
 import type { Logger } from '../../../shared/logger';
-import type { LarkAuthenticatedCardActor } from './lark-approval-card.handler';
+
+export interface LarkAuthenticatedCardActor {
+  readonly tenantKey: string;
+  readonly openId: string;
+  readonly userId: string;
+  readonly companyId: string;
+  readonly aiRole: string;
+  readonly displayName?: string;
+}
 
 interface WorkbookConversionCardAction {
   readonly kind: 'workbook_conversion_confirm';

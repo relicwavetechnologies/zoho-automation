@@ -9,6 +9,7 @@ import { createCanvaDesignTool } from '../src/application/tools/families/canva-d
 import { createGoogleWorkspaceMcpTools } from '../src/application/tools/families/google-workspace-mcp.tool';
 import { createKnowledgeTool } from '../src/application/tools/families/knowledge.tool';
 import { createLarkApprovalTool } from '../src/application/tools/families/lark-approval.tool';
+import { createConnectionsTool } from '../src/application/tools/families/connections.tool';
 import { createLarkBaseTool } from '../src/application/tools/families/lark-base.tool';
 import { createLarkCalendarTool } from '../src/application/tools/families/lark-calendar.tool';
 import { createLarkContactsTool } from '../src/application/tools/families/lark-contacts.tool';
@@ -23,6 +24,7 @@ import { createScheduledWorkflowsTool } from '../src/application/tools/families/
 import { createSemrushTool } from '../src/application/tools/families/semrush.tool';
 import { createShopifyTools } from '../src/application/tools/families/shopify.tool';
 import { createWebSearchTool } from '../src/application/tools/families/web-search.tool';
+import { createArtifactPublishingTool } from '../src/application/tools/families/artifact-publishing.tool';
 import { createZohoBooksTool } from '../src/application/tools/families/zoho-books.tool';
 import { createZohoCrmTool } from '../src/application/tools/families/zoho-crm.tool';
 import { serializeToolArgsSchema } from '../src/application/gateway/work-bootstrap.service';
@@ -65,6 +67,7 @@ export function buildCanonicalToolContracts(): ReadonlyArray<Tool<unknown, unkno
     createLarkDocTool(inert),
     createLarkBaseTool(inert),
     createLarkApprovalTool(inert),
+    createConnectionsTool(inert),
     ...createGoogleWorkspaceMcpTools(inert),
     createCanvaDesignTool(inert),
     ...createAirtableMcpTools(inert),
@@ -83,6 +86,7 @@ export function buildCanonicalToolContracts(): ReadonlyArray<Tool<unknown, unkno
     createSemrushTool(inert),
     createOmsSiteDataTool(inert),
     createMenhoodDataTool(inert),
+    createArtifactPublishingTool({ service: inert }),
   ];
   return tools as ReadonlyArray<Tool<unknown, unknown>>;
 }

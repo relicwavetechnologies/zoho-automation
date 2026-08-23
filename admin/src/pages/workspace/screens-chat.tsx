@@ -25,11 +25,12 @@
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { FileText } from 'lucide-react'
-import { Navigate, useParams } from 'react-router-dom'
+import { Navigate, useLocation, useParams } from 'react-router-dom'
 import { notify } from '@/lib/notify'
 import { Composer } from './chat/composer'
 import { useDecisions } from './data/use-decisions'
 import { firstOpen } from './decisions/decision'
+import { pinnedDecision } from './decisions/pinned'
 import { DecisionCard } from './decisions/decision.view'
 import { Say } from './chat/answer/answer.view'
 import { PiTraceTimeline } from './chat/trace'
@@ -82,8 +83,13 @@ export function WorkspaceChat() {
      mints exactly when a new thread is actually being asked for, and stays
      stable across the renders that redirect — which is what stops it looping. */
   const minted = useMemo(newThreadId, [threadId])
+  /* The query string rides along. Minting an id is a correction to the path and
+     nothing else, so dropping everything after the `?` loses whatever the
+     reader arrived with — which is how `/chat/anything?card=…` silently landed
+     on a fresh thread with no card pinned and no sign of why. */
+  const { search } = useLocation()
   if (!isThreadId(threadId)) {
-    return <Navigate to={`/chat/${minted}`} replace />
+    return <Navigate to={`/chat/${minted}${search}`} replace />
   }
   // Keyed on the thread so switching conversations remounts rather than
   // reconciling: two threads share no state worth carrying across, and a
@@ -132,7 +138,12 @@ function ChatThread({ threadId }: { threadId: string }) {
      opened, and there was no way to type until each was dismissed. */
   const asking = firstOpen(decisions.awaitingMe, threadId)
   const [deferred, setDeferred] = useDeferredDecisions()
-  const open = asking && !deferred.includes(asking.id) ? asking : null
+  /* A fixture held open by `?card=…`, so the card can be designed in the place
+     it actually appears rather than only in the gallery. Development only, and
+     it wins over a real question on purpose: pinning one and then being shown a
+     different card because a genuine approval arrived is the confusing outcome. */
+  const pinned = pinnedDecision(useLocation().search, threadId)
+  const open = pinned ?? (asking && !deferred.includes(asking.id) ? asking : null)
   /* A run that has just stopped is the likeliest moment for a new question. */
   useEffect(() => { if (!live.running) void decisions.refresh() }, [live.running])
   /**
@@ -397,7 +408,7 @@ function ChatThread({ threadId }: { threadId: string }) {
               banner over a live text box says "when you get a minute", and this
               says the true thing — nothing else is going to happen here until
               you answer. Putting it aside is still allowed, and the request
-              stays open on the Approvals page either way. */}
+              stays open on the shared Decision lists either way. */}
           {open ? (
             <DecisionCard
               /* Keyed, so a second decision arriving in this slot is a new card
@@ -410,13 +421,17 @@ function ChatThread({ threadId }: { threadId: string }) {
               decision={open}
               sending={decisions.sending === open.id}
               onDismiss={() => setDeferred(open.id)}
-              onSend={(answer) => void decisions.settle(open.id, answer).then((outcome) => {
+              onSend={(answer) => void decisions.settle(open.id, answer).then(async (outcome) => {
                 /* Said out loud, because every refusal here looks exactly like
                    success otherwise: the card disappears either way. A request
                    answered on a Lark card two seconds earlier comes back 409,
                    the row leaves `awaitingMe`, the composer returns — and the
                    reader has no way to tell that from their own answer landing. */
-                if (!outcome.ok) notify.refused('That could not be recorded', outcome.message)
+                if (!outcome.ok) {
+                  notify.refused('That could not be recorded', outcome.message)
+                  return
+                }
+                await live.refresh()
               })}
             />
           ) : (
@@ -620,6 +635,10 @@ const Exchanged = memo(function Exchanged({
 
         {exchange.error && (
           <p className="text-[13px] text-rose-600 dark:text-rose-400">{exchange.error}</p>
+        )}
+
+        {exchange.interruption && (
+          <p className="text-[13px] text-ink-3">{exchange.interruption}</p>
         )}
       </div>
     </div>

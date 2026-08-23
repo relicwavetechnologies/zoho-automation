@@ -78,3 +78,22 @@ describe('RuntimeApprovalRepository.createOrReuseActive', () => {
     assert.match(lockQuery, /\)::text AS lock_result/);
   });
 });
+
+describe('RuntimeApprovalRepository.listDeliverableLarkSkillOutcomeIds', () => {
+  it('does not require a card delivery when the Decision has no source message', async () => {
+    let query = '';
+    const repo = new RuntimeApprovalRepository({
+      $queryRaw: async (strings: TemplateStringsArray) => {
+        query = strings.join('?');
+        return [];
+      },
+    } as any);
+
+    assert.deepEqual(await repo.listDeliverableLarkSkillOutcomeIds(), []);
+    assert.match(
+      query,
+      /approval\."decisionMessageId" IS NOT NULL\s+AND \(\s+card_delivery\."id" IS NULL/s,
+    );
+    assert.match(query, /OR message_delivery\."id" IS NULL/);
+  });
+});

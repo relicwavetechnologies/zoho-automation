@@ -10,6 +10,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { ArrowUp, ArrowUpRight, Check, ChevronDown, Plus } from 'lucide-react'
 import { ToolMark, tool, type ToolKey } from './tools'
+import { crowded, splitMentions } from './mentions'
+import { tintFor } from './pebble'
+import './pebble.css'
+import './mentions.css'
 import { FileChips, RejectionNote } from './attach.view'
 import { namedForClipboard, type Rejection } from './attach'
 import {
@@ -56,6 +60,15 @@ const SOURCES: { key: ToolKey; name: string; hint: string }[] = [
 const NO_FILES: readonly File[] = []
 const NO_REJECTIONS: readonly Rejection[] = []
 
+/**
+ * How much of the type size an app's mark takes, as a fraction.
+ *
+ * Has to stay in step with `.cmp-mention-mark`'s `width` in `mentions.css`.
+ * They are two halves of one number: the CSS reserves the slot, this fills it,
+ * and when they disagreed the artwork overflowed its own pebble and sat low.
+ */
+const MARK_EM = 0.7
+
 /** The `@token` under the caret, if the caret is inside one. */
 function tokenAt(draft: string) {
   const at = draft.lastIndexOf('@')
@@ -68,7 +81,7 @@ function tokenAt(draft: string) {
 
 export function Composer({
   value, onChange, onSubmit, placeholder, autoFocus, running, onStop,
-  models, modelSelection, onModelChange, onReasoningEffortChange, modelLoading,
+  models, modelSelection, onModelChange, onReasoningEffortChange, modelLoading, picksModel = true,
   files = NO_FILES, rejected = NO_REJECTIONS, onAttach, onRemoveFile,
   hero, actions,
 }: {
@@ -96,6 +109,17 @@ export function Composer({
   onModelChange: (model: string) => void
   onReasoningEffortChange: (effort: ModelSelection['reasoningEffort']) => void
   modelLoading?: boolean
+  /**
+   * Whether this composer chooses a model.
+   *
+   * Off for the signed-out landing, which has no session to read a model list
+   * from. The picker would be a permanently disabled control reading
+   * "Unavailable", and — worse — send is gated on having a model pair, so the
+   * one control the page exists for would be dead. Sending there opens
+   * onboarding rather than starting a run, so there is nothing for a model to
+   * be chosen *for* until somebody is signed in.
+   */
+  picksModel?: boolean
   placeholder: string
   autoFocus?: boolean
   /** A run is going. The send control becomes the way to end it. */
@@ -115,6 +139,7 @@ export function Composer({
   const input = useRef<HTMLTextAreaElement>(null)
   const controls = useRef<HTMLDivElement>(null)
   const measure = useRef<HTMLSpanElement>(null)
+  const mirror = useRef<HTMLDivElement>(null)
   const modelBtn = useRef<HTMLButtonElement>(null)
   const modelMenu = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -135,8 +160,30 @@ export function Composer({
   const [active, setActive] = useState(0)
 
   const ready = value.trim().length > 0
-  const canSend = ready && modelSelection !== null
+  const canSend = ready && (modelSelection !== null || !picksModel)
   const model = models.find(candidate => candidate.id === modelSelection?.model)
+  /*
+   * The field's type size, as one number.
+   *
+   * It was spelled out three times — the mirror, the textarea, and the fallback
+   * `text-[13px]` — and now a fourth thing depends on it: the app marks drawn
+   * inside the text have to scale with the letters they sit among, because the
+   * landing composer's font size is a function of how far Home has been
+   * scrolled.
+   */
+  const fieldFontPx = hero === undefined ? 13 : 13 + 1.5 * hero
+  /*
+   * The mark, in pixels, at the same fraction of the type size the CSS slot
+   * uses.
+   *
+   * Sized here rather than stretched by CSS because `BrandMark` writes its own
+   * width and height as inline styles, and an inline style beats a stylesheet.
+   * The old `> * { width: 100% }` rule silently lost that fight: the artwork
+   * kept its natural 14px inside a 10.7px slot, overflowed the bottom, and sat
+   * a pixel and a half below the centre of its own pebble.
+   */
+  const markPx = Math.round(fieldFontPx * MARK_EM)
+  const runs = useMemo(() => splitMentions(value), [value])
   const token = tokenAt(value)
   const rows = useMemo(() => {
     const q = (token?.query ?? '').toLowerCase()
@@ -204,9 +251,13 @@ export function Composer({
   useLayoutEffect(() => {
     const el = input.current
     const bar = controls.current
-    const mirror = measure.current
-    const picker = modelBtn.current
-    if (!el || !bar || !mirror || !picker) return
+    const gauge = measure.current
+    /* The model picker is not required, and treating it as required was a real
+       bug: a composer with `picksModel` off draws no picker, so this bailed on
+       every pass and the field never got a height at all. It stayed at one CSS
+       line while the text scrolled inside it. Its width is a term in the
+       measurement, so it contributes nothing when it is not there. */
+    if (!el || !bar || !gauge) return
 
     /* Nothing has been laid out yet, so every number below would be a
        fabrication. Bailing leaves the field at its CSS `min-height`, which is
@@ -215,7 +266,7 @@ export function Composer({
        because the deps had not changed by the time layout was real. */
     if (bar.clientWidth === 0) return
 
-    const fixed = 28 * 2 + picker.offsetWidth
+    const fixed = 28 * 2 + (modelBtn.current?.offsetWidth ?? 0)
     const gaps = 4 * 3
     const inline = bar.clientWidth - fixed - gaps
 
@@ -230,7 +281,7 @@ export function Composer({
        latches: the composer opened two-rows-tall and stayed there forever. */
     const needsRow =
       value.length > 0
-      && (value.includes('\n') || (inline > 0 && mirror.offsetWidth + 8 > inline))
+      && (value.includes('\n') || (inline > 0 && gauge.offsetWidth + 8 > inline))
     if (needsRow !== measured) setMeasured(needsRow)
 
     /* The landing field is tall before anything is typed — an empty box the
@@ -387,7 +438,62 @@ export function Composer({
             <Plus size={16} />
           </button>
 
-          <textarea
+          {/*
+            The box you type in, and the marks drawn behind it.
+
+            Two elements at one position: a mirror that draws the draft with an
+            app's logo where its `@` is, and the real textarea on top of it with
+            its own letters turned transparent. Every keystroke, the caret and
+            the selection stay with the textarea — only the drawing moves. See
+            `mentions.css` for why nothing here may change a character's width.
+          */}
+          <div
+            className={`cmp-field min-w-0 self-start ${
+              expanded ? 'col-span-full col-start-1 row-start-1' : 'col-start-2 row-start-1'
+            }`}
+          >
+            <div
+              ref={mirror}
+              aria-hidden
+              className={`cmp-mirror px-1 py-[5px] leading-[18px] ${
+                hero === undefined ? 'text-[13px]' : ''
+              }`}
+              style={hero === undefined ? undefined : { fontSize: `${13 + 1.5 * hero}px` }}
+            >
+              {runs.map((run, index) => (
+                run.kind === 'text' ? (
+                  <span key={index}>{run.text}</span>
+                ) : (
+                  <span
+                    key={index}
+                    className="pebble cmp-mention"
+                    data-brand={tintFor(run.key) ? 'true' : undefined}
+                    /* Another tile right behind this one, with a single space
+                       to share. See `crowded` and `mentions.css`. */
+                    data-crowded={crowded(runs, index) ? 'true' : undefined}
+                    /* The app's own colour, handed to CSS rather than mixed
+                       here: the tint has to be blended against whichever theme
+                       is on, and `color-mix` in the stylesheet knows that and
+                       this does not. */
+                    style={tintFor(run.key) ? { ['--pebble-brand' as string]: tintFor(run.key) } : undefined}
+                  >
+                    {run.key ? (
+                      <span className="cmp-mention-mark">
+                        <ToolMark name={run.key} size={markPx} />
+                      </span>
+                    ) : null}
+                    <span className={run.key ? 'cmp-mention-at' : undefined}>@</span>
+                    {run.text.slice(1)}
+                  </span>
+                )
+              ))}
+              {/* A draft ending in a newline leaves the mirror a line short:
+                  a trailing line break collapses in flow, and the textarea's
+                  does not. */}
+              {value.endsWith('\n') ? '\u00a0' : null}
+            </div>
+
+            <textarea
             ref={input}
             rows={1}
             value={value}
@@ -425,101 +531,107 @@ export function Composer({
               ? `Ask about the attached file${files.length === 1 ? '' : 's'}`
               : placeholder}
             aria-label="Message Divo"
-            className={`min-h-7 w-full min-w-0 resize-none bg-transparent px-1 py-[5px] leading-[18px] text-ink outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 ${
+            onScroll={(event) => {
+              /* The mirror has no scrollbar of its own; it follows. */
+              if (mirror.current) mirror.current.scrollTop = event.currentTarget.scrollTop
+            }}
+            className={`cmp-input relative min-h-7 w-full min-w-0 resize-none bg-transparent px-1 py-[5px] leading-[18px] outline-none [overflow-wrap:anywhere] placeholder:text-ink-3 ${
               hero === undefined ? 'text-[13px]' : ''
-            } ${
-              expanded ? 'col-span-full col-start-1 row-start-1' : 'col-start-2 row-start-1'
             }`}
             style={hero === undefined ? undefined : { fontSize: `${13 + 1.5 * hero}px` }}
           />
-
-          {/* The menu lives in the toggle's own cell and grows up from it, so
-              it opens where the click was. Anchored to the composer's edge it
-              drifted: the landing box is tall and wears a tray, so "above the
-              composer" was half a screen from the control that opened it. */}
-          <div
-            className={`relative ${expanded ? 'col-start-2 row-start-2' : 'col-start-3 row-start-1'}`}
-          >
-            <button
-              ref={modelBtn}
-              type="button"
-              aria-expanded={modelOpen}
-              aria-label="Choose model"
-              disabled={running || modelLoading || models.length === 0}
-              onClick={() => { setSourceDismissed(true); setModelOpen((v) => !v) }}
-              className="flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[12px] font-medium text-ink-2 transition-colors duration-150 enabled:hover:bg-fill enabled:hover:text-ink disabled:opacity-60"
-            >
-              {model?.label ?? (modelLoading ? 'Loading…' : 'Unavailable')}
-              {modelSelection && (
-                <span className="font-normal text-ink-3">
-                  · {reasoningEffortLabel(modelSelection.reasoningEffort)}
-                </span>
-              )}
-              <ChevronDown size={11} className="text-ink-3" />
-            </button>
-
-            {modelOpen && (
-              <div
-                ref={modelMenu}
-                className="absolute right-0 bottom-full z-10 mb-2 w-56 rounded-card bg-surface p-1 shadow-overlay"
-                style={{ animation: 'bui-pop-in 180ms cubic-bezier(0.23,1,0.32,1) both', transformOrigin: 'bottom right' }}
-              >
-                <p className="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-3">
-                  Model
-                </p>
-                {models.map((candidate) => (
-                  <button
-                    key={candidate.id}
-                    type="button"
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => { onModelChange(candidate.id); input.current?.focus() }}
-                    className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
-                  >
-                    <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{candidate.label}</span>
-                    <span className="shrink-0 text-[11px] text-ink-3">
-                      {candidate.provider === 'deepseek'
-                        ? 'DeepSeek'
-                        : candidate.provider === 'openai'
-                          ? 'OpenAI'
-                          : candidate.provider}
-                    </span>
-                    <Check size={13} className={`shrink-0 text-ink ${candidate.id === model?.id ? '' : 'invisible'}`} />
-                  </button>
-                ))}
-                {model && modelSelection && (
-                  <>
-                    <p className="mx-1 mt-1 border-t border-line px-1 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-3">
-                      Reasoning effort
-                    </p>
-                    {model.reasoningEfforts.map((effort) => (
-                      <button
-                        key={effort}
-                        type="button"
-                        onMouseDown={(event) => event.preventDefault()}
-                        onClick={() => {
-                          onReasoningEffortChange(effort)
-                          setModelOpen(false)
-                          input.current?.focus()
-                        }}
-                        className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
-                      >
-                        <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
-                          {reasoningEffortLabel(effort)}
-                        </span>
-                        <span className="shrink-0 text-[11px] text-ink-3">
-                          {reasoningEffortHint(effort)}
-                        </span>
-                        <Check
-                          size={13}
-                          className={`shrink-0 text-ink ${effort === modelSelection.reasoningEffort ? '' : 'invisible'}`}
-                        />
-                      </button>
-                    ))}
-                  </>
-                )}
-              </div>
-            )}
           </div>
+
+          {/* Left out entirely when there is no model to choose; see `picksModel`. */}
+          {picksModel ? (
+            /* The menu lives in the toggle's own cell and grows up from it, so
+               it opens where the click was. Anchored to the composer's edge it
+               drifted: the landing box is tall and wears a tray, so "above the
+               composer" was half a screen from the control that opened it. */
+            <div
+              className={`relative ${expanded ? 'col-start-2 row-start-2' : 'col-start-3 row-start-1'}`}
+            >
+              <button
+                ref={modelBtn}
+                type="button"
+                aria-expanded={modelOpen}
+                aria-label="Choose model"
+                disabled={running || modelLoading || models.length === 0}
+                onClick={() => { setSourceDismissed(true); setModelOpen((v) => !v) }}
+                className="flex h-7 shrink-0 items-center gap-1 rounded-full px-2 text-[12px] font-medium text-ink-2 transition-colors duration-150 enabled:hover:bg-fill enabled:hover:text-ink disabled:opacity-60"
+              >
+                {model?.label ?? (modelLoading ? 'Loading…' : 'Unavailable')}
+                {modelSelection && (
+                  <span className="font-normal text-ink-3">
+                    · {reasoningEffortLabel(modelSelection.reasoningEffort)}
+                  </span>
+                )}
+                <ChevronDown size={11} className="text-ink-3" />
+              </button>
+
+              {modelOpen && (
+                <div
+                  ref={modelMenu}
+                  className="absolute right-0 bottom-full z-10 mb-2 w-56 rounded-card bg-surface p-1 shadow-overlay"
+                  style={{ animation: 'bui-pop-in 180ms cubic-bezier(0.23,1,0.32,1) both', transformOrigin: 'bottom right' }}
+                >
+                  <p className="px-2 pb-1 pt-1 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-3">
+                    Model
+                  </p>
+                  {models.map((candidate) => (
+                    <button
+                      key={candidate.id}
+                      type="button"
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => { onModelChange(candidate.id); input.current?.focus() }}
+                      className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-ink">{candidate.label}</span>
+                      <span className="shrink-0 text-[11px] text-ink-3">
+                        {candidate.provider === 'deepseek'
+                          ? 'DeepSeek'
+                          : candidate.provider === 'openai'
+                            ? 'OpenAI'
+                            : candidate.provider}
+                      </span>
+                      <Check size={13} className={`shrink-0 text-ink ${candidate.id === model?.id ? '' : 'invisible'}`} />
+                    </button>
+                  ))}
+                  {model && modelSelection && (
+                    <>
+                      <p className="mx-1 mt-1 border-t border-line px-1 pb-1 pt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-ink-3">
+                        Reasoning effort
+                      </p>
+                      {model.reasoningEfforts.map((effort) => (
+                        <button
+                          key={effort}
+                          type="button"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => {
+                            onReasoningEffortChange(effort)
+                            setModelOpen(false)
+                            input.current?.focus()
+                          }}
+                          className="flex h-8 w-full items-center gap-2 rounded-control px-2 text-left transition-colors duration-100 hover:bg-fill"
+                        >
+                          <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink">
+                            {reasoningEffortLabel(effort)}
+                          </span>
+                          <span className="shrink-0 text-[11px] text-ink-3">
+                            {reasoningEffortHint(effort)}
+                          </span>
+                          <Check
+                            size={13}
+                            className={`shrink-0 text-ink ${effort === modelSelection.reasoningEffort ? '' : 'invisible'}`}
+                          />
+                        </button>
+                      ))}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : null}
 
           {/*
             One control, two jobs — send, then stop. A recorder works this way

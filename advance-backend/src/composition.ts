@@ -14,9 +14,9 @@ import { buildApprovalResolutionCard } from './application/approval/approval-car
 import { ApprovalResolverService } from './application/approval/approval-resolver.service';
 import { ApprovalGateService } from './application/approval/approval-gate.service';
 import { ApprovalResumerService } from './application/approval/approval-resumer.service';
+import { parsePersonalGate } from './domain/approval/personal-gate';
 import { AutomationPlanService } from './application/gateway/automation-plan.service';
 import { AutomationPlanExecutor } from './application/gateway/automation-plan.executor';
-import { LarkApprovalCardHandler } from './infrastructure/channels/lark/lark-approval-card.handler';
 import { LarkWorkbookConversionCardHandler } from './infrastructure/channels/lark/lark-workbook-conversion-card.handler';
 import { ConsoleLogger } from './shared/logger';
 import { createPinoLogger } from './shared/pino-logger';
@@ -63,6 +63,8 @@ import { CanvaMcpClient } from './infrastructure/canva/canva-mcp.client';
 import { AirtableMcpOAuthService } from './infrastructure/airtable/airtable-mcp-oauth.service';
 import { AirtableMcpClient } from './infrastructure/airtable/airtable-mcp.client';
 import { AirtableMcpSchemaCatalog } from './infrastructure/airtable/airtable-mcp-schema.catalog';
+import { ProviderSchemaArtifactRepository } from './infrastructure/persistence/provider-schema-artifact.repository';
+import { providerSchemaArtifactPartitionKey } from './application/gateway/provider-schema-artifact-catalogue';
 import { AitableClient } from './infrastructure/aitable/aitable.client';
 import { ShopifyOAuthService } from './infrastructure/shopify/shopify-oauth.service';
 import { ShopifyAdminClient } from './infrastructure/shopify/shopify-admin.client';
@@ -167,11 +169,10 @@ import { GoogleSheetResourceResolver } from './application/artifacts/google-shee
 import { GoogleSheetResourceProbeClient } from './infrastructure/google/google-sheet-resource-probe';
 import { LarkIngressQueue } from './application/lark-ingress/lark-ingress.queue';
 import {
-  GoogleConnectionContinuationQueue,
-} from './application/connections/google-connection-continuation';
-import {
   GoogleConnectionAuthorizationService,
 } from './application/connections/google-connection-authorization.service';
+import { ConnectionAskCourier } from './application/connections/connection-ask-courier';
+import { ConnectionResumeService } from './application/connections/connection-resume';
 import { RunOriginStore } from './application/connections/run-origin.store';
 import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
 import { createMailRuleWriter } from './application/mail-ops/mail-rule-writer';
@@ -191,9 +192,14 @@ import {
   nextMailBriefRunAt,
 } from './application/mail-ops/mail-brief.schedule';
 import {
-  createBeginGoogleAuthorization,
   type DeliverGoogleConnectCard,
 } from './application/connections/begin-google-authorization';
+import { ConnectionRequestService } from './application/connections/connection-request/connection-request.service';
+import { createGoogleConnectionRequestAdapter } from './application/connections/connection-request/google.adapter';
+import {
+  createWebConnectionAskCourier,
+  type WebConnectionAskCourier,
+} from './application/connections/connection-request/web.courier';
 import { MailOpsWorker } from './application/mail-ops/mail-ops.worker';
 import { MailOpsConnectionUnavailableError } from './application/mail-ops/mail-ops.types';
 import { GmailHistoryClient } from './infrastructure/google/gmail-history.client';
@@ -219,6 +225,8 @@ import { ManagerTeachPersonaProcessor } from './application/persona-learning/man
 import { PeepshowVideoExtractor } from './infrastructure/media/peepshow-video.extractor';
 import { OpenRouterFrameReader } from './infrastructure/ai/ocr/openrouter-frame.reader';
 import { OpenAiVideoTranscriber } from './infrastructure/ai/transcription/openai-video.transcriber';
+import { ArtifactRepository } from './infrastructure/persistence/artifact.repository';
+import { VercelPublisher } from './infrastructure/publishing/vercel-publisher';
 
 // Central knowledge authority and semantic recall projection
 import type { MemoryService } from './application/knowledge/semantic-memory.port';
@@ -227,6 +235,10 @@ import { LarkKnowledgeReviewService } from './application/knowledge/lark-knowled
 import { RunEffectReceiptStore } from './application/runtime/run-effect-receipt.store';
 import { KnowledgeReviewDecisionQueue } from './application/knowledge/knowledge-review-decision.queue';
 import { KnowledgeMutationService } from './application/knowledge/knowledge-mutation.service';
+import { KnowledgeSkillReviewService } from './application/knowledge/knowledge-skill-review.service';
+import { LarkKnowledgeSkillOutcomeDelivery } from './infrastructure/channels/lark/lark-knowledge-skill-outcome.delivery';
+import { LarkDecisionActionQueue } from './infrastructure/channels/lark/lark-decision-action.queue';
+import { LarkDecisionActionProcessor } from './infrastructure/channels/lark/lark-decision-action.processor';
 import { KnowledgeProjectionService } from './application/knowledge/knowledge-projection.service';
 import { KnowledgeOperationsService } from './application/knowledge/knowledge-operations.service';
 import { KnowledgeRecallService } from './application/knowledge/knowledge-recall.service';
@@ -256,6 +268,7 @@ import { createLarkMeetingTool } from './application/tools/families/lark-meeting
 import { createLarkDocTool } from './application/tools/families/lark-doc.tool';
 import { createLarkBaseTool } from './application/tools/families/lark-base.tool';
 import { createLarkApprovalTool } from './application/tools/families/lark-approval.tool';
+import { createConnectionsTool } from './application/tools/families/connections.tool';
 import { createGoogleWorkspaceMcpTools } from './application/tools/families/google-workspace-mcp.tool';
 import { createCanvaDesignTool } from './application/tools/families/canva-design.tool';
 import {
@@ -267,6 +280,8 @@ import { hasAirtableScopeGroups } from './application/airtable/airtable-mcp-mani
 import { createZohoCrmTool } from './application/tools/families/zoho-crm.tool';
 import { createZohoBooksTool } from './application/tools/families/zoho-books.tool';
 import { createWebSearchTool } from './application/tools/families/web-search.tool';
+import { createArtifactPublishingTool } from './application/tools/families/artifact-publishing.tool';
+import { ArtifactPublishingService } from './application/publishing/artifact-publishing.service';
 import { createKnowledgeTool } from './application/tools/families/knowledge.tool';
 import { createRunCommandTool } from './application/tools/families/run-command.tool';
 import { createScheduledWorkflowsTool } from './application/tools/families/scheduled-workflows.tool';
@@ -388,7 +403,8 @@ export interface Container {
   // OAuth surfaces (used by auth routes)
   googleOAuthService: GoogleOAuthService;
   googleConnectionAuthorization: GoogleConnectionAuthorizationService;
-  googleConnectionContinuationQueue: GoogleConnectionContinuationQueue;
+  connectionAskCourier: ConnectionAskCourier;
+  connectionResume: ConnectionResumeService;
   connectionAuthorizationRepo: ConnectionAuthorizationRepository;
   mailOpsRepo: MailOpsRepository;
   mailOpsReadRepo: MailOpsReadRepository;
@@ -442,12 +458,13 @@ export interface Container {
   apiKeyExhaustionNotifier: ApiKeyExhaustionNotifierPort;
   // HITL approval
   approvalGate: ApprovalGateService;
-  approvalCardHandler: LarkApprovalCardHandler;
   workbookConversionCardHandler: LarkWorkbookConversionCardHandler;
   approvalResumer: ApprovalResumerService;
   /** The one place Divo asks a person something and hears back. */
   decisions: DecisionService;
   decisionCardHandler: LarkDecisionCardHandler;
+  larkDecisionActionQueue: LarkDecisionActionQueue;
+  larkDecisionActionProcessor: LarkDecisionActionProcessor;
   businessActions: BusinessActionService;
   workbookConversionQueue: WorkbookConversionQueue;
   workbookConversionWorker: GoogleDriveXlsxConversionConsumer;
@@ -467,6 +484,7 @@ export interface Container {
   memoryService: MemoryService | null;
   knowledgeMutations: KnowledgeMutationService;
   knowledgeProjections: KnowledgeProjectionService;
+  knowledgeSkillReviews: KnowledgeSkillReviewService;
   knowledgeOperations: KnowledgeOperationsService;
   knowledgeRecall: KnowledgeRecallService;
   knowledgeResources: KnowledgeResourceQueryService;
@@ -497,6 +515,8 @@ export interface Container {
   larkPiRuntime: import('./application/runtime/lark-pi-runtime.service').LarkPiRuntimeService;
   /** The same runtime, driven from the browser. Not a second agent — a second view. */
   webRuns: import('./application/runtime/web-run.service').WebRunService;
+  /** Run-scoped origins used by deferred connection continuations. */
+  runOrigins: RunOriginStore;
   /** Video attached to a conversation: taken in, read, and thrown away. */
   /** Absent when the deployment has no vision or transcription key. */
   conversationVideo: import('./application/conversation-video/conversation-video.service').ConversationVideoService | undefined;
@@ -506,6 +526,8 @@ export interface Container {
   webThreads: import('./infrastructure/persistence/web-thread.repository').WebThreadRepository;
   /** Documents the agent wrote, kept after the container that wrote them is gone. */
   artifacts: import('./infrastructure/persistence/artifact.repository').ArtifactRepository;
+  /** Shared publish seam used by the Pi tool and the member panel route. */
+  artifactPublishing: ArtifactPublishingService;
   /** What a member still has to do, read from their own Lark account. */
   openTasks: import('./application/work/open-tasks').OpenTasksDeps;
 }
@@ -528,6 +550,15 @@ export async function buildContainer(
 
   // ── Infra ──────────────────────────────────────────────────────────────
   const prisma = getPrismaClient();
+  const artifacts = new ArtifactRepository(prisma);
+  const artifactPublishing = new ArtifactPublishingService({
+    artifacts,
+    publisher: new VercelPublisher({
+      ...(env.VERCEL_TOKEN ? { token: env.VERCEL_TOKEN } : {}),
+      ...(env.VERCEL_PROJECT_NAME ? { projectName: env.VERCEL_PROJECT_NAME } : {}),
+      ...(env.VERCEL_TEAM_ID ? { teamId: env.VERCEL_TEAM_ID } : {}),
+    }),
+  });
 
   // Three purposeful Redis connections. Each falls back to REDIS_URL in local
   // dev so a single Redis instance continues to work with no config changes.
@@ -771,6 +802,12 @@ export async function buildContainer(
     env.OMS_SITE_DATA_API_KEY ?? '',
     env.OMS_VENDOR_FETCH_API_KEY ?? '',
   );
+  /* Said at boot because the alternative is finding out from a user.
+     Both keys are optional and fall back to an empty string, which is sent as
+     an empty `X-API-Key` header, so OMS answers 401 and the tool reports
+     "OMS rejected the configured API key". That reads as a bad key rather than
+     as no key, and on a deployed box nobody can open the env file to tell the
+     difference. Only presence is logged; the values are not. */
   for (const [name, value] of [
     ['OMS_SITE_DATA_API_KEY', env.OMS_SITE_DATA_API_KEY],
     ['OMS_VENDOR_FETCH_API_KEY', env.OMS_VENDOR_FETCH_API_KEY],
@@ -778,7 +815,7 @@ export async function buildContainer(
     if (!value) {
       logger.warn('oms.api_key.missing', {
         variable: name,
-        consequence: 'OMS calls needing this key will fail until it is set.',
+        consequence: 'OMS calls needing this key will fail as provider_auth_failed until it is set.',
       });
     }
   }
@@ -921,17 +958,39 @@ export async function buildContainer(
     callbackUrl: googleConnectionCallbackUrl,
     logger,
   });
-  let deliverGoogleConnect: DeliverGoogleConnectCard | undefined;
-  const beginGoogleAuthorization = createBeginGoogleAuthorization({
-    runOrigins,
-    authorization: googleConnectionAuthorization,
-    deliverConnectCard: () => deliverGoogleConnect,
+  /*
+   * Tells a waiting run that the member has finished. Its other half,
+   * `connectionResume`, is built once the decision module exists, since
+   * resuming also takes the Connect card back.
+   */
+  const connectionAskCourier = new ConnectionAskCourier({
+    controllerUrl: env.PI_LARK_CONTROLLER_URL,
     logger,
   });
-  const googleWorkspaceMcpSchemas = new GoogleWorkspaceMcpSchemaCatalog();
+  let deliverGoogleConnect: DeliverGoogleConnectCard | undefined;
+  let webConnectionAskCourier: WebConnectionAskCourier | undefined;
+  const connectionRequest = new ConnectionRequestService(new Map([
+    ['google_workspace', createGoogleConnectionRequestAdapter({
+      runOrigins,
+      authorization: googleConnectionAuthorization,
+      deliverConnectCard: () => deliverGoogleConnect,
+      webCourier: () => webConnectionAskCourier,
+      logger,
+    })],
+  ]));
+  const providerSchemaArtifacts = new ProviderSchemaArtifactRepository(prisma);
+  const googleWorkspaceMcpSchemas = new GoogleWorkspaceMcpSchemaCatalog({
+    store: providerSchemaArtifacts,
+    logger: logger.child({ service: 'google-workspace-schema-artifacts' }),
+    partitionKey: providerSchemaArtifactPartitionKey(env.GOOGLE_WORKSPACE_MCP_URL),
+  });
   const canvaMcpOAuthService      = new CanvaMcpOAuthService({ env, cache: ephemeralCache, logger });
   const airtableMcpOAuthService   = new AirtableMcpOAuthService({ env, cache: ephemeralCache, logger });
-  const airtableMcpSchemas        = new AirtableMcpSchemaCatalog();
+  const airtableMcpSchemas        = new AirtableMcpSchemaCatalog({
+    store: providerSchemaArtifacts,
+    logger: logger.child({ service: 'airtable-schema-artifacts' }),
+    partitionKey: providerSchemaArtifactPartitionKey(env.AIRTABLE_MCP_URL),
+  });
   // AITable authenticates with a personal API key, so there is no OAuth service
   // to construct — only the check that proves a pasted key before it is stored.
   const aitableKeyVerifier        = createAitableKeyVerifier({ baseUrl: env.AITABLE_BASE_URL });
@@ -1512,8 +1571,6 @@ export async function buildContainer(
 
   const workbookConversionQueue = new WorkbookConversionQueue(queueRedisUrl);
   const larkIngressQueue = new LarkIngressQueue(queueRedisUrl);
-  const googleConnectionContinuationQueue =
-    new GoogleConnectionContinuationQueue(queueRedisUrl);
   const personaLearningQueue = new PersonaLearningQueue(
     queueRedisUrl,
     env.REDIS_PERSONA_LEARNING_QUEUE_NAME,
@@ -1925,10 +1982,11 @@ export async function buildContainer(
   toolRegistry.register(createLarkApprovalTool({
     client: larkApprovalClient,
   }));
+  toolRegistry.register(createConnectionsTool({ connectionRequest }));
   for (const tool of createGoogleWorkspaceMcpTools({
     getConnection: getGoogleWorkspaceMcpConnection,
     resolveSheetReference: resolveGoogleSheetReference,
-    beginAuthorization: beginGoogleAuthorization,
+    connectionRequest,
   })) {
     toolRegistry.register(tool);
   }
@@ -1941,7 +1999,7 @@ export async function buildContainer(
       workersEnabled: env.DIVO_AUTONOMOUS_WORKERS_ENABLED,
     },
     resolveConnection: resolveMailAutomationGoogleConnection,
-    beginAuthorization: beginGoogleAuthorization,
+    connectionRequest,
     authorizeLarkChat: authorizeMailOpsLarkChat,
     connectionApproval: input => connectionRateLimits.approval(input),
     // The read repository, not `mailOpsRepo`: a dry run must not be able to
@@ -2094,6 +2152,9 @@ export async function buildContainer(
     appBaseUrl:      env.ZOHO_BOOKS_APP_BASE_URL,
   }));
   toolRegistry.register(createWebSearchTool({ client: webSearchClientAdapter }));
+  toolRegistry.register(createArtifactPublishingTool({
+    service: artifactPublishing,
+  }));
   toolRegistry.register(createKnowledgeTool({
     mutations: knowledgeMutations,
     projections: knowledgeProjections,
@@ -2517,6 +2578,13 @@ export async function buildContainer(
   if (approvalGateOptions.disableManagerSelfBypass) {
     logger.warn('approval.gate.manager_self_bypass_disabled');
   }
+  // ApprovalGateService is needed by the runtime executor and resumer before
+  // the rest of the container can construct DecisionService. Keep one lazy ask
+  // port so the gate and the Decision module still share one implementation.
+  let decisions!: DecisionService;
+  const decisionAsk: Pick<DecisionService, 'ask'> = {
+    ask: input => decisions.ask(input),
+  };
   const approvalGate     = new ApprovalGateService(
     approvalRepo,
     approvalResolver,
@@ -2524,6 +2592,7 @@ export async function buildContainer(
     logger.child({ service: 'approval-gate' }),
     { ...approvalGateOptions, knowledgeMutations },
     connectionRateLimits,
+    decisionAsk,
   );
   const gatewayToolExecutor = new ToolExecutor({
     toolRegistry,
@@ -2535,6 +2604,27 @@ export async function buildContainer(
     shopifyDataRuns,
     logger: logger.child({ service: 'gateway-tool-executor' }),
     clock:  systemClock,
+  });
+  const knowledgeSkillOutcomeDelivery = new LarkKnowledgeSkillOutcomeDelivery({
+    approvals: approvalRepo,
+    deliveries: channelDeliveryRepo,
+    lark: larkAdapter,
+    logger,
+  });
+  const knowledgeSkillReviews = new KnowledgeSkillReviewService({
+    mutations: knowledgeMutations,
+    projections: knowledgeProjections,
+    resources: knowledgeResources,
+    decisions: decisionAsk,
+    approvals: approvalRepo,
+    permissions,
+    tools: gatewayToolExecutor,
+    approvalGate,
+    approvalResolver,
+    identities: channelIdentityRepo,
+    transcript: conversationRepo,
+    outcomeDelivery: knowledgeSkillOutcomeDelivery,
+    logger,
   });
   const automationPlanExecutor = new AutomationPlanExecutor({
     approvalRepo,
@@ -2671,19 +2761,13 @@ export async function buildContainer(
     toolExecutor: gatewayToolExecutor,
     permissions,
     automationPlanExecutor,
+    linkedDecisions: knowledgeSkillReviews,
     /* The same store the web run writes its own turns through, so a resumed
        approval lands in the thread as an ordinary message. Without it a web
        approval executed correctly and reported into the void. */
     webTranscript: conversationRepo,
     logger: logger.child({ service: 'approval-resumer' }),
   });
-  const approvalCardHandler = new LarkApprovalCardHandler(
-    approvalRepo,
-    approvalResumer,
-    larkAdapter,
-    logger.child({ service: 'approval-card-handler' }),
-    auditService,
-  );
   const workbookConversionCardHandler = new LarkWorkbookConversionCardHandler(
     new WorkbookConversionConfirmationService({
       offers: runEffectReceipts,
@@ -2798,17 +2882,24 @@ export async function buildContainer(
 
   const businessActions = new BusinessActionService({
     approvals: approvalRepo,
+    decisions: decisionAsk,
     toolExecutor: gatewayToolExecutor,
     logger: logger.child({ service: 'business-action' }),
+    /* The same repository the resumer writes approval outcomes through, so a
+       confirmed action lands in the thread as an ordinary assistant turn. Its
+       absence here is what let the agent tell somebody their calendar event had
+       not been created while the event existed. */
+    webTranscript: conversationRepo,
   });
 
   // Every question Divo puts to a person, whichever surface it lands on.
   // `onResolvedCard` is what stops a delivered card from still offering buttons
   // for a decision that was already answered somewhere else.
-  const decisions = new DecisionService({
+  decisions = new DecisionService({
     approvals: approvalRepo,
     resumer: approvalResumer,
     businessActions,
+    knowledgeSkillReviews,
     logger: logger.child({ service: 'decision' }),
     audit: auditService,
     courier: new LarkDecisionCourier(larkAdapter, logger, env.APP_BASE_URL),
@@ -2817,12 +2908,35 @@ export async function buildContainer(
        card has no field for it — it can only say approved or rejected. */
     onResolvedCard: async ({ messageId, verdict, byName, title, summary, native }) => {
       const card = native
-        ? buildDecisionResolvedCard({ title, verdict, summary, byName, at: new Date() })
+        ? buildDecisionResolvedCard({
+            title,
+            verdict,
+            summary,
+            byName,
+            at: new Date(),
+          })
         : buildApprovalResolutionCard(verdict, byName, new Date());
       await larkAdapter.updateMessageById(messageId, card);
     },
   });
+  webConnectionAskCourier = createWebConnectionAskCourier({ decisions });
+  /* The other half of the resume: what the member actually granted, and the
+     Connect card taken back now that its question has been answered. */
+  const connectionResume = new ConnectionResumeService({
+    intentRepo: connectionAuthorizationRepo,
+    connectionRepo: integrationConnectionRepo,
+    decisions,
+    runOrigins,
+    logger,
+  });
   const decisionCardHandler = new LarkDecisionCardHandler(decisions, logger, env.APP_BASE_URL);
+  const larkDecisionActionQueue = new LarkDecisionActionQueue(queueRedisUrl);
+  const larkDecisionActionProcessor = new LarkDecisionActionProcessor({
+    handler: decisionCardHandler,
+    identities: channelIdentityRepo,
+    lark: larkAdapter,
+    logger,
+  });
   const automationPlanService = new AutomationPlanService({
     toolExecutor: gatewayToolExecutor,
     permissions,
@@ -2831,7 +2945,7 @@ export async function buildContainer(
     approvalRepo,
     approvalResolver,
     approvalGate,
-    larkAdapter,
+    decisions: decisionAsk,
     logger: logger.child({ service: 'automation-plan' }),
   });
   const mediaOcr = new MediaOcrService(env, logger);
@@ -2855,7 +2969,19 @@ export async function buildContainer(
     skillCatalog,
     toolExecutor: gatewayToolExecutor,
     businessActions,
+    /* The person's own "ask me before Divo does this". Read per gated call
+       rather than cached: it is one indexed lookup on a unique key, and a
+       cached copy would leave somebody who just picked an action unprotected
+       for the rest of their session — the one moment they are watching for it
+       to work. */
+    readPersonalGate: async (userId) => parsePersonalGate(
+      (await prisma.userDepartmentPreference.findUnique({
+        where: { userId },
+        select: { personalApprovalsJson: true },
+      }))?.personalApprovalsJson,
+    ),
     connectionRegistry: integrationConnectionRepo,
+    connectionResume,
     workContractBootstrap,
     mediaOcr,
     managerPersonaRuntime: managerPersonaRuntimeService,
@@ -2865,6 +2991,7 @@ export async function buildContainer(
     skillAccessEnforcement,
     auditService,
     larkKnowledgeReview: larkKnowledgeReviewService,
+    knowledgeSkillReviews,
     knowledgeMutations,
     personalMemoryCommands,
     resolveGoogleSheetReference,
@@ -2906,7 +3033,8 @@ export async function buildContainer(
     // OAuth surfaces
     googleOAuthService,
     googleConnectionAuthorization,
-    googleConnectionContinuationQueue,
+    connectionAskCourier,
+    connectionResume,
     connectionAuthorizationRepo,
     mailOpsRepo,
     mailOpsReadRepo,
@@ -2937,16 +3065,17 @@ export async function buildContainer(
     executionRunLifecycle,
     auditService,
     tokenUsageService,
-  proxyKeyStore,
-  llmProxyService,
-  apiKeyExhaustionNotifier: apiKeyExhaustionFacade,
-  // HITL approval
-  approvalGate,
-    approvalCardHandler,
+    proxyKeyStore,
+    llmProxyService,
+    apiKeyExhaustionNotifier: apiKeyExhaustionFacade,
+    // HITL approval
+    approvalGate,
     workbookConversionCardHandler,
     approvalResumer,
     decisions,
     decisionCardHandler,
+    larkDecisionActionQueue,
+    larkDecisionActionProcessor,
     businessActions,
     // Workbook conversion and async ingress
     workbookConversionQueue,
@@ -2966,6 +3095,7 @@ export async function buildContainer(
     memoryService,
     knowledgeMutations,
     knowledgeProjections,
+    knowledgeSkillReviews,
     knowledgeOperations,
     knowledgeRecall,
     knowledgeResources,
@@ -2993,18 +3123,21 @@ export async function buildContainer(
     larkPiRuntime,
     webRuns: new (await import('./application/runtime/web-run.service')).WebRunService({
       piRuntime: larkPiRuntime,
+      runOrigins,
       identity: channelIdentityRepo,
       departments: deptRepo,
       transcript: conversationRepo,
       ...(conversationVideo ? { videos: conversationVideo } : {}),
       logger: logger.child({ service: 'web-run' }),
     }),
+    runOrigins,
     conversationVideo,
     webRunRegistry: new (await import('./application/runtime/web-run-registry')).WebRunRegistry({
       logger: logger.child({ service: 'web-run-registry' }),
     }),
     webThreads: new (await import('./infrastructure/persistence/web-thread.repository')).WebThreadRepository(prisma),
-    artifacts: new (await import('./infrastructure/persistence/artifact.repository')).ArtifactRepository(prisma),
+    artifacts,
+    artifactPublishing,
     /*
       The member's own Lark account, resolved from the connection they
       authorized rather than from a run context. `userExternalId` is an open_id

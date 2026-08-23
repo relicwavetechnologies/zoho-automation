@@ -76,6 +76,7 @@ Durable memory, skills, and governed files are backend-owned:
 - For a governed file create/update/publish, give `divo_knowledge_review` only the exact workspace `localPath`; it privately stages and fingerprints the file after requester confirmation. Never invent storage keys or asset IDs.
 - When a member clearly finishes teaching a reusable procedure, prepare the complete corrected version and open `divo_knowledge_review` in the naturally implied scope. The review is the member's consent; do not require them to know words such as skill, scope, or approval. Do not save unfinished teaching, one-off task details, or unrelated conversation.
 - Before updating or deleting durable knowledge, use `resources.list`/`resources.get` through the loaded Manage Knowledge skill to obtain the exact canonical logical key, current version, and complete current content. Never guess a base version from chat history or a projected skill revision.
+- After `divo_knowledge_review` opens a Decision, say only that the review is open. Do not repeat its content, diff, fingerprint, catalogue checks, or pending status in chat. The Decision card is the review copy and the backend records the outcome after the person answers.
 - Retrieve a retained file only with the governed `files.download` knowledge operation. Use the short-lived backend link for the current approved file; never invent or reuse a storage-provider key.
 
 Use the department id only when the user has selected or implied a department context. Otherwise omit it and let runtime/backend defaults apply.

@@ -21,11 +21,9 @@ import type { ConversationRepoPort } from '../../persistence/conversation.reposi
 import type { Logger } from '../../../shared/logger';
 import type { TypedEnv } from '../../../config/env';
 import type { ApprovalGateService } from '../../../application/approval/approval-gate.service';
-import type {
-  LarkApprovalCardHandler,
-  LarkAuthenticatedCardActor,
-} from './lark-approval-card.handler';
 import type { LarkDecisionCardHandler } from './lark-decision-card.handler';
+import { resolveAuthenticatedCardActor } from './lark-card-actor';
+import type { LarkDecisionActionQueuePort } from './lark-decision-action.queue';
 import {
   isWorkbookConversionCardAction,
   type LarkWorkbookConversionCardHandler,
@@ -169,9 +167,9 @@ export interface LarkWebhookDeps {
   logger: Logger;
   env: TypedEnv;
   approvalGate?: ApprovalGateService;
-  approvalCardHandler?: LarkApprovalCardHandler;
   /** Answers every question asked through the decision module. */
   decisionCardHandler?: LarkDecisionCardHandler;
+  decisionActionQueue?: LarkDecisionActionQueuePort;
   workbookConversionCardHandler?: LarkWorkbookConversionCardHandler;
   knowledgeReviewService?: LarkKnowledgeReviewService;
   larkOAuthService?: LarkOAuthService;
@@ -319,6 +317,32 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
         });
         return;
       }
+      if (deps.decisionCardHandler?.claims(cardEvent)) {
+        if (!deps.decisionActionQueue) {
+          res.status(503).json({ error: 'decision_queue_unavailable' });
+          return;
+        }
+        try {
+          await deps.decisionActionQueue.enqueue({
+            cardEvent,
+            envelope: event,
+            ...(eventHeader ? { eventHeader } : {}),
+          });
+        } catch (error) {
+          log.error('webhook.decision.queue_failed', {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          res.status(503).json({ error: 'decision_queue_unavailable' });
+          return;
+        }
+        res.status(200).json({
+          toast: {
+            type: 'success',
+            content: 'Decision received. Divo is continuing now.',
+          },
+        });
+        return;
+      }
       void (async () => {
         try {
           const actor = await resolveAuthenticatedCardActor(
@@ -332,21 +356,6 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
             res.status(200).json({
               toast: { type: 'error', content: 'Could not verify this Lark action.' },
             });
-            return;
-          }
-
-          // Every question Divo asks through the decision module comes back
-          // here, under one kind. It claims only its own presses, so it can sit
-          // ahead of the older per-feature handlers without shadowing them —
-          // and as each of those migrates, its branch below simply goes away.
-          if (deps.decisionCardHandler?.claims(cardEvent)) {
-            const result = await deps.decisionCardHandler.handle(cardEvent, {
-              openId: actor.openId,
-              userId: actor.userId,
-              companyId: actor.companyId,
-              ...(actor.displayName ? { displayName: actor.displayName } : {}),
-            });
-            res.status(200).json(result.responseBody);
             return;
           }
 
@@ -367,11 +376,6 @@ export const createLarkWebhookRoutes = (deps: LarkWebhookDeps): Router => {
                 content: 'Divo always replies in threads inside groups.',
               },
             });
-            return;
-          }
-          if (deps.approvalCardHandler) {
-            const result = await deps.approvalCardHandler.handle(cardEvent, actor);
-            res.status(200).json(result.responseBody ?? { ok: true });
             return;
           }
           res.status(200).json({ ok: true });
@@ -569,23 +573,26 @@ async function processDeferredWorkbookConversionAction(input: {
             toast: { type: 'error', content: 'Divo could not verify this Lark action.' },
           },
         };
+    if (!result.handled) return;
     await deliverDeferredWorkbookConversionResponse(
-      result,
+      result.responseBody,
       input.cardEvent,
       input.adapter,
       input.log,
     );
   } catch (error) {
     input.log.error('webhook.workbook_conversion.deferred_failed', { error: String(error) });
-    await deliverDeferredWorkbookConversionResponse({
-      handled: true,
-      responseBody: {
+    await deliverDeferredWorkbookConversionResponse(
+      {
         toast: {
           type: 'error',
           content: 'Divo could not start this workbook conversion. Please try again.',
         },
       },
-    }, input.cardEvent, input.adapter, input.log);
+      input.cardEvent,
+      input.adapter,
+      input.log,
+    );
   }
 }
 
@@ -617,13 +624,12 @@ function channelErrorLogFields(error: unknown): Record<string, unknown> {
 }
 
 async function deliverDeferredWorkbookConversionResponse(
-  result: { handled: boolean; responseBody?: unknown },
+  responseBody: unknown,
   cardEvent: unknown,
   adapter: LarkChannelAdapter,
   log: Logger,
 ): Promise<void> {
-  if (!result.handled) return;
-  const response = asRecord(result.responseBody);
+  const response = asRecord(responseBody);
   const card = asRecord(response?.['card']);
   const cardData = card?.['type'] === 'raw' ? card['data'] : undefined;
   const delivery = response?.['delivery'];
@@ -2622,77 +2628,6 @@ export async function bootstrapLarkFirstTouchIdentity(
     });
     return false;
   }
-}
-
-async function resolveAuthenticatedCardActor(
-  cardEvent: unknown,
-  envelope: Record<string, unknown>,
-  header: Record<string, unknown> | undefined,
-  identityRepo: ChannelIdentityRepoPort,
-): Promise<(LarkAuthenticatedCardActor & { activeDepartmentId?: string }) | null> {
-  const card = toRecord(cardEvent);
-  const operator = toRecord(card?.['operator']);
-  const operatorId = toRecord(operator?.['operator_id']);
-  const envelopeEvent = toRecord(envelope['event']);
-  const envelopeOperator = toRecord(envelopeEvent?.['operator']);
-  const envelopeOperatorId = toRecord(envelopeOperator?.['operator_id']);
-  const openId = firstNonEmptyString(
-    operator?.['open_id'],
-    operatorId?.['open_id'],
-    card?.['open_id'],
-    envelopeOperator?.['open_id'],
-    envelopeOperatorId?.['open_id'],
-    envelopeEvent?.['open_id'],
-    envelope['open_id'],
-  );
-  const larkUserId = firstNonEmptyString(
-    operator?.['user_id'],
-    operatorId?.['user_id'],
-    card?.['user_id'],
-    envelopeOperator?.['user_id'],
-    envelopeOperatorId?.['user_id'],
-    envelopeEvent?.['user_id'],
-    envelope['user_id'],
-  );
-  const tenantKey = firstNonEmptyString(
-    header?.['tenant_key'],
-    card?.['tenant_key'],
-    envelopeEvent?.['tenant_key'],
-    envelope['tenant_key'],
-  );
-  if ((!openId && !larkUserId) || !tenantKey) return null;
-
-  const resolved = await identityRepo.resolveByLarkTenantIdentity(openId, tenantKey, larkUserId);
-  if (!resolved.ok || !resolved.value) return null;
-  const canonicalOpenId = resolved.value.larkOpenId ?? openId;
-  if (!canonicalOpenId) return null;
-  const displayName = firstNonEmptyString(
-    operator?.['name'],
-    card?.['user_name'],
-    resolved.value.displayName,
-  );
-
-  return {
-    tenantKey,
-    openId: canonicalOpenId,
-    userId: resolved.value.userId,
-    companyId: resolved.value.companyId,
-    aiRole: resolved.value.aiRole,
-    ...(displayName ? { displayName } : {}),
-    ...(resolved.value.activeDepartmentId
-      ? { activeDepartmentId: resolved.value.activeDepartmentId }
-      : {}),
-  };
-}
-
-function toRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function firstNonEmptyString(...values: unknown[]): string | undefined {
-  return values.find(value => typeof value === 'string' && value.trim().length > 0) as string | undefined;
 }
 
 /**

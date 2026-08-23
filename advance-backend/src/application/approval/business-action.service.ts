@@ -9,6 +9,7 @@ import type {
   GatewayResponse,
 } from '../gateway/gateway.types';
 import { gatewayFailure, gatewaySuccess } from '../gateway/gateway.types';
+import type { DecisionService } from '../decision/decision.service';
 
 const BUSINESS_ACTION_TTL_MS = 24 * 60 * 60 * 1_000;
 
@@ -40,8 +41,38 @@ export type BusinessActionDecisionResult =
 export class BusinessActionService {
   constructor(private readonly deps: {
     readonly approvals: RuntimeApprovalRepository;
+    readonly decisions: Pick<DecisionService, 'ask'>;
     readonly toolExecutor: ToolExecutor;
     readonly logger: Logger;
+    /**
+     * Where the outcome of a confirmed action is written down.
+     *
+     * The same port and the same shape the manager-approval path already uses
+     * in `ApprovalResumerService`, because the two were asymmetric and only one
+     * of them told the thread anything. A manager approval appended "Approved
+     * action completed."; a requester confirmation executed, recorded itself in
+     * the database, answered the browser, and left the transcript untouched.
+     *
+     * The consequence was not a missing line. It was the agent contradicting
+     * reality: with no completion in its context, the next turn still saw the
+     * staged ask and told somebody their calendar event had not been created
+     * while the event sat in their calendar. Absent information became a
+     * confident false statement.
+     *
+     * It lives here rather than in the callers because this module owns the
+     * requester-confirmation lifecycle end to end, and there are two callers.
+     * Optional for the same reason the resumer's is: a deployment without it
+     * behaves as this did before, which is worth a missing dependency rather
+     * than a crash.
+     */
+    readonly webTranscript?: {
+      appendTurn(
+        chatId: string,
+        turn: { role: 'user' | 'assistant'; content: string; timestamp: string },
+        scope: { companyId: string; channel: string },
+        metadata?: { dedupeKey?: string; sourceRunId?: string },
+      ): Promise<unknown>;
+    };
   }) {}
 
   async prepare(input: PrepareBusinessActionInput): Promise<GatewayResponse> {
@@ -62,20 +93,24 @@ export class BusinessActionService {
     );
     const channel = member.channel ?? 'desktop';
 
-    const stored = await this.deps.approvals.createOrReuseActive({
-      chatId: `business-action:${scope}`,
+    const asked = await this.deps.decisions.ask({
+      kind: 'tool_action',
       companyId: member.companyId,
-      toolId: prepared.toolId,
-      actionGroup: prepared.action,
-      kind: 'business_action',
-      summary: presentation.title,
-      payloadJson: {
-        toolId: prepared.toolId,
-        action: prepared.action,
-        args,
-        argsHash,
+      approver: {
+        userId: member.userId,
+        displayName: member.email ?? member.userId,
+        // Requester confirmations stay in the surface that raised them. The
+        // person is already looking at that surface, so no manager card is sent.
+        larkOpenId: null,
       },
-      metadataJson: {
+      requestedBy: { userId: member.userId, displayName: member.email ?? member.userId },
+      summary: presentation.title,
+      toolId: prepared.toolId,
+      action: prepared.action,
+      rowKind: 'business_action',
+      args,
+      argsHash,
+      metadata: {
         decisionKind: 'requester_confirmation',
         resolvedDecisionUserId: member.userId,
         // Compatibility with the existing inbox query during the migration to
@@ -96,22 +131,22 @@ export class BusinessActionService {
         autoResume: true,
       },
       channel,
-      requestedBy: member.userId,
+      conversationKey: `business-action:${scope}`,
       idempotencyKey,
-      expiresAt: new Date(Date.now() + BUSINESS_ACTION_TTL_MS),
       initialStatus: 'pending',
     });
 
-    if (!stored.ok) {
+    if (!asked.ok) {
       this.deps.logger.error('business_action.prepare_failed', {
         toolId: prepared.toolId,
         userId: member.userId,
-        error: stored.error.message,
+        reason: asked.reason,
+        rowId: asked.rowId,
       });
       return gatewayFailure('tool_error', 'Divo could not prepare this action for review. Please try again.');
     }
 
-    const action = stored.value.approval;
+    const action = asked.row;
     const terminal = responseFromExisting(action);
     if (terminal) return terminal;
 
@@ -120,7 +155,7 @@ export class BusinessActionService {
       toolId: prepared.toolId,
       action: prepared.action,
       channel,
-      created: stored.value.created,
+      created: asked.created,
       userId: member.userId,
       companyId: member.companyId,
       threadId: input.execution?.threadId ?? null,
@@ -184,6 +219,15 @@ export class BusinessActionService {
     if (input.decision === 'rejected') {
       const response = gatewayFailure('approval_rejected', 'Cancelled. Nothing was changed.');
       await this.deps.approvals.persistResult(action.id, response);
+      /* Recorded for the same reason the success is. An agent that cannot see
+         the cancellation will offer to go ahead again as though nothing was
+         said, which reads as not listening. */
+      await this.recordOutcome(
+        action.id,
+        readExecution(asRecord(action.metadataJson)['execution']),
+        input.member,
+        'You cancelled this action. Nothing was changed.',
+      );
       this.deps.logger.info('business_action.rejected', { actionId: action.id, userId: input.member.userId });
       return { handled: true, response };
     }
@@ -218,7 +262,7 @@ export class BusinessActionService {
       expectedAction: expectedAction as PreparedToolInvocation['action'],
       ...(execution ? { execution } : {}),
       resumeOnApproval: true,
-      parentBusinessActionId: action.id,
+      parentDecisionId: action.id,
     });
 
     if (response.status === 'approval_required') {
@@ -233,8 +277,15 @@ export class BusinessActionService {
       }
     } else if (response.ok) {
       await this.deps.approvals.completeApprovedExecution(action.id, response);
+      await this.recordOutcome(action.id, execution, input.member, 'The action you confirmed has been completed.');
     } else {
       await this.deps.approvals.failApprovedExecution(action.id, response);
+      await this.recordOutcome(
+        action.id,
+        execution,
+        input.member,
+        `The action you confirmed could not be completed: ${failureText(response)}`,
+      );
     }
     this.deps.logger.info('business_action.decided', {
       actionId: action.id,
@@ -245,6 +296,43 @@ export class BusinessActionService {
     });
     return { handled: true, response };
   }
+
+  /**
+   * Write what happened into the thread the action was raised from.
+   *
+   * Keyed on the action so the same confirmation resolved twice — from a card
+   * and a browser tab racing each other — leaves one line rather than two.
+   * The key carries the verdict-independent id because only one verdict can
+   * ever win the atomic resolve above.
+   *
+   * Failures to write are logged and swallowed. The action has already run; a
+   * transcript that could not be appended must not turn a completed calendar
+   * event into an error handed back to the person who confirmed it.
+   */
+  private async recordOutcome(
+    actionId: string,
+    execution: GatewayExecutionContext | undefined,
+    member: GatewayMemberContext,
+    text: string,
+  ): Promise<void> {
+    if (!this.deps.webTranscript || !execution?.threadId) return;
+    await this.deps.webTranscript.appendTurn(
+      execution.threadId,
+      { role: 'assistant', content: text, timestamp: new Date().toISOString() },
+      { companyId: member.companyId, channel: 'web' },
+      { dedupeKey: `business_action:${actionId}:outcome` },
+    ).catch((error: unknown) => this.deps.logger.error('business_action.outcome_write_failed', {
+      actionId,
+      error: String(error),
+    }));
+  }
+}
+
+/** The reason a gateway failure carries, if it carries one. */
+function failureText(response: GatewayResponse): string {
+  if (response.ok) return 'no reason was given.';
+  const message = response.error?.message;
+  return message ? (message.endsWith('.') ? message : `${message}.`) : 'no reason was given.';
 }
 
 function businessActionScope(

@@ -1,0 +1,103 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { buildDocument } from '../../src/domain/artifact/document.ts';
+import { hashOf, newPassword } from '../../src/domain/artifact/gate.ts';
+
+const BODY = '<section id="secret-report"><h2>Confidential report</h2><div class="chart" data-chart="{}"></div></section>';
+
+describe('artifact gate', () => {
+  it('generates passwords without ambiguous characters', () => {
+    const password = newPassword();
+
+    assert.equal(password.length, 12);
+    assert.match(password, /^[A-HJKMNP-Za-hjkmnp-z2-9]+$/u);
+    assert.equal(/[0Ol1I]/.test(password), false);
+  });
+
+  it('hashes the exact password as SHA-256 hex', () => {
+    assert.equal(
+      hashOf('hello'),
+      '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824',
+    );
+  });
+
+  it('does not put a gated body into the page as readable markup', () => {
+    const page = buildDocument('SECRET_ARTIFACT_BODY', 'dark', 'standalone', {
+      title: 'Private report',
+      gateHash: hashOf('correct password'),
+    });
+
+    assert.equal(page.includes('SECRET_ARTIFACT_BODY'), false);
+    assert.match(page, /crypto\.subtle\.digest/);
+    assert.match(page, /That password did not match/);
+    assert.match(page, /<title>Private report<\/title>/);
+  });
+
+  it('leaves an ungated body readable and carries the standalone wrapper', () => {
+    const page = buildDocument(BODY, 'light', 'standalone', { title: 'Public report' });
+
+    assert.ok(page.includes(BODY));
+    assert.match(page, /<title>Public report<\/title>/);
+    assert.match(page, /--canvas: #f1f2f3/);
+    assert.match(page, /--canvas: #1c1d1f/);
+    assert.match(page, /\.chart\[data-chart\]/);
+    assert.match(page, /createElementNS/);
+    assert.match(page, /Content-Security-Policy/);
+  });
+
+  it('keeps the chart runtime in a gated page without exposing the body', () => {
+    const page = buildDocument(BODY, 'dark', 'standalone', {
+      title: 'Chart report',
+      gateHash: hashOf('open sesame'),
+    });
+
+    assert.equal(page.includes(BODY), false);
+    assert.match(page, /--canvas: #f1f2f3/);
+    assert.match(page, /--canvas: #1c1d1f/);
+    assert.match(page, /createElementNS/);
+  });
+
+  it('names the document once, in the tab, and never draws a second heading', () => {
+    /* The stored body opens with the document's own <h1>. A wrapper that added
+       another put the title on the page twice, which is what a reader saw on
+       the first published link. The <title> is the tab and is not a heading, so
+       it stays; anything visible is the document's own. */
+    const titled = buildDocument(
+      '<h1>Menhood sales</h1><p>rows</p>',
+      'light',
+      'standalone',
+      { title: 'Menhood sales' },
+    );
+
+    assert.match(titled, /<title>Menhood sales<\/title>/);
+    assert.equal(titled.match(/<h1>/g)?.length, 1);
+    assert.equal(titled.includes('artifact-header'), false);
+  });
+
+  it('draws the body the same way in both modes', () => {
+    /* One soul: the panel and the published page differ in what wraps the
+       document, never in the document. */
+    const body = '<h1>Report</h1><p>rows</p>';
+    assert.ok(buildDocument(body, 'light', 'panel').includes(body));
+    assert.ok(buildDocument(body, 'light', 'standalone', { title: 'Report' }).includes(body));
+  });
+
+  it('gives a published page the measure the panel supplies for free', () => {
+    /* Verified in a browser at 1600px: content 980px wide, 310px either side,
+       no sideways scroll; at 375px it is 343px wide inside 16px gutters. The
+       panel needs none of this because it is already a fixed column, which is
+       exactly why standalone has to say it. */
+    const page = buildDocument('<h1>Wide</h1>', 'light', 'standalone', { title: 'Wide' });
+
+    assert.match(page, /#divo-artifact-content[^}]*max-width: 980px/);
+    assert.match(page, /#divo-artifact-content[^}]*margin-inline: auto/);
+    assert.match(page, /@media \(max-width: 640px\)/);
+  });
+
+  it('adds the page chrome to standalone only, never to the panel', () => {
+    /* The panel is measured by the app around it. Constraining it here would
+       narrow a column that is already the right width. */
+    assert.equal(buildDocument('<p>x</p>', 'light', 'panel').includes('max-width: 980px'), false);
+  });
+});

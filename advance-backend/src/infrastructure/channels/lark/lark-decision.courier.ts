@@ -12,6 +12,7 @@
  */
 import type { DecisionCourier } from '../../../application/decision/decision.service';
 import type { Logger } from '../../../shared/logger';
+import { isDefiniteApprovalNonDelivery } from '../../../application/approval/approval-delivery';
 import type { LarkChannelAdapter } from './lark.adapter';
 import { buildDecisionCard } from './lark-decision-card';
 
@@ -32,7 +33,7 @@ export class LarkDecisionCourier implements DecisionCourier {
     readonly decision: Parameters<DecisionCourier['deliver']>[0]['decision'];
     readonly questions: Parameters<DecisionCourier['deliver']>[0]['questions'];
     readonly approverOpenId: string;
-  }): Promise<{ readonly ok: boolean; readonly messageId?: string }> {
+  }): Promise<Awaited<ReturnType<DecisionCourier['deliver']>>> {
     const card = buildDecisionCard({
       decision: input.decision,
       questions: input.questions,
@@ -46,7 +47,13 @@ export class LarkDecisionCourier implements DecisionCourier {
         decisionId: input.decisionId,
         reason: sent.error.payload?.reason,
       });
-      return { ok: false };
+      return {
+        ok: false,
+        failure: {
+          certainty: isDefiniteApprovalNonDelivery(sent.error) ? 'definite' : 'unknown',
+          message: sent.error.message,
+        },
+      };
     }
     return { ok: true, messageId: sent.value.messageId };
   }

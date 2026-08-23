@@ -238,7 +238,7 @@ export const createKnowledgeTool = (deps: {
     'resources.list and resources.get read canonical Postgres versions for exact updates/deletes; visibility comes from live membership, never caller-provided scope IDs.',
     'files.download creates a short-lived authenticated download for one currently approved file resource.',
     'documents.search performs permission-filtered hybrid search over approved file contents and returns canonical page-aware excerpts.',
-    'propose creates one exact versioned mutation. Shared targets always wait for requester review and then a different manager/admin.',
+    'propose creates one exact versioned mutation. Shared targets wait for requester review; a department manager may confirm their own department skill, while other shared changes require the configured authority.',
     'apply is only for a mutation returned by propose after its required human review. Never invent a mutationId or contentHash.',
     'Use two proposals when the user wants both department and company publication.',
     'logicalKey identifies the durable subject; updates and deletes must also include the exact current baseVersion.',

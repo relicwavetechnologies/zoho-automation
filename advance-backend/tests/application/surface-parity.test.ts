@@ -75,13 +75,21 @@ describe('surface capabilities', () => {
     }
   });
 
-  // Lark keeps the conservative side of every grant. Its reader is a chat card:
-  // it cannot open a document, and the model must never be told otherwise.
-  it('grants Lark none of them', () => {
+  // Lark keeps the conservative side of every web grant. Its private reader is
+  // a chat card, so a document can only arrive as a link.
+  it('keeps Lark on its declared delivery modes', () => {
     assert.equal(lark.worklog, 'patched-card');
-    assert.equal(lark.artifacts, 'none');
+    assert.equal(lark.artifacts, 'link');
     assert.equal(lark.citations, 'compact');
     assert.equal(lark.decisions, 'buttons');
+  });
+
+  it('resolves Lark artifact delivery from the audience', () => {
+    const shared = surfaceCapabilities('lark', 'shared');
+    assert.equal(lark.audience, 'private');
+    assert.equal(lark.artifacts, 'link');
+    assert.equal(shared.audience, 'shared');
+    assert.equal(shared.artifacts, 'none');
   });
 
   // Not yet granted, and each for a stated reason: no chart renders in the web

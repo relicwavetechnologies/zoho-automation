@@ -1,7 +1,7 @@
 /**
  * HITL approval flow — end-to-end chain test.
  *
- * Tests the full gate → card handler → resumer pipeline with mocked
+ * Tests the full gate → Decision module → resumer pipeline with mocked
  * infrastructure. No real DB, Lark API, or LLM calls.
  *
  * Scenarios:
@@ -9,8 +9,8 @@
  *   2. Reads are never gated
  *   3. Idempotency — duplicate tool call reuses existing pending approval
  *   4. Manager self-bypass — manager's own actions skip the gate
- *   5. Card handler rejects unauthorized actor
- *   6. Card handler atomically resolves + kicks off resumer
+ *   5. Decision settlement rejects unauthorized actors
+ *   6. Decision settlement atomically resolves + kicks off resumer
  *   7. Reject flow — resumer re-invokes engine with rejection message
  *   8. Approval grant — second pass through gate is allowed
  */
@@ -19,7 +19,8 @@ import assert from 'node:assert/strict';
 import { ok, err } from '../../src/shared/result.ts';
 import { checkApprovalPolicy, computeArgsHash, computeIdempotencyKey } from '../../src/application/approval/approval-policy.ts';
 import { ApprovalGateService } from '../../src/application/approval/approval-gate.service.ts';
-import { LarkApprovalCardHandler } from '../../src/infrastructure/channels/lark/lark-approval-card.handler.ts';
+import { DecisionService } from '../../src/application/decision/decision.service.ts';
+import { LarkDecisionCourier } from '../../src/infrastructure/channels/lark/lark-decision.courier.ts';
 import type { RuntimeApprovalRow } from '../../src/infrastructure/persistence/runtime-approval.repository.ts';
 import type { PermissionResult } from '../../src/application/permissions/permission.types.ts';
 import type { RunContext } from '../../src/domain/orchestration/run-context.ts';
@@ -39,26 +40,6 @@ const REQUESTER_OID = 'ou_requester_openid';
 const DEPT_ID     = 'dept-finance';
 const CHAT_ID     = 'oc_test_chat';
 const TOOL_ID     = asToolId('googleGmail');
-
-function makeManagerActor(overrides: Record<string, string> = {}) {
-  return {
-    tenantKey: 'tenant-1',
-    openId: MANAGER_OID,
-    userId: String(MANAGER),
-    companyId: String(COMPANY_ID),
-    displayName: 'Abhishek Verma',
-    ...overrides,
-  };
-}
-
-function makeManagerMetadata(extra: Record<string, unknown> = {}) {
-  return {
-    resolvedManagerOpenId: MANAGER_OID,
-    resolvedManagerUserId: String(MANAGER),
-    tenantKey: 'tenant-1',
-    ...extra,
-  };
-}
 
 function makeLogger(): Logger {
   return {
@@ -233,6 +214,11 @@ function makeApprovalRepo() {
       else row.rejectedAt = new Date();
       return ok(row);
     },
+    persistAnswer: async (id: string, answer: unknown) => {
+      const row = store.get(id);
+      if (row) row.responseJson = answer;
+      return ok(undefined);
+    },
     persistResult: async (id: string, json: unknown) => {
       const row = store.get(id);
       if (row) row.executionResultJson = json;
@@ -348,6 +334,32 @@ function makeLarkAdapter() {
     getStatusMessageId: (_traceId: string) => undefined,
     restoreStatusCoordinator: () => {},
   };
+}
+
+function makeGate(
+  repo: unknown,
+  resolver: unknown,
+  lark: unknown,
+  logger: Logger,
+  options: Record<string, unknown> = {},
+  connectionRateLimits?: unknown,
+  decisions?: Pick<DecisionService, 'ask'>,
+) {
+  const decisionService = decisions ?? new DecisionService({
+    approvals: repo as never,
+    resumer: { resume: async () => {} } as never,
+    logger,
+    courier: new LarkDecisionCourier(lark as never, logger),
+  });
+  return new ApprovalGateService(
+    repo as never,
+    resolver as never,
+    lark as never,
+    logger,
+    options as never,
+    connectionRateLimits as never,
+    decisionService,
+  );
 }
 
 // ── Mock resolver ────────────────────────────────────────────────────────────
@@ -490,7 +502,7 @@ describe('ApprovalGateService', () => {
     const connectionPolicy = {
       approval: async () => ({ kind: 'required' as const, mode: 'connection_owner' as const, policySource: 'manager_policy' as const }),
     };
-    const gate = new ApprovalGateService(repo as any, resolver as any, lark as any, makeLogger(), {}, connectionPolicy as any);
+    const gate = makeGate(repo as any, resolver as any, lark as any, makeLogger(), {}, connectionPolicy as any);
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -513,7 +525,7 @@ describe('ApprovalGateService', () => {
     // under is revoked, so nothing can re-derive it later.
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     await gate.check({
       toolId: String(TOOL_ID),
@@ -535,7 +547,7 @@ describe('ApprovalGateService', () => {
   it('sends and tags a cloud Pi approval card for non-read action', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -575,12 +587,13 @@ describe('ApprovalGateService', () => {
     // Card sent to manager
     assert.equal(lark.sentCards.length, 1);
     assert.equal(lark.sentCards[0].openId, MANAGER_OID);
+    assert.match(lark.sentCards[0].content, /decision_answer/);
   });
 
   it('allows read actions without gating', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -600,7 +613,7 @@ describe('ApprovalGateService', () => {
   it('returns idempotent pending for duplicate tool call', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const input = {
       toolId: String(TOOL_ID),
@@ -632,7 +645,7 @@ describe('ApprovalGateService', () => {
   it('keeps identical requests from different users in the same chat isolated', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const base = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -667,7 +680,7 @@ describe('ApprovalGateService', () => {
   it('keeps identical requests in different Lark threads isolated and pinned to their source', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const base = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -723,7 +736,7 @@ describe('ApprovalGateService', () => {
   it('reuses a compatible pre-upgrade pending approval without sending another card', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const args = { op: 'send', to: ['x@y.com'], subject: 'Rolling upgrade' };
     const argsHash = computeArgsHash(args);
     const legacyKey = computeIdempotencyKey(
@@ -779,7 +792,7 @@ describe('ApprovalGateService', () => {
   it('serializes concurrent identical requests into one approval and one card', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -819,7 +832,7 @@ describe('ApprovalGateService', () => {
   it('claims an approved exact action once and replays its completed result', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -859,7 +872,7 @@ describe('ApprovalGateService', () => {
   it('keeps an executing action as the exactly-once barrier after approval expiry', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -886,7 +899,7 @@ describe('ApprovalGateService', () => {
   it('replays a consumed result after approval expiry instead of approving the mutation again', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -922,7 +935,7 @@ describe('ApprovalGateService', () => {
   it('blocks an identical retry when an approved mutation failed with an uncertain provider outcome', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -955,7 +968,7 @@ describe('ApprovalGateService', () => {
   it('keeps department-manager approval namespaces separate when one manager owns both departments', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const base = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -988,7 +1001,7 @@ describe('ApprovalGateService', () => {
   it('creates a fresh approval when the matching pending approval is expired', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const args = { op: 'send', to: ['x@y.com'], subject: 'Expired' };
     const input = {
@@ -1015,7 +1028,7 @@ describe('ApprovalGateService', () => {
   it('claims an approved exact-match approval grant and allows execution', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const args = { op: 'send', to: ['x@y.com'], subject: 'Approved' };
     const input = {
@@ -1041,7 +1054,7 @@ describe('ApprovalGateService', () => {
   it('returns rejected for an exact request after the manager rejects it', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const args = { op: 'send', to: ['x@y.com'], subject: 'Rejected' };
     const input = {
@@ -1067,7 +1080,7 @@ describe('ApprovalGateService', () => {
   it('marks a claimed approval grant consumed after successful execution', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     await repo.create({
       chatId: CHAT_ID,
@@ -1095,7 +1108,7 @@ describe('ApprovalGateService', () => {
   it('replays a durable terminal checkpoint when the consumed transition could not be stored', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as ToolActionGroup,
@@ -1127,7 +1140,7 @@ describe('ApprovalGateService', () => {
   it('rejects an approved grant when stored metadata does not match requester', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const args = { op: 'send', to: ['x@y.com'], subject: 'Mismatch' };
     const input = {
@@ -1154,7 +1167,7 @@ describe('ApprovalGateService', () => {
   it('returns misconfigured when approval config is malformed', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -1181,7 +1194,7 @@ describe('ApprovalGateService', () => {
         return err(new Error('timeout after request body was sent'));
       },
     };
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as const,
@@ -1228,7 +1241,7 @@ describe('ApprovalGateService', () => {
           : ok({ messageId: 'msg-card-2' });
       },
     };
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as const,
@@ -1263,7 +1276,7 @@ describe('ApprovalGateService', () => {
     const repo = makeApprovalRepo();
     repo.setDecisionMessageId = async () => err(new Error('database write failed'));
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
     const input = {
       toolId: String(TOOL_ID),
       action: 'send' as const,
@@ -1286,7 +1299,7 @@ describe('ApprovalGateService', () => {
   it('self-bypass: manager triggering their own action is allowed', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -1305,7 +1318,7 @@ describe('ApprovalGateService', () => {
   it('can disable manager self-bypass for local approval-card smoke tests', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(
+    const gate = makeGate(
       repo as any,
       makeResolver() as any,
       lark as any,
@@ -1332,7 +1345,7 @@ describe('ApprovalGateService', () => {
   it('returns misconfigured when no manager resolved', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver(null) as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver(null) as any, lark as any, makeLogger());
 
     const result = await gate.check({
       toolId: String(TOOL_ID),
@@ -1350,7 +1363,7 @@ describe('ApprovalGateService', () => {
   it('returns misconfigured when no department context', async () => {
     const repo = makeApprovalRepo();
     const lark = makeLarkAdapter();
-    const gate = new ApprovalGateService(repo as any, makeResolver() as any, lark as any, makeLogger());
+    const gate = makeGate(repo as any, makeResolver() as any, lark as any, makeLogger());
 
     const permNoDept: PermissionResult = {
       allowedToolIds:       new Set([TOOL_ID]),
@@ -1371,555 +1384,6 @@ describe('ApprovalGateService', () => {
 
     // No department metadata → policy says not required → allowed
     assert.equal(result.kind, 'allowed');
-  });
-});
-
-describe('LarkApprovalCardHandler', () => {
-  it('approves a delivered dispatching card without a stored Lark message ID', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    let resumeDecision = '';
-    const resumer = {
-      resume: async (_id: string, decision: string) => {
-        resumeDecision = decision;
-      },
-    };
-    const created = await repo.create({
-      chatId: CHAT_ID,
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'Send email to test@example.com',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata({
-        approvalOrigin: 'lark',
-        requesterId: String(REQUESTER),
-      }),
-      channel: 'lark',
-      requestedBy: String(REQUESTER),
-      idempotencyKey: 'idem-dispatching-approve',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-    assert.ok(created.ok);
-    created.value.status = 'dispatching';
-    created.value.decisionMessageId = null;
-
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
-    const result = await handler.handle({
-      action: {
-        value: { kind: 'approval_decision', approvalId: created.value.id, decision: 'approved' },
-        tag: 'button',
-      },
-      operator: { open_id: MANAGER_OID, name: 'Abhishek Verma' },
-    }, makeManagerActor());
-
-    assert.equal(result.handled, true);
-    assert.equal((result.responseBody as any).toast.type, 'success');
-    assert.equal(repo.store.get(created.value.id)?.status, 'approved');
-    assert.equal(lark.updatedMessages.length, 0);
-    await new Promise(r => setTimeout(r, 50));
-    assert.equal(resumeDecision, 'approved');
-  });
-
-  it('rejects a delivered dispatching gateway card without auto-resuming it', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    let resumeCalled = false;
-    const resumer = { resume: async () => { resumeCalled = true; } };
-    const created = await repo.create({
-      chatId: 'gateway:session-1',
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'Send governed email',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata({
-        approvalOrigin: 'gateway',
-        chatId: 'gateway:session-1',
-        requesterId: String(REQUESTER),
-      }),
-      channel: 'lark',
-      requestedBy: String(REQUESTER),
-      idempotencyKey: 'idem-dispatching-reject',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-    assert.ok(created.ok);
-    created.value.status = 'dispatching';
-    created.value.decisionMessageId = null;
-
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
-    const result = await handler.handle({
-      action: {
-        value: { kind: 'approval_decision', approvalId: created.value.id, decision: 'rejected' },
-        tag: 'button',
-      },
-      operator: { open_id: MANAGER_OID, name: 'Abhishek Verma' },
-    }, makeManagerActor());
-
-    assert.equal(result.handled, true);
-    assert.equal((result.responseBody as any).toast.type, 'success');
-    assert.equal(repo.store.get(created.value.id)?.status, 'rejected');
-    assert.equal(lark.updatedMessages.length, 0);
-    await new Promise(r => setTimeout(r, 50));
-    assert.equal(resumeCalled, false);
-  });
-
-  it('auto-resumes a cloud Pi approval while keeping its gateway scope internal', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    let resumeDecision = '';
-    const resumer = {
-      resume: async (_id: string, decision: string) => {
-        resumeDecision = decision;
-      },
-    };
-    const created = await repo.create({
-      chatId: 'gateway:company:comp-1:requester:user-anish:thread:oc_test_chat:run:run-1',
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'Send governed email',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata({
-        approvalOrigin: 'cloud_pi',
-        chatId: 'gateway:company:comp-1:requester:user-anish:thread:oc_test_chat:run:run-1',
-        sourceChatId: CHAT_ID,
-        requesterId: String(REQUESTER),
-        requesterLarkOpenId: REQUESTER_OID,
-        execution: {
-          version: 1,
-          threadId: CHAT_ID,
-          runId: 'run-1',
-          actionId: 'call-1',
-        },
-      }),
-      channel: 'lark',
-      requestedBy: String(REQUESTER),
-      idempotencyKey: 'idem-cloud-pi-approve',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-    assert.ok(created.ok);
-    created.value.status = 'dispatching';
-
-    const handler = new LarkApprovalCardHandler(
-      repo as any,
-      resumer as any,
-      lark as any,
-      makeLogger(),
-    );
-    const result = await handler.handle({
-      action: {
-        value: {
-          kind: 'approval_decision',
-          approvalId: created.value.id,
-          decision: 'approved',
-        },
-        tag: 'button',
-      },
-      operator: { open_id: MANAGER_OID, name: 'Abhishek Verma' },
-    }, makeManagerActor());
-
-    assert.equal(result.handled, true);
-    assert.match((result.responseBody as any).toast.content, /will now be executed/i);
-    await new Promise(r => setTimeout(r, 50));
-    assert.equal(resumeDecision, 'approved');
-  });
-
-  it('resolves approval and returns toast on approve click', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    let resumeCalled = false;
-    let resumeDecision = '';
-    const resumer = {
-      resume: async (_id: string, decision: string) => {
-        resumeCalled = true;
-        resumeDecision = decision;
-      },
-    };
-
-    // Pre-create a pending approval
-    const createResult = await repo.create({
-      chatId: CHAT_ID,
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'Send email to test@example.com',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata({ requesterId: String(REQUESTER) }),
-      channel: 'lark',
-      requestedBy: String(REQUESTER),
-      idempotencyKey: 'idem-1',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-    const approval = createResult.ok ? createResult.value : null;
-    assert.ok(approval);
-    await repo.setDecisionMessageId(approval.id, 'msg-decision-1');
-
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
-
-    const result = await handler.handle({
-      action: {
-        value: { kind: 'approval_decision', approvalId: approval.id, decision: 'approved' },
-        tag: 'button',
-      },
-      operator: { open_id: MANAGER_OID, name: 'Abhishek Verma' },
-    }, makeManagerActor());
-
-    assert.equal(result.handled, true);
-    assert.ok(result.responseBody);
-    assert.equal((result.responseBody as any).toast.type, 'success');
-    assert.equal((result.responseBody as any).card.type, 'raw');
-    assert.match((result.responseBody as any).card.data.header.title.content, /Approved by Abhishek Verma/);
-    assert.equal(
-      JSON.stringify((result.responseBody as any).card.data).includes('approval_decision'),
-      false,
-      'the callback card has no actionable approval buttons',
-    );
-
-    // Approval atomically resolved
-    const resolved = repo.store.get(approval.id)!;
-    assert.equal(resolved.status, 'approved');
-    assert.equal(resolved.approvedBy, String(MANAGER));
-
-    // The callback response updates immediately; PATCH remains async recovery.
-    await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(lark.updatedMessages.length, 1);
-    assert.equal(lark.updatedMessages[0].messageId, 'msg-decision-1');
-
-    // Resumer kicked off
-    await new Promise(r => setTimeout(r, 50));
-    assert.equal(resumeCalled, true);
-    assert.equal(resumeDecision, 'approved');
-  });
-
-  it('rejects unauthorized actor', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    const resumer = { resume: async () => {} };
-
-    await repo.create({
-      chatId: CHAT_ID,
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'test',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata(),
-      channel: 'lark',
-      idempotencyKey: 'idem-2',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
-
-    const result = await handler.handle({
-      action: {
-        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
-        tag: 'button',
-      },
-      operator: { open_id: 'ou_unauthorized_person' },
-    }, makeManagerActor({ openId: 'ou_unauthorized_person' }));
-
-    assert.equal(result.handled, true);
-    assert.equal((result.responseBody as any).toast.type, 'error');
-    assert.ok((result.responseBody as any).toast.content.includes('not authorized'));
-
-    // Approval NOT resolved
-    const approval = repo.store.get('approval-1')!;
-    assert.equal(approval.status, 'pending');
-  });
-
-  it('rejects actor identities from another user, company, or tenant', async () => {
-    const mismatches = [
-      { userId: 'user-someone-else' },
-      { companyId: 'comp-other' },
-      { tenantKey: 'tenant-other' },
-    ];
-
-    for (const mismatch of mismatches) {
-      const repo = makeApprovalRepo();
-      await repo.create({
-        chatId: CHAT_ID,
-        companyId: String(COMPANY_ID),
-        toolId: String(TOOL_ID),
-        actionGroup: 'send',
-        kind: 'tool_action',
-        summary: 'test',
-        payloadJson: {},
-        metadataJson: makeManagerMetadata(),
-        channel: 'lark',
-        idempotencyKey: `idem-scope-${Object.keys(mismatch)[0]}`,
-        expiresAt: new Date(Date.now() + 86400_000),
-      });
-      const handler = new LarkApprovalCardHandler(
-        repo as any,
-        { resume: async () => {} } as any,
-        makeLarkAdapter() as any,
-        makeLogger(),
-      );
-
-      const result = await handler.handle({
-        action: {
-          value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
-          tag: 'button',
-        },
-        operator: { open_id: MANAGER_OID },
-      }, makeManagerActor(mismatch));
-
-      assert.equal((result.responseBody as any).toast.type, 'error');
-      assert.equal(repo.store.get('approval-1')!.status, 'pending');
-    }
-  });
-
-  it('rejects approval clicks when manager metadata is missing', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    const resumer = { resume: async () => {} };
-
-    await repo.create({
-      chatId: CHAT_ID,
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'test',
-      payloadJson: {},
-      metadataJson: {},
-      channel: 'lark',
-      idempotencyKey: 'idem-missing-manager',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
-
-    const result = await handler.handle({
-      action: {
-        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
-        tag: 'button',
-      },
-      operator: { open_id: MANAGER_OID },
-    }, makeManagerActor());
-
-    assert.equal(result.handled, true);
-    assert.equal((result.responseBody as any).toast.type, 'error');
-    assert.match((result.responseBody as any).toast.content, /approval metadata/i);
-    assert.equal(repo.store.get('approval-1')!.status, 'pending');
-  });
-
-  it('rejects approval clicks after approval expiry', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    const resumer = { resume: async () => {} };
-
-    await repo.create({
-      chatId: CHAT_ID,
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'test',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata(),
-      channel: 'lark',
-      idempotencyKey: 'idem-expired-click',
-      expiresAt: new Date(Date.now() - 1_000),
-    });
-
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
-
-    const result = await handler.handle({
-      action: {
-        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
-        tag: 'button',
-      },
-      operator: { open_id: MANAGER_OID },
-    }, makeManagerActor());
-
-    assert.equal(result.handled, true);
-    assert.equal((result.responseBody as any).toast.type, 'error');
-    assert.match((result.responseBody as any).toast.content, /expired/i);
-    assert.equal(repo.store.get('approval-1')!.status, 'pending');
-  });
-
-  it('returns already resolved for double-click', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    const resumer = { resume: async () => {} };
-
-    await repo.create({
-      chatId: CHAT_ID,
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'test',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata(),
-      channel: 'lark',
-      idempotencyKey: 'idem-3',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-
-    // Resolve it first
-    await repo.atomicResolve('approval-1', 'approved', MANAGER_OID);
-
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
-
-    const result = await handler.handle({
-      action: {
-        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
-        tag: 'button',
-      },
-      operator: { open_id: MANAGER_OID },
-    }, makeManagerActor());
-
-    assert.equal(result.handled, true);
-    assert.equal((result.responseBody as any).toast.type, 'info');
-    assert.ok((result.responseBody as any).toast.content.includes('Already'));
-  });
-
-  it('handles reject decision', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    let resumeDecision = '';
-    const resumer = { resume: async (_id: string, d: string) => { resumeDecision = d; } };
-
-    await repo.create({
-      chatId: CHAT_ID,
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'test',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata(),
-      channel: 'lark',
-      idempotencyKey: 'idem-4',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-    await repo.setDecisionMessageId('approval-1', 'msg-d-1');
-
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
-
-    const result = await handler.handle({
-      action: {
-        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'rejected' },
-        tag: 'button',
-      },
-      operator: { open_id: MANAGER_OID, name: 'Abhishek' },
-    }, makeManagerActor({ displayName: 'Abhishek' }));
-
-    assert.equal(result.handled, true);
-
-    const resolved = repo.store.get('approval-1')!;
-    assert.equal(resolved.status, 'rejected');
-    assert.ok(resolved.rejectedAt);
-
-    await new Promise(r => setTimeout(r, 50));
-    assert.equal(resumeDecision, 'rejected');
-  });
-
-  it('does not auto-resume gateway-origin approvals', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    let resumeCalled = false;
-    const resumer = { resume: async () => { resumeCalled = true; } };
-
-    await repo.create({
-      chatId: 'gateway:sess-test',
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'test gateway approval',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata({
-        approvalOrigin: 'gateway',
-        chatId: 'gateway:sess-test',
-        requesterId: String(REQUESTER),
-      }),
-      channel: 'lark',
-      requestedBy: String(REQUESTER),
-      idempotencyKey: 'idem-gateway',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-    await repo.setDecisionMessageId('approval-1', 'msg-gateway-1');
-
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
-
-    const result = await handler.handle({
-      action: {
-        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
-        tag: 'button',
-      },
-      operator: { open_id: MANAGER_OID, name: 'Abhishek' },
-    }, makeManagerActor({ displayName: 'Abhishek' }));
-
-    assert.equal(result.handled, true);
-    assert.match((result.responseBody as any).toast.content, /retry the exact desktop action/i);
-    assert.equal(repo.store.get('approval-1')!.status, 'approved');
-    await new Promise<void>(resolve => setImmediate(resolve));
-    assert.equal(lark.updatedMessages.length, 1);
-
-    await new Promise(r => setTimeout(r, 50));
-    assert.equal(resumeCalled, false);
-  });
-
-  it('parses double-encoded JSON value', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    const resumer = { resume: async () => {} };
-
-    await repo.create({
-      chatId: CHAT_ID,
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'test',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata(),
-      channel: 'lark',
-      idempotencyKey: 'idem-5',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
-
-    // Double-encoded: Lark sometimes re-stringifies the value
-    const doubleEncoded = JSON.stringify(
-      JSON.stringify({ kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' }),
-    );
-
-    const result = await handler.handle({
-      action: { value: JSON.parse(doubleEncoded), tag: 'button' },
-      operator: { open_id: MANAGER_OID },
-    }, makeManagerActor());
-
-    assert.equal(result.handled, true);
-    assert.equal(repo.store.get('approval-1')!.status, 'approved');
-  });
-
-  it('ignores non-approval card actions', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    const resumer = { resume: async () => {} };
-    const handler = new LarkApprovalCardHandler(repo as any, resumer as any, lark as any, makeLogger());
-
-    const result = await handler.handle({
-      action: {
-        value: { kind: 'some_other_action', data: 'foo' },
-        tag: 'button',
-      },
-      operator: { open_id: 'ou_anyone' },
-    }, makeManagerActor({ openId: 'ou_anyone' }));
-
-    assert.equal(result.handled, false);
   });
 });
 
@@ -1945,95 +1409,6 @@ describe('Idempotency key computation', () => {
     const k1 = computeIdempotencyKey('chat-A', String(TOOL_ID), 'send', hash);
     const k2 = computeIdempotencyKey('chat-B', String(TOOL_ID), 'send', hash);
     assert.notEqual(k1, k2);
-  });
-});
-
-describe('LarkApprovalCardHandler audit trail', () => {
-  it('persists an audit record when someone approves a decision that is not theirs', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    const resumer = { resume: async () => {} };
-    const audited: unknown[] = [];
-
-    await repo.create({
-      chatId: CHAT_ID,
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'test',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata(),
-      channel: 'lark',
-      idempotencyKey: 'idem-audit-1',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-
-    const handler = new LarkApprovalCardHandler(
-      repo as any, resumer as any, lark as any, makeLogger(),
-      { record: (input: unknown) => { audited.push(input); } } as any,
-    );
-
-    const result = await handler.handle({
-      action: {
-        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
-        tag: 'button',
-      },
-      operator: { open_id: 'ou_intruder' },
-    }, makeManagerActor({ openId: 'ou_intruder' }));
-
-    assert.equal(result.handled, true);
-    assert.equal(repo.store.get('approval-1')!.status, 'pending', 'nothing was approved');
-
-    // Rejecting the click is not enough on its own: an attempt to approve
-    // someone else's decision has to survive somewhere an admin can query,
-    // not only in process telemetry that rotates away.
-    assert.equal(audited.length, 1, 'the attempt was recorded');
-    const entry = audited[0] as any;
-    assert.equal(entry.action, 'approval.card.unauthorized_actor');
-    assert.equal(entry.outcome, 'failure');
-    assert.equal(entry.companyId, String(COMPANY_ID), 'filed under the approval"s company');
-    assert.equal(entry.metadata.approvalId, 'approval-1');
-    assert.equal(entry.metadata.decision, 'approved');
-    assert.equal(entry.metadata.actorOpenId, 'ou_intruder');
-    assert.ok(entry.metadata.expectedApproverOpenId, 'records who it should have been');
-  });
-
-  it('records nothing when the rightful approver acts', async () => {
-    const repo = makeApprovalRepo();
-    const lark = makeLarkAdapter();
-    const resumer = { resume: async () => {} };
-    const audited: unknown[] = [];
-
-    await repo.create({
-      chatId: CHAT_ID,
-      companyId: String(COMPANY_ID),
-      toolId: String(TOOL_ID),
-      actionGroup: 'send',
-      kind: 'tool_action',
-      summary: 'test',
-      payloadJson: {},
-      metadataJson: makeManagerMetadata(),
-      channel: 'lark',
-      idempotencyKey: 'idem-audit-2',
-      expiresAt: new Date(Date.now() + 86400_000),
-    });
-
-    const handler = new LarkApprovalCardHandler(
-      repo as any, resumer as any, lark as any, makeLogger(),
-      { record: (input: unknown) => { audited.push(input); } } as any,
-    );
-
-    await handler.handle({
-      action: {
-        value: { kind: 'approval_decision', approvalId: 'approval-1', decision: 'approved' },
-        tag: 'button',
-      },
-      operator: { open_id: 'ou_manager' },
-    }, makeManagerActor());
-
-    // A security log that fires on the happy path teaches admins to ignore it.
-    assert.deepEqual(audited, []);
   });
 });
 
@@ -2079,7 +1454,7 @@ describe('an approval requested through the gateway and executed through the run
 
   it('is claimed by the execution that follows it, not asked for a second time', async () => {
     const repo = makeApprovalRepo();
-    const gate = new ApprovalGateService(
+    const gate = makeGate(
       repo as any, makeResolver() as any, makeLarkAdapter() as any, makeLogger(),
     );
 
@@ -2107,7 +1482,7 @@ describe('an approval requested through the gateway and executed through the run
     // The run scope is what stops one manager decision being spent by an
     // unrelated turn. Widening the search must not cost that.
     const repo = makeApprovalRepo();
-    const gate = new ApprovalGateService(
+    const gate = makeGate(
       repo as any, makeResolver() as any, makeLarkAdapter() as any, makeLogger(),
     );
 

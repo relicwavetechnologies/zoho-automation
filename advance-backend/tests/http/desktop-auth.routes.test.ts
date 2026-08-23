@@ -42,6 +42,16 @@ function signTestState(payload: Record<string, unknown>): string {
   return `${header}.${body}.${signature}`;
 }
 
+function runtimeMembership(department: Record<string, unknown> | null) {
+  return {
+    findMany: async () => department ? [{
+      departmentId: department['id'],
+      roleId: 'test-department-role',
+      department,
+    }] : [],
+  };
+}
+
 function makeDeps(overrides: Record<string, unknown> = {}) {
   const {
     prisma: overridePrismaValue,
@@ -52,6 +62,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
   const deps = {
     prisma: {
       knowledgeResource: { findMany: async () => [] },
+      adminMembership: { findFirst: async () => null },
       ...overridePrisma,
     } as any,
     larkOAuthService: new LarkOAuthService(
@@ -1591,9 +1602,7 @@ describe('desktop auth routes', () => {
   it('returns the active department persona for an authorized desktop member', async () => {
     const router = createDesktopAuthRoutes(makeDeps({
       prisma: {
-        departmentMembership: {
-          findFirst: async () => ({
-            department: {
+        departmentMembership: runtimeMembership({
               id: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd',
               name: 'Finance',
               agentConfig: {
@@ -1601,9 +1610,7 @@ describe('desktop auth routes', () => {
                 isActive: true,
                 updatedAt: new Date('2026-07-11T10:00:00.000Z'),
               },
-            },
-          }),
-        },
+        }),
       },
     }));
     const result = await callRoute(router, 'GET', '/runtime-context', {
@@ -1708,7 +1715,7 @@ describe('desktop auth routes', () => {
 
   it('does not expose a persona for an inaccessible department', async () => {
     const router = createDesktopAuthRoutes(makeDeps({
-      prisma: { departmentMembership: { findFirst: async () => null } },
+      prisma: { departmentMembership: runtimeMembership(null) },
     }));
     const result = await callRoute(router, 'GET', '/runtime-context', {
       query: { departmentId: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd' },
@@ -1722,9 +1729,7 @@ describe('desktop auth routes', () => {
   it('appends the active manager persona brief without making it a permission grant', async () => {
     const router = createDesktopAuthRoutes(makeDeps({
       prisma: {
-        departmentMembership: {
-          findFirst: async () => ({
-            department: {
+        departmentMembership: runtimeMembership({
               id: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd',
               name: 'Finance',
               agentConfig: {
@@ -1732,9 +1737,7 @@ describe('desktop auth routes', () => {
                 isActive: true,
                 updatedAt: new Date('2026-07-11T10:00:00.000Z'),
               },
-            },
-          }),
-        },
+        }),
       },
       managerPersonaRuntime: {
         getDepartmentBrief: async () => ({
@@ -1765,16 +1768,12 @@ describe('desktop auth routes', () => {
     ]);
     const router = createDesktopAuthRoutes(makeDeps({
       prisma: {
-        departmentMembership: {
-          findFirst: async () => ({
-            department: {
+        departmentMembership: runtimeMembership({
               id: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd',
               name: 'Finance',
               slug: 'finance',
               agentConfig: null,
-            },
-          }),
-        },
+        }),
       },
       permissions: {
         resolve: async () => ({
@@ -1868,11 +1867,9 @@ describe('desktop auth routes', () => {
     };
     const router = createDesktopAuthRoutes(makeDeps({
       prisma: {
-        departmentMembership: {
-          findFirst: async () => ({
-            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
-          }),
-        },
+        departmentMembership: runtimeMembership({
+          id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null,
+        }),
       },
       permissions: {
         resolve: async () => { calls.push('permissions.resolve'); return permission; },
@@ -1937,11 +1934,9 @@ describe('desktop auth routes', () => {
     };
     const router = createDesktopAuthRoutes(makeDeps({
       prisma: {
-        departmentMembership: {
-          findFirst: async () => ({
-            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
-          }),
-        },
+        departmentMembership: runtimeMembership({
+          id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null,
+        }),
       },
       permissions: {
         resolve: async () => ({
@@ -2002,11 +1997,9 @@ describe('desktop auth routes', () => {
     let grantedSkillIds = new Set(['skill-finance']);
     const router = createDesktopAuthRoutes(makeDeps({
       prisma: {
-        departmentMembership: {
-          findFirst: async () => ({
-            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
-          }),
-        },
+        departmentMembership: runtimeMembership({
+          id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null,
+        }),
       },
       permissions: {
         resolve: async () => {
@@ -2093,11 +2086,9 @@ describe('desktop auth routes', () => {
     };
     const router = createDesktopAuthRoutes(makeDeps({
       prisma: {
-        departmentMembership: {
-          findFirst: async () => ({
-            department: { id: departmentId, name: 'Operations', slug: 'operations', agentConfig: null },
-          }),
-        },
+        departmentMembership: runtimeMembership({
+          id: departmentId, name: 'Operations', slug: 'operations', agentConfig: null,
+        }),
       },
       permissions: {
         resolve: async () => ({
@@ -2139,11 +2130,9 @@ describe('desktop auth routes', () => {
     const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
     const router = createDesktopAuthRoutes(makeDeps({
       prisma: {
-        departmentMembership: {
-          findFirst: async () => ({
-            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
-          }),
-        },
+        departmentMembership: runtimeMembership({
+          id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null,
+        }),
       },
       permissions: {
         resolve: async (input: unknown) => {
@@ -2228,11 +2217,9 @@ describe('desktop auth routes', () => {
     const router = createDesktopAuthRoutes(makeDeps({
       logger,
       prisma: {
-        departmentMembership: {
-          findFirst: async () => ({
-            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
-          }),
-        },
+        departmentMembership: runtimeMembership({
+          id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null,
+        }),
       },
       permissions: {
         resolve: async () => ({
@@ -2292,11 +2279,9 @@ describe('desktop auth routes', () => {
     const departmentId = '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd';
     const router = createDesktopAuthRoutes(makeDeps({
       prisma: {
-        departmentMembership: {
-          findFirst: async () => ({
-            department: { id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null },
-          }),
-        },
+        departmentMembership: runtimeMembership({
+          id: departmentId, name: 'Finance', slug: 'finance', agentConfig: null,
+        }),
       },
       permissions: {
         resolve: async () => ({
@@ -2332,9 +2317,7 @@ describe('desktop auth routes', () => {
   it('returns no persona when the department agent config is disabled', async () => {
     const router = createDesktopAuthRoutes(makeDeps({
       prisma: {
-        departmentMembership: {
-          findFirst: async () => ({
-            department: {
+        departmentMembership: runtimeMembership({
               id: '5d649f61-d5ea-4fd6-a52e-7166c33fb1cd',
               name: 'Finance',
               agentConfig: {
@@ -2342,9 +2325,7 @@ describe('desktop auth routes', () => {
                 isActive: false,
                 updatedAt: new Date('2026-07-11T10:00:00.000Z'),
               },
-            },
-          }),
-        },
+        }),
       },
     }));
     const result = await callRoute(router, 'GET', '/runtime-context', {

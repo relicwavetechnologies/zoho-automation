@@ -22,6 +22,14 @@ export const GATEWAY_OPS = [
   'tools.prepare',
   'tools.commit',
   'tools.invoke',
+  /**
+   * Pick a waiting run back up once the member has connected the account.
+   *
+   * Reached only from inside a run that is already sitting on a Connect ask,
+   * which is why it takes an ask id and nothing else: everything about what the
+   * run may then do still comes from the member session.
+   */
+  'connections.resume',
   'automation.plan.create',
   'automation.plan.status',
 ] as const;
@@ -49,6 +57,13 @@ export const GATEWAY_STATUSES = [
   'approval_rejected',
   'approval_execution_failed',
   'approval_misconfigured',
+  /**
+   * A Connect ask is with the member and this call is holding for it.
+   *
+   * Not a failure and not yet a result. The run blocks on it, so the only way
+   * a caller sees this status is when the wait ended without a connection.
+   */
+  'connection_pending',
   'rate_limited',
   'rate_limit_unavailable',
   'automation_plan_not_found',
@@ -234,12 +249,24 @@ export const connectionsListPayloadSchema = z.object({
   provider: z.enum(CONNECTION_PROVIDER_IDS),
 }).strict();
 
+/**
+ * The ask id and nothing else.
+ *
+ * Deliberately the whole payload. The run resuming here already carries its own
+ * identity and permissions from the member session, and the ask carries what
+ * was requested, so anything more a caller could send would be a second, weaker
+ * source of truth for facts the backend already holds.
+ */
+export const connectionsResumePayloadSchema = z.object({
+  askId: z.string().trim().min(1).max(200),
+}).strict();
+
 export const toolsListPayloadSchema = z.object({
   toolId: z.string().min(1).optional(),
   toolIds: z.array(z.string().min(1)).min(1).max(100).optional(),
   family: z.enum(TOOL_FAMILY_IDS).optional(),
   query: z.string().trim().min(3).max(2_000).optional(),
-  contractMode: z.enum(['suggested', 'complete']).optional(),
+  contractMode: z.enum(['suggested', 'complete', 'complete_cached']).optional(),
 }).strict().refine(
   value => [value.toolId, value.toolIds, value.family].filter(Boolean).length <= 1,
   { message: 'Use one selector: toolId, toolIds, or family.' },
@@ -333,6 +360,26 @@ export function gatewayFailure(
  * Channel adapters decide how to present it; this status does not imply a
  * Desktop-local process or UI.
  */
+/**
+ * The Connect ask is with the member, and the run is to wait for it.
+ *
+ * `ok: false` for the same reason requester confirmation is: no result was
+ * produced. What makes it different is that the caller does not report it. It
+ * stands still, and resumes through `connections.resume` when the member is
+ * done, so the model only ever reads this if the wait ran out.
+ */
+export function gatewayConnectionPending<T>(data: T): GatewayResponse<T> {
+  return {
+    ok: false,
+    status: 'connection_pending',
+    data,
+    error: {
+      code: 'connection_pending',
+      message: 'A Connect ask is with the member. This call waits for them to finish it.',
+    },
+  };
+}
+
 export function gatewayRequesterConfirmationRequired<T>(data: T): GatewayResponse<T> {
   return {
     ok: false,

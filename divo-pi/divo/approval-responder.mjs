@@ -99,3 +99,65 @@ export function createHeadlessExtensionResponder() {
 		respond({ type: "extension_ui_response", id: request.id, cancelled: true });
 	};
 }
+
+/**
+ * The wire title for "tell me when the member has connected this account".
+ *
+ * Declared here as well as in the gateway extension, the way
+ * `divo_approval_v1` already is. The two halves are compiled separately and
+ * only ever meet as a string on this channel, so the string is the contract.
+ */
+export const DIVO_CONNECT_PROTOCOL_TITLE = "divo_connect_v1";
+
+/** The ask id, or undefined when this is not a connect request we can hold. */
+export function readConnectAsk(title, message) {
+	if (title !== DIVO_CONNECT_PROTOCOL_TITLE || typeof message !== "string") return undefined;
+	try {
+		const parsed = JSON.parse(message);
+		const askId = parsed?.askId;
+		if (typeof askId !== "string" || !askId.trim()) return undefined;
+		return {
+			askId,
+			expiresAt: typeof parsed?.expiresAt === "string" ? parsed.expiresAt : undefined,
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The headless policy, plus the one question it is allowed to not answer.
+ *
+ * Everything the policy already decided still decides the same way. A connect
+ * request is the exception because there is no policy that could answer it:
+ * whether the member connected their Google account is a fact about the world,
+ * not a rule, and the only way to learn it is to wait for the world to say so.
+ */
+export function createRuntimeExtensionResponder({ asks, signal }) {
+	const headless = createHeadlessExtensionResponder();
+	return async (request, respond) => {
+		if (request.method === "confirm") {
+			const ask = readConnectAsk(request.title, request.message);
+			if (ask) {
+				const parked = asks.park({
+					askId: ask.askId,
+					expiresAt: ask.expiresAt,
+					signal,
+					settle: granted => respond({
+						type: "extension_ui_response",
+						id: request.id,
+						confirmed: granted,
+					}),
+				});
+				// Refusing to park is not a reason to leave the run hanging. A
+				// declined wait reads to the model as "not connected", which is
+				// both true and something it can act on.
+				if (!parked) {
+					respond({ type: "extension_ui_response", id: request.id, confirmed: false });
+				}
+				return;
+			}
+		}
+		return headless(request, respond);
+	};
+}

@@ -3,6 +3,8 @@ import { sha256 } from '../../shared/hash';
 
 export const CONNECTION_AUTHORIZATION_PROVIDER = 'google_workspace' as const;
 export const CONNECTION_AUTHORIZATION_TTL_MS = 10 * 60_000;
+/** The existing intent row predates web delivery and stores this discriminator in chatType. */
+export const WEB_CONNECTION_AUTHORIZATION_CHAT_TYPE = 'web' as const;
 
 export type ConnectionAuthorizationStatus =
   | 'pending'
@@ -32,6 +34,12 @@ export interface ConnectionAuthorizationTarget {
   groupReplyMode?: string;
   originalRequest: string;
   requestedToolIds: string[];
+}
+
+export function isWebConnectionAuthorization(
+  target: Pick<ConnectionAuthorizationTarget, 'chatType'>,
+): boolean {
+  return target.chatType === WEB_CONNECTION_AUTHORIZATION_CHAT_TYPE;
 }
 
 export interface ConnectionAuthorizationSecrets {

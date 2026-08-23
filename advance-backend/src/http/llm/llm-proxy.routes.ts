@@ -301,6 +301,27 @@ export function createLlmProxyRoutes(deps: LlmProxyRoutesDeps): Router {
         }),
       );
     } catch (e) {
+      if (controller.signal.aborted) {
+        log.info('proxy.upstream.cancelled', { provider });
+        if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+          res.status(499).end();
+        }
+        void svc.recordAudit({
+          companyId,
+          userId,
+          executionId,
+          model,
+          provider,
+          channel,
+          decision: 'denied',
+          reason: 'client_cancelled',
+          httpStatus: 499,
+          latencyMs: Date.now() - startedAt,
+          keySource: resolved.source,
+          ...auxiliaryAuditTarget,
+        });
+        return;
+      }
       log.error('proxy.upstream.unreachable', { provider, error: String(e) });
       res.status(502).json({ error: { message: 'Upstream unreachable', type: 'upstream' } });
       void svc.recordAudit({ companyId, userId, executionId, model, provider, channel, decision: 'denied', reason: 'upstream', httpStatus: 502, latencyMs: Date.now() - startedAt, keySource: resolved.source, ...auxiliaryAuditTarget });

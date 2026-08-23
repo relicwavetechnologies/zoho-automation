@@ -166,6 +166,8 @@ export type Exchange = {
   state: RunState
   /** Set when the run ended without an answer. */
   error?: string
+  /** Set when the member deliberately stopped the run. */
+  interruption?: string
   /** Files that went with the ask. Drawn under it, the way the composer showed them. */
   attachments?: SentFile[]
 }
@@ -217,22 +219,25 @@ export function exchangesFrom(turns: readonly ThreadTurn[]): Exchange[] {
     const trace = traceFromRecord(turn.run)
     const elapsed = (turn.run?.elapsedMs ?? 0) / 1000
     const open = exchanges[exchanges.length - 1]
-    if (open && open.trace.length === 0 && !open.answer && !open.error) {
+    const interruption = turn.run?.interruption?.message
+    if (open && open.trace.length === 0 && !open.answer && !open.error && !open.interruption) {
       exchanges[exchanges.length - 1] = {
         ...open,
         trace,
-        answer: turn.text,
+        answer: interruption ? '' : turn.text,
         state: settledState(elapsed),
         ...(turn.run?.failure ? { error: turn.run.failure.message } : {}),
+        ...(interruption ? { interruption } : {}),
       }
     } else {
       exchanges.push({
         id: turn.id,
         prompt: '',
         trace,
-        answer: turn.text,
+        answer: interruption ? '' : turn.text,
         state: settledState(elapsed),
         ...(turn.run?.failure ? { error: turn.run.failure.message } : {}),
+        ...(interruption ? { interruption } : {}),
       })
     }
   }
@@ -264,6 +269,8 @@ export type ThreadRun = {
   loadingEarlier: boolean
   /** Fetch the page above the oldest exchange on screen. */
   loadEarlier: () => Promise<void>
+  /** Re-read the newest page after an out-of-band Decision writes an outcome. */
+  refresh: () => Promise<void>
   /**
    * What the run says it is doing right now.
    *
@@ -301,6 +308,15 @@ export type ThreadRun = {
   send: (text: string, files: readonly File[] | undefined, modelSelection: ModelSelection) => boolean
   error: string | null
 }
+
+/**
+ * How often an idle thread asks whether a run has begun without it.
+ *
+ * Six seconds because the thing being waited for is a person coming back from
+ * an OAuth consent screen, where a few seconds of nothing reads as broken. It
+ * costs one request per interval and only while a thread is open, idle, and
+ * visible.
+ */
 
 export function useThreadRun(input: {
   threadId: string
@@ -341,6 +357,7 @@ export function useThreadRun(input: {
   const uploading = useRef(false)
   const [final, setFinal] = useState<{ text: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [interruption, setInterruption] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
   const abort = useRef<AbortController | null>(null)
   const startedAt = useRef(0)
@@ -354,6 +371,9 @@ export function useThreadRun(input: {
      is a second reader of one stream. */
   const currentToken = useRef(input.token)
   currentToken.current = input.token
+  /* The newest turn this thread has been shown, by sequence. The idle poll
+     compares the server against it to notice turns that arrived from somewhere
+     other than this browser. */
 
   /**
    * Consume a run's events, however it was reached.
@@ -386,6 +406,12 @@ export function useThreadRun(input: {
           void showArtifact(event, currentThread.current, currentToken.current)
         }
         if (event.type === 'error') { setError(event.message); answered = true }
+        if (event.type === 'interrupted') {
+          if (event.timeline) setTimeline(event.timeline)
+          setLiveAnswer('')
+          setInterruption(event.message)
+          answered = true
+        }
         if (event.type === 'final') {
           answered = true
           setTimeline(event.timeline)
@@ -424,6 +450,7 @@ export function useThreadRun(input: {
     setLiveAnswer('')
     setFinal(null)
     setError(null)
+    setInterruption(null)
     setRunning(false)
     setLoading(true)
 
@@ -492,7 +519,7 @@ export function useThreadRun(input: {
      the answer the reader is mid-sentence through. */
   useEffect(() => {
     if (running || prompt === null) return
-    if (!final && !error) return
+    if (!final && !error && !interruption) return
     setAppended(previous => [...previous, {
       id: runExchangeId(startedAt.current),
       prompt,
@@ -502,6 +529,7 @@ export function useThreadRun(input: {
          duration is only news when the run is over. */
       state: settledState((Date.now() - startedAt.current) / 1000),
       ...(error ? { error } : {}),
+      ...(interruption ? { interruption } : {}),
       ...(sent.length ? { attachments: sent } : {}),
     }])
     setPrompt(null)
@@ -511,6 +539,7 @@ export function useThreadRun(input: {
     setLiveAnswer('')
     setFinal(null)
     setError(null)
+    setInterruption(null)
     // A finished run is the moment a new thread acquires its name and stops
     // being marked as working, and neither is visible from the sidebar. It is
     // also the moment the rail's own claim on this thread expires: the server
@@ -520,7 +549,7 @@ export function useThreadRun(input: {
     // settled by then, and re-running on every frame would duplicate the
     // exchange.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [running, final, error])
+  }, [running, final, error, interruption])
 
   const send = useCallback((
     text: string,
@@ -539,6 +568,7 @@ export function useThreadRun(input: {
     setLiveAnswer('')
     setFinal(null)
     setError(null)
+    setInterruption(null)
     setRunning(true)
 
     /* Recordings go first, on their own endpoint, and only their ids travel
@@ -600,12 +630,12 @@ export function useThreadRun(input: {
       abort.current?.abort()
       setWatching(null)
       setRunning(false)
-      /* Said out loud, not left blank. Without an error the append effect skips
+      /* Said out loud, not left blank. Without a terminal state the append effect skips
          this exchange entirely, so the message sits in the thread looking as
          though Divo answered with nothing — and vanishes on reload. The server
-         path says "Stopped…" for the same reason; this is its equivalent for a
+         path says "Interrupted by user" for the same reason. This is its equivalent for a
          stop that happened before the server had anything to stop. */
-      setError('Stopped before the recording finished sending.')
+      setInterruption('Interrupted by user.')
     }
     void stop(input.threadId, input.token)
   }, [input.threadId, input.token, running])
@@ -680,6 +710,16 @@ export function useThreadRun(input: {
     }
   }, [input.threadId, input.token, turns, loadingEarlier, hasEarlier])
 
+  const refresh = useCallback(async (): Promise<void> => {
+    if (!input.token) return
+    const found = await getThread(input.threadId, input.token)
+    if (!found || currentThread.current !== input.threadId) return
+    setTurns(found.thread.turns)
+    setAppended([])
+    setHasEarlier(found.thread.hasEarlier)
+    setTitle(found.thread.title?.trim() || null)
+  }, [input.threadId, input.token])
+
   const exchanges = useMemo(() => (prompt === null
     ? settled
     : [...settled, {
@@ -689,8 +729,9 @@ export function useThreadRun(input: {
       answer: liveAnswerText,
       state: liveState,
       ...(error ? { error } : {}),
+      ...(interruption ? { interruption } : {}),
       ...(sent.length ? { attachments: sent } : {}),
-    }]), [prompt, settled, liveTrace, liveAnswerText, liveState, error, sent])
+    }]), [prompt, settled, liveTrace, liveAnswerText, liveState, error, interruption, sent])
 
   return {
     exchanges,
@@ -700,6 +741,7 @@ export function useThreadRun(input: {
     hasEarlier,
     loadingEarlier,
     loadEarlier,
+    refresh,
     /* The reading takes over the live label while it runs: there is no timeline
        yet, and "Divo is watching workflow.mov (40%)" is the only true thing the
        thread can say during a wait that lasts minutes. */

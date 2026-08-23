@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Divo Dex application icon</title>
+  <desc id="desc">The Divo Dex Cut D mark on a dark rounded-square field.</desc>
+  <rect x="24" y="24" width="464" height="464" rx="116" fill="#171719"/>
+  <g transform="translate(64 64) scale(6)">
+    <path d="M17 10h9a22 22 0 0 1 0 44h-9z" fill="none" stroke="#fafafa" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M5 59 59 5" fill="none" stroke="#171719" stroke-width="9.5"/>
+  </g>
+</svg>

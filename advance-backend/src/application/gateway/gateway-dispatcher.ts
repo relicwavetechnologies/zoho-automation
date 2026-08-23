@@ -24,6 +24,7 @@ import type {
 } from '../knowledge/lark-knowledge-review.service';
 import type { RunContext } from '../../domain/orchestration/run-context';
 import type { KnowledgeMutationService } from '../knowledge/knowledge-mutation.service';
+import type { KnowledgeSkillReviewService } from '../knowledge/knowledge-skill-review.service';
 import type { PersonalMemoryCommandService } from '../knowledge/personal-memory-command.service';
 import { KnowledgeMutationError } from '../knowledge/knowledge-mutation.errors';
 import type {
@@ -42,6 +43,7 @@ import type {
   GatewayResponse,
 } from './gateway.types';
 import {
+  gatewayConnectionPending,
   gatewayFailure,
   gatewayRequesterConfirmationRequired,
   gatewaySuccess,
@@ -62,7 +64,10 @@ import {
   workResolvePayloadSchema,
   automationPlanCreatePayloadSchema,
   automationPlanStatusPayloadSchema,
+  connectionsResumePayloadSchema,
 } from './gateway.types';
+import type { ConnectionResumeService } from '../connections/connection-resume';
+import { CONNECTION_ASK_SENT_CODE } from '../connections/connection-request/connection-request.service';
 import {
   buildGoogleVendorOnboardingPlan,
   deriveGoogleVendorOnboardingPhaseIds,
@@ -79,12 +84,16 @@ import {
   WorkResolutionService,
   withWorkDiscoveryPermissions as withGatewayDiscoveryPermissions,
 } from './work-resolution.service';
-import type { WorkContractBootstrapPort } from './work-contract-bootstrap.port';
+import type {
+  WorkContractBootstrapMode,
+  WorkContractBootstrapPort,
+} from './work-contract-bootstrap.port';
 import {
   measureRunLatency,
   type RunLatencyTrace,
 } from '../observability/run-latency-recorder';
 import { requiresRequesterConfirmation } from '../approval/business-action-routing';
+import type { PersonalGate } from '../../domain/approval/personal-gate';
 import {
   WorkBootstrapService,
   connectionProvidersForToolIds,
@@ -107,7 +116,23 @@ export interface GatewayDispatcherDeps {
   readonly skillCatalog: SkillCatalogService;
   readonly toolExecutor: ToolExecutor;
   readonly businessActions?: BusinessActionService;
+  /**
+   * The requester's own "ask me before Divo acts".
+   *
+   * A port rather than a Prisma call, because this module holds no database and
+   * should not start. Absent in tests and in any composition that has not wired
+   * it, which reads as "off" — the behaviour before the preference existed.
+   */
+  readonly readPersonalGate?: (userId: string) => Promise<PersonalGate | null>;
   readonly connectionRegistry?: ConnectionRegistryPort;
+  /**
+   * Picks a run back up once the member has finished a Connect ask.
+   *
+   * Optional for the same reason the others here are: a composition that never
+   * asks anyone to connect anything has nothing to resume, and absent reads as
+   * "this deployment cannot wait", not as a fault.
+   */
+  readonly connectionResume?: Pick<ConnectionResumeService, 'resume'>;
   readonly workContractBootstrap?: WorkContractBootstrapPort;
   readonly mediaOcr?: MediaOcrService;
   readonly skillAccessEnforcement?: SkillAccessEnforcementPort;
@@ -118,6 +143,7 @@ export interface GatewayDispatcherDeps {
   readonly managerTeachService?: ManagerTeachService;
   readonly automationPlanService?: AutomationPlanService;
   readonly larkKnowledgeReview?: Pick<LarkKnowledgeReviewService, 'openMemoryForRuntime' | 'openResourceForRuntime'>;
+  readonly knowledgeSkillReviews?: Pick<KnowledgeSkillReviewService, 'open'>;
   readonly knowledgeMutations?: KnowledgeMutationService;
   readonly personalMemoryCommands?: PersonalMemoryCommandService;
   readonly resolveGoogleSheetReference?: (input: {
@@ -213,6 +239,8 @@ export class GatewayDispatcher {
         return this.handleToolsPreflight(member, departmentId, request.payload, execution);
       case 'tools.commit':
         return this.handleToolsCommit(member, departmentId, request.payload, execution);
+      case 'connections.resume':
+        return this.handleConnectionsResume(member, request.payload);
       case 'automation.plan.create':
         return this.handleAutomationPlanCreate(member, departmentId, request.payload, execution);
       case 'automation.plan.status':
@@ -701,7 +729,7 @@ export class GatewayDispatcher {
     permission: PermissionResult;
     registryRevision: number;
     query?: string;
-    contractMode?: 'suggested' | 'complete';
+    contractMode?: WorkContractBootstrapMode;
     toolIds: readonly string[];
   }): Promise<WorkBootstrap> {
     return this.workBootstrap.build({
@@ -980,10 +1008,19 @@ export class GatewayDispatcher {
     // broaden access.
     const isReviewedKnowledgeApply = parsed.data.toolId === 'knowledge'
       && operation === 'apply';
+    /* Read before the routing test rather than inside it, so the rule stays a
+       pure function over values. A failed read is "no gate": somebody's
+       optional preference being unreadable must not turn into a refused tool
+       call. Skipped entirely for reads, which nothing can gate. */
+    const personal = prepared.data.action === 'read'
+      ? null
+      : await this.deps.readPersonalGate?.(String(member.userId)).catch(() => null) ?? null;
     const needsRequesterConfirmation = requiresRequesterConfirmation({
+      toolId: parsed.data.toolId,
       action: prepared.data.action,
       ...(member.channel ? { channel: member.channel } : {}),
       reviewAlreadyRecorded: isReviewedKnowledgeApply,
+      personal,
     });
     if (needsRequesterConfirmation) {
       if (!this.deps.businessActions) {
@@ -1161,9 +1198,75 @@ export class GatewayDispatcher {
         },
       });
     }
+    /*
+     * The one result that is not a result.
+     *
+     * A tool that has sent a Connect ask has produced nothing yet, and the run
+     * is about to stand still and wait for it. Translated here rather than in
+     * the tool so the waiting shape is one rule keyed on a named code, and no
+     * tool has to know how a run is held open.
+     */
+    const connectionAsk = connectionAskFrom(response);
+    if (connectionAsk) return gatewayConnectionPending(connectionAsk);
+
     return materialized.kind === 'materialized'
       ? safeMaterializedSheetResponse(response, materialized.value)
       : response;
+  }
+
+  private async handleConnectionsResume(
+    member: GatewayMemberContext,
+    payload: Record<string, unknown> | undefined,
+  ): Promise<GatewayResponse> {
+    const parsed = connectionsResumePayloadSchema.safeParse(payload ?? {});
+    if (!parsed.success) {
+      const issues = parsed.error.errors
+        .map(error => `${error.path.join('.') || '(root)'}: ${error.message}`)
+        .join('; ');
+      return gatewayFailure('bad_request', `Invalid connections.resume payload — ${issues}`);
+    }
+    if (!this.deps.connectionResume) {
+      return gatewayFailure('tool_error', 'Connection resume is not configured.');
+    }
+
+    let outcome;
+    try {
+      outcome = await this.deps.connectionResume.resume({
+        askId: parsed.data.askId,
+        companyId: member.companyId,
+        userId: member.userId,
+      });
+    } catch (error) {
+      this.deps.logger.error('gateway.connections_resume.failed', {
+        askId: parsed.data.askId,
+        error: safeGatewayMessage(error),
+      });
+      return gatewayFailure('tool_error', 'Divo could not read the finished connection.');
+    }
+
+    if (outcome.status === 'connected') {
+      return gatewaySuccess({
+        connected: true,
+        provider: outcome.provider,
+        grantedScopeGroups: outcome.grantedScopeGroups,
+        /* Names the field rather than saying "above". The model reads this as
+           JSON, where there is no above, and a pointer to nothing is how a run
+           ends up guessing which scopes it has. */
+        message:
+          'Google Workspace is now connected for this member. grantedScopeGroups lists exactly what '
+          + 'Google returned; treat any group absent from it as not granted. Continue the request you '
+          + 'were working on, and say in your reply that the connection is now in place.',
+      });
+    }
+    /* Named causes, not one refusal. Each of these leaves the member in a
+       different place, and a run that cannot tell them apart will explain the
+       wrong one. */
+    const because = outcome.status === 'not_pending'
+      ? 'That connection request has already been finished or has expired.'
+      : outcome.status === 'not_yours'
+        ? 'That connection request belongs to a different member.'
+        : 'The finished connection is no longer readable for this member.';
+    return gatewayFailure('tool_error', `${because} Do not retry; tell the member plainly.`);
   }
 
   private async handlePersonalMemoryCommand(
@@ -1499,6 +1602,42 @@ export class GatewayDispatcher {
     if (resourceReview.scope === 'department' && !departmentId) {
       return this.permissionDenied('Select an authenticated department before reviewing department knowledge.');
     }
+    if (resourceReview.kind === 'skill') {
+      if (!execution) {
+        return gatewayFailure('bad_request', 'Skill review requires exact run execution provenance.');
+      }
+      if (!this.deps.knowledgeSkillReviews) {
+        return gatewayFailure('tool_error', 'Durable skill review is not configured.');
+      }
+      const opened = await this.deps.knowledgeSkillReviews.open({
+        member,
+        ...(departmentId ? { departmentId } : {}),
+        execution,
+        request: {
+          requestId: resourceReview.requestId,
+          action: resourceReview.action,
+          scope: resourceReview.scope,
+          logicalKey: resourceReview.logicalKey,
+          ...(resourceReview.baseVersion ? { baseVersion: resourceReview.baseVersion } : {}),
+          ...(resourceReview.content !== undefined ? { content: resourceReview.content } : {}),
+        },
+      });
+      if (!opened.ok) {
+        return gatewayFailure(
+          opened.reason === 'permission_denied' ? 'permission_denied'
+            : opened.reason === 'invalid' ? 'bad_request'
+              : 'tool_error',
+          opened.message,
+        );
+      }
+      return gatewaySuccess({
+        status: opened.state,
+        mutationId: opened.mutationId,
+        decisionId: opened.decisionId,
+        message: opened.message,
+        reused: opened.reused,
+      });
+    }
     return this.openVerifiedLarkKnowledgeReview({
       label: 'Knowledge',
       effectKind: 'knowledge_review_opened',
@@ -1508,7 +1647,7 @@ export class GatewayDispatcher {
       execution,
       open: context => this.deps.larkKnowledgeReview!.openResourceForRuntime({
         requestId: resourceReview.requestId,
-        kind: resourceReview.kind,
+        kind: 'file',
         action: resourceReview.action,
         scope: resourceReview.scope,
         logicalKey: resourceReview.logicalKey,
@@ -1517,7 +1656,7 @@ export class GatewayDispatcher {
         ...context,
       }),
       logFields: {
-        kind: resourceReview.kind,
+        kind: 'file',
         action: resourceReview.action,
         scope: resourceReview.scope,
       },
@@ -2067,6 +2206,37 @@ export class GatewayDispatcher {
       },
     });
   }
+}
+
+/**
+ * The Connect ask a tool result is carrying, if it is carrying one.
+ *
+ * Keyed on the code rather than on the tool id, so a second front door onto
+ * connections would wait the same way without this module learning its name.
+ */
+function connectionAskFrom(response: GatewayResponse): {
+  askId: string;
+  provider: string;
+  expiresAt?: string;
+  presentation: unknown;
+} | undefined {
+  if (!response.ok) return undefined;
+  const data = response.data as { result?: unknown } | undefined;
+  const result = data?.result as {
+    code?: unknown;
+    intentId?: unknown;
+    provider?: unknown;
+    expiresAt?: unknown;
+  } | undefined;
+  if (!result || result.code !== CONNECTION_ASK_SENT_CODE) return undefined;
+  if (typeof result.intentId !== 'string' || !result.intentId.trim()) return undefined;
+  const provider = typeof result.provider === 'string' ? result.provider : 'google_workspace';
+  return {
+    askId: result.intentId,
+    provider,
+    ...(typeof result.expiresAt === 'string' ? { expiresAt: result.expiresAt } : {}),
+    presentation: { kind: 'connection.connect', provider },
+  };
 }
 
 function googleSheetDestinationFrom(

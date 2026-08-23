@@ -168,3 +168,23 @@ describe('a conversation recorded before the run marked its asides', () => {
     )
   })
 })
+
+describe('a run the member interrupted', () => {
+  it('replays as a neutral interruption rather than an answer or failure', () => {
+    const [exchange] = exchangesFrom([
+      { id: 'u1', sequence: 1, role: 'user', text: 'Keep searching', at: '' },
+      {
+        id: 'a1', sequence: 2, role: 'assistant', text: 'Interrupted by user.', at: '',
+        run: {
+          ledger: [],
+          elapsedMs: 1_200,
+          interruption: { message: 'Interrupted by user.' },
+        },
+      },
+    ])
+
+    assert.equal(exchange?.answer, '')
+    assert.equal(exchange?.error, undefined)
+    assert.equal(exchange?.interruption, 'Interrupted by user.')
+  })
+})

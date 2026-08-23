@@ -13,16 +13,13 @@ import { asCompanyRoleSlug } from '../../domain/permissions/company-role';
 import type { KnowledgeReviewDecisionQueuePort } from './knowledge-review-decision.queue';
 import type { ChannelIdentityRepoPort } from '../../infrastructure/persistence/channel-identity.repository';
 import type { KnowledgeMutationService } from './knowledge-mutation.service';
-import {
-  assertLarkReviewableSkill,
-  exactSkillReviewBlocks,
-} from './knowledge-review-presentation';
 import { buildCallbackCard } from '../../infrastructure/channels/lark/lark-card.builder';
 
 /**
- * One Lark review surface for every shared knowledge mutation. The card only
- * records the requester's exact-content confirmation; the knowledge mutation
- * service and approval gate remain the authority for policy and publication.
+ * Legacy Lark review adapter for shared memory and governed files.
+ *
+ * Skills use the durable Decision-backed knowledge skill review module. This
+ * adapter keeps only the two parked review kinds that have not migrated yet.
  */
 
 const KNOWLEDGE_REVIEW_CACHE_PREFIX = 'lark:knowledge-review:v1:';
@@ -47,7 +44,7 @@ interface KnowledgeReviewRequest {
   companyId: string;
   chatId: string;
   facts: string[];
-  kind: 'memory' | 'skill' | 'file';
+  kind: 'memory' | 'file';
   action: 'create' | 'update' | 'publish' | 'delete';
   logicalKey: string;
   baseVersion?: number;
@@ -109,7 +106,7 @@ export interface OpenKnowledgeReviewResult {
 
 export interface OpenResourceReviewInput {
   requestId: string;
-  kind: 'skill' | 'file';
+  kind: 'file';
   action: 'create' | 'update' | 'publish' | 'delete';
   scope: 'personal' | 'department' | 'company';
   logicalKey: string;
@@ -211,12 +208,6 @@ export class LarkKnowledgeReviewService {
     }
     if (input.action === 'delete' ? input.content !== undefined : input.content === undefined) {
       return { opened: false, message: 'Knowledge review content does not match its action.' };
-    }
-    if (input.kind === 'skill' && input.action !== 'delete') {
-      const content = asRecord(input.content);
-      const markdown = typeof content['markdown'] === 'string' ? content['markdown'] : '';
-      const reviewError = assertLarkReviewableSkill(markdown);
-      if (reviewError) return { opened: false, message: reviewError };
     }
     const authority = await this.checkAuthority(input.runContext, input.perm);
     if (!authority.ok) return { opened: false, message: authority.message };
@@ -954,11 +945,11 @@ function buildKnowledgeReviewResolvedCard(
 }
 
 function reviewNoun(request: KnowledgeReviewRequest): string {
-  return request.kind === 'memory' ? 'memory' : request.kind === 'skill' ? 'procedure' : 'file';
+  return request.kind === 'memory' ? 'memory' : 'file';
 }
 
 function reviewActionVerb(request: KnowledgeReviewRequest): string {
-  return request.action === 'delete' ? 'removing' : request.kind === 'skill' ? 'publishing' : 'saving';
+  return request.action === 'delete' ? 'removing' : 'saving';
 }
 
 function reviewDetailBlocks(request: KnowledgeReviewRequest): string[] {
@@ -972,12 +963,6 @@ function reviewDetailBlocks(request: KnowledgeReviewRequest): string[] {
     return [`**Resource to remove:** ${escapeLarkMarkdown(request.logicalKey)}`];
   }
   const content = asRecord(request.content);
-  if (request.kind === 'skill') {
-    const name = typeof content['name'] === 'string' ? content['name'] : request.logicalKey;
-    const summary = typeof content['summary'] === 'string' ? content['summary'] : '';
-    const markdown = typeof content['markdown'] === 'string' ? content['markdown'] : '';
-    return exactSkillReviewBlocks({ name, summary, markdown });
-  }
   const fileName = typeof content['fileName'] === 'string' ? content['fileName'] : request.logicalKey;
   const mimeType = typeof content['mimeType'] === 'string' ? content['mimeType'] : 'unknown';
   const sizeBytes = typeof content['sizeBytes'] === 'number' ? content['sizeBytes'] : 0;

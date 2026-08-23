@@ -83,7 +83,7 @@ export function summariseToolAction(toolId: string, action: string, args: unknow
  * keys sit one level down. Flatten that one level; deeper nesting is payload,
  * not summary.
  */
-function flattenArgs(args: unknown): Record<string, unknown> {
+export function flattenArgs(args: unknown): Record<string, unknown> {
   if (!isRecord(args)) return {};
   const inner = isRecord(args['input']) ? args['input'] : {};
   return { ...args, ...inner };

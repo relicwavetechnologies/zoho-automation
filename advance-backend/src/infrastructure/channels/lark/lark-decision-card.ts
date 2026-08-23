@@ -2,16 +2,14 @@
  * A decision, as a Lark card.
  *
  * One builder and one callback kind, `decision_answer`, for every question
- * asked through the decision module. It is meant to replace four of each —
- * `approval_decision` from the manager gate, `knowledge_review_publish` from
- * the review flow, `workbook_conversion_confirm` from the offer, and
- * `set_group_mode` — four vocabularies arriving at one webhook, dispatched by
- * an if-chain that every new feature extended.
+ * asked through the decision module. It is meant to replace the old pattern of
+ * one callback family per workflow — manager approvals, knowledge review,
+ * workbook conversion, and group mode — all arriving at one webhook, dispatched
+ * by an if-chain that every new feature extended.
  *
- * None of those has been migrated yet. Nothing calls `DecisionService.ask`, so
- * no card built here has been sent in production and the four older branches
- * are all still in `lark.webhook.routes.ts` below this one's. What is here is
- * proven by its tests and is waiting for its first caller.
+ * Manager tool approvals and automation plans now call `DecisionService.ask`
+ * through this builder. The remaining older feature branches are still in
+ * `lark.webhook.routes.ts` below this one and will migrate separately.
  *
  * The interesting part is the degradation. A card is a row of buttons: it can
  * carry a single choice and cannot carry a text field or a multi-select that
@@ -29,6 +27,7 @@ import {
   type DecisionQuestion,
 } from '../../../domain/decision/decision';
 import { buildCallbackCardData } from './lark-card.builder';
+import { focusedSkillReviewBlocks } from '../../../application/knowledge/knowledge-review-presentation';
 
 /** The one callback kind a decision card sends back. */
 export const DECISION_CARD_KIND = 'decision_answer';
@@ -90,8 +89,12 @@ export function buildDecisionCardData(input: DecisionCardInput): Record<string, 
   const question = nextQuestion(input.questions, answer);
   if (!question) return null;
 
-  const blocks: string[] = [];
-  if (input.decision.detail) blocks.push(input.decision.detail);
+  const blocks: string[] = [`**${input.decision.title}**`];
+  if (input.decision.evidence?.kind === 'skill') {
+    blocks.push(...focusedSkillReviewBlocks(input.decision.evidence));
+  } else if (input.decision.detail) {
+    blocks.push(input.decision.detail);
+  }
   blocks.push(`**${question.ask}**`);
 
   /* More than one question means the reader is part-way through something, and
@@ -103,7 +106,7 @@ export function buildDecisionCardData(input: DecisionCardInput): Record<string, 
   if ('text' in question || !answerableWithButtons([question])) {
     return buildCallbackCardData({
       title: input.decision.title,
-      template: 'blue',
+      headerless: true,
       markdownBlocks: input.webUrl
         ? [...blocks, `[Answer this in Divo](${input.webUrl})`]
         : blocks,
@@ -113,7 +116,7 @@ export function buildDecisionCardData(input: DecisionCardInput): Record<string, 
 
   return buildCallbackCardData({
     title: input.decision.title,
-    template: 'blue',
+    headerless: true,
     markdownBlocks: blocks,
     ...(position ? { note: position } : {}),
     actions: question.options.map(option => ({
@@ -142,6 +145,9 @@ export interface DecisionResolvedCardInput {
   readonly title: string;
   readonly verdict: 'approved' | 'rejected';
   readonly summary: string;
+  /** Exact terminal result when answering the decision also executed work. */
+  readonly result?: string;
+  readonly resultLabel?: string;
   readonly byName: string;
   readonly at: Date;
 }
@@ -159,11 +165,14 @@ export function buildDecisionResolvedCardData(
   const when = input.at.toISOString().replace('T', ' ').slice(0, 16);
   return buildCallbackCardData({
     title: input.title,
-    template: input.verdict === 'approved' ? 'green' : 'grey',
+    headerless: true,
     markdownBlocks: [
-      input.summary
-        ? `**${input.verdict === 'approved' ? 'Answered' : 'Declined'}**\n${input.summary}`
-        : `**${input.verdict === 'approved' ? 'Approved' : 'Rejected'}**`,
+      `**${input.title}**`,
+      input.result
+        ? `**${input.resultLabel ?? 'Result'}**\n${input.result}`
+        : input.summary
+          ? `**${input.verdict === 'approved' ? 'Answered' : 'Declined'}**\n${input.summary}`
+          : `**${input.verdict === 'approved' ? 'Approved' : 'Rejected'}**`,
     ],
     note: `${input.byName} · ${when} UTC`,
   });

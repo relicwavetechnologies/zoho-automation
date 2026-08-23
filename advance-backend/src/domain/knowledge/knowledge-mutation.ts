@@ -143,7 +143,8 @@ export function validateKnowledgePolicy(policy: KnowledgePolicySnapshot): string
   if (policy.scope !== 'personal' && !policy.requesterReviewRequired) {
     return 'Shared knowledge must require requester review before authority approval.';
   }
-  if (policy.scope !== 'personal' && !policy.distinctApprover) {
+  const managerMayConfirmDepartmentSkill = policy.kind === 'skill' && policy.scope === 'department';
+  if (policy.scope !== 'personal' && !policy.distinctApprover && !managerMayConfirmDepartmentSkill) {
     return 'Shared knowledge must require an approver other than the requester.';
   }
   if (policy.scope === 'personal' && policy.requiredAuthority !== 'none') {

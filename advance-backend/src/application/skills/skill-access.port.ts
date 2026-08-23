@@ -1,3 +1,5 @@
+import type { MemberGrantScope } from '../../domain/permissions/member-grant-scope';
+
 /**
  * Resolves the explicit skill grants effective for one company member.
  *
@@ -10,5 +12,6 @@ export interface SkillAccessEnforcementPort {
     companyId: string,
     userId: string,
     abortSignal?: AbortSignal,
+    memberGrantScope?: MemberGrantScope,
   ): Promise<ReadonlySet<string>>;
 }

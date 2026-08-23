@@ -2,7 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { CHART_RUNTIME, DOCUMENT_SANDBOX, buildDocument } from './document'
+import { CHART_RUNTIME, DOCUMENT_SANDBOX, buildDocument } from '../../src/domain/artifact/document.ts'
 
 /**
  * Run the chart renderer the way the frame would, and hand back what it drew.
@@ -108,7 +108,7 @@ describe('the document wrapper', () => {
        written out in this file would be a *third* copy, and a third copy drifts
        from the first two while the test goes on passing. */
     const palette = readFileSync(
-      new URL('../../../styles/palette.css', import.meta.url), 'utf8',
+      new URL('../../../admin/src/styles/palette.css', import.meta.url), 'utf8',
     )
     const block = (selector: string): Record<string, string> => {
       const body = palette.slice(palette.indexOf(`${selector} {`))

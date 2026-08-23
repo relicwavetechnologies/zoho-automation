@@ -319,16 +319,21 @@ test('turns a run-bound Google authorization into a direct final-card action', a
         recalledRunId = input.runId;
         return {
           version: 1,
+          channel: 'lark',
           companyId: 'company-1',
           userId: 'user-1',
-          larkOpenId: 'ou-user-1',
-          larkTenantKey: 'tenant-1',
-          chatId: 'chat-1',
-          chatType: 'p2p',
-          originalMessageId: 'message-1',
-          replyInThread: false,
           originalRequest: 'Read my mail',
-          googleAuthorization: {
+          conversationKey: 'chat-1',
+          lark: {
+            larkOpenId: 'ou-user-1',
+            larkTenantKey: 'tenant-1',
+            chatId: 'chat-1',
+            chatType: 'p2p',
+            originalMessageId: 'message-1',
+            replyInThread: false,
+          },
+          pendingAuthorization: {
+            provider: 'google_workspace',
             intentId: 'intent-1',
             authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
           },
@@ -1200,10 +1205,10 @@ test('propagates caller interruption instead of converting it to a Pi failure', 
     userId: 'user-1',
     status: 'running',
   });
-  assert.equal(update.data.status, 'failed');
+  assert.equal(update.data.status, 'interrupted');
   assert.ok(update.data.finishedAt instanceof Date);
   assert.equal(update.data.errorCode, 'interrupted');
-  assert.equal(update.data.errorMessage, 'The Pi run was interrupted.');
+  assert.equal(update.data.errorMessage, 'Interrupted by user.');
 });
 
 // ── Attachment staging ──────────────────────────────────────────────────────
@@ -1940,17 +1945,21 @@ test('records where a Lark run came from so a deferred authorization can resume 
   assert.equal(written[0]!.runId, 'trace-1');
   assert.deepEqual(written[0]!.origin, {
     version: 1,
+    channel: 'lark',
     companyId: 'company-1',
     userId: 'user-1',
-    larkOpenId: 'ou-user-1',
-    larkTenantKey: 'tenant-1',
-    chatId: 'chat-1',
-    chatType: 'group',
-    originalMessageId: 'om_request',
-    rootMessageId: 'om_root',
-    replyInThread: true,
-    groupReplyMode: 'threaded',
     originalRequest: 'Do the work',
+    conversationKey: 'chat-1',
+    lark: {
+      larkOpenId: 'ou-user-1',
+      larkTenantKey: 'tenant-1',
+      chatId: 'chat-1',
+      chatType: 'group',
+      originalMessageId: 'om_request',
+      rootMessageId: 'om_root',
+      replyInThread: true,
+      groupReplyMode: 'threaded',
+    },
   });
 });
 

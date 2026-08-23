@@ -19,6 +19,7 @@ import {
 import type { ToolActionGroup } from '../../src/domain/permissions/tool-action-group.ts';
 import { TOOL_SUPPORTED_ACTIONS } from '../../src/domain/tools/tool-id.ts';
 import {
+  assertSafeAirtableMcpInput,
   compactAirtableMcpResult,
   unwrapAirtableMcpResult,
 } from '../../src/infrastructure/airtable/airtable-mcp.client.ts';
@@ -278,6 +279,31 @@ describe('airtable execute', () => {
     assert.equal(result.ok, false);
     assert.equal(!result.ok && result.error.payload.reason, 'bad_args');
     assert.equal(resolved, false, 'an unapproved operation must not reach connection resolution');
+  });
+
+  it('rejects nested credential and local-file arguments before connection resolution', async () => {
+    let resolved = false;
+    const [records] = createAirtableMcpTools({
+      getConnection: async () => {
+        resolved = true;
+        return { status: 'unavailable' as const };
+      },
+    });
+
+    const result = await records!.execute({
+      op: 'call',
+      nativeTool: 'list_records_for_table',
+      input: { baseId: 'app1', nested: [{ 'api-key': 'must-not-pass' }] },
+    } as any, makeCtx('airtableRecords', ['read']));
+
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && result.error.payload.reason, 'bad_args');
+    assert.match(!result.ok ? result.error.message : '', /input\.nested\[0\]\.api-key is not allowed/);
+    assert.equal(resolved, false);
+    assert.throws(
+      () => assertSafeAirtableMcpInput({ nested: { 'file-path': '/tmp/secret' } }),
+      /input\.nested\.file-path is not allowed/,
+    );
   });
 
   it('calls the approved native tool and returns its data', async () => {

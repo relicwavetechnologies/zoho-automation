@@ -15,7 +15,6 @@
  * positioned, and a positioned pin is wrong the moment the layout moves.
  */
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
-import { Diamond } from 'lucide-react'
 import type { Mode } from './data'
 
 type PreviewState = {
@@ -83,10 +82,10 @@ export function Note({ n, title, children }: { n: number; title?: string; childr
   )
 }
 
-/** Divo's mark, at the size the shell wants it. */
-export const DivoMark = ({ size = 12 }: { size?: number }) => (
-  <Diamond size={size} fill="currentColor" strokeWidth={0} />
-)
+/* The kit used to draw its own stand-in for Divo's mark. It is re-exported
+   rather than removed, because the preview screens import it from here and the
+   real mark is what they should have been drawing all along. */
+export { DivoMark } from '@/components/admin/divo-mark'
 
 /* ── Small shared pieces ─────────────────────────────── */
 

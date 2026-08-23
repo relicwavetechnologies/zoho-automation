@@ -25,6 +25,7 @@ const execFileAsync = promisify(execFile);
 export const IMAGE = process.env.DIVO_PI_IMAGE ?? "divo-pi-local:phase0";
 export const RESOURCE_PREFIX = process.env.DIVO_PI_RESOURCE_PREFIX ?? "divo-pi-local";
 const RUNTIME_CONTAINER_MODE = "exec-v2";
+const DOCKER_CONTAINER_ID = /^[a-f0-9]{64}$/;
 const DEEPSEEK_TOOL_SURFACE_ENV = "DIVO_DEEPSEEK_TOOL_SURFACE";
 
 /** The unprivileged workspace user every container process runs as. */
@@ -316,9 +317,11 @@ export async function ensureProfileVolume(profileName) {
  * always takes the full path. So the four probes skipped here re-answer a
  * question this process has already answered once, every turn, forever.
  *
- * The container itself is still inspected every time, because it answers a
- * question the warm process cannot: whether it still carries our ownership
- * labels.
+ * When this function is called, the container is still inspected because that
+ * proves its ownership labels and immutable ID. A live warm entry may retain
+ * that exact verified ID and skip this function until its image generation or
+ * process binding changes; Docker operations then target the ID, never the
+ * reusable name.
  *
  * `imageId` is resolved by the caller rather than here. It answers the other
  * question a warm process cannot — whether a deploy moved the tag out from
@@ -369,7 +372,19 @@ export async function ensureRuntime(profile, { ephemeral = false, provisioned = 
 		container = await inspectOwnedContainer(profile);
 		created = true;
 	}
-	return { resources, wasRunning, created };
+	if (typeof container.Id !== "string" || !DOCKER_CONTAINER_ID.test(container.Id)) {
+		throw new Error("Docker container has no resolved ID: " + resources.container);
+	}
+	if (typeof container.Image !== "string" || !container.Image) {
+		throw new Error("Docker container has no resolved image ID: " + resources.container);
+	}
+	return {
+		resources,
+		wasRunning,
+		created,
+		containerId: container.Id,
+		containerImageId: container.Image,
+	};
 }
 
 /**
@@ -641,6 +656,14 @@ export async function prepareWarmRuntime(container, bootstrap) {
 
 export async function clearBootstrap(volume) {
 	await runVolumeCommand(volume, "rm -f /run/divo-auth/bootstrap.json");
+}
+
+/** Stop the exact immutable ID returned by an earlier owned-container inspect. */
+export async function stopContainerById(containerId) {
+	if (!DOCKER_CONTAINER_ID.test(containerId)) {
+		throw new Error("Refusing to stop an invalid Docker container ID");
+	}
+	await docker(["stop", containerId]);
 }
 
 export async function stopOwnedContainer(profile) {

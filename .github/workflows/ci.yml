@@ -84,6 +84,12 @@ jobs:
         # They are static imports, so a missing file is not a skipped test but a
         # suite that cannot load: `advance-backend` has been red on main and dev
         # since the allowlist parity test arrived without the two paths it reads.
+        #
+        # `admin/src/styles/palette.css` is here for the same reason and arrived
+        # the same way. A published document carries a copy of the app's greys,
+        # and the test that stops the copy drifting reads the original. Locally
+        # the whole repo is on disk so it passes; in this job only what is listed
+        # here exists, so the test threw ENOENT rather than comparing anything.
         with:
           sparse-checkout: |
             advance-backend
@@ -93,6 +99,7 @@ jobs:
             divo-pi/divo/extensions/divo-gateway/native-tools/catalogue-contract.ts
             divo-pi/divo/extensions/divo-gateway/native-tools/generated
             divo-pi/divo/extensions/divo-gateway/native-tools/semrush-contract.ts
+            admin/src/styles/palette.css
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -185,61 +192,6 @@ jobs:
 
       - name: Check Divo runtime, controller, and extensions
         run: npm run divo:check
-
-  development-image-plan:
-    name: development-image-plan
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    runs-on: ubuntu-latest
-    outputs:
-      backend: ${{ steps.changes.outputs.backend }}
-      admin: ${{ steps.changes.outputs.admin }}
-      pi: ${{ steps.changes.outputs.pi }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-
-      - name: Detect image build inputs changed by this push
-        id: changes
-        env:
-          BEFORE_SHA: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${BEFORE_SHA}" || "${BEFORE_SHA}" =~ ^0+$ ]] \
-            || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
-            files="$(git ls-files)"
-          else
-            files="$(git diff --name-only "${BEFORE_SHA}" "${GITHUB_SHA}")"
-          fi
-
-          changed() {
-            local prefix="$1"
-            if grep -q "^${prefix}" <<<"${files}"; then
-              printf 'true'
-            else
-              printf 'false'
-            fi
-          }
-
-          {
-            echo "backend=$(changed 'advance-backend/')"
-            echo "admin=$(changed 'admin/')"
-            echo "pi=$(changed 'divo-pi/')"
-          } >> "${GITHUB_OUTPUT}"
-
-      - name: Validate Compose configs used by releases
-        run: |
-          DIVO_ENV_FILE=/dev/null docker compose --env-file .env.production.example config >/dev/null
-          DIVO_DEV_ENV_FILE=/dev/null \
-          DIVO_DEV_BACKEND_IMAGE=divo-backend:ci \
-          DIVO_DEV_ADMIN_IMAGE=divo-admin:ci \
-          DIVO_DEV_PI_IMAGE=divo-pi:ci \
-          DIVO_DEV_PI_CONTROLLER_IMAGE=divo-pi-controller:ci \
-          DIVO_DEV_POSTGRES_PASSWORD=ci-placeholder \
-          DIVO_DEV_PUBLIC_URL=https://app-dev.103.172.92.187.sslip.io \
-          HINDSIGHT_LLM_API_KEY=ci-placeholder \
-          docker compose -f docker-compose.dev.yml config >/dev/null
 
   verify-development-source:
     name: verify-development-source
@@ -363,7 +315,6 @@ jobs:
       - advance-backend
       - admin
       - divo-pi
-      - development-image-plan
     if: >-
       ${{
         always() &&
@@ -371,8 +322,7 @@ jobs:
         github.ref == 'refs/heads/dev' &&
         needs.advance-backend.result == 'success' &&
         needs.admin.result == 'success' &&
-        needs.divo-pi.result == 'success' &&
-        needs.development-image-plan.result == 'success'
+        needs.divo-pi.result == 'success'
       }}
     permissions:
       contents: read
@@ -382,25 +332,21 @@ jobs:
       matrix:
         include:
           - component: backend
-            plan: backend
             context: ./advance-backend
             file: ./advance-backend/Dockerfile
             checkout_path: advance-backend
             build-args: ""
           - component: admin
-            plan: admin
             context: ./admin
             file: ./admin/Dockerfile
             checkout_path: admin
             build-args: VITE_API_BASE_URL=
           - component: pi
-            plan: pi
             context: ./divo-pi
             file: ./divo-pi/Dockerfile
             checkout_path: divo-pi
             build-args: ""
           - component: pi-controller
-            plan: pi
             context: ./divo-pi
             file: ./divo-pi/Dockerfile.controller
             checkout_path: divo-pi
@@ -421,26 +367,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Decide whether to build or reuse ${{ matrix.component }}
-        id: mode
-        env:
-          PATH_CHANGED: ${{ needs.development-image-plan.outputs[matrix.plan] }}
-          LATEST: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-latest
-        run: |
-          # Every successful Dev push must publish all four immutable SHA tags
-          # so a later deploy can resolve one coherent release. An unchanged
-          # component gets a new tag pointing at its last verified digest; it
-          # is not rebuilt merely to make the tag exist.
-          if [[ "${PATH_CHANGED}" == "true" ]] \
-            || ! docker buildx imagetools inspect "${LATEST}" >/dev/null 2>&1; then
-            echo 'build=true' >> "${GITHUB_OUTPUT}"
-          else
-            echo 'build=false' >> "${GITHUB_OUTPUT}"
-          fi
-
+      # Every successful Dev push publishes all four immutable SHA tags so a
+      # later deploy can resolve one coherent release.
+      #
+      # This used to retag `dev-latest` for a component whose paths had not
+      # changed since the previous push, rather than rebuild it merely to make
+      # a tag exist. The saving was real and the assumption was not:
+      # `dev-latest` only moves when a build happens, so a push that changed a
+      # component but failed CI never built it and left `dev-latest` on
+      # pre-change code. The next unrelated push then read that component as
+      # unchanged and stamped the stale image with a SHA it was never built
+      # from.
+      #
+      # That is how a Development deploy came to run `prisma db push` with a
+      # schema nineteen lines behind its own database, and be told it was about
+      # to drop four columns holding real rows. The revision-label check below
+      # existed to catch precisely this, and was skipped on the one path that
+      # could fail it.
+      #
+      # So: always build. A SHA tag now names the commit it was built from.
       - name: Build and push ${{ matrix.component }} image
         id: build
-        if: steps.mode.outputs.build == 'true'
         uses: docker/build-push-action@v7
         with:
           context: ${{ matrix.context }}
@@ -453,13 +400,6 @@ jobs:
           build-args: ${{ matrix.build-args }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
-
-      - name: Reuse unchanged ${{ matrix.component }} image
-        if: steps.mode.outputs.build == 'false'
-        env:
-          LATEST: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-latest
-          RELEASE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-${{ github.sha }}
-        run: docker buildx imagetools create --tag "${RELEASE}" "${LATEST}"
 
       - name: Resolve ${{ matrix.component }} release digest
         id: release
@@ -476,11 +416,11 @@ jobs:
             echo "### Development image: ${{ matrix.component }}"
             echo "- Tag: \`dev-${GITHUB_SHA}\`"
             echo "- Digest: \`${{ steps.release.outputs.digest }}\`"
-            echo "- Built for this commit: \`${{ steps.mode.outputs.build }}\`"
+            echo "- Built for this commit: \`${{ github.sha }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Verify backend image revision label
-        if: matrix.component == 'backend' && steps.mode.outputs.build == 'true'
+        if: matrix.component == 'backend'
         env:
           IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.release.outputs.digest }}
         run: |
@@ -494,7 +434,7 @@ jobs:
           fi
 
       - name: Smoke published Pi image
-        if: steps.mode.outputs.build == 'true' && (matrix.component == 'pi' || matrix.component == 'pi-controller')
+        if: matrix.component == 'pi' || matrix.component == 'pi-controller'
         env:
           IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.release.outputs.digest }}
         run: |
@@ -524,7 +464,6 @@ jobs:
           fi
 
       - name: Promote ${{ matrix.component }} development alias
-        if: steps.mode.outputs.build == 'true'
         env:
           IMAGE: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}@${{ steps.release.outputs.digest }}
           LATEST: ghcr.io/relicwavetechnologies/zoho-automation/${{ matrix.component }}:dev-latest
@@ -787,6 +726,12 @@ jobs:
              DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
              DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
              docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm prisma db execute --file prisma/migrations/20260731_drop_scheduled_workflow_origin_chat/migration.sql --schema prisma/schema.prisma && \
+             DIVO_DEV_ENV_FILE=.env.development.local \
+             DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \
+             DIVO_DEV_ADMIN_IMAGE='${ADMIN_IMAGE}' \
+             DIVO_DEV_PI_IMAGE='${PI_IMAGE}' \
+             DIVO_DEV_PI_CONTROLLER_IMAGE='${PI_CONTROLLER_IMAGE}' \
+             docker compose --env-file .env.development.local run --rm --no-deps divo-dev-backend pnpm prisma db execute --file prisma/migrations/20260822_department_skill_manager_self_approval/migration.sql --schema prisma/schema.prisma && \
              if [[ '${{ inputs.apply_development_schema }}' == 'true' ]]; then \
                DIVO_DEV_ENV_FILE=.env.development.local \
                DIVO_DEV_BACKEND_IMAGE='${BACKEND_IMAGE}' \

@@ -44,3 +44,18 @@ plan-divo-*.html
 
 # Local-only handover/context notes. Never committed.
 *.local.md
+
+# Local dev stack pids and per-service logs.
+.dev-stack/
+
+# Scratch and captured run data. These hold real Lark transcripts, customer
+# records and colleague addresses; a commit that sweeps them in writes that into
+# history permanently. Nothing here is source.
+tmp/
+output/
+.divo-state/
+
+# Generated investigation and review pages that land at the repo root.
+/px.html
+/research-*.html
+/review-*.html

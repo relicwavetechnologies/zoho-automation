@@ -15,6 +15,8 @@ import { KnowledgeMutationError } from './knowledge-mutation.errors';
 import type {
   AppliedKnowledgeMutation,
   KnowledgeMutationStore,
+  SettledKnowledgeRequesterDecision,
+  SettledKnowledgeAuthorityDecision,
 } from './knowledge-mutation.store';
 import {
   DefaultKnowledgeContentValidator,
@@ -112,6 +114,24 @@ export class KnowledgeMutationService {
       requester: input.requester,
       existingResourceId,
     });
+    if (kind === 'skill' && action !== 'delete') {
+      const slug = (proposedContent as { slug: string }).slug;
+      const collision = await this.store.findSkillSlugConflict?.({
+        companyId: target.companyId,
+        scope: target.scope,
+        departmentId: target.departmentId,
+        slug,
+        existingResourceId,
+      }) ?? null;
+      if (collision) {
+        throw new KnowledgeMutationError(
+          'conflict',
+          collision.isSystem
+            ? `The slug "${slug}" belongs to a protected system skill in this scope.`
+            : `The slug "${slug}" already belongs to another active skill in this scope.`,
+        );
+      }
+    }
     const proposedContentHash = action === 'delete'
       ? null
       : hashJson(proposedContent);
@@ -211,6 +231,41 @@ export class KnowledgeMutationService {
       expectedContentHash: input.expectedContentHash,
       nextStatus: statusAfterRequesterReview(mutation),
     });
+  }
+
+  async settleRequesterDecision(input: {
+    mutationId: string;
+    decisionId: string;
+    companyId: string;
+    requesterId: string;
+    expectedContentHash: string | null;
+    decision: 'approved' | 'rejected';
+    summary: string;
+  }): Promise<SettledKnowledgeRequesterDecision> {
+    const mutation = await this.requireMutation(input.mutationId, input.companyId);
+    if (mutation.requesterId !== input.requesterId) {
+      throw new KnowledgeMutationError('permission_denied', 'Only the requester may decide this exact proposal.');
+    }
+    assertExactHash(mutation.proposedContentHash, input.expectedContentHash);
+    return this.store.settleRequesterDecision({
+      ...input,
+      nextStatus: statusAfterRequesterReview(mutation),
+    });
+  }
+
+  async settleAuthorityDecision(input: {
+    mutationId: string;
+    parentDecisionId: string;
+    approvalId: string;
+    companyId: string;
+    status: 'completed' | 'rejected' | 'failed';
+    result: unknown;
+  }): Promise<SettledKnowledgeAuthorityDecision> {
+    return this.store.settleAuthorityDecision(input);
+  }
+
+  async expireRequesterDecisions(limit = 100): Promise<number> {
+    return this.store.expireRequesterDecisions(limit);
   }
 
   async attachRuntimeApproval(input: {

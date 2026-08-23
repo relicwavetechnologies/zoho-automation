@@ -33,6 +33,8 @@ export interface RuntimeApprovalRow {
   updatedAt:           Date;
 }
 
+const LINKED_DECISION_KINDS = ['business_action', 'knowledge_skill_review'] as const;
+
 export interface CreateApprovalInput {
   /** Lark chat ID (used to upsert RuntimeConversation). */
   chatId:           string;
@@ -67,8 +69,109 @@ export interface CreateOrReuseApprovalOptions {
   readonly isCompatibleApproval?: (approval: RuntimeApprovalRow) => boolean;
 }
 
+export interface LinkedDecisionTerminalOutcome {
+  readonly parentDecisionId: string;
+  readonly approvalId: string;
+  readonly status: 'completed' | 'rejected' | 'failed';
+  readonly result: unknown;
+}
+
 export class RuntimeApprovalRepository {
   constructor(private readonly prisma: PrismaClient) {}
+
+  /**
+   * Terminal authority rows whose requester-owned skill Decision still needs
+   * closing. The authority row is the durable retry source; no cache or user
+   * command is required to recover the linked lifecycle.
+   */
+  async listPendingLinkedSkillOutcomes(limit = 100): Promise<LinkedDecisionTerminalOutcome[]> {
+    const rows = await this.prisma.$queryRaw<Array<{
+      parentDecisionId: string;
+      approvalId: string;
+      status: string;
+      result: unknown;
+      expired: boolean;
+    }>>`
+      SELECT
+        authority."metadataJson"->>'parentDecisionId' AS "parentDecisionId",
+        authority."id" AS "approvalId",
+        authority."status" AS "status",
+        authority."executionResultJson" AS "result",
+        (authority."expiresAt" <= CURRENT_TIMESTAMP) AS "expired"
+      FROM "RuntimeApproval" AS authority
+      INNER JOIN "RuntimeApproval" AS parent
+        ON parent."id" = authority."metadataJson"->>'parentDecisionId'
+      WHERE (
+          authority."status" IN ('consumed', 'rejected', 'failed')
+          OR (
+            authority."status" IN ('dispatching', 'pending')
+            AND authority."expiresAt" <= CURRENT_TIMESTAMP
+          )
+        )
+        AND parent."kind" = 'knowledge_skill_review'
+        AND parent."status" IN ('executing', 'awaiting_governance')
+      ORDER BY authority."updatedAt" ASC
+      LIMIT ${Math.max(1, Math.min(limit, 500))}
+    `;
+    return rows.flatMap(row => {
+      const status = row.status === 'consumed' ? 'completed'
+        : row.status === 'rejected' ? 'rejected'
+          : row.status === 'failed' || row.expired ? 'failed'
+            : null;
+      return status ? [{
+        parentDecisionId: row.parentDecisionId,
+        approvalId: row.approvalId,
+        status,
+        result: row.result ?? { status: row.expired ? 'approval_expired' : row.status },
+      }] : [];
+    });
+  }
+
+  /** Terminal Lark skill Decisions whose resolved card or completion DM still needs delivery. */
+  async listDeliverableLarkSkillOutcomeIds(limit = 100): Promise<string[]> {
+    const rows = await this.prisma.$queryRaw<Array<{ id: string }>>`
+      SELECT approval."id"
+      FROM "RuntimeApproval" AS approval
+      LEFT JOIN "ChannelDelivery" AS card_delivery
+        ON card_delivery."channel" = 'lark'
+       AND card_delivery."idempotencyKey" = 'knowledge-skill-review:' || approval."id" || ':card'
+      LEFT JOIN "ChannelDelivery" AS message_delivery
+        ON message_delivery."channel" = 'lark'
+       AND message_delivery."idempotencyKey" = 'knowledge-skill-review:' || approval."id" || ':message'
+      WHERE approval."kind" = 'knowledge_skill_review'
+        AND approval."status" IN ('consumed', 'rejected', 'failed')
+        AND approval."metadataJson"->>'sourceChannel' = 'lark'
+        AND COALESCE(approval."metadataJson"->>'requesterLarkOpenId', '') <> ''
+        AND (
+          (
+            approval."decisionMessageId" IS NOT NULL
+            AND (
+              card_delivery."id" IS NULL
+              OR (
+                card_delivery."status" IN ('pending', 'failed')
+                AND (card_delivery."nextAttemptAt" IS NULL OR card_delivery."nextAttemptAt" <= CURRENT_TIMESTAMP)
+              )
+              OR (
+                card_delivery."status" = 'sending'
+                AND card_delivery."startedAt" <= CURRENT_TIMESTAMP - INTERVAL '60 seconds'
+              )
+            )
+          )
+          OR message_delivery."id" IS NULL
+          OR (
+            message_delivery."status" IN ('pending', 'failed')
+            AND (message_delivery."nextAttemptAt" IS NULL OR message_delivery."nextAttemptAt" <= CURRENT_TIMESTAMP)
+          )
+          OR (
+            message_delivery."status" = 'sending'
+            AND message_delivery."startedAt" <= CURRENT_TIMESTAMP - INTERVAL '60 seconds'
+          )
+        )
+      ORDER BY approval."updatedAt" ASC
+      LIMIT ${Math.max(1, Math.min(limit, 500))}
+    `;
+    return rows.map(row => row.id);
+  }
 
   /**
    * Create a RuntimeApproval, transparently upserting the required
@@ -258,6 +361,43 @@ export class RuntimeApprovalRepository {
     }
   }
 
+  /**
+   * Close an ask nobody needs answered any more.
+   *
+   * Distinct from `markFailed`, which says the request broke. A withdrawn ask
+   * succeeded and was then made moot by something else: the Connect card whose
+   * OAuth completed in a browser tab is the case this exists for, and calling
+   * that "failed" would be a lie told to whoever reads the row later.
+   *
+   * `withdrawn` is outside both the inbox filter (`dispatching`/`pending`) and
+   * the exactly-once durable set (`executing`/`awaiting_governance`/
+   * `consumed`), so a withdrawn row disappears from the reader's screen without
+   * standing in for a completed action.
+   *
+   * Scoped to still-open rows so this can never overwrite a real answer that
+   * landed first.
+   */
+  async withdrawByIdempotencyKey(
+    idempotencyKey: string,
+    reason: string,
+  ): Promise<Result<number, Error>> {
+    try {
+      const updated = await this.prisma.runtimeApproval.updateMany({
+        where: {
+          idempotencyKey,
+          status: { in: ['dispatching', 'pending'] },
+        },
+        data: {
+          status: 'withdrawn',
+          resolutionReason: reason,
+        },
+      });
+      return ok(updated.count);
+    } catch (e) {
+      return err(wrapInfra('prisma', 'runtime-approval.withdrawByIdempotencyKey', e));
+    }
+  }
+
   async markFailed(id: string, reason: string): Promise<Result<void, Error>> {
     try {
       await this.prisma.runtimeApproval.update({
@@ -353,7 +493,7 @@ export class RuntimeApprovalRepository {
   async markAwaitingGovernance(id: string, resultJson: unknown): Promise<Result<boolean, Error>> {
     try {
       const changed = await this.prisma.runtimeApproval.updateMany({
-        where: { id, status: 'executing', kind: 'business_action' },
+        where: { id, status: 'executing', kind: { in: [...LINKED_DECISION_KINDS] } },
         data: {
           status: 'awaiting_governance',
           executionResultJson: resultJson as any,
@@ -365,11 +505,11 @@ export class RuntimeApprovalRepository {
     }
   }
 
-  /** Finish the requester-owned action after its linked manager decision runs. */
-  async completeLinkedBusinessAction(id: string, resultJson: unknown): Promise<Result<boolean, Error>> {
+  /** Finish a requester-owned Decision after its linked authority decision runs. */
+  async completeLinkedDecision(id: string, resultJson: unknown): Promise<Result<boolean, Error>> {
     try {
       const changed = await this.prisma.runtimeApproval.updateMany({
-        where: { id, status: 'awaiting_governance', kind: 'business_action' },
+        where: { id, status: 'awaiting_governance', kind: { in: [...LINKED_DECISION_KINDS] } },
         data: {
           status: 'consumed',
           executionResultJson: resultJson as any,
@@ -377,19 +517,19 @@ export class RuntimeApprovalRepository {
       });
       return ok(changed.count === 1);
     } catch (e) {
-      return err(wrapInfra('prisma', 'runtime-approval.completeLinkedBusinessAction', e));
+      return err(wrapInfra('prisma', 'runtime-approval.completeLinkedDecision', e));
     }
   }
 
   /** Reject or fail a requester-owned action whose governance decision ended it. */
-  async failLinkedBusinessAction(
+  async failLinkedDecision(
     id: string,
     status: 'rejected' | 'failed',
     resultJson: unknown,
   ): Promise<Result<boolean, Error>> {
     try {
       const changed = await this.prisma.runtimeApproval.updateMany({
-        where: { id, status: 'awaiting_governance', kind: 'business_action' },
+        where: { id, status: 'awaiting_governance', kind: { in: [...LINKED_DECISION_KINDS] } },
         data: {
           status,
           executionResultJson: resultJson as any,
@@ -397,7 +537,7 @@ export class RuntimeApprovalRepository {
       });
       return ok(changed.count === 1);
     } catch (e) {
-      return err(wrapInfra('prisma', 'runtime-approval.failLinkedBusinessAction', e));
+      return err(wrapInfra('prisma', 'runtime-approval.failLinkedDecision', e));
     }
   }
 

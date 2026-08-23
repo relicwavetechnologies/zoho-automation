@@ -44,6 +44,7 @@ import {
 	stageNativeSkillBootstrap,
 	startContainer,
 	stageRuntimeInterruption,
+	stopContainerById,
 	stopOwnedContainer,
 	waitUntilRunning,
 	writeBootstrap,
@@ -156,6 +157,7 @@ export const defaultTurnEffects = {
 	finalizeRuntimeLifecycle,
 	abortRuntimeInPlace,
 	stageRuntimeInterruption,
+	stopContainerById,
 	stopOwnedContainer,
 	now: Date.now,
 	log: (line) => console.error(line),
@@ -303,6 +305,8 @@ async function runTurn({
 	let child;
 	let exited;
 	let rpc;
+	let runtimeReference;
+	let runtimeTarget = resources.container;
 	// Declared out here because the soft-interrupt path in `catch` re-remembers
 	// the warm entry, and an entry without its session id logs `session undefined`
 	// on every later turn that reuses it.
@@ -318,11 +322,16 @@ async function runTurn({
 		abortStop = (async () => {
 			const warmEntry = getWarmPiProcess(profile);
 			const activeRpc = rpc ?? warmEntry?.rpc;
+			const activeRuntime = rpc
+				? runtimeReference
+				: warmEntry?.runtime ?? runtimeReference;
+			const activeContainerId = activeRuntime?.containerId;
+			const activeContainer = activeContainerId ?? runtimeTarget;
 			if (piKeepAlive && lifecycle === undefined && activeRpc) {
 				try {
 					softInterruptMetadata = await effects.abortRuntimeInPlace({
 						rpc: activeRpc,
-						container: resources.container,
+						container: activeContainer,
 						bootstrap,
 					});
 					softInterrupted = true;
@@ -336,11 +345,12 @@ async function runTurn({
 					effects.log(`[Pi] Soft abort failed; stopping runtime: ${error.message}`);
 				}
 			}
-			await effects.stageRuntimeInterruption(resources.container, bootstrap).catch((error) => {
+			await effects.stageRuntimeInterruption(activeContainer, bootstrap).catch((error) => {
 				effects.log(`[Pi] Failed to stage interrupted work: ${error.message}`);
 			});
 			forgetWarmPiProcess(profile);
-			await effects.stopOwnedContainer(profile);
+			if (activeContainerId) await effects.stopContainerById(activeContainerId);
+			else await effects.stopOwnedContainer(profile);
 			effects.log(`[Pi] ${JSON.stringify({
 				event: "pi_runtime.interrupted",
 				mode: "hard",
@@ -354,17 +364,52 @@ async function runTurn({
 	signal?.addEventListener("abort", abort, { once: true });
 	if (signal?.aborted) abort();
 	try {
-		// A surviving warm entry at this point means its binding matched, so the
-		// container it is attached to is this turn's container. Its network and
-		// volumes cannot have gone missing underneath a process that is running
-		// inside it, so they are not re-probed.
 		const imageId = await imageIdReady;
-		const runtime = await phases.measure("runtime", () => effects.ensureRuntime(profile, {
-			ephemeral,
-			provisioned: piKeepAlive && hasWarmPiProcess(profile),
-			imageId,
-		}));
+		let reusable = piKeepAlive ? getWarmPiProcess(profile) : undefined;
+		if (reusable && reusable.alive !== true) {
+			processMode = "restarted";
+			replacementReason = "cached_process_exited";
+			await discardWarmPiProcess(profile);
+			reusable = undefined;
+		}
+		if (
+			reusable?.runtime
+			&& reusable.runtime.containerImageId !== imageId
+		) {
+			processMode = "restarted";
+			replacementReason = "image_changed";
+			await discardWarmPiProcess(profile);
+			reusable = undefined;
+		}
+		const cachedReference = reusable?.runtime;
+		const canReuseVerifiedRuntime = (
+			reusable
+			&& cachedReference
+			&& cachedReference.containerImageId === imageId
+			&& getWarmPiProcess(profile) === reusable
+			&& reusable.alive === true
+		);
+		const runtime = await phases.measure("runtime", () => (
+			canReuseVerifiedRuntime
+				? Promise.resolve({
+					...cachedReference,
+					wasRunning: true,
+					created: false,
+				})
+				: effects.ensureRuntime(profile, {
+					ephemeral,
+					provisioned: piKeepAlive && hasWarmPiProcess(profile),
+					imageId,
+				})
+		));
 		resources = runtime.resources;
+		runtimeReference = {
+			containerId: runtime.containerId,
+			containerImageId: runtime.containerImageId,
+			resources: runtime.resources,
+		};
+		runtimeTarget = runtime.containerId;
+		if (reusable) reusable.runtime = runtimeReference;
 		const stage = await phases.measure("stage", () => effects.stageNativeSkills(
 			resources.skillsVolume,
 			nativeSkillBootstrap,
@@ -401,12 +446,10 @@ async function runTurn({
 		if (lifecycle === "reset") {
 			await effects.deleteDurableSession(resources.volume, thread);
 		}
-		// `ensureRuntime` just inspected this container and verified it is ours,
-		// so its running state is already known here. Polling is only meaningful
-		// when we actually issued the start: a container already reported running
-		// has nothing to wait for, and if it died in the moment since, `docker
-		// exec` reports that immediately rather than after ten seconds spent
-		// waiting for a transition nobody triggered.
+		// The full path inspected this container and the warm path retained its
+		// exact verified ID. Polling is only meaningful after an actual start.
+		// If the container dies after either proof, the next exact-ID Docker
+		// operation fails immediately.
 		if (!runtime.wasRunning) {
 			await phases.measure("start", async () => {
 				await effects.startContainer(resources.container);
@@ -415,7 +458,11 @@ async function runTurn({
 		}
 		bootstrapAttempted = true;
 		let piProcessReused = false;
-		const reusable = piKeepAlive ? getWarmPiProcess(profile) : undefined;
+		const currentReusable = piKeepAlive ? getWarmPiProcess(profile) : undefined;
+		reusable = (
+			currentReusable === reusable
+			&& currentReusable?.alive === true
+		) ? currentReusable : undefined;
 		// A cold Pi reads the bootstrap itself as it boots, so the file has to be on
 		// the volume before that process starts. A warm one is already running and
 		// only needs the prepare, which now carries the bootstrap on its own stdin
@@ -423,7 +470,7 @@ async function runTurn({
 		if (reusable) {
 			const environment = await phases.measure(
 				"prepare",
-				() => effects.prepareWarmRuntime(resources.container, bootstrap),
+				() => effects.prepareWarmRuntime(runtimeTarget, bootstrap),
 			);
 			reusable.rpc.configure({ answerRequest, onProgress });
 			await phases.measure(
@@ -441,14 +488,14 @@ async function runTurn({
 			// name rather than quietly reclassifying every cold turn as prepared.
 			await phases.measure(
 				"bootstrap",
-				() => effects.writeBootstrap(resources.container, bootstrap),
+				() => effects.writeBootstrap(runtimeTarget, bootstrap),
 			);
 			if (processMode === "warm") {
 				processMode = "restarted";
 				replacementReason = "cached_process_exited";
 			}
 			({ child, exited, rpc } = effects.spawnRuntimeRpc(
-				resources.container,
+				runtimeTarget,
 				answerRequest,
 				onProgress,
 			));
@@ -473,6 +520,7 @@ async function runTurn({
 				child,
 				exited,
 				rpc,
+				runtime: runtimeReference,
 			});
 		}
 		// The sum of the named ready phases, not a wall span: the gaps between them
@@ -542,7 +590,15 @@ async function runTurn({
 			|| softInterruptMetadata?.protectedDataUsed === true;
 		if (softInterrupted && !protectedDataUsed) {
 			if (piKeepAlive && !hasWarmPiProcess(profile) && child && exited && rpc) {
-				rememberWarmPiProcess(profile, { profile, binding, sessionId, child, exited, rpc });
+				rememberWarmPiProcess(profile, {
+					profile,
+					binding,
+					sessionId,
+					child,
+					exited,
+					rpc,
+					runtime: runtimeReference,
+				});
 			}
 			retainRuntimeProcess = true;
 		} else {
@@ -707,7 +763,10 @@ export async function promptWithRuntimeLease(runtime, message, options = {}, eff
 	return runPrompt({
 		...runtime,
 		message,
-		answerRequest: createHeadlessExtensionResponder(),
+		// The caller may hand over an answerer that can wait for a person. The
+		// headless policy remains the default, so a caller that supplies nothing
+		// still gets the decision made immediately, as every caller once did.
+		answerRequest: options.answerRequest ?? createHeadlessExtensionResponder(),
 		attachments: options.attachments,
 		sessionScope: validateSessionScope(options.sessionScope),
 		ephemeral: runtime.ephemeral === true,

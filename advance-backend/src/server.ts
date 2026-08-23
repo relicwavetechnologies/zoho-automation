@@ -60,12 +60,13 @@ import { createMemberTaskRoutes } from './http/member/tasks.routes';
 import { ExecutionRepository } from './infrastructure/persistence/execution.repository';
 import { createGatewayRoutes } from './http/gateway/gateway.routes';
 import { LarkIngressWorker } from './application/lark-ingress/lark-ingress.worker';
-import { GoogleConnectionContinuationWorker } from './application/connections/google-connection-continuation';
 import { getGmailPubSubConfig } from './config/env';
 import { PersonaLearningWorker } from './application/persona-learning/persona-learning.worker';
 import { KnowledgeLearningWorker } from './application/knowledge/knowledge-learning.worker';
 import { ManagerTeachWorker } from './application/persona-learning/manager-teach.worker';
 import { KnowledgeReviewDecisionWorker } from './application/knowledge/knowledge-review-decision.worker';
+import { KnowledgeSkillReviewWorker } from './application/knowledge/knowledge-skill-review.worker';
+import { LarkDecisionActionWorker } from './infrastructure/channels/lark/lark-decision-action.worker';
 import { createManagerTeachRoutes } from './http/desktop/manager-teach.routes';
 import { createKnowledgeFileRoutes } from './http/desktop/knowledge-files.routes';
 import { createWebChatRoutes } from './http/desktop/web-chat.routes';
@@ -125,8 +126,8 @@ export const createServer = (c: Container): DivoServerApplication => {
     env:                   c.env,
     appBaseUrl:            c.env.APP_BASE_URL,
     approvalGate:          c.approvalGate,
-    approvalCardHandler:   c.approvalCardHandler,
     decisionCardHandler:   c.decisionCardHandler,
+    decisionActionQueue:    c.larkDecisionActionQueue,
     workbookConversionCardHandler: c.workbookConversionCardHandler,
     knowledgeReviewService: c.larkKnowledgeReviewService,
     larkOAuthService:      c.larkOAuthService,
@@ -156,32 +157,6 @@ export const createServer = (c: Container): DivoServerApplication => {
   });
   larkIngressWorker.start();
 
-  const googleConnectionContinuationWorker =
-    new GoogleConnectionContinuationWorker({
-      redisUrl: c.queueRedisUrl,
-      queue: c.googleConnectionContinuationQueue,
-      intentRepo: c.connectionAuthorizationRepo,
-      identityRepo: c.channelIdentityRepo,
-      connectionRepo: c.integrationConnectionRepo,
-      runPi: async input => (await runPiAndDeliver({
-        ...input,
-        deps: {
-          adapter: input.channelAdapter,
-          piRuntime: larkPiRuntime,
-          conversationRepo: c.conversationRepo,
-          channelDeliveryRepo: c.channelDeliveryRepo,
-          groupContextHydrator: c.groupContextHydrator,
-          chatContextService: c.chatContextService,
-        },
-        log: c.logger,
-        ...(input.abortSignal ? { signal: input.abortSignal } : {}),
-        rethrowRuntimeFailureAfterDelivery: true,
-      }))?.text ?? null,
-      channelAdapter: c.larkAdapter,
-      laneLeaseHolder: c.laneLeaseHolder,
-      logger: c.logger,
-    });
-  googleConnectionContinuationWorker.start();
   const recoverGoogleExchanges = () => {
     const staleBefore = new Date(Date.now() - 2 * 60_000);
     void c.googleConnectionAuthorization
@@ -244,6 +219,19 @@ export const createServer = (c: Container): DivoServerApplication => {
     logger: c.logger,
   });
   knowledgeReviewDecisionWorker.start();
+
+  const larkDecisionActionWorker = new LarkDecisionActionWorker({
+    redisUrl: c.queueRedisUrl,
+    processor: c.larkDecisionActionProcessor,
+    logger: c.logger,
+  });
+  larkDecisionActionWorker.start();
+
+  const knowledgeSkillReviewWorker = new KnowledgeSkillReviewWorker({
+    reviews: c.knowledgeSkillReviews,
+    logger: c.logger,
+  });
+  knowledgeSkillReviewWorker.start();
 
   const drainKnowledgeOutbox = () => {
     void c.knowledgeProjections.drain().catch(error => {
@@ -524,7 +512,8 @@ export const createServer = (c: Container): DivoServerApplication => {
     '/api/google/connection',
     createGoogleConnectionRoutes({
       authorization: c.googleConnectionAuthorization,
-      continuationQueue: c.googleConnectionContinuationQueue,
+      askCourier: c.connectionAskCourier,
+      connectionResume: c.connectionResume,
       logger: c.logger,
     }),
   );
@@ -883,6 +872,8 @@ export const createServer = (c: Container): DivoServerApplication => {
     piRuntimeMemberAuth,
     createArtifactRoutes({
       artifacts: c.artifacts,
+      publishing: c.artifactPublishing,
+      permissions: c.permissions,
       logger:    c.logger,
     }),
   );
@@ -1092,7 +1083,6 @@ export const createServer = (c: Container): DivoServerApplication => {
       // producer queues and shared application Redis clients are closed.
       await closePhase([
         { name: 'lark-ingress-worker', close: () => larkIngressWorker.stop() },
-        { name: 'google-continuation-worker', close: () => googleConnectionContinuationWorker.stop() },
         { name: 'workbook-conversion-worker', close: () => c.workbookConversionWorker.stop() },
         { name: 'persona-learning-worker', close: () => personaLearningWorker.stop() },
         ...(knowledgeLearningWorker
@@ -1100,15 +1090,17 @@ export const createServer = (c: Container): DivoServerApplication => {
           : []),
         { name: 'manager-teach-worker', close: () => managerTeachWorker.close() },
         { name: 'knowledge-review-worker', close: () => knowledgeReviewDecisionWorker.stop() },
+        { name: 'lark-decision-action-worker', close: () => larkDecisionActionWorker.stop() },
+        { name: 'knowledge-skill-review-worker', close: () => knowledgeSkillReviewWorker.stop() },
       ]);
       await closePhase([
         { name: 'lark-ingress-queue', close: () => c.larkIngressQueue.close() },
-        { name: 'google-continuation-queue', close: () => c.googleConnectionContinuationQueue.close() },
         { name: 'workbook-conversion-queue', close: () => c.workbookConversionQueue.close() },
         { name: 'persona-learning-queue', close: () => c.personaLearningQueue.close() },
         { name: 'knowledge-learning-queue', close: () => c.knowledgeLearningQueue.close() },
         { name: 'manager-teach-queue', close: () => c.managerTeachQueue.close() },
         { name: 'knowledge-review-queue', close: () => c.knowledgeReviewDecisionQueue.close() },
+        { name: 'lark-decision-action-queue', close: () => c.larkDecisionActionQueue.close() },
         { name: 'menhood-query-pool', close: () => c.menhoodQueryService.close() },
       ]);
 

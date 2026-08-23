@@ -174,7 +174,9 @@ export const TOOL_CAPABILITY_DEFINITIONS = {
   shopifyOrders:    defineCapability('shopify', ['read']),
   shopifyCustomers: defineCapability('shopify', ['read']),
 
+  artifactPublish: defineCapability('context', ['create']),
   webSearch:       defineCapability('context', ['read']),
+  connectApp:      defineCapability('context', ['create']),
   knowledge:       defineCapability('memory', ['read', 'create', 'update', 'delete']),
   mailAutomations:  defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
   scheduledWorkflows: defineCapability('scheduling', ['read', 'create', 'update', 'delete', 'execute']),
@@ -201,6 +203,13 @@ export const CANONICAL_TOOL_IDS = Object.freeze(
  * may not carry case. The transform is lossy, which is why the reverse lookup
  * below is a table of the ids we actually have rather than an attempt to undo
  * it — an inverted guess would confidently name a tool that does not exist.
+ *
+ * **Mirrors means mirrors. No special cases.** One id was briefly given a
+ * shorter name here and nowhere else, so the backend called it `divo_publish`
+ * while the container derived `divo_artifact_publish` from the same id, and the
+ * two halves of the system disagreed about what a tool was called. An exception
+ * living in one of two copies is the failure; adding it to both would only make
+ * the next one harder to see. If a name reads badly, change the id.
  */
 export function typedToolNameFor(toolId: string): string {
   const snake = toolId
@@ -247,6 +256,11 @@ export const TOOL_SUPPORTED_ACTIONS: Readonly<Record<CanonicalToolId, readonly s
 export const TOOL_DEFAULT_PERMISSIONS: Readonly<Record<CanonicalToolId, BuiltInRoleDefaults>> =
   mapCapabilities<BuiltInRoleDefaults>(definition => definition.defaultPermissions);
 
+// Permission policy includes the department-inheritance table, which is a
+// separate authority from the canonical tool definitions above. Bump this
+// epoch when that table changes so a live cache cannot retain the old overlay.
+const TOOL_PERMISSION_POLICY_EPOCH = 'artifact-publish-inherited-v1';
+
 /** Every canonical tool ID in one family, in stable catalogue order. */
 export function toolIdsForFamily(family: ToolFamily): CanonicalToolId[] {
   return CANONICAL_TOOL_IDS.filter(toolId => TOOL_CAPABILITY_DEFINITIONS[toolId].family === family);
@@ -259,6 +273,7 @@ export function toolIdsForFamily(family: ToolFamily): CanonicalToolId[] {
  */
 export const TOOL_PERMISSION_POLICY_REVISION = createHash('sha256')
   .update(JSON.stringify({
+    policyEpoch: TOOL_PERMISSION_POLICY_EPOCH,
     toolIds: CANONICAL_TOOL_IDS,
     supportedActions: TOOL_SUPPORTED_ACTIONS,
     defaults: TOOL_DEFAULT_PERMISSIONS,

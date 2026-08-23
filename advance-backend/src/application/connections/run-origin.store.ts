@@ -1,5 +1,6 @@
 import type { CachePort } from '../../shared/cache';
 import type { ChatType, GroupReplyMode } from '../../domain/channel/incoming-message';
+import type { ProviderKey } from '../../domain/connections/scope-gap';
 
 const RUN_ORIGIN_TTL_SECONDS = 30 * 60;
 const RUN_ORIGIN_PREFIX = 'run-origin:v1:';
@@ -19,7 +20,44 @@ const MAX_ORIGINAL_REQUEST_CHARS = 16_000;
  * resume it: who asked, in which chat, replying to which message, and what they
  * actually asked for.
  */
-export interface RunOrigin {
+interface RunOriginBase {
+  readonly version: 1;
+  readonly companyId: string;
+  readonly userId: string;
+  readonly channel: 'lark' | 'web';
+  readonly originalRequest: string;
+  readonly conversationKey: string;
+  readonly pendingAuthorization?: {
+    readonly provider: ProviderKey;
+    readonly intentId: string;
+    readonly authorizeUrl: string;
+  };
+}
+
+export interface LarkRunOriginFields {
+  readonly larkOpenId: string;
+  readonly larkTenantKey: string;
+  readonly chatId: string;
+  readonly chatType: ChatType;
+  readonly originalMessageId: string;
+  readonly rootMessageId?: string;
+  readonly replyInThread: boolean;
+  readonly groupReplyMode?: GroupReplyMode;
+}
+
+export interface WebRunOriginFields {
+  readonly threadId: string;
+  readonly userExternalId: string;
+  /** The exact web sign-in the run must resume under. */
+  readonly sessionId: string;
+  readonly timestamp: string;
+}
+
+export type RunOrigin =
+  | (RunOriginBase & { readonly channel: 'lark'; readonly lark: LarkRunOriginFields })
+  | (RunOriginBase & { readonly channel: 'web'; readonly web: WebRunOriginFields });
+
+interface LegacyLarkRunOrigin {
   readonly version: 1;
   readonly companyId: string;
   readonly userId: string;
@@ -62,17 +100,19 @@ export class RunOriginStore {
   async remember(runId: string, origin: RunOrigin): Promise<boolean> {
     if (origin.originalRequest.length > MAX_ORIGINAL_REQUEST_CHARS) return false;
     const key = runOriginKey(runId);
-    const current = await this.cache.get<RunOrigin>(key);
+    const current = await this.cache.get<RunOrigin | LegacyLarkRunOrigin>(key);
     if (!current.ok) throw current.error;
-    const retainedAuthorization = current.value?.version === 1
-      && current.value.companyId === origin.companyId
-      && current.value.userId === origin.userId
-      && current.value.originalMessageId === origin.originalMessageId
-      ? current.value.googleAuthorization
+    const currentOrigin = normalizeOrigin(current.value);
+    const retainedAuthorization = currentOrigin
+      && currentOrigin.companyId === origin.companyId
+      && currentOrigin.userId === origin.userId
+      && currentOrigin.channel === origin.channel
+      && currentOrigin.conversationKey === origin.conversationKey
+      ? currentOrigin.pendingAuthorization
       : undefined;
     const stored = await this.cache.set(
       key,
-      retainedAuthorization ? { ...origin, googleAuthorization: retainedAuthorization } : origin,
+      retainedAuthorization ? { ...origin, pendingAuthorization: retainedAuthorization } : origin,
       RUN_ORIGIN_TTL_SECONDS,
     );
     if (!stored.ok) throw stored.error;
@@ -86,17 +126,18 @@ export class RunOriginStore {
   }): Promise<RunOrigin | undefined> {
     const read = await this.cache.get<RunOrigin>(runOriginKey(input.runId));
     if (!read.ok) throw read.error;
-    const origin = read.value;
-    if (!origin || origin.version !== 1) return undefined;
+    const origin = normalizeOrigin(read.value);
+    if (!origin) return undefined;
     if (origin.companyId !== input.companyId) return undefined;
     if (origin.userId !== input.userId) return undefined;
     return origin;
   }
 
-  async attachGoogleAuthorization(input: {
+  async attachPendingAuthorization(input: {
     readonly runId: string;
     readonly companyId: string;
     readonly userId: string;
+    readonly provider: ProviderKey;
     readonly intentId: string;
     readonly authorizeUrl: string;
   }): Promise<boolean> {
@@ -106,7 +147,8 @@ export class RunOriginStore {
       runOriginKey(input.runId),
       {
         ...origin,
-        googleAuthorization: {
+        pendingAuthorization: {
+          provider: input.provider,
           intentId: input.intentId,
           authorizeUrl: input.authorizeUrl,
         },
@@ -116,8 +158,92 @@ export class RunOriginStore {
     if (!stored.ok) throw stored.error;
     return true;
   }
+
+  /**
+   * Forget an authorization the member has finished with.
+   *
+   * A run that is still waiting for a Connect ask has nothing of its own to
+   * say, so the runtime replaces its final answer with the card text and a
+   * Connect button. That is right up to the moment the member connects, and
+   * wrong immediately after: the run then goes on to do the actual work, and
+   * leaving this attached throws that answer away and offers a button for an
+   * account that is already connected.
+   *
+   * The mirror of `attachPendingAuthorization`, and the same idea as
+   * withdrawing the card: once the ask is answered, take back everything that
+   * still advertises it.
+   */
+  async clearPendingAuthorization(input: {
+    readonly runId: string;
+    readonly companyId: string;
+    readonly userId: string;
+  }): Promise<boolean> {
+    const origin = await this.recall(input);
+    if (!origin?.pendingAuthorization) return false;
+    const { pendingAuthorization: _resolved, ...withoutAuthorization } = origin;
+    const stored = await this.cache.set(
+      runOriginKey(input.runId),
+      withoutAuthorization,
+      RUN_ORIGIN_TTL_SECONDS,
+    );
+    if (!stored.ok) throw stored.error;
+    return true;
+  }
 }
 
 function runOriginKey(runId: string): string {
   return `${RUN_ORIGIN_PREFIX}${runId}`;
+}
+
+function normalizeOrigin(value: unknown): RunOrigin | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Record<string, unknown>;
+  if (candidate['version'] !== 1) return undefined;
+  if (candidate['channel'] === 'lark' && candidate['lark']) return value as RunOrigin;
+  if (candidate['channel'] === 'web' && candidate['web']) return value as RunOrigin;
+
+  // Preserve a pending Lark authorization written by the previous flat shape
+  // while the short origin TTL drains. New writes always use the discriminated
+  // channel shape above.
+  if (
+    typeof candidate['companyId'] === 'string'
+    && typeof candidate['userId'] === 'string'
+    && typeof candidate['larkOpenId'] === 'string'
+    && typeof candidate['larkTenantKey'] === 'string'
+    && typeof candidate['chatId'] === 'string'
+    && typeof candidate['chatType'] === 'string'
+    && typeof candidate['originalMessageId'] === 'string'
+    && typeof candidate['replyInThread'] === 'boolean'
+    && typeof candidate['originalRequest'] === 'string'
+  ) {
+    const legacy = value as LegacyLarkRunOrigin;
+    return {
+      version: 1,
+      companyId: legacy.companyId,
+      userId: legacy.userId,
+      channel: 'lark',
+      originalRequest: legacy.originalRequest,
+      conversationKey: legacy.chatId,
+      lark: {
+        larkOpenId: legacy.larkOpenId,
+        larkTenantKey: legacy.larkTenantKey,
+        chatId: legacy.chatId,
+        chatType: legacy.chatType,
+        originalMessageId: legacy.originalMessageId,
+        ...(legacy.rootMessageId ? { rootMessageId: legacy.rootMessageId } : {}),
+        replyInThread: legacy.replyInThread,
+        ...(legacy.groupReplyMode ? { groupReplyMode: legacy.groupReplyMode } : {}),
+      },
+      ...(legacy.googleAuthorization
+        ? {
+            pendingAuthorization: {
+              provider: 'google_workspace' as const,
+              intentId: legacy.googleAuthorization.intentId,
+              authorizeUrl: legacy.googleAuthorization.authorizeUrl,
+            },
+          }
+        : {}),
+    };
+  }
+  return undefined;
 }

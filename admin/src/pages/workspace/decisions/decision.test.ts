@@ -39,6 +39,12 @@ const CONFIRM = {
     { value: 'no', label: 'Reject', settles: 'rejected' as const },
   ],
 }
+const CONNECT = {
+  id: 'connect',
+  ask: 'Connect Google Workspace',
+  pick: 'one' as const,
+  options: [{ value: 'connect', label: 'Connect Google', href: 'https://accounts.google.com/' }],
+}
 
 describe('choosing', () => {
   it('replaces on a single-choice question', () => {
@@ -94,6 +100,11 @@ describe('completeness', () => {
     assert.equal(settlesEarly([CONFIRM, MIXINS], stopped), true)
     assert.equal(complete([CONFIRM, MIXINS], stopped), true)
   })
+
+  it('keeps a link option outside the answer and settlement flow', () => {
+    assert.equal(settlesEarly([CONNECT], EMPTY), false)
+    assert.equal(complete([CONNECT], EMPTY), false)
+  })
 })
 
 describe('the pager', () => {
@@ -137,7 +148,7 @@ describe('which decision the thread shows', () => {
   })
 
   it('still takes everything when no thread is named', () => {
-    /* The Approvals page asks for the whole list, and gets it. */
+    /* Shared Decision lists ask for the whole list, and get it. */
     assert.equal(firstOpen([decision('lark', '2026-08-17T08:00:00Z', null)])?.id, 'lark')
   })
 })

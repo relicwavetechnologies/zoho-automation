@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { RunOriginStore, type RunOrigin } from '../../src/application/connections/run-origin.store';
+import { webIncomingMessage } from '../../src/application/runtime/web-run.service';
 import type { CachePort } from '../../src/shared/cache';
 import { ok } from '../../src/shared/result';
 
@@ -23,15 +24,19 @@ function fakeCache(): CachePort & { entries: Map<string, { value: unknown; ttl?:
 
 const ORIGIN: RunOrigin = {
   version: 1,
+  channel: 'lark',
   companyId: 'co-1',
   userId: 'user-1',
-  larkOpenId: 'ou_user',
-  larkTenantKey: 'tenant-1',
-  chatId: 'oc_chat',
-  chatType: 'p2p',
-  originalMessageId: 'om_request',
-  replyInThread: false,
   originalRequest: 'Forward my invoices to finance',
+  conversationKey: 'oc_chat',
+  lark: {
+    larkOpenId: 'ou_user',
+    larkTenantKey: 'tenant-1',
+    chatId: 'oc_chat',
+    chatType: 'p2p',
+    originalMessageId: 'om_request',
+    replyInThread: false,
+  },
 };
 
 describe('RunOriginStore', () => {
@@ -57,10 +62,11 @@ describe('RunOriginStore', () => {
   it('retains a Google authorization action when the same run is recorded again', async () => {
     const store = new RunOriginStore(fakeCache());
     await store.remember('run-1', ORIGIN);
-    await store.attachGoogleAuthorization({
+    await store.attachPendingAuthorization({
       runId: 'run-1',
       companyId: 'co-1',
       userId: 'user-1',
+      provider: 'google_workspace',
       intentId: 'intent-1',
       authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
     });
@@ -72,11 +78,52 @@ describe('RunOriginStore', () => {
         runId: 'run-1',
         companyId: 'co-1',
         userId: 'user-1',
-      }))?.googleAuthorization,
+      }))?.pendingAuthorization,
       {
+        provider: 'google_workspace',
         intentId: 'intent-1',
         authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
       },
+    );
+  });
+
+  it('forgets an authorization the member has finished with', async () => {
+    /* The runtime answers with the Connect card text for as long as this is
+       attached. Once the member has connected, the run has a real answer and
+       that substitution would discard it. */
+    const store = new RunOriginStore(fakeCache());
+    await store.remember('run-1', ORIGIN);
+    await store.attachPendingAuthorization({
+      runId: 'run-1',
+      companyId: 'co-1',
+      userId: 'user-1',
+      provider: 'google_workspace',
+      intentId: 'intent-1',
+      authorizeUrl: 'https://accounts.google.com/o/oauth2/auth?state=opaque',
+    });
+
+    const cleared = await store.clearPendingAuthorization({
+      runId: 'run-1',
+      companyId: 'co-1',
+      userId: 'user-1',
+    });
+
+    assert.equal(cleared, true);
+    const origin = await store.recall({ runId: 'run-1', companyId: 'co-1', userId: 'user-1' });
+    assert.equal(origin?.pendingAuthorization, undefined);
+    assert.equal(origin?.channel, ORIGIN.channel, 'the rest of the origin survives');
+  });
+
+  it('reports nothing to forget when no authorization is attached', async () => {
+    const store = new RunOriginStore(fakeCache());
+    await store.remember('run-1', ORIGIN);
+    assert.equal(
+      await store.clearPendingAuthorization({
+        runId: 'run-1',
+        companyId: 'co-1',
+        userId: 'user-1',
+      }),
+      false,
     );
   });
 
@@ -118,5 +165,74 @@ describe('RunOriginStore', () => {
 
     assert.equal(stored, false);
     assert.equal(cache.entries.size, 0);
+  });
+
+  it('round-trips a replayable web origin and rebuilds the live IncomingMessage', async () => {
+    const cache = fakeCache();
+    const store = new RunOriginStore(cache);
+    const live = webIncomingMessage({
+      runId: 'run-web-1',
+      threadId: 'thread-web-1',
+      text: 'Export the Sheet to Google Drive',
+      userExternalId: 'web-user-1',
+      timestamp: '2026-08-21T00:00:00.000Z',
+    });
+    const origin: RunOrigin = {
+      version: 1,
+      channel: 'web',
+      companyId: 'co-1',
+      userId: 'user-1',
+      originalRequest: live.text,
+      conversationKey: 'thread-web-1',
+      web: {
+        threadId: 'thread-web-1',
+        userExternalId: 'web-user-1',
+        sessionId: 'web-session-1',
+        timestamp: live.timestamp,
+      },
+    };
+
+    assert.equal(await store.remember('run-web-1', origin), true);
+    const recalled = await store.recall({
+      runId: 'run-web-1',
+      companyId: 'co-1',
+      userId: 'user-1',
+    });
+    assert.equal(recalled?.channel, 'web');
+    if (!recalled || recalled.channel !== 'web') return;
+
+    const rebuilt = webIncomingMessage({
+      runId: 'run-web-1',
+      threadId: recalled.web.threadId,
+      text: recalled.originalRequest,
+      userExternalId: recalled.web.userExternalId,
+      timestamp: recalled.web.timestamp,
+    });
+    assert.deepEqual(rebuilt, live);
+  });
+
+  it('keeps reading a legacy flat Lark origin during the short TTL migration', async () => {
+    const cache = fakeCache();
+    cache.entries.set('run-origin:v1:legacy', {
+      value: {
+        version: 1,
+        companyId: 'co-1',
+        userId: 'user-1',
+        larkOpenId: 'ou_user',
+        larkTenantKey: 'tenant-1',
+        chatId: 'oc_chat',
+        chatType: 'p2p',
+        originalMessageId: 'om_request',
+        replyInThread: false,
+        originalRequest: 'Legacy ask',
+      },
+    });
+    const recalled = await new RunOriginStore(cache).recall({
+      runId: 'legacy',
+      companyId: 'co-1',
+      userId: 'user-1',
+    });
+    assert.equal(recalled?.channel, 'lark');
+    assert.equal(recalled?.conversationKey, 'oc_chat');
   });
 });

@@ -50,6 +50,7 @@ const ask = {
   threadId: 'web:thread-1',
   text: 'How much did we invoice in March?',
   userExternalId: 'user-1',
+  sessionId: 'session-1',
 };
 
 describe('web run', () => {
@@ -69,6 +70,34 @@ describe('web run', () => {
     // needs a second code path to handle it.
     assert.equal(incoming['chatType'], 'p2p');
     assert.equal(input['threadId'], 'web:thread-1');
+  });
+
+  it('records a replayable web origin before the shared runtime starts', async () => {
+    const { piRuntime } = fakeRuntime({});
+    const written: Array<{ runId: string; origin: any }> = [];
+    const service = new WebRunService({
+      piRuntime,
+      logger: noopLogger,
+      runOrigins: {
+        remember: async (runId, origin) => {
+          written.push({ runId, origin });
+          return true;
+        },
+      },
+    });
+
+    await collect(service.run(ask));
+
+    assert.equal(written.length, 1);
+    assert.equal(written[0]!.origin.channel, 'web');
+    assert.equal(written[0]!.origin.conversationKey, ask.threadId);
+    assert.equal(written[0]!.origin.originalRequest, ask.text);
+    assert.deepEqual(written[0]!.origin.web, {
+      threadId: ask.threadId,
+      userExternalId: ask.userExternalId,
+      sessionId: ask.sessionId,
+      timestamp: written[0]!.origin.web.timestamp,
+    });
   });
 
   it('hands the composer model and reasoning choice to the shared runtime unchanged', async () => {
@@ -328,10 +357,7 @@ describe('web run', () => {
     assert.equal('attachments' in seen[0]!, false);
   });
 
-  // Stopping is the reader's, and what they want is to hear that it stopped.
-  // The runtime answers "Stopped." on an abort, so the stream must stay open
-  // long enough to carry it.
-  it("carries the runtime's stopped answer instead of dying with the signal", async () => {
+  it('reports a user stop as an interruption even if the runtime returns during its abort', async () => {
     const controller = new AbortController();
     const { piRuntime } = fakeRuntime({
       emit: async report => {
@@ -344,11 +370,22 @@ describe('web run', () => {
 
     const events = await collect(service.run({ ...ask, abortSignal: controller.signal }));
 
-    assert.equal(events.at(-1)?.type, 'final');
-    assert.match(
-      events.at(-1)?.type === 'final' ? events.at(-1)!.text : '',
-      /Stopped/,
+    assert.equal(events.at(-1)?.type, 'interrupted');
+    assert.equal(
+      events.at(-1)?.type === 'interrupted' ? events.at(-1)!.message : '',
+      'Interrupted by user.',
     );
+  });
+
+  it('reports the runtime AbortError as an interruption rather than a failure', async () => {
+    const { piRuntime } = fakeRuntime({
+      fail: new DOMException('The Pi run was interrupted.', 'AbortError'),
+    });
+    const service = new WebRunService({ piRuntime, logger: noopLogger });
+
+    const events = await collect(service.run(ask));
+
+    assert.equal(events.at(-1)?.type, 'interrupted');
   });
 
 });

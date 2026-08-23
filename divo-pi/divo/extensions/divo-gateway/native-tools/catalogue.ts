@@ -16,6 +16,8 @@ export type NativeContract = WorkBootstrap["nativeContracts"][number];
 export type NativeContractCache = Map<string, NativeContract>;
 export type NativeContractCoverage = Set<string>;
 
+const EMPTY_CONTRACT_SIGNATURE = "[]";
+
 const PROVIDER_NATIVE_CONTRACT_TOOL_IDS = new Set([
 	"airtableBase",
 	"airtableRecords",
@@ -109,29 +111,70 @@ export function cacheNativeContracts(
  * turn's surface is applied, never after: registration re-expands Pi's active
  * tool set, which silently discards a narrower plan.
  */
-export function bindNativeContractsToCatalogue(
-	host: TypedToolHost,
-	invoke: TypedToolInvoker,
-	contracts: readonly NativeContract[],
-): string[] {
-	const byToolId = new Map<string, NativeContract[]>();
-	for (const contract of contracts) {
-		const existing = byToolId.get(contract.toolId);
-		if (existing) existing.push(contract);
-		else byToolId.set(contract.toolId, [contract]);
+export class NativeContractBindings {
+	private readonly signatures = new Map<string, string>();
+	private readonly host: TypedToolHost;
+	private readonly invoke: TypedToolInvoker;
+
+	constructor(
+		host: TypedToolHost,
+		invoke: TypedToolInvoker,
+		initiallyBaseToolIds: readonly string[] = [],
+	) {
+		this.host = host;
+		this.invoke = invoke;
+		for (const toolId of providerNativeContractToolIds(initiallyBaseToolIds)) {
+			this.signatures.set(toolId, EMPTY_CONTRACT_SIGNATURE);
+		}
 	}
-	const refreshed: string[] = [];
-	for (const spec of GENERATED_NATIVE_TOOL_SPECS) {
-		const matching = byToolId.get(spec.toolId);
-		if (!matching || matching.length === 0) continue;
-		const parameters = bindNativeContracts(
-			spec.parameters as Record<string, unknown>,
-			matching,
-		);
-		registerSpec(host, invoke, spec, parameters);
-		refreshed.push(spec.name);
+
+	/**
+	 * Reconcile the exact provider schemas visible on this turn.
+	 *
+	 * This module owns the model-visible binding state. It resets a previously
+	 * enriched wrapper when a later prompt selects no exact operation, and it
+	 * skips registration when the selected contracts are byte-for-byte
+	 * unchanged. The durable cache remains knowledge only; it cannot leak a
+	 * previous turn's selection into a later model payload.
+	 */
+	reconcile(
+		toolIds: readonly string[],
+		contracts: readonly NativeContract[],
+	): string[] {
+		const targets = new Set([
+			...providerNativeContractToolIds(toolIds),
+			...[...this.signatures]
+				.filter(([, signature]) => signature !== EMPTY_CONTRACT_SIGNATURE)
+				.map(([toolId]) => toolId),
+		]);
+		if (targets.size === 0) return [];
+
+		const byToolId = new Map<string, NativeContract[]>();
+		for (const contract of contracts) {
+			if (!targets.has(contract.toolId)) continue;
+			const existing = byToolId.get(contract.toolId);
+			if (existing) existing.push(contract);
+			else byToolId.set(contract.toolId, [contract]);
+		}
+
+		const refreshed: string[] = [];
+		for (const spec of GENERATED_NATIVE_TOOL_SPECS) {
+			if (!targets.has(spec.toolId)) continue;
+			const matching = [...(byToolId.get(spec.toolId) ?? [])]
+				.sort((left, right) => left.nativeTool.localeCompare(right.nativeTool));
+			const signature = JSON.stringify(matching);
+			if (this.signatures.get(spec.toolId) === signature) continue;
+
+			const parameters = bindNativeContracts(
+				spec.parameters as Record<string, unknown>,
+				matching,
+			);
+			registerSpec(this.host, this.invoke, spec, parameters);
+			this.signatures.set(spec.toolId, signature);
+			refreshed.push(spec.name);
+		}
+		return refreshed;
 	}
-	return refreshed;
 }
 
 function registerSpec(

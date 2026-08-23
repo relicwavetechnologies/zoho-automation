@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { RuntimeContextLifecycle } from '../../src/application/runtime/runtime-context-lifecycle.ts';
 import { asToolId } from '../../src/shared/ids.ts';
+import { SkillAccessRepository } from '../../src/infrastructure/persistence/skill-access.repository.ts';
+import { IntegrationConnectionRepository } from '../../src/infrastructure/persistence/integration-connection.repository.ts';
 
 const noopLogger = {
   info: () => {}, warn: () => {}, error: () => {}, debug: () => {},
@@ -38,9 +40,11 @@ function fixture() {
         findMany: async () => { calls.memory += 1; return []; },
       },
       departmentMembership: {
-        findFirst: async () => {
+        findMany: async () => {
           calls.membership += 1;
-          return membershipActive ? {
+          return membershipActive ? [{
+            departmentId: 'department-1',
+            roleId: 'department-role-1',
             department: {
               id: 'department-1',
               name: 'Finance',
@@ -51,8 +55,11 @@ function fixture() {
                 updatedAt: new Date('2026-08-18T00:00:00.000Z'),
               },
             },
-          } : null;
+          }] : [];
         },
+      },
+      adminMembership: {
+        findFirst: async () => null,
       },
     } as any,
     permissions: {
@@ -73,7 +80,12 @@ function fixture() {
       listVisible: async () => { calls.catalogue += 1; return [financeSkill]; },
     } as any,
     skillAccessEnforcement: {
-      listGrantedSkillIds: async () => { calls.grants += 1; return new Set([financeSkill.id]); },
+      listGrantedSkillIds: async (_companyId: string, _userId: string, _signal: unknown, scope: any) => {
+        calls.grants += 1;
+        assert.deepEqual(scope.departmentIds, ['department-1']);
+        assert.deepEqual(scope.departmentRoleIds, ['department-role-1']);
+        return new Set([financeSkill.id]);
+      },
     },
     managerPersonaRuntime: {
       getDepartmentBrief: async () => {
@@ -82,8 +94,10 @@ function fixture() {
       },
     } as any,
     connectionRegistry: {
-      listAccessibleZohoConnections: async () => {
+      listAccessibleZohoConnections: async (input: any) => {
         calls.connections += 1;
+        assert.deepEqual(input.memberGrantScope.departmentIds, ['department-1']);
+        assert.deepEqual(input.memberGrantScope.departmentRoleIds, ['department-role-1']);
         return { ok: true, value: [] };
       },
     } as any,
@@ -173,5 +187,83 @@ describe('RuntimeContextLifecycle', () => {
     assert.equal(calls.membership, 0);
     assert.equal(calls.permission, 0);
     assert.equal(calls.catalogue, 0);
+  });
+
+  it('carries the trusted shared audience into the surface descriptor', async () => {
+    const { lifecycle } = fixture();
+    const result = await lifecycle.load({
+      ...nativeInput,
+      audience: 'shared',
+    });
+
+    assert.equal(result.kind, 'ready');
+    if (result.kind !== 'ready') return;
+    assert.equal(result.snapshot.surface.key, 'lark');
+    assert.equal(result.snapshot.surface.audience, 'shared');
+    assert.equal(result.snapshot.surface.artifacts, 'none');
+  });
+
+  it('loads active memberships once across runtime, skill, and connection grant adapters', async () => {
+    const reads = { memberships: 0, admin: 0, skillGrants: 0, connections: 0 };
+    const prisma = {
+      knowledgeResource: { findMany: async () => [] },
+      departmentMembership: {
+        findMany: async () => {
+          reads.memberships += 1;
+          return [{
+            departmentId: 'department-1',
+            roleId: 'department-role-1',
+            department: {
+              id: 'department-1',
+              name: 'Finance',
+              slug: 'finance',
+              agentConfig: null,
+            },
+          }];
+        },
+      },
+      adminMembership: {
+        findFirst: async () => { reads.admin += 1; return null; },
+      },
+      skillAccessGrant: {
+        findMany: async () => { reads.skillGrants += 1; return []; },
+      },
+      integrationConnection: {
+        findMany: async () => { reads.connections += 1; return []; },
+      },
+    } as any;
+    const lifecycle = new RuntimeContextLifecycle({
+      prisma,
+      permissions: {
+        resolve: async () => ({
+          ok: true,
+          value: {
+            allowedToolIds: new Set([asToolId('zohoBooks')]),
+            allowedActionsByTool: new Map([[asToolId('zohoBooks'), new Set(['read'])]]),
+            decisions: [],
+          },
+        }),
+      } as any,
+      skillCatalog: {
+        registryRevision: async () => 1,
+        listVisible: async () => [],
+      } as any,
+      skillAccessEnforcement: new SkillAccessRepository(prisma),
+      managerPersonaRuntime: { getDepartmentBrief: async () => null } as any,
+      connectionRegistry: new IntegrationConnectionRepository(prisma, {
+        ZOHO_TOKEN_ENCRYPTION_KEY: 'test-key',
+      } as any),
+      logger: noopLogger,
+    });
+
+    const result = await lifecycle.load(nativeInput);
+
+    assert.equal(result.kind, 'ready');
+    assert.deepEqual(reads, {
+      memberships: 1,
+      admin: 1,
+      skillGrants: 1,
+      connections: 1,
+    });
   });
 });

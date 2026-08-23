@@ -511,3 +511,14 @@ This non-skills program is complete only when:
   malformed-marker and bootstrap-failure runs, RSS, and active-context size.
 - Decision: core cold → warm → changed-restart lifecycle proven; broader Phase
   1 matrix remains open.
+
+### Slice: local web skill-update operational findings — 2026-08-22
+
+- Commit / image / environment: dirty local Development worktree; rebuilt `divo-pi-local:phase0`; web channel; DeepSeek V4 Flash.
+- Exact flow: interrupt one knowledge lookup, adopt legacy editable skills into canonical knowledge, open and approve one department skill update.
+- Completed behavior: `cursor-design-html` moved from knowledge and skill revision 1 to 2; mutation applied; projection completed; controller returned to zero active runs.
+- Context/tool drift: repeated `divo-surface-drift` events reported planned tool schemas at 69,629 bytes and observed schemas at 102,073 bytes, 36,537 bytes over budget. Earlier turns in the same reused session reached 111,075 observed bytes, 45,539 bytes over budget. The run still completed, so this is active-context cost and consistency debt rather than the skill-update blocker.
+- Admission noise: concurrent `ExecutionRun` creation emitted Prisma `P2002` for unique `requestId`; the repository's winner-refetch recovery succeeded. The handled race still logs as an error at the Prisma layer.
+- Interrupt tail: a late `/api/desktop/trace` batch received `403 trace_provenance_required` after the user stop had terminalized the execution. Web interruption itself is now a normal `interrupted` outcome.
+- Restart-only observation: backend hot reload once caused the mail worker to report `Response from the Engine was empty`. Reproduce without a restart before treating it as production mail debt.
+- Decision: record the schema-budget drift for the primary runtime optimization agent. Keep the admission-log and trace-tail findings open until reproduced in a clean narrow run.

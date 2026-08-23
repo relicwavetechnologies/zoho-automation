@@ -1,0 +1,146 @@
+/*
+ * Apps, drawn inside the box you type in.
+ *
+ * A textarea holds characters and nothing else, so the marks are painted on a
+ * mirror sitting exactly behind it: same font, same padding, same wrapping,
+ * same width. The textarea keeps the caret, the selection and every keystroke;
+ * it just stops drawing its own letters.
+ *
+ * That arrangement has one rule, and everything below obeys it. **Nothing here
+ * may change the width of a single character.** The mirror and the real text
+ * must wrap at the same points and advance at the same rate, or the caret walks
+ * away from the letters underneath it. So the mark is placed on top of the `@`
+ * rather than inserted beside it, and the tile's padding is paid back with an
+ * equal negative margin — see `.cmp-mention` below.
+ */
+
+/* The two layers, stacked and identical. `inset-0` on the mirror pins it to the
+   textarea's own box, which is the one being resized in script. */
+.cmp-field { position: relative; }
+
+.cmp-mirror {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--bui-ink);
+}
+
+/* The letters live on the mirror now. The caret and the selection do not, so
+   both are given back explicitly — a composer whose caret you cannot find is
+   worse than one with no marks in it. */
+.cmp-input {
+  color: transparent;
+  caret-color: var(--bui-ink);
+}
+
+/* Selection paints on the textarea, which sits above the mirror, so an opaque
+   highlight would black out the very text being selected. Tinted instead, so
+   the words show through it. */
+.cmp-input::selection {
+  background: color-mix(in oklab, var(--bui-ink) 22%, transparent);
+  color: transparent;
+}
+
+/* ── One app ──────────────────────────────────────────── */
+
+/*
+ * The tile, given real padding without moving a character.
+ *
+ * The rule this file has always obeyed is that nothing may change the width of
+ * a run, because the mirror has to advance at exactly the rate the textarea
+ * under it does. For a long time that was read as "no horizontal padding", and
+ * the sides were faked with a 1.5px shadow that never looked like the tile used
+ * everywhere else.
+ *
+ * That reading was too strong. Padding moves the *following* content; an equal
+ * negative margin moves it back. The element's left edge shifts out by the pad
+ * and its content starts a pad further in, which is where it always was, and
+ * the next character resumes exactly where it would have. Every glyph stays
+ * put, the caret stays with it, and the painted box is genuinely wider.
+ *
+ * So the tile keeps the padding it has in the tray and the transcript, and this
+ * file only says where the room comes from.
+ */
+.cmp-mention {
+  /* Not the tile's `inline-flex`: this one sits in wrapping text and has to
+     break like the words around it. The mark is placed rather than laid out,
+     which is why it can afford to. */
+  display: inline;
+  position: relative;
+  /* In `em`, because the field's size is a function of how far Home is
+     scrolled and a fixed pad would drift away from the type. */
+  --pebble-pad-x: 0.3em;
+  --pebble-pad-y: 3px;
+  margin-inline: calc(-1 * var(--pebble-pad-x));
+}
+
+/*
+ * Two tiles with one space between them share that space.
+ *
+ * Each would otherwise paint a full pad into it and the pair would merge into
+ * one long tile with two logos in it. `crowded()` in `mentions.ts` decides
+ * this, because it is a fact about the draft rather than about the DOM.
+ */
+.cmp-mention[data-crowded] { --pebble-pad-x: 0.08em; }
+
+/*
+ * The mark stands where the `@` is.
+ *
+ * The `@` keeps its place in the line and gives up its ink, so the mark costs
+ * exactly one character of width — the width that character was always going to
+ * take. Take the mark out of flow and the sentence does not move.
+ */
+.cmp-mention-at { color: transparent; }
+
+.cmp-mention-mark {
+  position: absolute;
+  /*
+   * Sized to the cap height, and set inside the slot with room on both sides.
+   *
+   * The `@` advance is 0.968em in Inter — nearly a full em — and the mark only
+   * needs about 0.7em to match the capital beside it (`G` is 0.743em). The
+   * quarter-em left over is the only horizontal room this design has, and it
+   * is spent in two places: 0.11em in front of the mark, which is the pebble's
+   * left padding, and the remainder behind it, which is the gap before the
+   * first letter.
+   *
+   * Flush with the content edge, so the tile's left gap is its padding and
+   * nothing else. The containing block for an absolute child of an inline
+   * element is its *padding* box, which is what makes this work — and which is
+   * also why a bare `0.11em` used to sit the mark *inside* the padding and eat
+   * it, leaving every tile measuring 1.6px on the left however much padding it
+   * actually had.
+   *
+   * The slot is wider than the mark by design: the `@` advance is 0.968em and
+   * the mark is 0.7em, so the quarter-em left over now falls entirely behind the
+   * mark, where it becomes the gap before the first letter.
+   *
+   * Sized in `em` because the field's font-size is a function of how far Home
+   * has been scrolled.
+   */
+  left: var(--pebble-pad-x, 0px);
+  top: 50%;
+  width: 0.7em;
+  height: 0.7em;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+}
+
+/*
+ * Nothing to resize here.
+ *
+ * The mark arrives already at the slot's size, measured off the field's own
+ * font size in `composer.tsx`. This used to try to stretch it with
+ * `width: 100%`, which never applied: `BrandMark` sets its box in an inline
+ * style, and an inline style beats a stylesheet every time. The artwork stayed
+ * at its natural size, overflowed the slot, and sat low in the pebble — the
+ * boxes were all perfectly centred and the thing inside them was not.
+ */
+
+@media (prefers-reduced-motion: no-preference) {
+  .cmp-mention { transition: background-color .12s ease; }
+}

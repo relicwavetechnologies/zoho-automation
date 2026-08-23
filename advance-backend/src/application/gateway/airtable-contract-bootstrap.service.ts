@@ -99,7 +99,9 @@ export class AirtableContractBootstrapService implements WorkContractBootstrapPo
     }
 
     return loadWorkNativeContracts(requested, async item => {
-      const description = await resolution.connection.client.describeTool(item.nativeTool);
+      const description = await resolution.connection.client.describeTool(item.nativeTool, {
+        waitForProvider: input.contractMode !== 'complete_cached',
+      });
       if (!description) return null;
       const boundedDescription = contractDescription(description.name, description.description);
       return {
@@ -156,7 +158,7 @@ export function airtableNativeToolsForMode(
   toolIds: readonly string[],
   contractMode: WorkContractBootstrapMode,
 ): Array<{ toolId: string; nativeTool: string }> {
-  if (contractMode === 'complete') return completeAirtableNativeTools(toolIds);
+  if (contractMode !== 'suggested') return completeAirtableNativeTools(toolIds);
   const normalized = query.toLowerCase();
   const suggestions: Array<{ toolId: string; nativeTool: string }> = [];
 

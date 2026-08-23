@@ -14,17 +14,12 @@ import type {
 } from './approval.types';
 import type { ResolvedManager } from './approval.types';
 import { checkApprovalPolicy, computeArgsHash, computeIdempotencyKey } from './approval-policy';
-import { buildApprovalCard } from './approval-card-builder';
 import { approvalOriginFromChatId } from './approval-origin';
 import type { ConnectionRateLimitService } from '../governance/connection-rate-limit.service';
-import {
-  approvalDeliveryFailedCheckpoint,
-  approvalDeliveryUnknownCheckpoint,
-  isDefiniteApprovalNonDelivery,
-} from './approval-delivery';
 import type { KnowledgeMutationService } from '../knowledge/knowledge-mutation.service';
 import { externalMailDestinations } from '../mail-ops/external-destination';
 import { inspectExternalForward } from '../mail-ops/external-forward-approval';
+import type { DecisionService } from '../decision/decision.service';
 
 export type { ApprovalAuthority } from './approval.types';
 
@@ -47,8 +42,8 @@ export interface ApprovalGateInput {
    * form that has since been closed.
    */
   resumeOnApproval?: boolean;
-  /** Requester-confirmed action whose lifecycle continues through this decision. */
-  parentBusinessActionId?: string;
+  /** Requester-owned Decision whose lifecycle continues through this authority decision. */
+  parentDecisionId?: string;
   /** Optional, non-authoritative runtime execution provenance for audit/match checks. */
   execution?: {
     readonly version: 1;
@@ -133,6 +128,7 @@ export class ApprovalGateService {
     private readonly logger:          Logger,
     private readonly options:         ApprovalGateOptions = {},
     private readonly connectionRateLimits?: ConnectionRateLimitService,
+    private readonly decisions?: Pick<DecisionService, 'ask'>,
   ) {}
 
   async check(input: ApprovalGateInput): Promise<ApprovalDecision> {
@@ -207,89 +203,111 @@ export class ApprovalGateService {
       ? this.larkAdapter.getStatusMessageId(String(runContext.traceId))
       : undefined;
 
-    // Atomically reuse a live request or create one. The repository serializes
-    // this exact idempotency key across backend processes before creating a
-    // row, which prevents duplicate Lark cards under concurrent retries.
-    const createResult = await this.approvalRepo.createOrReuseActive(
-      {
-        chatId: scopedChatId,
-        companyId:      String(runContext.companyId),
-        toolId,
-        actionGroup:    action,
-        kind:           'tool_action',
-        summary:        argsSummary,
-        payloadJson:    { toolId, action, args, argsHash },
-        metadataJson:   {
-          requesterId,
-          requesterName:          requesterDisplay,
-          requesterEmail:         runContext.requesterEmail ?? null,
-          requesterLarkOpenId:    runContext.channel === 'lark' && runContext.userExternalId
-            ? String(runContext.userExternalId)
-            : null,
-          tenantKey:              runContext.channel === 'lark' && runContext.tenantId
-            ? String(runContext.tenantId)
-            : null,
-          departmentId,
-          departmentName,
-          approvalOrigin:         runContext.channel === 'lark' && execution
-            ? 'cloud_pi'
-            : approvalOriginFromChatId(sourceChatId),
-          sourceChannel:          runContext.channel,
-          statusMessageId:        statusMessageId ?? null,
-          chatId: scopedChatId,
-          sourceChatId,
-          replyToMessageId:       runContext.replyToMessageId ?? null,
-          replyInThread:          runContext.replyInThread ?? null,
-          // Carried so the approved action executes under the same delivery
-          // rules as the run that asked for it. Approval is checked before a
-          // tool runs, so a scheduled run reaches this point with its guards
-          // untested; rebuilding the context later without this would let the
-          // approved call deliver where the run itself may not.
-          deliveryMode:           runContext.deliveryMode ?? null,
-          resolvedManagerOpenId:  manager.larkOpenId,
-          resolvedManagerUserId:  manager.userId,
-          resolvedManagerName:    manager.displayName,
-          approvalAuthority:      requirement.authority,
-          // Whether a yes finishes this or merely unblocks a retry. Read by
-          // both decision surfaces; absent means the old behaviour.
-          autoResume:             input.resumeOnApproval === true,
-          parentBusinessActionId: input.parentBusinessActionId ?? null,
-          execution: execution ?? null,
-        },
-        // The row is the source of truth; delivery is a side effect of it.
-        channel:        deliveredVia,
-        requestedBy:    requesterId,
-        idempotencyKey: idemKey,
-        expiresAt:      new Date(Date.now() + 24 * 60 * 60 * 1000),
-      },
-      {
-        compatibleIdempotencyKeys: compatibilityScopes.map(scope =>
-          computeIdempotencyKey(scope.chatId, toolId, action, argsHash)),
-        isCompatibleApproval: approval => matchesApproval(
-          approval,
-          expectedApproval,
-          compatibilityScopes,
-        ),
-      },
-    );
-
-    if (!createResult.ok) {
-      this.logger.error('approval.gate.create_or_reuse_failed', { error: createResult.error.message });
-      return { kind: 'misconfigured', message: 'Failed to create approval request. Please try again.' };
+    if (!this.decisions) {
+      this.logger.error('approval.gate.decision_service_missing', { toolId, action });
+      return { kind: 'misconfigured', message: 'The decision module is not configured. Please try again.' };
     }
 
-    const { approval, created, replacedExpired } = createResult.value;
-    const knowledgeBound = await this.bindKnowledgeApproval({
+    let linkedDecisionEvidence: unknown;
+    if (input.parentDecisionId) {
+      const parent = await this.approvalRepo.findById(input.parentDecisionId);
+      if (
+        parent.ok
+        && parent.value
+        && parent.value.companyId === String(runContext.companyId)
+      ) {
+        linkedDecisionEvidence = isRecord(parent.value.metadataJson)
+          ? parent.value.metadataJson['decisionEvidence']
+          : undefined;
+      }
+    }
+
+    const asked = await this.decisions.ask({
+      kind: 'tool_action',
+      companyId: String(runContext.companyId),
+      approver: manager,
+      requestedBy: { userId: requesterId, displayName: requesterDisplay },
+      summary: argsSummary,
       toolId,
+      action,
       args,
-      runContext,
-      approvalId: approval.id,
-      authority: requirement.authority,
+      argsHash,
+      metadata: {
+        requesterId,
+        requesterName: requesterDisplay,
+        requesterEmail: runContext.requesterEmail ?? null,
+        requesterLarkOpenId: runContext.channel === 'lark' && runContext.userExternalId
+          ? String(runContext.userExternalId)
+          : null,
+        tenantKey: runContext.channel === 'lark' && runContext.tenantId
+          ? String(runContext.tenantId)
+          : null,
+        departmentId,
+        departmentName,
+        approvalOrigin: runContext.channel === 'lark' && execution
+          ? 'cloud_pi'
+          : approvalOriginFromChatId(sourceChatId),
+        sourceChannel: runContext.channel,
+        statusMessageId: statusMessageId ?? null,
+        chatId: scopedChatId,
+        sourceChatId,
+        replyToMessageId: runContext.replyToMessageId ?? null,
+        replyInThread: runContext.replyInThread ?? null,
+        // Carried so the approved action executes under the same delivery
+        // rules as the run that asked for it. Approval is checked before a
+        // tool runs, so a scheduled run reaches this point with its guards
+        // untested; rebuilding the context later without this would let the
+        // approved call deliver where the run itself may not.
+        deliveryMode: runContext.deliveryMode ?? null,
+        approvalAuthority: requirement.authority,
+        // Whether a yes finishes this or merely unblocks a retry. Read by
+        // both decision surfaces; absent means the old behaviour.
+        autoResume: input.resumeOnApproval === true,
+        parentDecisionId: input.parentDecisionId ?? null,
+        ...(linkedDecisionEvidence !== undefined ? { decisionEvidence: linkedDecisionEvidence } : {}),
+        execution: execution ?? null,
+      },
+      beforeDelivery: async approval => {
+        const knowledgeBound = await this.bindKnowledgeApproval({
+          toolId,
+          args,
+          runContext,
+          approvalId: approval.id,
+          authority: requirement.authority,
+        });
+        return knowledgeBound.ok
+          ? { ok: true as const }
+          : {
+              ok: false as const,
+              reason: 'knowledge_binding_failed',
+              message: knowledgeBound.message,
+            };
+      },
+      channel: deliveredVia,
+      conversationKey: scopedChatId,
+      idempotencyKey: idemKey,
+      compatibleIdempotencyKeys: compatibilityScopes.map(scope =>
+        computeIdempotencyKey(scope.chatId, toolId, action, argsHash)),
+      isCompatibleApproval: approval => matchesApproval(
+        approval,
+        expectedApproval,
+        compatibilityScopes,
+      ),
+      initialStatus: deliveredVia === 'lark' ? 'dispatching' : 'pending',
     });
-    if (!knowledgeBound.ok) {
-      await this.approvalRepo.markFailed(approval.id, 'knowledge_binding_failed');
-      return { kind: 'misconfigured', message: knowledgeBound.message };
+
+    if (!asked.ok) {
+      this.logger.error('approval.gate.decision_ask_failed', {
+        reason: asked.reason,
+        rowId: asked.rowId,
+        toolId,
+        action,
+      });
+      return { kind: 'misconfigured', message: asked.message };
     }
+
+    const { row: approval, created, replacedExpired } = asked;
+    const approvalDelivery: ApprovalDelivery = asked.deliveredVia === 'lark' ? 'lark' : 'desktop';
     if (!created) {
       return this.decisionFromExisting({
         approval,
@@ -304,21 +322,20 @@ export class ApprovalGateService {
       });
     }
 
-    // No card address — the request is live and waiting in their approval
-    // inbox. This used to be `misconfigured`, which failed the tool call
-    // outright and made a Lark account a precondition for approvals working
-    // at all.
+    // No card address, or delivery was explicitly suppressed. The request is
+    // live and waiting in their approval inbox. This used to be `misconfigured`,
+    // which failed the tool call outright and made a Lark account a precondition
+    // for approvals working at all.
     //
     // Suppressed delivery lands here too, on purpose: it is the same state, and
-    // it is a state the system already handles rather than a new half-sent one.
-    if (!manager.larkOpenId || this.options.suppressCardDelivery) {
+    // it is a state the Decision module already handles rather than a new
+    // half-sent one.
+    if (approvalDelivery === 'desktop') {
       this.logger.info('approval.gate.pending_created_inbox', {
         approvalId: approval.id,
         toolId,
         action,
         approver: manager.displayName,
-        // Which of the two reasons, so a quiet approval is never mistaken for a
-        // colleague who has not connected Lark.
         reason: manager.larkOpenId ? 'card_delivery_suppressed' : 'no_lark_account',
       });
       return pendingDecision(
@@ -328,84 +345,18 @@ export class ApprovalGateService {
         replacedExpired
           ? `The previous approval expired. ${manager.displayName} has a fresh request waiting in Divo (id: ${approval.id}).`
           : `${manager.displayName} has an approval request waiting in Divo. Waiting on their response (id: ${approval.id}).`,
-        deliveredVia,
+        approvalDelivery,
       );
     }
 
-    // Build and send the approval card to the manager
-    const cardContent = buildApprovalCard({
-      approvalId:     approval.id,
-      toolId,
-      action,
-      args,
-      summary:        argsSummary,
-      requesterName:  requesterDisplay,
-      approverName:   manager.displayName,
-      authority:      requirement.authority,
-      departmentName,
-    });
-
-    const sendResult = await this.larkAdapter.sendDirectCard(manager.larkOpenId, cardContent);
-    if (!sendResult.ok) {
-      this.logger.warn('approval.gate.card_send_failed', {
-        approvalId: approval.id,
-        error:      sendResult.error.message,
-      });
-      if (!isDefiniteApprovalNonDelivery(sendResult.error)) {
-        const checkpoint = await this.approvalRepo.persistResult(
-          approval.id,
-          approvalDeliveryUnknownCheckpoint(sendResult.error.message),
-        );
-        if (!checkpoint.ok) {
-          this.logger.error('approval.gate.delivery_unknown_checkpoint_failed', {
-            approvalId: approval.id,
-            error: checkpoint.error.message,
-          });
-        }
-        return {
-          kind: 'misconfigured',
-          message: `Divo lost confirmation while delivering the approval card to ${manager.displayName}. The card may still be actionable, so the exact request is blocked from automatic retry (id: ${approval.id}). Please contact your administrator.`,
-        };
-      }
-      const markFailed = await this.approvalRepo.markFailed(approval.id, `card_send_failed:${sendResult.error.message}`);
-      if (!markFailed.ok) {
-        this.logger.error('approval.gate.mark_failed_failed', {
-          approvalId: approval.id,
-          error:      markFailed.error.message,
-        });
-        const checkpoint = await this.approvalRepo.persistResult(
-          approval.id,
-          approvalDeliveryFailedCheckpoint(sendResult.error.message),
-        );
-        if (!checkpoint.ok) {
-          this.logger.error('approval.gate.delivery_failure_checkpoint_failed', {
-            approvalId: approval.id,
-            error: checkpoint.error.message,
-          });
-        }
-      }
-      return {
-        kind:    'misconfigured',
-        message: 'This action requires manager approval, but the approval card could not be delivered. Please try again or contact your administrator.',
-      };
-    }
-
-    // Persist the card message ID so the webhook can update it later.
-    const delivered = await this.approvalRepo.setDecisionMessageId(approval.id, sendResult.value.messageId);
-    if (!delivered.ok) {
-      this.logger.error('approval.gate.delivery_persist_failed', {
-        approvalId: approval.id,
-        error: delivered.error.message,
-      });
-      // Sending succeeded. Keep the row as a durable dispatching barrier: the
-      // card still carries its approval ID and can be resolved, while an exact
-      // retry must never send a second card.
+    if (asked.requestState === 'dispatching') {
+      this.logger.error('approval.gate.delivery_persist_failed', { approvalId: approval.id });
       return pendingDecision(
         approval.id,
         requirement,
         'dispatching',
         `The approval card reached ${manager.displayName}, but Divo is still syncing its delivery state (id: ${approval.id}). Do not create another request; the existing card remains usable.`,
-        deliveredVia,
+        approvalDelivery,
       );
     }
 
@@ -413,11 +364,11 @@ export class ApprovalGateService {
       approvalId: approval.id,
       toolId,
       action,
-      manager:    manager.displayName,
+      manager: manager.displayName,
     });
 
     return {
-      kind:       'pending',
+      kind: 'pending',
       approvalId: approval.id,
       message: replacedExpired
         ? `The previous approval expired. I've sent a fresh exact request to ${manager.displayName} (id: ${approval.id}).`
@@ -427,7 +378,7 @@ export class ApprovalGateService {
       requestState: replacedExpired ? 'replaced_expired' : 'created',
       nextAction: 'wait',
       retry: 'retry_exact',
-      deliveredVia,
+      deliveredVia: approvalDelivery,
     };
   }
 
@@ -593,9 +544,10 @@ export class ApprovalGateService {
     if (input.toolId !== 'knowledge') return null;
     const parsed = knowledgeApplyArgs(input.args);
     if (!parsed) {
-      // Target discovery and proposal creation have no provider side effect and
-      // never enter the authority-approval stage.
-      return isKnowledgeNonApply(input.args)
+      // The tool owns operation-to-action classification. Reads and proposal
+      // creation have no provider side effect and never enter the authority
+      // approval stage.
+      return input.action === 'read' || isKnowledgeProposal(input.args)
         ? { kind: 'allowed' }
         : { kind: 'misconfigured', message: 'Invalid knowledge apply request.' };
     }
@@ -651,7 +603,7 @@ export class ApprovalGateService {
         mutation.departmentId,
         mutation.companyId,
         {
-          excludeUserId: mutation.requesterId,
+          ...(mutation.distinctApprover ? { excludeUserId: mutation.requesterId } : {}),
           allowCompanyAdminFallback: false,
         },
       );
@@ -659,7 +611,9 @@ export class ApprovalGateService {
         ? { kind: 'required', approver, authority: 'department_manager' }
         : {
             kind: 'misconfigured',
-            message: 'A different active department manager is required, but none is configured.',
+            message: mutation.distinctApprover
+              ? 'A different active department manager is required, but none is configured.'
+              : 'An active department manager is required, but none is configured.',
           };
     }
 
@@ -1041,10 +995,10 @@ function knowledgeApplyArgs(value: unknown): KnowledgeApplyArgs | null {
   };
 }
 
-function isKnowledgeNonApply(value: unknown): boolean {
+function isKnowledgeProposal(value: unknown): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const operation = (value as Record<string, unknown>)['operation'];
-  return operation === 'check_targets' || operation === 'recall' || operation === 'propose';
+  return operation === 'propose';
 }
 
 function completedDecision(

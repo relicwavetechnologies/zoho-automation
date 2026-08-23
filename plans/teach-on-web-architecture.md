@@ -1,610 +1,523 @@
-# Self-updating skills, and native video understanding
+# Self-updating skill pipeline, end to end
 
-Living document. What exists, and the decisions we settle as we grill the
-design. Nothing here is built yet.
+> Status: **Implemented; one local web update applied at revision 2; focused-review and next-turn behavior proof pending**
+>
+> Created: **2026-08-17**
+>
+> Re-scoped: **2026-08-22**
+>
+> Executor: **Codex GPT-5.x, Tier A**
+>
+> Scope: **One correction-driven skill update from Pi proposal through durable review, approval, projection, and next-turn skill reload.**
+>
+> Parked: **Media work, governed files, shared memory, Teach UI, Jan/Desktop migration, and Pi core changes.**
 
-**Superseded on 2026-08-18.** This file previously planned a "Teach on the web"
-feature — a `/teach` command, a teach session, a teach-specific write path. That
-framing is dropped. See D1.
+## 1. Outcome
 
-## The target
+- A member corrects a reusable procedure in an ordinary Divo conversation.
+- Pi calls `divo_knowledge_review` with the complete replacement skill.
+- The backend creates a durable `KnowledgeMutation` before asking anyone to approve it.
+- The requester reviews the exact skill content through the existing Decision module.
+- A personal skill applies after the requester confirms it.
+- A department skill from an ordinary member goes to the current department manager.
+- A department manager can confirm and apply their own department skill update in one decision.
+- A company skill still needs a different company administrator.
+- Approval applies the exact reviewed mutation, projects the `Skill`, writes `SkillVersion`, and bumps `SkillRegistryRevision`.
+- The next Pi turn receives a changed native-skill bootstrap digest, replaces the warm Pi process, and uses the new instruction.
+- Web and Lark use the same durable backend state. A Redis TTL is never the source of truth for a skill review.
 
-Two things, and neither is a named feature:
+## 2. Scope boundary
 
-1. **A skill can update itself.** Like any coding agent, Divo should be able to
-   decide a skill needs changing and change it — gated by approval, because a
-   skill change alters how work gets done. Not a mode, not a command. An
-   ordinary capability described in instructions.
-2. **Video is understood natively.** Anyone uploads a video in any chat, Divo
-   takes in its context, and answers from it. We do not keep the video — only
-   what was understood from it.
+### Included
 
-The product reason: web Divo is a pitch surface. A client should see Divo learn
-from a recording without being told to enter a special mode first.
+- Skill `create`, `update`, `publish`, and `delete` operations through `divo_knowledge_review`.
+- Personal, department, and company skill scopes.
+- Requester review of the complete replacement content.
+- Department-manager and company-admin approval where policy requires it.
+- Department-manager self-approval for department skills only.
+- Exact-content hashing, optimistic `baseVersion`, idempotency, actor checks, expiry, and atomic execution claims.
+- Durable web and Lark Decision cards.
+- Skill projection into `Skill`, `SkillVersion`, access grants, and registry revision.
+- Native-skill bootstrap refresh and next-turn Pi process replacement.
+- A Development proof that records every durable row and revision in the chain.
 
----
+### Parked, do not spend time here
 
-## The one thing that cannot work, and why
+- Media understanding and attachment work. It has no phase in this plan.
+- Shared-memory review. Keep its current behavior unchanged.
+- Governed-file review. Keep its current behavior unchanged.
+- Persona learning and manager Teach sessions. A skill is the approved object.
+- A `/teach` command, Teach mode, or Teach-specific user interface.
+- Jan/Desktop approval migration. Its local confirmation adapter stays as-is.
+- Vendored Pi core. The Divo-owned extension and controller already provide the needed seams.
+- A new skill editor or approval page. The current Decision card, thread, Home, You, and Team surfaces remain the adapters.
+- Automatic skill rewriting from Divo's own opinion. A human correction must start the proposal.
+- Merging two different live proposals. The current mutation store rejects a competing live mutation, and this plan preserves that honest conflict.
 
-**The agent must never write skills inside the container.** Two independent
-reasons, and the second is already enforced:
+## 3. Locked decisions
 
-1. The container is rebuilt from the database on every bootstrap, so a file
-   written in-container is reverted on the next run — the change would appear to
-   work and then silently vanish.
-2. It is physically impossible anyway. The skills volume is mounted
-   **`readonly`** and the container itself runs `--read-only`
-   (`divo-pi/divo/runtime-docker.mjs:88`), and staged `SKILL.md` files are
-   written `0444`.
+- **D1. Skill updates are an ordinary capability.** There is no Teach feature, command, session, or second write path.
+- **D2. The approved object is a skill.** Persona rules are not readable enough to be the object a person approves.
+- **D3. The backend remains the authority.** Pi proposes exact content but never writes a skill file or decides RBAC, policy, approval, or scope.
+- **D4. The Decision module stores every skill-review question.** Web and Lark render the same durable `RuntimeApproval` row.
+- **D5. The exact content is stored before review.** The `KnowledgeMutation` snapshot and its content hash are created before the Decision row.
+- **D6. Only explicit correction starts an update.** Divo may act when a member corrects a reusable procedure. It may not propose a change merely because it dislikes an existing skill.
+- **D7. Personal scope needs requester review only.** The owner confirms the exact replacement and the mutation applies.
+- **D8. Department scope uses current authority.** An ordinary member's confirmed proposal goes to the current manager. A current manager's own confirmed proposal uses the same requester Decision as the authority receipt and applies without asking a second manager.
+- **D9. Company scope keeps a distinct administrator.** This plan does not weaken company-wide approval.
+- **D10. Manager self-approval is limited to department skills.** Shared memory and governed files keep their current distinct-approver policy.
+- **D11. A changed skill becomes active between turns.** The current turn reports that Divo learned it. The next message runs with the new revision.
+- **D12. Lark cuts over only after web proof.** The existing Lark skill review works today. Build and prove the durable web path first, then route Lark skill reviews through it.
+- **D13. Old skill-specific Redis code does not remain after confirmed cleanup.** Once the cutover proves that branch dead, ask for the required cleanup approval. Keep the Redis workflow only for parked memory and file review behavior that still needs it.
+- **D14. Projection failures remain visible.** A queued projection is not reported as a completed skill refresh.
+- **D15. People approve the change, not the storage object.** Web and Lark render one backend-derived focused diff from canonical current and proposed skill content. Full markdown, unchanged fields, and fingerprints are not review copy. A change too large for a bounded exact diff is rejected before a Decision opens and must be split.
 
-So the write has to go to the **database**, and the container has to pick it up.
-Both halves already exist — see below.
+## 4. Open questions
 
----
+- None.
 
-## What already exists (verified 2026-08-17/18)
+## 5. Current state
 
-### The skill write path — complete
+- The worktree was clean on `dev` at commit `needb232d0e596cb183d02746c8555f393f01b646`. Verified 2026-08-22 with `git status --short --branch`, `git rev-parse HEAD`, and `git rev-parse origin/dev`.
+- `divo-pi/divo/extensions/divo-gateway/knowledge-review.ts` registers `divo_knowledge_review`. Web and Lark runs call `knowledge.review.open`; installed Desktop uses its local confirmation path. Verified 2026-08-22 by reading `executeKnowledgeReview`.
+- `advance-backend/src/application/gateway/gateway-dispatcher.ts` rejects `knowledge.review.open` unless the caller is an authenticated Lark Pi runtime with matching runtime lease provenance. This is the direct web blocker. Verified 2026-08-22 by reading `openVerifiedLarkKnowledgeReview`.
+- `advance-backend/src/application/knowledge/lark-knowledge-review.service.ts` writes the pending requester review and queued decision to Redis for 24 hours. Its comment states that PostgreSQL reconstruction is a separate durability requirement. Verified 2026-08-22 by reading `openReviewRequest`, `handle`, and `processQueuedDecision`.
+- The same Lark module handles memory, skills, and files. Removing the whole module would break parked behavior. The skill branch must move without deleting the memory and file paths. Verified 2026-08-22 by reading `openMemoryForRuntime`, `openResourceForRuntime`, and `executeDecision`.
+- `advance-backend/src/application/knowledge/knowledge-mutation.service.ts` already owns proposal policy, exact-content hashing, requester confirmation, approval binding, approval acceptance, cancellation, and apply state transitions.
+- `advance-backend/src/infrastructure/persistence/knowledge-mutation.repository.ts` serializes proposal and apply operations with advisory locks. It rejects a second live mutation for the same company, kind, target, and logical key.
+- `advance-backend/src/application/approval/approval-gate.service.ts` already opens manager and administrator approvals through `DecisionService.ask`, binds the approval row to the mutation before delivery, and refuses approval before requester review.
+- `advance-backend/src/application/decision/decision.service.ts` already provides durable ask, inbox, authority, expiry, answer validation, atomic settlement, and continuation for web and Lark.
+- Native decisions cannot execute a continuation. A skill review therefore needs its own durable row kind and a knowledge-owned settlement path, like `business_action`, instead of pretending a native Decision can run a tool.
+- `advance-backend/src/application/approval/business-action.service.ts` proves the needed pattern: a producer opens a Decision row, Decision settlement delegates the whole producer-owned lifecycle, and exact arguments are claimed once before execution.
+- `advance-backend/src/application/approval/business-action-presentation.ts` already knows how to describe exact knowledge proposal content, but `decision-projection.ts` does not project that full presentation into the current web card.
+- `advance-backend/src/application/knowledge/knowledge-review-presentation.ts` now derives a bounded exact diff from canonical current and proposed skill content, verifies the proposed content hash, and rejects oversized changes before review.
+- `admin/src/pages/workspace/decisions/decision.view.tsx` renders only changed fields and focused instruction lines. It does not render the complete skill or SHA-256 fingerprint.
+- `advance-backend/src/application/knowledge/knowledge-projection.service.ts` updates or creates the projected `Skill`, increments its revision, rewrites access grants, writes `SkillVersion`, and bumps the company registry revision in one transaction.
+- Skill slug collision is still detected in the outbox projection after approval. It must move to proposal validation so a person never approves a mutation that cannot project.
+- `advance-backend/src/application/skills/knowledge-provisioning.ts`, `advance-backend/src/domain/knowledge/knowledge-mutation.ts`, and `advance-backend/prisma/sql/knowledge-invariants.sql` currently require a distinct approver for every shared mutation. Department-manager self-approval therefore needs an explicit, skill-only policy and database change. It is not only a row update.
+- `divo-pi/divo/native-skills.mjs` hashes the complete validated skill bootstrap and scope. `divo-pi/divo/runtime-warm-process.mjs` includes that digest in `piProcessBinding`, and `divo-pi/divo/local-rpc-controller.mjs` discards a warm Pi process when the digest changes.
+- Focused backend baseline passed on 2026-08-22: 146 tests, 0 failures.
+- Pi knowledge-review baseline passed on 2026-08-22: 8 tests, 0 failures.
+- Pi controller baseline passed on 2026-08-22: 64 tests, 0 failures.
+- Admin Decision baseline passed on 2026-08-22: 29 tests, 0 failures.
 
-`KnowledgeMutationService` is a full state machine, not a stub:
+## 6. The shape
 
+The finished flow is:
+
+```text
+explicit correction
+  -> divo_knowledge_review
+  -> knowledge.review.open
+  -> KnowledgeSkillReviewService.open
+  -> KnowledgeMutation awaiting_requester_review
+  -> Decision awaiting the requester
+  -> requester confirms exact content
+  -> KnowledgeSkillReviewService.decide
+     -> personal: apply
+     -> department manager requester: bind same Decision, apply
+     -> ordinary department member: open manager Decision, wait
+     -> company: open distinct admin Decision, wait
+  -> KnowledgeOutbox
+  -> Skill + SkillVersion + SkillRegistryRevision
+  -> next runtime-context bootstrap changes
+  -> native skill digest changes
+  -> warm Pi process is replaced
+  -> next message follows the new skill
 ```
-propose → confirmRequesterReview → attachRuntimeApproval
-        → acceptRuntimeApproval → apply | reject | cancel
+
+### Owning module
+
+- Add `KnowledgeSkillReviewService` in `advance-backend/src/application/knowledge/knowledge-skill-review.service.ts` (new).
+- Its small interface owns the whole skill requester-review lifecycle:
+  - `open(...)` validates the authenticated target, creates or reuses the exact mutation, and opens or reuses the requester Decision.
+  - `decide(...)` cancels or confirms the mutation, performs the live authority check, and either applies it or opens the existing manager/admin approval path.
+- Keep exact-content validation, policy, versioning, and apply inside `KnowledgeMutationService`.
+- Keep generic ask, delivery, inbox, answer, expiry, and atomic settlement inside `DecisionService`.
+- Keep manager/admin authority and approval delivery inside `ApprovalGateService` and `ApprovalResolverService`.
+- Keep web and Lark as adapters. Neither adapter may store workflow state or reconstruct skill policy.
+
+### Durable records
+
+- `KnowledgeMutation` stores the exact proposed content, content hash, policy snapshot, scope, base version, requester, and mutation status.
+- A `RuntimeApproval` row with kind `knowledge_skill_review` stores the requester Decision and exact apply arguments.
+- A second existing `tool_action` approval row exists only when a different manager or administrator must approve.
+- `KnowledgeOutbox` stores projection work.
+- `Skill`, `SkillVersion`, and `SkillRegistryRevision` store the active runtime result.
+
+### Error interface
+
+- Invalid skill schema, unavailable tool IDs, language policy, slug collision, stale base version, unavailable scope, or a competing live mutation fails before a Decision opens.
+- An expired requester Decision leaves the mutation unapplied and allows a fresh exact request.
+- Rejection cancels the mutation. It never leaves a live mutation blocking the next correction.
+- Manager or administrator rejection moves the mutation to `rejected` and closes the linked requester Decision.
+- An expired requester or authority Decision cannot leave a live mutation that blocks a fresh correction.
+- Changed membership or authority fails at settlement or apply with a named structured reason.
+- Projection failure returns `projection: queued` and stays visible in logs and proof evidence.
+- A reused request returns the existing Decision and mutation IDs. It does not send another card.
+
+## 7. Phases
+
+### Phase 1 - Durable skill-review module
+
+**Goal.** Put the requester review on durable rows and give the knowledge domain one settlement owner without changing live routing yet.
+
+**Files.**
+
+- `advance-backend/src/application/knowledge/knowledge-skill-review.service.ts` (new) - owns open, cancel, confirm, authority hand-off, and apply coordination.
+- `advance-backend/src/application/knowledge/knowledge-skill-review.worker.ts` (new) - reconciles terminal and expired linked Decisions from durable PostgreSQL rows.
+- `CONTEXT.md` (new) - names the durable skill-review, linked-Decision, applied, and active-projection concepts.
+- `advance-backend/tests/application/knowledge-skill-review.service.test.ts` (new) - tests the module through its interface.
+- `advance-backend/src/application/decision/decision.service.ts` - delegates `knowledge_skill_review` settlement to the knowledge owner, as it already does for `business_action`.
+- `advance-backend/src/application/decision/decision-projection.ts` - projects the new row kind without inventing tool semantics.
+- `advance-backend/src/application/approval/approval-resumer.service.ts` - reports linked approval outcomes through a row-kind-neutral continuation seam.
+- `advance-backend/src/application/approval/business-action.service.ts` - becomes one adapter at that linked-decision seam without changing its behavior.
+- `advance-backend/src/infrastructure/persistence/runtime-approval.repository.ts` - generalizes linked requester-row transitions beyond `business_action` while keeping allowed row kinds explicit.
+- `advance-backend/src/composition.ts` - wires one lazy Decision ask port and one settlement dependency without creating a second Decision implementation.
+
+**Steps.**
+
+- [x] Define the `knowledge_skill_review` row payload from an existing `KnowledgeMutation` and exact apply arguments.
+- [x] Implement `open` so the mutation exists before the Decision and an exact retry reuses both.
+- [x] Implement reject so it atomically settles the Decision and cancels the mutation.
+- [x] Implement approve so it atomically settles and claims the requester Decision before confirming the mutation.
+- [x] Route personal approval to apply and shared approval to the existing authority path.
+- [x] Replace `parentBusinessActionId` completion with one linked requester-decision interface used by business actions and skill reviews.
+- [x] On authority rejection, reject the mutation and close the linked requester Decision.
+- [x] On requester or authority expiry, retire the stale mutation before accepting a fresh correction.
+- [x] Persist terminal success, waiting-for-authority, failure, and projection-queued results on the requester row.
+- [ ] Test wrong actor, wrong company, expired row, authority rejection, changed hash, duplicate answer, restart-safe settlement, and concurrent settlement.
+
+**Gate.** A module test creates a mutation and Decision, discards the module instance, reconstructs it, settles the same Decision once, and observes exactly one of: cancelled, applied, or awaiting authority. No Redis fake appears in the test.
+
+### Phase 2 - Focused exact change on every Decision surface
+
+**Goal.** Let a person understand the exact change without reading the complete storage object or a fingerprint.
+
+> Correction recorded 2026-08-22 after local web proof. The original full-content card was cryptographically exact but unusable. It hid a one-line edit inside roughly 16,000 characters of unchanged skill content. The focused diff below supersedes that presentation choice while keeping the complete mutation and hash as backend authority.
+
+**Files.**
+
+- `advance-backend/src/domain/decision/decision.ts` - carries the focused field and instruction diff plus the non-rendered complete-content hash.
+- `advance-backend/src/application/decision/decision-projection.ts` - projects a human skill title, focused summary, and exact diff.
+- `advance-backend/src/infrastructure/channels/lark/lark-decision-card.ts` - renders the same focused evidence as web.
+- `advance-backend/src/application/knowledge/knowledge-review-presentation.ts` - owns canonical hash verification, bounded exact line diffing, and Lark formatting.
+- `admin/src/pages/workspace/decisions/decision.ts` - mirrors the focused evidence value.
+- `admin/src/pages/workspace/decisions/decision.view.tsx` - renders changed fields and focused instruction lines with wrapping.
+- `advance-backend/tests/application/decision.service.test.ts` - covers projection and settlement.
+- `advance-backend/tests/infrastructure/lark/lark-decision-card.handler.test.ts` - covers native Decision callback behavior.
+- `admin/src/pages/workspace/decisions/decision.test.ts` - covers the mirrored value rules.
+
+**Steps.**
+
+- [x] Replace full replacement evidence with one canonical focused-change value for web and Lark.
+- [x] Derive that value on the backend from the readable current `KnowledgeVersion` and the exact proposed mutation content.
+- [x] Verify the proposed complete-content hash before opening the Decision.
+- [x] Refuse updates over the bounded diff budget instead of truncating or dumping a complete skill.
+- [x] Remove unchanged name, slug, summary, tools, tags, full markdown, and SHA-256 from visible review copy.
+- [x] Use `Update <skill name>` and `Apply this change from the next turn?` instead of generic knowledge/apply language.
+- [x] Wrap long diff lines and label the final action `Approve change` or `Reject change`.
+- [x] Refresh the originating web thread after settlement so the backend-written applied/rejected/failed outcome appears immediately.
+- [x] Tell Pi not to duplicate the Decision evidence or pending-state explanation in chat after opening the review.
+- [ ] Prove the focused card and immediate applied outcome through the local web UI.
+
+**Gate.** A one-line update displays exactly that line with one context line on either side on both web and Lark. No unchanged metadata, full skill body, or fingerprint is visible. Approving applies the content bound to the same hash and immediately appends the applied revision to the web thread. An update over the review budget opens no Decision and asks for smaller changes.
+
+### Phase 3 - Department-manager self-approval and early rejection
+
+**Goal.** Make the chosen department policy real and stop unprojectable skill proposals before anyone reviews them.
+
+**Files.**
+
+- `advance-backend/src/domain/knowledge/knowledge-mutation.ts` - allows non-distinct approval only for the locked department-skill case.
+- `advance-backend/src/application/skills/knowledge-provisioning.ts` - provisions department skill policies with `distinctApprover: false` and increments their policy version.
+- `advance-backend/prisma/sql/knowledge-invariants.sql` - preserves database checks while allowing that one case.
+- `advance-backend/prisma/migrations/20260822_department_skill_manager_self_approval/migration.sql` (new) - updates Development/Main schema constraints and existing global policy rows safely.
+- `advance-backend/src/application/knowledge/knowledge-mutation.service.ts` - rejects a live slug collision before creating a proposal.
+- `advance-backend/src/application/knowledge/knowledge-mutation.store.ts` - adds the minimum lookup needed for early collision proof.
+- `advance-backend/src/infrastructure/persistence/knowledge-mutation.repository.ts` - implements the lookup and keeps live authority rechecks.
+- `advance-backend/src/application/approval/approval-gate.service.ts` - keeps distinct company approval and ordinary-member manager routing.
+- `advance-backend/tests/domain/knowledge-mutation-policy.test.ts` - pins the narrow policy exception.
+- `advance-backend/tests/approval/knowledge-approval-gate.test.ts` - pins ordinary-member and manager paths.
+- `advance-backend/tests/infrastructure/knowledge-mutation-authority.test.ts` - proves live manager authority at apply.
+
+**Steps.**
+
+- [x] Change the policy validator and SQL constraints only for `kind = skill`, `scope = department`.
+- [x] Update existing global department-skill policies in the migration and increment their version.
+- [x] Keep department memory, department files, and every company mutation distinct-approver.
+- [x] Reuse the requester Decision as the bound authority receipt only when the requester is the current department manager.
+- [x] Recheck manager authority inside the apply transaction.
+- [x] Send an ordinary member's confirmed mutation to the current manager through the existing approval gate.
+- [x] Reject a colliding active skill slug, including a system-skill slug, before opening a requester Decision.
+
+**Gate.** The policy tests prove four cases: personal owner confirmation applies; ordinary department member creates two decisions; department manager creates one decision and applies; company administrator still needs a different administrator. A system-skill slug collision creates zero Decision rows.
+
+### Phase 4 - Web skill review cutover
+
+**Goal.** Make `divo_knowledge_review` work from web chat through the durable skill path.
+
+**Files.**
+
+- `advance-backend/src/application/gateway/gateway-dispatcher.ts` - routes skill review opens for web to `KnowledgeSkillReviewService` and keeps the runtime lease check.
+- `advance-backend/src/application/gateway/gateway.types.ts` - keeps the existing payload schema and documents the channel-neutral result.
+- `advance-backend/tests/application/gateway.test.ts` - replaces the web denial expectation with durable review behavior.
+- `divo-pi/divo/extensions/divo-gateway/knowledge-review.ts` - keeps one model-facing tool and reports the durable waiting state plainly.
+- `divo-pi/divo/extensions/divo-gateway/knowledge-review.test.ts` - proves web opens the backend-owned review and Desktop stays local.
+- `advance-backend/src/http/desktop/web-chat.routes.ts` - keeps settlement through `DecisionService`; no skill-specific route is added.
+- `admin/src/pages/workspace/data/use-decisions.ts` - continues to read the same Decision inbox.
+
+**Steps.**
+
+- [x] Accept authenticated web Pi runtime provenance for skill review open.
+- [x] Preserve the exact company, user, department, thread, run, and action IDs on the durable row.
+- [x] Return the durable review state with the Decision and mutation IDs in structured data.
+- [x] Project the requester Decision into the originating thread and the Home, You, and Team Decision lists through existing reads.
+- [x] After approval, append a truthful thread outcome for applied, waiting on authority, cancelled, failed, or projection queued.
+- [x] Remove the web permission-denied path for skills without weakening lease validation.
+
+**Gate.** A web-originated skill correction opens one Decision in the same `web_...` thread. Confirming it produces either an applied personal skill or one manager/admin Decision. Refreshing the browser before confirmation does not lose the request.
+
+### Phase 5 - Lark skill review cutover and focused cleanup
+
+**Goal.** Route Lark skills through the same durable Decision flow after the web path is proven.
+
+**Files.**
+
+- `advance-backend/src/application/gateway/gateway-dispatcher.ts` - routes Lark `kind: skill` to `KnowledgeSkillReviewService`.
+- `advance-backend/src/application/knowledge/lark-knowledge-review.service.ts` - removes skill ownership while retaining parked memory and file behavior.
+- `advance-backend/src/application/knowledge/knowledge-review-decision.worker.ts` - remains only for the parked Redis-backed review kinds.
+- `advance-backend/src/application/knowledge/knowledge-review-decision.queue.ts` - remains only for the parked Redis-backed review kinds.
+- `advance-backend/src/infrastructure/channels/lark/lark.webhook.routes.ts` - keeps `decision_answer` ahead of the legacy memory/file callback branch.
+- `advance-backend/tests/application/gateway.test.ts` - proves Lark skill routing and unchanged memory/file routing.
+- `advance-backend/tests/infrastructure/lark/lark-decision-card.handler.test.ts` - proves skill requester settlement through `decision_answer`.
+
+**Steps.**
+
+- [x] Route only skill review opens to the durable module.
+- [x] Deliver the requester Decision through `LarkDecisionCourier`.
+- [x] Confirm the skill through `LarkDecisionCardHandler` and `DecisionService.answerOne`.
+- [x] Use the user's follow-up authorization to remove the proven-dead Redis skill branch while keeping memory and file review.
+- [x] Remove `skill` from the legacy Lark review request types, validation, card builder, and execution branch.
+- [x] Keep the legacy memory and file code paths unchanged.
+- [x] Remove stale comments that still call the Redis module the owner of every shared knowledge mutation.
+
+**Gate.** A Lark skill correction produces a `decision_answer` card backed by `RuntimeApproval`, with no `lark:knowledge-review:v1:` skill key. Existing shared-memory and governed-file review tests remain green.
+
+### Phase 6 - Full pipeline proof and handoff
+
+**Goal.** Prove the exact reviewed instruction is the instruction Pi follows on the next turn.
+
+**Files.**
+
+- `advance-backend/tests/integration/knowledge-skill-review.e2e.integration.test.ts` (new) - proves the durable backend chain.
+- `divo-pi/divo/test/local-rpc-controller.test.mjs` - proves a changed skill digest replaces the warm Pi process for this scenario.
+- `plans/hotspot-todos.md` - marks Self-Updating Skill Proof complete only after real Development evidence.
+- `plans/teach-on-web-architecture.md` - records IDs, revisions, commands, deviations, and the final gate in the build log.
+
+**Steps.**
+
+- [ ] Add an integration test for Decision to mutation confirmation to authority to apply to projection.
+- [ ] Run the Development Cloud-Pi harness under `AGENTS.local.md` and the prescribed local runtime framework.
+- [ ] Start with a skill instruction whose output is easy to distinguish.
+- [ ] Give an explicit correction and capture the requester Decision.
+- [ ] Approve through the real web surface, including manager approval when the requester is an ordinary member.
+- [ ] Record the `KnowledgeMutation`, requester `RuntimeApproval`, optional manager `RuntimeApproval`, `KnowledgeOutbox`, `KnowledgeResource`, `KnowledgeVersion`, `Skill`, `SkillVersion`, and `SkillRegistryRevision` IDs and statuses.
+- [ ] Send the next message and capture `native_skill_digest_changed` as the Pi process replacement reason.
+- [ ] Prove the answer follows the new instruction and would not satisfy the old instruction.
+- [ ] Rerun the same exact request and prove no duplicate mutation, Decision, version, or revision appears.
+- [x] Update the plan and hotspot todo with the implemented state and the still-pending proof gate.
+
+**Gate.** One evidence bundle shows the full chain from explicit correction to next-turn changed behavior. Every durable ID is recorded, the mutation and projection are terminal, the Pi replacement reason is `native_skill_digest_changed`, and the next answer follows the new skill.
+
+## 8. Primary files
+
+### Skill proposal and mutation authority
+
+- `CONTEXT.md`
+- `advance-backend/src/application/knowledge/knowledge-mutation.service.ts`
+- `advance-backend/src/application/knowledge/knowledge-mutation.store.ts`
+- `advance-backend/src/infrastructure/persistence/knowledge-mutation.repository.ts`
+- `advance-backend/src/domain/knowledge/knowledge-mutation.ts`
+- `advance-backend/src/application/knowledge/knowledge-content-validator.ts`
+- `advance-backend/src/application/knowledge/knowledge-skill-review.service.ts` (new)
+- `advance-backend/src/application/knowledge/knowledge-skill-review.worker.ts` (new)
+
+### Human decisions and authority approval
+
+- `advance-backend/src/application/decision/decision.service.ts`
+- `advance-backend/src/application/decision/decision-projection.ts`
+- `advance-backend/src/domain/decision/decision.ts`
+- `advance-backend/src/application/approval/approval-gate.service.ts`
+- `advance-backend/src/application/approval/approval-resolver.service.ts`
+- `advance-backend/src/application/approval/approval-resumer.service.ts`
+- `advance-backend/src/application/approval/business-action.service.ts`
+- `advance-backend/src/infrastructure/persistence/runtime-approval.repository.ts`
+
+### Gateway and Pi tool
+
+- `advance-backend/src/application/gateway/gateway-dispatcher.ts`
+- `advance-backend/src/application/gateway/gateway.types.ts`
+- `advance-backend/src/application/tools/families/knowledge.tool.ts`
+- `divo-pi/divo/extensions/divo-gateway/knowledge-review.ts`
+- `divo-pi/divo/extensions/divo-gateway/run-prompt.ts`
+
+### Decision adapters
+
+- `advance-backend/src/infrastructure/channels/lark/lark-decision-card.ts`
+- `advance-backend/src/infrastructure/channels/lark/lark-decision-card.handler.ts`
+- `advance-backend/src/infrastructure/channels/lark/lark-decision.courier.ts`
+- `advance-backend/src/application/knowledge/knowledge-review-presentation.ts`
+- `admin/src/pages/workspace/data/use-decisions.ts`
+- `admin/src/pages/workspace/decisions/decision.ts`
+- `admin/src/pages/workspace/decisions/decision.view.tsx`
+
+### Projection and runtime refresh
+
+- `advance-backend/src/application/knowledge/knowledge-projection.service.ts`
+- `advance-backend/src/application/skills/skill-registry-versioning.ts`
+- `advance-backend/src/application/runtime/runtime-context-lifecycle.ts`
+- `advance-backend/src/application/skills/native-skill-binding.ts`
+- `divo-pi/divo/native-skills.mjs`
+- `divo-pi/divo/runtime-warm-process.mjs`
+- `divo-pi/divo/local-rpc-controller.mjs`
+
+### Policy and deployment
+
+- `advance-backend/src/application/skills/knowledge-provisioning.ts`
+- `advance-backend/prisma/sql/knowledge-invariants.sql`
+- `advance-backend/prisma/schema.prisma`
+- `advance-backend/prisma/migrations/20260822_department_skill_manager_self_approval/migration.sql` (new)
+
+## 9. Related plans and references
+
+- `AGENTS.md` - backend authority, fail-loud behavior, deep-module rules, and Cloud-Pi testing requirements.
+- `plans/decision-module-deepening.md` - complete. It provides the durable Decision module this plan reuses.
+- `plans/hotspot-todos.md` - item 2 is the final Self-Updating Skill Proof gate.
+- `plans/pi-first-class-harness-quality-audit.md` - active. It owns broad Pi runtime quality, not this skill mutation.
+- `plans/pi-cloud-runtime-code-quality-handoff.md` - active. It owns Cloud-Pi runtime modularity and parks Desktop.
+- `plans/cloud-pi-runtime-optimization-consistency-and-proof.md` - active. It owns broader runtime performance and consistency proof.
+- `plans/skill-intent-routing-and-search.md` - active. It owns skill selection quality, not skill mutation.
+- `plans/scope-gap-connect-ask.md` - separate. It owns connection and OAuth waiting behavior.
+
+## 10. Verification commands
+
+These commands passed on 2026-08-22 before implementation. Run the narrow command for the phase first, then the relevant broader suite.
+
+```bash
+cd advance-backend
+node --import tsx --test tests/application/decision.service.test.ts tests/application/business-action.service.test.ts tests/application/gateway.test.ts tests/application/knowledge-mutation.service.test.ts tests/application/knowledge-projection.service.test.ts tests/approval/knowledge-approval-gate.test.ts tests/tools/knowledge.tool.test.ts
 ```
 
-`applyApproved` (`knowledge-mutation.repository.ts:322`) runs in one transaction
-with advisory locks on both the mutation and the target
-(`company:kind:targetKey:logicalKey`), an optimistic `baseVersion` check, a live
-re-check of the approver's authority, and a requirement that the bound approval
-was **atomically claimed** for execution. It writes a `KnowledgeResource` plus a
-`KnowledgeOutbox` event.
-
-`knowledge-projection.service.ts` consumes the outbox and writes the `Skill`
-row: `revision: { increment: 1 }`, with `scope` and `departmentId` writable, and
-a per-scope slug collision check. **So a scope change is already an ordinary
-update** — no copy-and-fork.
-
-Direct writes elsewhere are already closed off: *"Direct skill writes are
-disabled. Use the governed knowledge review flow"*
-(`admin/departments.routes.ts:287`).
-
-### The refresh path — complete, and self-triggering
-
-1. Backend returns a bootstrap from
-   `/api/desktop/auth/runtime-context?nativeSkills=1` — ≤100 visible skills,
-   access-filtered, fail-closed, each with instructions + revision
-2. The controller writes `<slug>/SKILL.md` into `/run/divo-skills/.next` inside
-   a throwaway helper container (no network, read-only, all caps dropped), then
-   `rename current → previous`, `next → current` — atomic
-3. Pi launches with `--skill /run/divo-skills/current`
-
-`nativeSkillBootstrapDigest` hashes the **whole bootstrap — every skill's
-instructions and revision** — and is part of `piProcessBinding`. So an edited
-skill changes the digest, which invalidates the warm binding and replaces the Pi
-process on the next turn. Identical digests short-circuit to `"unchanged"` and
-cost nothing.
-
-Worth knowing: the trigger is the **content hash**, so the refresh does not
-depend on `registryRevision` moving. It does move anyway —
-`recordSkillRegistryMutation` writes the `SkillVersion` row and bumps
-`SkillRegistryRevision` in the same transaction — but the hash is the robust
-half.
-
-### System skills are already unreachable, by construction
-
-The projection resolves its target as
-`skill.findUnique({ where: { knowledgeResourceId: resource.id } })`. The 19
-code-provisioned system skills (`*-system-skills.ts`, `isSystem: true`) have no
-`knowledgeResourceId`, so **no knowledge mutation can ever modify one**. A
-member cannot talk Divo into rewriting the Zoho, mail-ops or gateway skill.
-
-There is no explicit `isSystem` check anywhere in the knowledge flow — the
-protection is structural. One consequence to fix: a proposal whose slug collides
-with a system skill in the same scope fails the collision check *inside the
-outbox worker*, i.e. **after a manager has already approved it**. That belongs at
-propose time, with a readable message.
-
-### The web already renders decisions
-
-`DecisionCard` (`admin/src/pages/workspace/decisions/decision.view.tsx`) is live
-on three surfaces: the Approvals page (`screens-you.tsx`), inside the chat
-thread (`screens-chat.tsx`), and home's "up next" (`upnext.view.tsx`).
-
-So anything asked *through the decision module* already has a web card, a
-thread card and a home entry, with no new UI.
-
-**Cost of a refresh:** one Pi *process* restart inside the already-warm
-container. Not a container boot, not a rebuild. Same path a model switch takes.
-Not measured yet.
-
-**Consequence for UX:** the swap lands *between* turns. A skill changed
-mid-conversation is live from the next message. Copy should read "Divo learnt
-this — it'll use it from here on", never "applied".
-
-### Video understanding — complete, and knows nothing about teaching
-
-`ManagerTeachMediaProcessor`: scene-cut frame extraction (≤40 frames at 1600px,
-threshold 0.12) → audio split → `gpt-4o-mini-transcribe` in 5-minute chunks →
-per-frame OCR on `qwen/qwen3-vl-32b-instruct` (caption + screen text + UI
-elements) → one `evidence-manifest.json`. Named progress steps
-(`selecting_evidence`, `transcribing`, `reading_screens`,
-`reconstructing_workflow`). Raw video self-deletes after 24h.
-
-The module is video-generic. Only the session table and manager gate wrapped
-around it are teach-specific — which is exactly what we are removing.
-
-Ingestion is equally generic: `PUT /sessions/:id/video` streams MP4/MOV/WebM
-capped at 2047 MB, rejecting a body whose size does not match the declared one.
-Plus a BullMQ worker with a 5-minute lock, stall recovery, a reconcile sweep,
-`cancel` and manual `resume`.
-
-### The approval vocabulary — complete
-
-`src/domain/decision/decision.ts` is one vocabulary for every human-in-the-loop
-ask. A confirm is one question with two options; a form is several. It carries
-`{ kind: 'run', toolId, action, argsHash }` — *"approval is a decision over one
-validated set of arguments, never a licence to re-plan"*, with the hash proving
-the arguments did not move while a person read them.
-
-`decision.service.ts` takes `approver` and `requestedBy` separately, splits the
-inbox into `awaitingMe` / `requestedByMe`, rejects an actor who is not the named
-approver, and hashes the approver into the dedupe key. **A decision therefore
-cannot be re-routed after it is asked** — a different audience means a second
-decision. `approvalResolver.resolveManager(departmentId, companyId)` already
-resolves a department's manager.
-
-Known limit: the `tell` arm was deliberately removed — *"it needs the runtime
-threaded through to this module to work"*. So `run` can apply a change, but Divo
-cannot yet narrate the result back into the thread as a new turn.
-
-### The two kinds of approval already have names
-
-`DEFAULT_KNOWLEDGE_POLICIES` (`knowledge-provisioning.ts`) generates one row per
-(kind × scope × action):
-
-| scope | `requesterReviewRequired` | `requiredAuthority` | `distinctApprover` |
-|---|---|---|---|
-| personal | (memory only: false) | `none` | **false** |
-| department | true | `department_manager` | **true** |
-| company | true | `company_admin` | **true** |
-
-- `requesterReviewRequired` — the invoker confirms. The "normal" kind.
-- `distinctApprover` — a *different* person must approve. The "higher authority"
-  kind.
-
-These are **rows in a `KnowledgePolicy` table, not constants** — tenant
-configurable without a code change.
-
----
-
-## What is actually missing
-
-Only two things. Everything above is built.
-
-### M1 — The shared-skill approval has no web surface
-
-`LarkKnowledgeReviewService` (1,048 lines) builds a **Lark card** and sends it to
-a Lark chat. The pending review lives **only in Redis** —
-`cache.set(knowledgeReviewKey(reviewId))` — it never touches the approvals table
-and never calls `ApprovalGateService`. So it has no web surface, no durable row,
-and it dies with its TTL.
-
-This is one of the two askers the decision module's own comment complains about:
-*"Two of them had given up on the approvals table entirely and kept their
-pending question in a cache, because the table can only hold a verdict."*
-
-The web approval card for skill updates cannot be built on this. There is
-nothing to render.
-
-### M2 — Video is refused everywhere except a teach session
-
-`upload-intake.ts` has three outcomes — audio transcribed and folded into the
-ask (bytes not staged), unopenable formats refused by name, everything else
-staged as a path — and video sits in the refusal set. The browser mirrors it in
-`admin/src/pages/workspace/chat/attach.ts`. The composer also caps files at
-24 MB, while video needs the streaming PUT.
-
-### Smaller, but real
-
-- Cloud Pi has no `skill-view`/`skill-authorization` extensions (the desktop
-  copy has both).
-- No slash-command infrastructure anywhere — but under D1 we no longer need any.
-- Recording in-browser: `getDisplayMedia` + `MediaRecorder` → WebM, which the
-  backend already accepts. The desktop's macOS-only `screencapture` path
-  (`jan/src-tauri/src/core/divo/teach.rs`) is not portable and not worth
-  porting.
-
----
-
-## Decisions
-
-### D1 — There is no Teach feature
-
-*Settled 2026-08-18. Supersedes the earlier `/teach` design.*
-
-No `/teach` command, no teach mode, no teach session as a user-visible concept,
-no teach-specific write path. Updating a skill is an **ordinary agent
-capability**, described in instructions and skill text — "if this skill is wrong
-or incomplete, propose the corrected version" — exactly as any coding agent
-edits its own skills.
-
-Why: a separate feature implies a separate machine to maintain, a separate
-approval path, and a mode the member has to know to enter. The capability is
-more valuable when it is always on. It also means we stop needing the two
-gateway ops (`teach.context.get`, `teach.learning.apply`), the teach clarifier
-port to cloud Pi, and the `PI_RUNTIME_BLOCKED_OPS` question entirely.
-
-"Owner" is dropped as a word. The concerned party for a department skill is the
-**manager**.
-
-### D2 — Skills, not persona
-
-Persona is a graph of rules only Divo reads: no title, no body, nothing a human
-can look at and say yes to. A skill is a document with a name, a summary and
-markdown. Since everything must be approval-gated, the approved object has to be
-**readable** — that alone decides it.
-
-### D3 — The approver is the department manager; a manager self-approves
-
-*Settled 2026-08-17, re-confirmed under D1.*
-
-| requester | personal scope | department scope |
-|---|---|---|
-| ordinary member | self-approve | goes to the department manager |
-| department manager | self-approve | **self-approve** |
-
-**Deliberate deviation from shipped policy:** `distinctApprover` is true for
-department scope today, so a manager publishing to their own department needs a
-*second* manager. We switch that to false when the requester already holds
-`department_manager` authority over that department. A `KnowledgePolicy` row
-change, not a code change — but it does remove a second pair of eyes on
-department-wide behaviour. Recorded as a decision, not a drift.
-
-### D4 — The run waits for video understanding; the wait is shown
-
-*Settled 2026-08-17.*
-
-Rejected the alternative (start the turn immediately, fetch evidence via a tool
-call). A video being understood is shown as exactly that, with progress, and the
-answer comes after.
-
-Supported by what exists: the pipeline already reports named steps and the
-desktop already renders them; and a web run **survives disconnection** — *"An
-abort is the reader leaving… The run itself carries on server-side and will be
-here when they come back"* (`admin/src/pages/workspace/chat/live.ts:372`). A
-reload during a three-minute wait does not lose the recording.
-
-Build-time consequence: `WebRunService.run` is an async generator feeding the
-HTTP stream, so understanding progress must be emitted as run events — otherwise
-a reader who returns mid-wait sees a blank thread.
-
-### D5 — Video is understood natively, in any chat
-
-*Settled 2026-08-17, re-confirmed under D1.*
-
-Any member attaches a video in any chat and asks questions answered from its
-context. Video stops being a refused extension.
-
-Cost accepted knowingly: at most 40 calls to a small open-weights VL model plus
-one transcription per five minutes of audio.
-
-Follows from this: the 24 MB composer cap lifts for video on the *ordinary*
-attachment path, so the streaming PUT becomes the normal route for video.
-
-### D7 — Divo proposes only from an explicit correction
-
-*Settled 2026-08-18.*
-
-In a coding agent, editing a skill is free — nobody is interrupted. Here every
-proposal spends a **manager's attention**, and the manager did not ask to be
-involved. Unchecked, the same rough edge gets proposed by three different
-members in a week, the manager gets nine near-duplicate cards, and starts
-approving without reading. A rubber-stamped gate is worse than no gate.
-
-Three brakes, in order of what they buy:
-
-1. **Only from an explicit correction.** Divo may propose when a member tells it
-   something was wrong or shows it a better way. It may **not** propose from its
-   own reading of a skill. A correction has already passed a human filter; the
-   agent's opinion has not.
-2. **One open proposal per skill.** `KnowledgeMutation` already carries
-   `targetKey` + `logicalKey` and takes an advisory lock on exactly that tuple.
-   A second proposal against a skill with one pending merges into it rather than
-   queueing behind it.
-3. **`baseVersion` freshness** — already in the code. A proposal drafted against
-   a stale skill fails at apply instead of silently overwriting.
-
-Accepted cost: Divo will **not** spontaneously improve a skill it notices is
-wrong. It waits to be told. That is a real narrowing of "if you feel you need to
-update it, update it", taken deliberately because a manager's attention is the
-scarce resource.
-
-### D6 — We keep the understanding, not the video; both on the existing expiry
-
-*Settled 2026-08-18.*
-
-Two different things come out of an upload:
-
-- **the recording** — hundreds of MB of someone's screen, face and voice
-- **the understanding** — transcript, per-frame captions, screen text. A few
-  pages, capped at 5 MB (`MANAGER_TEACH_EVIDENCE_MAX_MB`)
-
-We are not a video store. The recording is deleted as soon as the understanding
-exists — not 24 hours later, since nothing reads it again.
-
-**Amended after building it.** There turned out to be two lifetimes, not one,
-and the plan as written described neither:
-
-- **The on-disk artefacts** — the extracted stills and the stored reading — age
-  out on their own constant, `CONVERSATION_VIDEO_RETENTION_HOURS` (24h). Not the
-  conversation-attachment TTL: the two are separate dials, because these files
-  live in their own directory tree rather than in the attachment store.
-- **What Divo remembers** lives as long as the thread. Because slice 4 was
-  deferred, the excerpt is folded into the ask itself, and an ask is part of the
-  conversation turn — it has to be, or the answer above it stops making sense on
-  re-read.
-
-So the earlier claim here — that a follow-up next week cannot be answered — is
-wrong in both directions: the *reading* is gone, but the excerpt that was
-actually used is still in the thread. Recorded plainly because a retention
-review will read this section and act on it.
-
-Three lifetimes already exist in an ordinary thread, and this simply joins the
-third:
-
-| What | How long | Where |
-|---|---|---|
-| Chat text | forever — no expiry, no prune | `DesktopThread` / `DesktopMessage` |
-| Run trace | 7 days | `TRACE_RETENTION_DAYS` |
-| Uploaded files | 24 hours | `CONVERSATION_ATTACHMENT_TTL_MS` |
-
-**Consequence, recorded so it is a choice and not a surprise:** at 24 hours, a
-follow-up question about last week's video cannot be answered — the
-understanding is gone with the file, and `divo_watch_video` has nothing to read.
-The window is one constant, so if that bites in practice it becomes 30 days
-without any redesign.
-
-### D9 — We are unlocking a capability, not building one
-
-*Settled 2026-08-18.*
-
-The self-updating-skill architecture **already exists and runs today**:
-
-- the tool: `divo_knowledge_review`, in `runtime-manifest.json`'s allowlist and
-  *not* channel-scoped, so the model is handed it on web and Lark alike
-- the instruction, in the run prompt of every cloud Pi run
-  (`run-prompt.ts:189`): *"When the user clearly finishes teaching a reusable
-  procedure, prepare the corrected complete version and open the same review in
-  the naturally implied scope"*
-- the same again in `skills/divo-gateway/SKILL.md:77`, already carrying a brake:
-  *"Do not save unfinished teaching, one-off task details, or unrelated
-  conversation"* — which is D7 brake 1, already written
-
-**And the backend refuses it anywhere but Lark.** `openVerifiedLarkKnowledgeReview`
-guards on `member.channel !== 'lark' || !member.larkOpenId || !member.runtimeChatId
-|| !member.runtimeRunId || !member.runtimeThreadId` and returns
-`permissionDenied('Knowledge requester review requires an authenticated Lark Pi
-runtime')`.
-
-So today a member on the web finishes explaining a procedure, Divo does exactly
-what it was instructed to do, and the call comes back denied — the "denial vs
-absence" trap, where Divo then invents a confident wrong reason for not saving
-what it was just taught.
-
-The project is therefore two sentences:
-
-1. Make `divo_knowledge_review` channel-agnostic by moving its pending state onto
-   the decision module. The web card, thread card and approvals inbox then exist
-   for free.
-2. Make video an understood input in any chat, and keep only what was understood.
-
-Everything else settled here (D3, D6, D7) is tightening what already runs.
-
-### D10 — Understanding is eager; reading is a tool
-
-*Settled 2026-08-18.*
-
-The flow, end to end:
-
-1. **Drop → upload.** The composer routes a video to the streaming PUT rather
-   than the multipart path, and it uploads while the member is still typing.
-2. **Understanding runs once, eagerly**, in the worker: ffmpeg scene-cut →
-   frames, audio → chunked transcript, frames → OCR. This is the wait the member
-   watches (`selecting_evidence → transcribing → reading_screens`). Output is one
-   manifest, addressable by a handle.
-3. **The turn starts** with the handle and a short précis — not the manifest.
-4. **The agent calls `divo_watch_video(handle, question)`** to actually read it.
-
-Step 4 cannot be replaced by inlining at step 3: the manifest is capped at 5 MB,
-and pre-trimming at intake means choosing what to keep *before* knowing what was
-asked. A tool call lets the model ask "what is on screen around 0:40?" and get a
-budgeted slice with citations. The persona processor already solved this exact
-budgeting problem for the same reason.
-
-**The wait is for understanding; the tool is for reading.** Understanding happens
-once and is expensive. Reading happens many times, is cheap, and still works on
-the next turn.
-
-Two modules, small interfaces, deep implementations:
-
-- `understand(video) → Understanding` — ffmpeg, scene detection, chunked STT, OCR
-  fan-out with partial-failure handling, behind two words. Runs in the worker.
-- `read(handle, query) → excerpt` — budgeting, trimming, citation refs. This is
-  the `divo_watch_video` tool.
-
-Where the wait lives: `upload-intake` gains a fourth **classification** ("this is
-a video, here is its handle") and stays fast; `WebRunService.run` awaits the
-understanding before the first model turn. Intake cannot emit run events, so a
-multi-minute path behind its interface would both lie about cost and be unable
-to report progress — the run service can do both.
-
-**Honest limit:** the route accepts **MP4, MOV and WebM only**. An `.avi` or
-`.mkv` is rejected at the door even though ffmpeg downstream handles them fine.
-That is a policy list, not a capability limit, so widening it is cheap — but
-"any video" is not true today.
-
----
-
-## The shape, in deep-module terms
-
-Applying `/codebase-design` to what we settled:
-
-**`LarkKnowledgeReviewService` fails the deletion test in the good direction.**
-Its interface — what a caller must know to open a review — includes *"you must be
-on Lark, with a `larkOpenId`, `runtimeChatId`, `runtimeRunId` and
-`runtimeThreadId`"*, plus pending state in Redis that expires. That is transport
-leaking into the interface of "ask a human to approve a change". Delete it and
-complexity **vanishes** rather than reappearing at callers, because the decision
-module already holds ask/answer/settle and already has a Lark courier. The seam
-is real rather than hypothetical: two adapters exist across it (Lark courier, web
-`DecisionCard`).
-
-**`ManagerTeachMediaProcessor` is less deep than it looks.** The implementation
-is genuinely deep. But its interface takes ten fields and seven of them
-(`teachSessionId`, `companyId`, `departmentId`, `managerId`, `source`,
-`originalFileName`, `evidenceDir`) are the caller's session bookkeeping, not the
-video's. Understanding a video needs bytes. Shrinking the interface to
-`understand(video) → Understanding` is leverage for the second caller we are
-about to add, at no cost to the implementation.
-
-**`upload-intake` keeps its shape.** It already documents three outcomes behind
-one interface. Video becomes a fourth classification, and the interface does not
-grow.
-
----
+- Baseline result: 146 passed, 0 failed.
+- Proves the current Decision, gateway, mutation, projection, authority, and knowledge-tool seams.
+- Does not prove the new durable skill coordinator until its test joins the command.
+
+```bash
+cd divo-pi
+node --import tsx --test divo/extensions/divo-gateway/knowledge-review.test.ts
+```
+
+- Baseline result: 8 passed, 0 failed.
+- Proves the Pi knowledge-review adapter.
+
+```bash
+cd divo-pi
+node --test divo/test/local-rpc-controller.test.mjs
+```
+
+- Baseline result: 64 passed, 0 failed.
+- Proves native-skill staging, digest binding, and warm-process replacement mechanics.
+
+```bash
+cd admin
+pnpm exec tsx --test src/pages/workspace/decisions/decision.test.ts src/pages/workspace/home/upnext.test.ts
+```
+
+- Baseline result: 29 passed, 0 failed.
+- Proves shared Decision value behavior and home ordering.
+- The exact document evidence renderer also needs a focused rendering test in Phase 2.
+
+## How to work this plan
+
+You are building this plan. Read it end to end before you touch code, then work
+from `## Next action`.
+
+**Before each phase**
+
+1. Open the files the phase names and the tests around them. The plan's
+   `Current state` was true on the date next to it, not necessarily today. Where
+   it disagrees with the code, the code wins, and you fix the plan.
+2. Re-read `Locked decisions`. Those are settled. If one of them turns out to be
+   wrong, that is a finding: stop, say so, and do not quietly design around it.
+3. Check `Parked`. Do not open those areas, even to fix something obvious there.
+
+**While building**
+
+4. Say which responsibility you are moving or which behaviour you are changing
+   before you change it.
+5. Preserve unrelated and concurrent work. Other agents may be editing this repo.
+   Commit with an explicit pathspec rather than staging everything.
+6. Run the narrow tests for what you touched, then the broader gate for the seam
+   you crossed.
+
+**Closing a phase**
+
+7. A phase is complete when its **Gate** passed, not when the code compiles and
+   not when the diff looks right. Run the gate. Record what it returned.
+8. Tick every checkbox in the phase. Tick them when the step is done and proven,
+   not when it is written.
+9. Mark the phase heading complete with the date: `### Phase N — goal ✅ *YYYY-MM-DD*`.
+10. Append to `## Build log`: what you built, where it differed from the plan and
+    why, what you found that nobody knew about, and the gate result. The
+    deviations and the surprises are the most valuable thing in this file. A log
+    entry that only says "done as planned" is worth writing only when that is
+    literally true.
+11. Rewrite `## Next action`.
+12. **Commit the plan update in the same commit as the code.** Not afterwards. A
+    plan updated later is a plan updated never.
+
+**When you are blocked**
+
+13. Follow the escalation rule for your tier, stated in the header. In short:
+    high tier decides and records the decision with its reason; mid and low tier
+    stop and ask one clear question. Either way it goes in the build log.
+14. Never delete a phase because it turned out to be wrong. Strike it through and
+    write why. Someone will otherwise propose it again.
+
+**What not to do**
+
+15. Do not report a phase complete because tests pass that do not exercise the
+    change. Say plainly which parts are unverified.
+16. Do not widen the scope. If you find real work outside `Included`, write it at
+    the bottom of the build log under `Found, out of scope` and leave it.
+17. Do not rewrite this section.
 
 ## Build log
 
-### Slice 1 — the understanding module, extracted ✅ *2026-08-18*
+- 2026-08-22: The plan was re-scoped to the skill-update pipeline only. Completed and deferred media work was removed from this document. No implementation code changed.
+- 2026-08-22: Code inspection corrected two earlier claims. The manager approval already uses the Decision module; the missing durable step is requester review. Department-manager self-approval also requires policy validation and SQL constraint changes, not only a policy row update.
+- 2026-08-22: Baseline gates passed with 146 backend tests, 8 Pi knowledge-review tests, 64 Pi controller tests, and 29 admin Decision tests.
+- 2026-08-22: Implemented the deep `KnowledgeSkillReviewService` with durable mutation-first review, atomic requester Decision plus mutation settlement, authority hand-off, department-manager self-approval, linked authority outcome settlement, terminal retry recovery, and truthful projection states.
+- 2026-08-22: Replaced business-action-specific parent metadata and repository names with a linked Decision interface. The resumer still reads `parentBusinessActionId` only as rolling compatibility for approvals written before the rename.
+- 2026-08-22: Added canonical skill evidence to Decision projection. Web and Lark now receive name, slug, summary, markdown, tool IDs, tags, and the full mutation content hash from one value.
+- 2026-08-22: Routed web and Lark skill opens through the durable module. Removed only the dead skill branch from `LarkKnowledgeReviewService`; shared memory and governed files remain on its Redis worker.
+- 2026-08-22: Added early active/system slug conflict checks, deterministic retries after terminal mutations, the narrow department-skill self-approval policy, SQL invariants, and migration `20260822_department_skill_manager_self_approval`.
+- 2026-08-22: Knowledge provisioning now reconciles existing global department-skill policy rows to version 2 after schema sync; new defaults alone would have left Development on the old distinct-manager rule.
+- 2026-08-22: Corrected stale Decision surface comments and queued-projection success copy. `KnowledgeMutation.status = applied` is no longer described as an active skill when projection is queued or unknown.
+- 2026-08-22: Cold review found that linked manager outcomes still depended on a requester retry after a transient settlement failure. Added `KnowledgeSkillReviewWorker`, which reconciles terminal or expired authority rows from PostgreSQL every 15 seconds. The authority row remains the durable source; Redis is not involved.
+- 2026-08-22: Cold review found delete Decisions lacked complete skill evidence. Delete review now snapshots the readable active skill into immutable Decision metadata and carries that evidence into the linked authority Decision.
+- 2026-08-22: The same cold reviewer verified the corrections and returned no remaining blocker. Behavioral proof is still pending because the user reserved local UI testing.
+- 2026-08-22: `pnpm typecheck:tests` remains red on pre-existing unrelated Zoho connection-ID fixtures and cross-root generated Pi imports. The implementation's production typecheck is green; this unrelated test-project debt was not changed or presented as passing.
+- 2026-08-22: Static validation after the final edits: backend `pnpm typecheck` passed; admin `pnpm build` passed with existing Browserslist and chunk-size warnings; Pi `npm run divo:types` passed. Per user instruction, no post-implementation test suite or local UI flow was run. Phase gates remain unchecked until behavioral proof exists.
+- 2026-08-22: Local web proof exposed two authority gaps before the skill review could open. Read-only `resources.list` entered the apply approval gate, and legacy editable `Skill` rows had no canonical `KnowledgeResource`. The gate now trusts the tool's canonical read action. Startup reconciliation adopted six access-compatible non-system skills, including `cursor-design-html`, without changing live content or access. It reported and left untouched `bike-search` with legacy `global` scope and two finance skills referencing unavailable retired tools.
+- 2026-08-22: The first real Cursor update succeeded end to end. Mutation `c04f35bd-aa1c-4f7a-b877-0057fa7031ed` reached `applied`; Decision `a5cde14e-9490-4ce2-9f82-98ce10a72562` reached `consumed`; `cursor-design-html` moved from revision 1 to 2; projection completed.
+- 2026-08-22: The same proof rejected the original Phase 2 UX. The card used generic “Edit knowledge · apply” language, showed six mostly unchanged fields, exposed the SHA-256 fingerprint, dumped roughly 16,000 characters of markdown, overflowed long lines, and ended on a dark-mode action with weak contrast. The model then duplicated the diff and stale “review pending” status in chat. Replaced this with backend-derived bounded focused evidence, human title/copy, wrapped lines, explicit approve/reject labels, and no rendered hash or full content.
+- 2026-08-22: Approval applied correctly, but the open thread kept the pre-approval model sentence as its latest visible state even though the backend had appended the applied outcome. Decision settlement now refreshes the newest thread page before returning the composer.
+- 2026-08-22: User interruption was incorrectly rendered as a red runtime failure and logged by the LLM proxy as upstream unavailability. Web now carries a distinct durable `interrupted` outcome, renders “Interrupted by user.” neutrally, and records the execution as interrupted. The proxy now records client cancellation without an upstream-error log.
+- 2026-08-22: Open operational proof issues collected from the same run: concurrent `ExecutionRun` admission logs a Prisma `P2002` before its existing winner-refetch recovery succeeds; a late `/api/desktop/trace` batch receives `403 trace_provenance_required` after interruption terminalizes the run; hot reload once produced a transient mail worker “Response from the Engine was empty”. These did not block the skill update. They remain unclaimed by this plan unless they reproduce outside restart/interruption timing.
+- 2026-08-22: Comparing canonical versions 1 and 2 found the proposal also added a trailing blank line that the model-written “one line” diff omitted. Focused evidence now labels blank-line formatting explicitly; it never counts or hides it as an instruction. After the correction, backend `pnpm typecheck` and admin `pnpm build` passed. No behavioral test suite was run; the next local UI proof remains the gate.
 
-Pure refactor, no behaviour change.
+## Next action
 
-New module `src/application/video-understanding/`:
-
-- `video-understanding.types.ts` — the value (`VideoUnderstanding`) and three
-  ports (`VideoFrameExtractor`, `VideoTranscriber`, `FrameReader`)
-- `video-understanding.service.ts` — `understand({ videoPath, workDir, assertActive?, onProgress? })`
-
-**Interface: ten fields → two required, two optional.** The seven session fields
-(`teachSessionId`, `companyId`, `departmentId`, `managerId`, `source`,
-`originalFileName`, `evidenceDir`) are gone; none of them changed how a frame
-was read.
-
-Other changes in the same slice:
-
-- **Progress is now the module's own 0–100.** It used to emit 35/55/70/95 —
-  a slice of one Teach bar, which would have reported 35% for a fresh chat
-  attachment before a frame was read. `manager-teach.service` maps it into
-  30–95 via `INGESTION_READING_FLOOR`/`CEILING`.
-- **The manifest write moved to Teach**, which owns the only part of it the
-  reader could not produce — the `source` block. The reader no longer writes
-  files it does not own.
-- **`FrameReading` is declared in the application layer.** It used to be
-  `VisionOcrResult`, imported from the OpenRouter adapter, which put the vision
-  provider into the interface every caller had to learn. The adapter satisfies
-  the shape now; it does not define it.
-- `frame.reading` in the module, `frame.ocr` on disk — the manifest is a stored
-  format the persona processor's schema already speaks, so the rename stops at
-  that boundary rather than migrating files.
-
-Renamed (none were ever teach-specific): `peepshow-manager-teach.extractor` →
-`peepshow-video.extractor`, `openai-manager-teach.transcriber` →
-`openai-video.transcriber`, `openrouter-manager-teach.ocr` →
-`openrouter-frame.reader`. Deleted: `manager-teach-media.processor.ts`,
-`manager-teach-media.types.ts`.
-
-**Verified:** `tsc --noEmit` clean; **1,728 application tests pass, 0 fail**; new
-`video-understanding.service.test.ts` covers frame ordering, one unreadable
-frame surviving in place, silence reported rather than invented, every-frame
-failure leaving no work directory behind, and a frame written outside the work
-directory being refused.
-
-### Slices 2 & 3 — video accepted, and the wait made visible ✅ *2026-08-18*
-
-New module `src/application/conversation-video/` — a video attached to a
-conversation, from arrival to answer.
-
-- `PUT /api/web-chat/threads/:threadId/video` streams the body to disk
-  (its own endpoint, because a recording does not fit the multipart ask and
-  because starting early is what overlaps reading with typing)
-- reading begins immediately, in the background, under a concurrency cap
-- `POST /runs` carries `videoIds`; `WebRunService.run` awaits each reading
-  before the first model turn, yielding a `watching` event as it goes
-- a budgeted, question-relevant excerpt is folded into the model-facing text
-- the recording is deleted as soon as the reading is written; readings are
-  pruned on the retention sweep
-
-Browser: video is an accepted kind with its own ceiling, uploaded ahead of the
-ask, and the wait is shown as the live label.
-
-### Slice 4 — `divo_watch_video` *(deferred, deliberately)*
-
-Registering a typed tool needs backend tool-registry provisioning, which is not
-in reach of this wave. Instead the excerpt is **inlined into the ask**, chosen
-against the member's own question.
-
-The honest cost: this answers the turn the video arrives on, and not a follow-up
-three turns later. When the tool exists, `askNoticeFor` goes back to being a
-summary and `excerptFor` — already written and tested — becomes the tool's body.
-
-### The cold review, and what it caught
-
-Five findings, all fixed, plus two more found while fixing:
-
-1. **The ask named a tool that does not exist** while deliberately withholding
-   the evidence "for" it — the model would have had a paragraph and no content.
-2. **`watching` frames were dropped by the browser's parser allow-list**, so the
-   wait would have shown nothing — the exact silence the event was added to end.
-3. **Stop was inert during a reading.** No abort was threaded through, so the
-   thread stayed busy and paid for OCR the member had cancelled.
-4. **A single `videoIds` value failed the schema.** `/runs` is multipart, and
-   `append-field` stores one occurrence as a *string* and only builds an array
-   from the second — so attaching exactly one video, the ordinary case, would
-   have 400'd the whole ask after the upload was already paid for.
-5. **Reading was unqueued and uncapped**, where the Teach path it came from runs
-   behind a worker with a concurrency limit.
-
-Found while fixing:
-
-6. **An unhandled rejection**: `void this.begin(...)` attaches no handler, so a
-   reading that failed before anyone awaited it would take the process down.
-7. **A prune that never swept.** `Date.now()` is whole milliseconds and
-   `stat().mtimeMs` carries a fraction, so a directory written inside the
-   current millisecond read as being in the future and was skipped by every
-   window.
-
-### Attachments, shown as themselves ✅ *2026-08-18*
-
-One `FileCard` used by both the composer and the transcript. A pill with an icon
-was the same drawing for a screenshot, a contract and a screen recording — three
-things a reader tells apart instantly by looking. The card leads with a tile that
-shows the thing itself where it can: the actual image, the recording's own first
-frame via `preload="metadata"`.
-
-The object URL is minted and revoked by the card that draws it, not at send
-time — a URL made once outlives every card that ever showed it, and nothing at
-that point knows when the last one goes away. A reload drops the bytes and the
-card falls back to the typed tile, which is the ordinary case for anything not
-sent in this tab.
-
-### D8 — Replace the Lark-only skill review, with a staged cutover
-
-*Settled 2026-08-18.*
-
-The `knowledge` tool opens a `Decision` directly. `LarkKnowledgeReviewService`'s
-bespoke card builder and Redis state machine are **deleted** — 1,048 lines gone,
-not wrapped in an adapter.
-
-Cheap rather than brave, because the decision module already has a Lark side:
-`lark-decision.courier.ts`, `lark-decision-card.ts`,
-`lark-decision-card.handler.ts`. Lark keeps its card, the web gains one, and the
-Approvals page and home "up next" light up — all rendering from the same
-`Decision`, which is the only reason they cannot drift apart. The two-step shape
-(requester confirms, then the manager) is just two decisions, i.e. D3.
-
-**Sequencing, because the risk is asymmetric.** Knowledge review works today on
-Lark, in production. The web has nothing to lose; Lark does. So: build the
-decision path → run it for web-originated proposals first → cut Lark over once
-proven → delete the old service. Temporarily two paths, as a migration sequence
-with a delete at the end — not as an architecture.
+- Run a second one-line correction in the local web UI. Confirm the card shows only the focused diff, approve it, confirm the applied revision appears immediately in the thread, then send the next message and prove Pi follows the revised instruction. Record the Decision ID, mutation ID, revision, and native skill digest change.

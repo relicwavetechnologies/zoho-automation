@@ -1,14 +1,80 @@
-import { useEffect, useState, type ComponentType, type ReactNode, type SVGProps } from 'react'
+import { useState, type ComponentProps, type ComponentType, type ReactNode, type SVGProps } from 'react'
 import {
   GmailIcon, GoogleAppsScriptIcon, GoogleCalendarIcon,
   GoogleChatIcon, GoogleContactsIcon, GoogleDocsIcon, GoogleDriveIcon, GoogleFormsIcon,
-  GoogleIcon, GoogleSheetsIcon, GoogleSlidesIcon, GoogleTasksIcon, ZohoIcon,
+  GoogleIcon, GoogleSheetsIcon, GoogleSlidesIcon, GoogleTasksIcon, LarkIcon, ZohoIcon,
 } from '@/components/brand-icons'
 import { API_BASE_URL } from '@/lib/api-base'
 import { logoDevPublishableKey } from '@/lib/runtime-config'
-import { BRAND_CATALOG, buildLogoDevUrl, type BrandKey } from './brand-catalog'
+import { BRAND_CATALOG, type BrandKey } from './brand-catalog'
+import { remoteBrandLogoUrl, type LocalBrandSource } from './brand-source'
+import { remoteImageLayers, remoteImagePhase, type RemoteImagePhase, type RemoteImageState } from './remote-image'
 
 type SvgMark = ComponentType<SVGProps<SVGSVGElement>>
+
+/**
+ * Tracks one remote image by URL, so a late event from an old URL cannot mark
+ * the current image as loaded. The fallback is allowed to remain visible while
+ * the image loads, but the caller must remove it once `phase` becomes `shown`.
+ */
+function useRemoteImage(src: string | null): {
+  phase: RemoteImagePhase | 'disabled'
+  onLoad: () => void
+  onError: () => void
+} {
+  const [state, setState] = useState<RemoteImageState>(null)
+  const phase = remoteImagePhase(src, state)
+
+  return {
+    phase,
+    onLoad: () => {
+      if (src) setState({ src, phase: 'shown' })
+    },
+    onError: () => {
+      if (src) setState({ src, phase: 'failed' })
+    },
+  }
+}
+
+type RemoteImageProps = {
+  src: string | null
+  fallback: ReactNode
+  width: number
+  height: number
+  className: string
+  referrerPolicy: ComponentProps<'img'>['referrerPolicy']
+}
+
+/**
+ * One remote-image policy for product marks and site icons. The fallback and a
+ * successfully loaded remote image are mutually exclusive; opacity only hides
+ * the remote image while it loads and never leaves two logos visible together.
+ */
+function RemoteImage({ src, fallback, width, height, className, referrerPolicy }: RemoteImageProps) {
+  const remoteImage = useRemoteImage(src)
+  const layers = remoteImageLayers(src, remoteImage.phase)
+  return (
+    <>
+      {layers.showFallback ? fallback : null}
+      {layers.showRemote && src ? (
+        <img
+          key={src}
+          src={src}
+          alt=""
+          width={width}
+          height={height}
+          loading="lazy"
+          decoding="async"
+          referrerPolicy={referrerPolicy}
+          onLoad={remoteImage.onLoad}
+          onError={remoteImage.onError}
+          className={className}
+          style={{ opacity: remoteImage.phase === 'shown' ? 1 : 0 }}
+        />
+      ) : null}
+    </>
+  )
+}
 
 const LOCAL_FALLBACK: Partial<Record<BrandKey, SvgMark>> = {
   google: GoogleIcon,
@@ -23,13 +89,13 @@ const LOCAL_FALLBACK: Partial<Record<BrandKey, SvgMark>> = {
   googleContacts: GoogleContactsIcon,
   googleChat: GoogleChatIcon,
   googleAppsScript: GoogleAppsScriptIcon,
+  lark: LarkIcon,
   zoho: ZohoIcon,
   zohoBooks: ZohoIcon,
   zohoCrm: ZohoIcon,
 }
 
 const LOCAL_ASSET: Partial<Record<BrandKey, string>> = {
-  lark: '/brand/lark.png',
   canva: '/brand/canva.png',
   airtable: '/brand/airtable.png',
   aitable: '/brand/aitable.png',
@@ -51,7 +117,7 @@ type BrandMarkProps = {
 
 /**
  * The one rendering boundary for third-party product and company identity.
- * Callers name a brand and a placement; this module owns remote lookup,
+ * Callers name a brand and a placement; this module owns source choice,
  * dimensions, loading, accessibility, and a local/monogram failure state.
  */
 export function BrandMark({
@@ -59,18 +125,22 @@ export function BrandMark({
 }: BrandMarkProps) {
   const definition = BRAND_CATALOG[brand]
   const glyphSize = placement === 'tile' && !definition.fullBleed ? Math.round(size * 0.62) : size
-  const token = logoDevPublishableKey()
-  const src = buildLogoDevUrl(brand, token, Math.max(glyphSize, 32))
   const Fallback = LOCAL_FALLBACK[brand]
   const fallbackAsset = LOCAL_ASSET[brand]
-  const [loaded, setLoaded] = useState(false)
-  const [failed, setFailed] = useState(false)
+  const localSource: LocalBrandSource = fallbackAsset ? 'asset' : Fallback ? 'component' : null
+  const token = localSource ? '' : logoDevPublishableKey()
+  const src = remoteBrandLogoUrl(brand, token, Math.max(glyphSize, 32), localSource)
   const label = decorative ? undefined : definition.label
 
-  useEffect(() => {
-    setLoaded(false)
-    setFailed(false)
-  }, [src])
+  const fallback = fallbackAsset
+    ? <img src={fallbackAsset} alt="" width={glyphSize} height={glyphSize} className="block h-full w-full object-contain" />
+    : Fallback
+      ? <Fallback width={glyphSize} height={glyphSize} className="block h-full w-full" aria-hidden />
+      : (
+        <span className="grid h-full w-full place-items-center rounded-[3px] bg-secondary text-[0.55em] font-medium text-muted-foreground">
+          {definition.short}
+        </span>
+      )
 
   const mark = (
     <span
@@ -80,31 +150,14 @@ export function BrandMark({
       role={decorative ? undefined : 'img'}
       aria-label={label}
     >
-      {fallbackAsset
-        ? <img src={fallbackAsset} alt="" width={glyphSize} height={glyphSize} className="block h-full w-full object-contain" />
-        : Fallback
-          ? <Fallback width={glyphSize} height={glyphSize} className="block h-full w-full" aria-hidden />
-        : (
-          <span className="grid h-full w-full place-items-center rounded-[3px] bg-secondary text-[0.55em] font-medium text-muted-foreground">
-            {definition.short}
-          </span>
-          )}
-      {src && !failed ? (
-        <img
-          key={src}
-          src={src}
-          alt=""
-          width={glyphSize}
-          height={glyphSize}
-          loading="lazy"
-          decoding="async"
-          referrerPolicy="origin"
-          onLoad={() => setLoaded(true)}
-          onError={() => setFailed(true)}
-          className="absolute inset-0 h-full w-full object-contain"
-          style={{ opacity: loaded ? 1 : 0 }}
-        />
-      ) : null}
+      <RemoteImage
+        src={src}
+        fallback={fallback}
+        width={glyphSize}
+        height={glyphSize}
+        referrerPolicy="origin"
+        className="absolute inset-0 h-full w-full object-contain"
+      />
     </span>
   )
 
@@ -128,26 +181,17 @@ export function SiteBrandMark({ domain, size = 14, fallback }: {
   size?: number
   fallback: ReactNode
 }) {
-  const [state, setState] = useState<'loading' | 'shown' | 'failed'>('loading')
-  useEffect(() => setState('loading'), [domain])
+  const src = `${API_BASE_URL}/api/icon/${encodeURIComponent(domain)}`
   return (
     <span className="relative grid shrink-0 place-items-center" style={{ width: size, height: size }} aria-hidden>
-      {state !== 'shown' ? fallback : null}
-      {state !== 'failed' ? (
-        <img
-          src={`${API_BASE_URL}/api/icon/${encodeURIComponent(domain)}`}
-          alt=""
-          width={size}
-          height={size}
-          referrerPolicy="no-referrer"
-          loading="lazy"
-          decoding="async"
-          onLoad={() => setState('shown')}
-          onError={() => setState('failed')}
-          className="absolute inset-0 rounded-[3px] object-contain"
-          style={{ opacity: state === 'shown' ? 1 : 0 }}
-        />
-      ) : null}
+      <RemoteImage
+        src={src}
+        fallback={fallback}
+        width={size}
+        height={size}
+        referrerPolicy="no-referrer"
+        className="absolute inset-0 rounded-[3px] object-contain"
+      />
     </span>
   )
 }

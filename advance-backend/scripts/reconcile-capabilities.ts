@@ -18,10 +18,12 @@ import { provisionKnowledgeForExistingCompanies } from '../src/application/skill
 import { provisionFilesAndDocumentsForExistingCompanies } from '../src/application/skills/files-and-documents-system-skills';
 import { provisionDivoLocalPythonForExistingCompanies } from '../src/application/skills/divo-local-python-system-skill';
 import { provisionMenhoodDataForExistingCompanies } from '../src/application/skills/menhood-data-system-skill';
+import { provisionConnectionsSkillForExistingCompanies } from '../src/application/skills/connections.skill';
 import { PermissionCache } from '../src/application/permissions/permission.cache';
 import { RedisCache } from '../src/infrastructure/cache/redis-cache';
 import { disconnectAllRedis, getRedisClient } from '../src/infrastructure/cache/redis.client';
 import { retireDataExportCapability } from '../src/application/skills/retired-data-export-capability';
+import { adoptLegacySkillsIntoKnowledge } from '../src/application/knowledge/knowledge-skill-adoption';
 
 export async function provisionConnectedProviderSkillsForExistingCompanies(prisma: PrismaClient) {
   const totals = { companies: 0, created: 0, updated: 0, existing: 0, skipped: 0 };
@@ -43,6 +45,7 @@ export async function reconcileCapabilities(
   const retiredDataExport = await retireDataExportCapability(prisma);
   const registeredTools = await seedRegisteredTools(prisma);
   const skills = {
+    connections: await provisionConnectionsSkillForExistingCompanies(prisma),
     lark: await provisionLarkSkillsForExistingCompanies(prisma),
     google: await provisionGoogleWorkspaceSkillsForExistingCompanies(prisma),
     airtableAndAitable: await provisionConnectedProviderSkillsForExistingCompanies(prisma),
@@ -56,13 +59,21 @@ export async function reconcileCapabilities(
     filesAndDocuments: await provisionFilesAndDocumentsForExistingCompanies(prisma),
     localPython: await provisionDivoLocalPythonForExistingCompanies(prisma),
   };
+  const knowledgeSkillAdoption = await adoptLegacySkillsIntoKnowledge(prisma);
   const skillRoutes = await provisionSystemSkillRoutesForExistingCompanies(prisma);
   const permissions = {
     mailOps: await provisionMailOpsPermissionsForExistingCompanies(prisma, {
       invalidateDept: invalidator,
     }),
   };
-  return { retiredDataExport, registeredTools, skills, skillRoutes, permissions };
+  return {
+    retiredDataExport,
+    registeredTools,
+    skills,
+    knowledgeSkillAdoption,
+    skillRoutes,
+    permissions,
+  };
 }
 
 /**

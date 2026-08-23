@@ -11,7 +11,8 @@
  * and it made the console look like a demo of itself.
  */
 import type { ReactNode } from 'react'
-import { Diamond, Gauge, Moon, ShieldCheck, Sun, Users } from 'lucide-react'
+import { Gauge, Moon, ShieldCheck, Sun, Users } from 'lucide-react'
+import { DivoMark } from '@/components/admin/divo-mark'
 import { useTheme } from '@/lib/use-theme'
 
 type AuthCardProps = {
@@ -26,12 +27,50 @@ export function AuthCard({ title, description, children }: AuthCardProps) {
   return (
     <div className="cur">
       <div className="ws-auth">
-        <aside className="ws-auth-aside">
-          <div>
-            <div className="brand" style={{ padding: '0 0 40px' }}>
-              <span className="mark"><Diamond size={13} fill="currentColor" strokeWidth={0} /></span>
+        {/* Page-level, not inside either half. It lived in the panel for a
+            moment, which put the only way to change theme inside the one column
+            that disappears on a narrow screen. */}
+        <button
+          type="button"
+          className="icon-btn ws-auth-theme"
+          title={resolved === 'dark' ? 'Switch to light' : 'Switch to dark'}
+          onClick={() => setTheme(resolved === 'dark' ? 'light' : 'dark')}
+        >
+          {resolved === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+        </button>
+
+        {/*
+         * The form, on the left, where reading starts.
+         *
+         * It used to be on the right with the argument on the left, so the one
+         * thing a person came here to do was the second thing they reached. The
+         * onboarding modal made the same swap for the same reason; a person
+         * signing in and a person signing up should not meet opposite layouts.
+         */}
+        <main className="ws-auth-main">
+          <div className="ws-auth-box">
+            <div className="brand" style={{ padding: 0 }}>
+              <span className="mark"><DivoMark size={15} /></span>
               <b className="display">Divo</b>
             </div>
+            <h2>{title}</h2>
+            <p>{description}</p>
+            {children}
+          </div>
+        </main>
+
+        {/*
+         * The right half is the argument, and it is made of things this product
+         * actually does.
+         *
+         * The reference this was rebuilt against puts a customer quote here,
+         * with a face and five stars. Divo has no such quote, and inventing one
+         * would be putting a fabricated review on the front door of the app. The
+         * claims below are checkable in the product, which is a better argument
+         * than a stranger agreeing with us.
+         */}
+        <aside className="ws-auth-aside">
+          <div className="ws-auth-pitch">
             <h1>The console behind the agent.</h1>
             <p>
               Divo runs inside Lark and on the desktop. This is where you decide what it may do, for whom, and
@@ -61,33 +100,14 @@ export function AuthCard({ title, description, children }: AuthCardProps) {
               </div>
             </div>
           </div>
-          <div className="ws-auth-foot">One sign-in for everyone — the same account works here, in Lark, and on the desktop.</div>
-        </aside>
 
-        <main className="ws-auth-main">
-          <button
-            type="button"
-            className="icon-btn ws-auth-theme"
-            title={resolved === 'dark' ? 'Switch to light' : 'Switch to dark'}
-            onClick={() => setTheme(resolved === 'dark' ? 'light' : 'dark')}
-          >
-            {resolved === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-          </button>
-
-          <div className="ws-auth-box">
-            {/* Shown only where the aside is hidden, so the page still identifies itself. */}
-            <div className="brand" style={{ padding: 0 }}>
-              <span className="mark"><Diamond size={13} fill="currentColor" strokeWidth={0} /></span>
-              <b className="display">Divo</b>
-            </div>
-            <h2>{title}</h2>
-            <p>{description}</p>
-            {children}
+          <div className="ws-auth-foot">
+            <span>One sign-in for everyone — the same account works here, in Lark, and on the desktop.</span>
+            <a className="ws-auth-attribution" href="https://logo.dev" target="_blank" rel="noopener">
+              Logos provided by Logo.dev
+            </a>
           </div>
-          <a className="ws-auth-attribution" href="https://logo.dev" target="_blank" rel="noopener">
-            Logos provided by Logo.dev
-          </a>
-        </main>
+        </aside>
       </div>
     </div>
   )

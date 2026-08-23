@@ -86,8 +86,18 @@ function fakeRpc(log) {
  */
 function recordingEffects({ log, wasRunning = true, created = false } = {}) {
 	const rpc = fakeRpc(log);
+	const targets = {
+		abort: [],
+		bootstrap: [],
+		prepare: [],
+		run: [],
+		stageInterruption: [],
+		stopById: [],
+		stopOwned: [],
+	};
 	return {
 		rpc,
+		targets,
 		effects: {
 			now: (() => {
 				let value = 0;
@@ -126,6 +136,8 @@ function recordingEffects({ log, wasRunning = true, created = false } = {}) {
 					},
 					wasRunning,
 					created,
+					containerId: "container-id:" + options.imageId,
+					containerImageId: options.imageId,
 				};
 			},
 			async stageNativeSkills(_volume, _bootstrap, _scope, options) {
@@ -138,17 +150,20 @@ function recordingEffects({ log, wasRunning = true, created = false } = {}) {
 			async waitUntilRunning() {
 				log.push("docker wait");
 			},
-			async writeBootstrap() {
+			async writeBootstrap(container) {
+				targets.bootstrap.push(container);
 				log.push("docker exec writeBootstrap");
 			},
-			async prepareWarmRuntime() {
+			async prepareWarmRuntime(container) {
+				targets.prepare.push(container);
 				log.push("docker exec prepare");
 				return { DIVO_BACKEND_URL: "http://backend" };
 			},
 			async deleteDurableSession() {
 				log.push("docker deleteDurableSession");
 			},
-			spawnRuntimeRpc() {
+			spawnRuntimeRpc(container) {
+				targets.run.push(container);
 				log.push("docker exec run");
 				// Modelled on the real `docker exec` child rather than stubbed: it
 				// exits when its stdin closes, and not before. A promise that is
@@ -173,15 +188,22 @@ function recordingEffects({ log, wasRunning = true, created = false } = {}) {
 			async finalizeRuntimeLifecycle() {
 				log.push("finalize");
 			},
-			async abortRuntimeInPlace() {
+			async abortRuntimeInPlace({ container }) {
+				targets.abort.push(container);
 				log.push("rpc abort (soft)");
 				return { protectedDataUsed: false, protectedRefs: [] };
 			},
-			async stageRuntimeInterruption() {
+			async stageRuntimeInterruption(container) {
+				targets.stageInterruption.push(container);
 				log.push("docker exec stageInterruption");
 				return true;
 			},
-			async stopOwnedContainer() {
+			async stopContainerById(container) {
+				targets.stopById.push(container);
+				log.push("docker stop");
+			},
+			async stopOwnedContainer(profile) {
+				targets.stopOwned.push(profile);
 				log.push("docker stop");
 			},
 		},
@@ -254,10 +276,10 @@ test("the image inspect is in flight before the skill fetch resolves", async () 
 	forgetWarmPiProcess(PROFILE);
 });
 
-test("a warm turn skips the container start, the bootstrap write and the handshake", async () => {
+test("a warm turn reuses the exact verified container without another inspect", async () => {
 	forgetWarmPiProcess(PROFILE);
 	const log = [];
-	const { effects, rpc } = recordingEffects({ log });
+	const { effects, rpc, targets } = recordingEffects({ log });
 	// Prime the warm entry the way a completed previous turn leaves it. The
 	// binding has to match what this turn computes or the process is discarded.
 	await promptWithRuntimeLease(runtimeRequest(), "first", {}, effects);
@@ -267,7 +289,6 @@ test("a warm turn skips the container start, the bootstrap write and the handsha
 
 	assert.deepEqual(second.filter(line => line.startsWith("docker") || line.startsWith("rpc")), [
 		"docker image inspect",
-		"docker container inspect provisioned=true imageId=sha256:image",
 		"docker stage force=false",
 		"docker exec prepare",
 		"rpc set_environment",
@@ -276,7 +297,65 @@ test("a warm turn skips the container start, the bootstrap write and the handsha
 	]);
 	assert.equal(second.includes("docker exec run"), false, "a warm turn must not spawn a second Pi");
 	assert.equal(second.includes("rpc get_state"), false, "a warm turn already knows its session");
+	assert.equal(targets.run[0], "container-id:sha256:image");
+	assert.equal(targets.prepare.at(-1), "container-id:sha256:image");
 	assert.ok(rpc);
+	forgetWarmPiProcess(PROFILE);
+});
+
+test("an image change discards the warm generation before full inspection", async () => {
+	forgetWarmPiProcess(PROFILE);
+	const lines = [];
+	const log = [];
+	const { effects, targets } = recordingEffects({ log });
+	const writeLog = effects.log;
+	effects.log = (line) => {
+		lines.push(line);
+		writeLog(line);
+	};
+	await promptWithRuntimeLease(runtimeRequest(), "first", {}, effects);
+
+	effects.resolveImageId = async () => {
+		log.push("docker image inspect");
+		return "sha256:new-image";
+	};
+	const before = log.length;
+	await promptWithRuntimeLease(runtimeRequest(), "second", {}, effects);
+	const second = log.slice(before);
+
+	assert.ok(second.includes(
+		"docker container inspect provisioned=false imageId=sha256:new-image",
+	));
+	assert.deepEqual(targets.run, [
+		"container-id:sha256:image",
+		"container-id:sha256:new-image",
+	]);
+	const ready = JSON.parse(
+		lines.filter(line => line.includes('"pi_runtime.ready"')).at(-1).slice("[Pi] ".length),
+	);
+	assert.equal(ready.mode, "restarted");
+	assert.equal(ready.replacementReason, "image_changed");
+	forgetWarmPiProcess(PROFILE);
+});
+
+test("an exited Pi process takes the fully inspected path", async () => {
+	forgetWarmPiProcess(PROFILE);
+	const log = [];
+	const { effects } = recordingEffects({ log });
+	await promptWithRuntimeLease(runtimeRequest(), "first", {}, effects);
+	const warm = getWarmPiProcess(PROFILE);
+	warm.child.stdin.end();
+	await warm.exited;
+	await new Promise((resolve) => setImmediate(resolve));
+
+	const before = log.length;
+	await promptWithRuntimeLease(runtimeRequest(), "second", {}, effects);
+	const second = log.slice(before);
+
+	assert.ok(second.includes(
+		"docker container inspect provisioned=false imageId=sha256:image",
+	));
+	assert.ok(second.includes("docker exec run"));
 	forgetWarmPiProcess(PROFILE);
 });
 
@@ -507,7 +586,7 @@ test("a member pressing stop is recorded as interrupted, not failed", async () =
 	forgetWarmPiProcess(PROFILE);
 	const lines = [];
 	const log = [];
-	const { effects } = recordingEffects({ log });
+	const { effects, targets } = recordingEffects({ log });
 	effects.log = (line) => lines.push(line);
 	effects.logAnswer = (line) => lines.push(line);
 	const controller = new AbortController();
@@ -544,6 +623,11 @@ test("a member pressing stop is recorded as interrupted, not failed", async () =
 	assert.ok(
 		lines.some(line => line.includes('"pi_runtime.interrupted"')),
 		"the interrupt itself is reported through the same sink",
+	);
+	assert.equal(
+		targets.abort.at(-1),
+		"container-id:sha256:image",
+		"a warm interrupt must target the verified container ID",
 	);
 	forgetWarmPiProcess(PROFILE);
 });
@@ -625,26 +709,44 @@ test("skill telemetry carries counts and timing, never skill content", async () 
 	forgetWarmPiProcess(PROFILE);
 });
 
-test("the warm entry a turn leaves behind carries its session id", async () => {
+test("the warm entry carries its session and verified runtime generation", async () => {
 	forgetWarmPiProcess(PROFILE);
 	const log = [];
 	const { effects } = recordingEffects({ log });
 	await promptWithRuntimeLease(runtimeRequest(), "hello", {}, effects);
 	// An entry remembered without its session id logged `session undefined` on
 	// every later turn that reused it, and nothing failed when it happened.
-	assert.equal(getWarmPiProcess(PROFILE)?.sessionId, "session-1");
+	const warm = getWarmPiProcess(PROFILE);
+	assert.equal(warm?.sessionId, "session-1");
+	assert.equal(warm?.alive, true);
+	assert.deepEqual(warm?.runtime, {
+		containerId: "container-id:sha256:image",
+		containerImageId: "sha256:image",
+		resources: {
+			container: "divo-pi-local-turnplan",
+			volume: "divo-pi-local-turnplan",
+			authVolume: "divo-pi-local-turnplan-auth",
+			skillsVolume: "divo-pi-local-turnplan-skills",
+		},
+	});
 	forgetWarmPiProcess(PROFILE);
 });
 
 test("a soft interrupt that fails falls back to staging the work and stopping the container", async () => {
 	forgetWarmPiProcess(PROFILE);
 	const log = [];
-	const { effects } = recordingEffects({ log });
+	const { effects, targets } = recordingEffects({ log });
 	await promptWithRuntimeLease(runtimeRequest(), "first", {}, effects);
 
 	const controller = new AbortController();
 	const { effects: second } = recordingEffects({ log });
-	for (const key of ["log", "logAnswer", "stageRuntimeInterruption", "stopOwnedContainer"]) {
+	for (const key of [
+		"log",
+		"logAnswer",
+		"stageRuntimeInterruption",
+		"stopContainerById",
+		"stopOwnedContainer",
+	]) {
 		second[key] = effects[key];
 	}
 	// The soft path is the one that keeps the member's session. When it fails, the
@@ -670,6 +772,17 @@ test("a soft interrupt that fails falls back to staging the work and stopping th
 	assert.ok(after.includes("rpc abort (soft)"), "the soft path is tried first");
 	assert.ok(after.includes("docker exec stageInterruption"), "interrupted work is staged");
 	assert.ok(after.includes("docker stop"), "the container is stopped");
+	assert.equal(
+		targets.stageInterruption.at(-1),
+		"container-id:sha256:image",
+		"hard fallback staging must target the verified container ID",
+	);
+	assert.equal(
+		targets.stopById.at(-1),
+		"container-id:sha256:image",
+		"hard fallback stop must target the verified container ID",
+	);
+	assert.deepEqual(targets.stopOwned, [], "the warm fallback must not resolve the profile name");
 	forgetWarmPiProcess(PROFILE);
 });
 

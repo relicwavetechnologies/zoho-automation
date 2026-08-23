@@ -131,13 +131,15 @@ describe('Google Workspace MCP product tools', () => {
   });
 
   it('starts resumable Google authorization when no personal account can open a pasted Sheet', async () => {
-    const authorizationReasons: string[] = [];
+    const authorizationGaps: any[] = [];
     const sheets = createGoogleWorkspaceMcpTools({
       getConnection: async () => ({ status: 'unavailable' as const }),
       resolveSheetReference: async () => ({ status: 'no_connection' }),
-      beginAuthorization: async request => {
-        authorizationReasons.push(request.reason);
-        return { status: 'sent', intentId: 'intent-1' };
+      connectionRequest: {
+        request: async request => {
+          authorizationGaps.push(request.gap);
+          return { status: 'sent', intentId: 'intent-1' };
+        },
       },
     }).find((tool) => tool.id === 'googleSheets')!;
     const parsed = sheets.argsSchema.safeParse({
@@ -152,22 +154,26 @@ describe('Google Workspace MCP product tools', () => {
     assert.equal(result.ok, true);
     assert.equal(result.ok && result.value.success, false);
     assert.deepEqual(result.ok && result.value.data, {
-      code: 'google_workspace_authorization_pending',
+      success: false,
+      code: 'connection_ask_sent',
       intentId: 'intent-1',
+      provider: 'google_workspace',
+      message: 'A connection ask was sent to the member. This run waits for them to finish it.',
     });
-    assert.deepEqual(authorizationReasons, [
-      'Connect a writable personal Google account to open this Sheet.',
-    ]);
+    assert.equal(authorizationGaps[0].toolId, 'googleSheets');
+    assert.equal(authorizationGaps[0].reason, 'not_connected');
   });
 
   it('starts Google re-consent when a Sheet connection lacks full write scopes', async () => {
-    const authorizationReasons: string[] = [];
+    const authorizationGaps: any[] = [];
     const sheets = createGoogleWorkspaceMcpTools({
       getConnection: async () => ({ status: 'unavailable' as const }),
       resolveSheetReference: async () => ({ status: 'missing_scope' }),
-      beginAuthorization: async request => {
-        authorizationReasons.push(request.reason);
-        return { status: 'sent', intentId: 'intent-2' };
+      connectionRequest: {
+        request: async request => {
+          authorizationGaps.push(request.gap);
+          return { status: 'sent', intentId: 'intent-2' };
+        },
       },
     }).find((tool) => tool.id === 'googleSheets')!;
     const parsed = sheets.argsSchema.safeParse({
@@ -180,9 +186,8 @@ describe('Google Workspace MCP product tools', () => {
     const result = await sheets.execute(parsed.data, makeCtx('googleSheets', ['read']));
 
     assert.equal(result.ok && result.value.success, false);
-    assert.deepEqual(authorizationReasons, [
-      'Reconnect Google to grant Drive and Sheets write access for this Sheet.',
-    ]);
+    assert.equal(authorizationGaps[0].toolId, 'googleSheets');
+    assert.equal(authorizationGaps[0].reason, 'insufficient_scope');
   });
 
   it('describes a reviewed operation through the selected connection', async () => {
@@ -600,9 +605,11 @@ describe('Google Workspace MCP product tools', () => {
         reason: 'none_accessible',
         accessible: [],
       }),
-      beginAuthorization: async (input) => {
+      connectionRequest: {
+        request: async (input) => {
         authorizationInput = input;
         return { status: 'sent', intentId: 'intent-1' };
+        },
       },
     }).find((tool) => tool.id === 'googleGmail')!;
     const result = await gmail.execute({
@@ -613,13 +620,13 @@ describe('Google Workspace MCP product tools', () => {
     }, makeCtx('googleGmail', ['read'], { runtimeRunId: 'run-1' }));
 
     assert.equal(result.ok, true);
-    assert.equal(result.ok && (result.value.data as any).code, 'google_workspace_authorization_pending');
-    assert.equal(authorizationInput.toolId, 'googleGmail');
+    assert.equal(result.ok && (result.value.data as any).code, 'connection_ask_sent');
+    assert.equal(authorizationInput.gap.toolId, 'googleGmail');
     // See the note in mail-automations.tool.test.ts: the tool forwards the live
     // run context, and whether an authorization can start from it is proved
     // against the real closure in begin-google-authorization.test.ts.
     assert.equal(authorizationInput.runContext.runtimeRunId, 'run-1');
-    assert.match(result.ok ? result.value.message ?? '' : '', /fresh run automatically/);
+    assert.match(result.ok ? result.value.message ?? '' : '', /This run waits for them/);
   });
 
   it('points a member at Connected apps when no card can be sent', async () => {

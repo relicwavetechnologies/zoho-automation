@@ -691,6 +691,7 @@ async function main() {
     messageId:      asMessageId(messageId),
     chatId:         asChatId(contextChatId),
     chatType:       options.chatType,
+    tenantKey,
     userExternalId: userOpenId,
     text:           options.prompt,
     attachments:    [],

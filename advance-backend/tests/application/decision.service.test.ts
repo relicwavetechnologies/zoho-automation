@@ -10,6 +10,12 @@ const logger: Logger = {
 } as never;
 
 const APPROVER = { userId: 'user-manager', companyId: 'comp-1', displayName: 'Priya Nair' };
+const LARK_APPROVAL_METADATA = {
+  resolvedManagerUserId: 'user-manager',
+  resolvedManagerName: 'Priya Nair',
+  resolvedManagerOpenId: 'ou_manager',
+  tenantKey: 'tenant-1',
+};
 
 /** A manager approval written by the gate — the shape that predates this module. */
 function toolActionRow(overrides: Record<string, unknown> = {}) {
@@ -79,10 +85,29 @@ function decisionRow(overrides: Record<string, unknown> = {}) {
   });
 }
 
+function toolRowFromAsk(input: any) {
+  return toolActionRow({
+    id: 'tool-ask-1',
+    toolId: input.toolId,
+    actionGroup: input.actionGroup,
+    summary: input.summary,
+    payloadJson: input.payloadJson,
+    metadataJson: input.metadataJson,
+    channel: input.channel,
+    requestedBy: input.requestedBy,
+    status: input.initialStatus,
+    idempotencyKey: input.idempotencyKey,
+  });
+}
+
 function makeService(row: ReturnType<typeof toolActionRow> | null, opts: {
   resolveOk?: boolean;
   partialLands?: boolean;
   businessAction?: unknown;
+  createApproval?: (input: any) => ReturnType<typeof toolActionRow>;
+  created?: boolean;
+  replacedExpired?: boolean;
+  courierResult?: unknown;
 } = {}) {
   const calls = {
     resolved: [] as unknown[],
@@ -93,6 +118,8 @@ function makeService(row: ReturnType<typeof toolActionRow> | null, opts: {
     audit: [] as any[],
     created: [] as any[],
     delivered: [] as any[],
+    failed: [] as any[],
+    checkpoints: [] as any[],
     businessDecisions: [] as any[],
   };
   const service = new DecisionService({
@@ -113,9 +140,21 @@ function makeService(row: ReturnType<typeof toolActionRow> | null, opts: {
       listInboxFor: async () => ok({ awaitingMe: row ? [row] : [], requestedByMe: [] }),
       createOrReuseActive: async (input: unknown) => {
         calls.created.push(input);
-        return ok({ approval: decisionRow(), created: true, replacedExpired: false });
+        return ok({
+          approval: opts.createApproval?.(input) ?? decisionRow(),
+          created: opts.created !== false,
+          replacedExpired: opts.replacedExpired === true,
+        });
       },
       setDecisionMessageId: async () => ok(undefined),
+      markFailed: async (id: string, reason: string) => {
+        calls.failed.push({ id, reason });
+        return ok(undefined);
+      },
+      persistResult: async (id: string, result: unknown) => {
+        calls.checkpoints.push({ id, result });
+        return ok(undefined);
+      },
     } as never,
     resumer: { resume: async (id: string) => { calls.resumed.push(id); } } as never,
     logger,
@@ -129,7 +168,7 @@ function makeService(row: ReturnType<typeof toolActionRow> | null, opts: {
     courier: {
       deliver: async (input: unknown) => {
         calls.delivered.push(input);
-        return { ok: true, messageId: 'om_new' };
+        return opts.courierResult ?? { ok: true, messageId: 'om_new' };
       },
     },
     onResolvedCard: async (input) => {
@@ -163,6 +202,48 @@ describe('decisions — reading what is open', () => {
 
     assert.equal(inbox.awaitingMe[0]!.title, 'Launch plan');
     assert.deepEqual(inbox.awaitingMe[0]!.questions.map(q => q.id), ['flavours', 'market']);
+  });
+
+  it('projects an automation plan as one exact batch question with its preview', async () => {
+    const { service } = makeService(toolActionRow({
+      id: 'automation-1',
+      toolId: 'automationScript',
+      actionGroup: 'execute',
+      kind: 'automation_script_plan',
+      summary: 'Daily batch: create reports',
+      payloadJson: {
+        version: 2,
+        title: 'Daily batch',
+        summary: 'Create the reports.',
+        approvalSignature: {
+          kind: 'required',
+          authority: 'department_manager',
+          approverUserId: 'user-manager',
+          connectionScope: null,
+        },
+        invocations: [
+          { toolId: 'googleSheets', action: 'create', args: {}, argsHash: 'a'.repeat(64), validation: {}, callSummary: 'Create Leads', approvalSignature: { kind: 'allowed' } },
+          { toolId: 'googleGmail', action: 'send', args: {}, argsHash: 'b'.repeat(64), validation: {}, callSummary: 'Send summary', approvalSignature: { kind: 'allowed' } },
+        ],
+      },
+      metadataJson: {
+        resolvedManagerUserId: 'user-manager',
+        resolvedManagerName: 'Priya Nair',
+        planHash: 'plan-hash',
+        detail: '**What will happen**\nCreate the reports.\n\n**Exact preflighted calls**\n1. Create Leads\n2. Send summary',
+      },
+    }));
+    const projected = (await service.openRows(APPROVER)).awaitingMe[0]!;
+
+    assert.equal(projected.decision.title, 'Daily batch');
+    assert.match(projected.decision.detail ?? '', /Create Leads/);
+    assert.match(projected.questions[0]!.ask, /2-call automation plan/);
+    assert.deepEqual(projected.continuation, {
+      kind: 'run',
+      toolId: 'automationScript',
+      action: 'execute',
+      argsHash: 'plan-hash',
+    });
   });
 
   it('leaves out anything whose deadline has passed', async () => {
@@ -215,6 +296,40 @@ describe('decisions — settling', () => {
     );
 
     assert.equal(outcome.ok === false && outcome.reason, 'forbidden');
+    assert.equal(calls.resolved.length, 0);
+  });
+
+  it('refuses a Lark card from a different open id', async () => {
+    const { service, calls } = makeService(toolActionRow({ metadataJson: LARK_APPROVAL_METADATA }));
+    const outcome = await service.settle(
+      {
+        ...APPROVER,
+        lark: { openId: 'ou_someone_else', tenantKey: 'tenant-1' },
+      },
+      'approval-1',
+      confirmAnswer('approved'),
+    );
+
+    assert.equal(outcome.ok === false && outcome.reason, 'forbidden');
+    assert.equal(outcome.ok === false && outcome.message, 'You are not authorized to approve this request.');
+    assert.equal(calls.resolved.length, 0);
+    assert.equal(calls.audit[0].action, 'decision.unauthorized_actor');
+    assert.equal(calls.audit[0].metadata.expectedApproverOpenId, 'ou_manager');
+  });
+
+  it('refuses a Lark card from a different tenant', async () => {
+    const { service, calls } = makeService(toolActionRow({ metadataJson: LARK_APPROVAL_METADATA }));
+    const outcome = await service.settle(
+      {
+        ...APPROVER,
+        lark: { openId: 'ou_manager', tenantKey: 'tenant-other' },
+      },
+      'approval-1',
+      confirmAnswer('approved'),
+    );
+
+    assert.equal(outcome.ok === false && outcome.reason, 'forbidden');
+    assert.equal(outcome.ok === false && outcome.message, 'You are not authorized to approve this request.');
     assert.equal(calls.resolved.length, 0);
   });
 
@@ -425,6 +540,29 @@ describe('decisions — one button at a time', () => {
 });
 
 describe('decisions — asking', () => {
+  const toolAsk = {
+    kind: 'tool_action' as const,
+    companyId: 'comp-1',
+    approver: { userId: 'user-manager', displayName: 'Priya Nair', larkOpenId: 'ou_manager' },
+    requestedBy: { userId: 'user-aman', displayName: 'Aman' },
+    summary: 'Send email to boss@example.com',
+    toolId: 'googleGmail',
+    action: 'send' as const,
+    args: { to: ['boss@example.com'], subject: 'Q2' },
+    argsHash: 'hash-q2',
+    metadata: {
+      approvalOrigin: 'cloud_pi',
+      sourceChannel: 'lark',
+      approvalAuthority: 'department_manager',
+      autoResume: false,
+      departmentName: 'Finance',
+    },
+    channel: 'lark' as const,
+    conversationKey: 'gateway:scope-1',
+    idempotencyKey: 'tool-ask-q2',
+    initialStatus: 'dispatching' as const,
+  };
+
   it('writes the row first and cards afterwards', async () => {
     /* The row is the request; the card is a side effect of it. Somebody Divo
        cannot reach still has the question waiting in Divo. */
@@ -482,6 +620,71 @@ describe('decisions — asking', () => {
 
     assert.equal(outcome.ok, false);
     assert.equal(calls.created.length, 0);
+  });
+
+  it('opens a tool approval and sends the shared decision card', async () => {
+    const { service, calls } = makeService(null, {
+      createApproval: input => toolRowFromAsk(input),
+    });
+    const outcome = await service.ask(toolAsk);
+
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.ok && outcome.deliveredVia, 'lark');
+    assert.equal(outcome.ok && outcome.requestState, 'created');
+    assert.equal(outcome.ok && outcome.row.kind, 'tool_action');
+    assert.equal(outcome.ok && outcome.row.status, 'pending');
+    assert.equal(outcome.ok && outcome.row.decisionMessageId, 'om_new');
+    assert.equal(calls.created[0].payloadJson.argsHash, 'hash-q2');
+    assert.equal(calls.created[0].metadataJson.approvalAuthority, 'department_manager');
+    assert.deepEqual(
+      (calls.delivered[0].decision.questions[0] as any).options.map((option: any) => option.value),
+      ['yes', 'no'],
+    );
+  });
+
+  it('leaves a no-Lark approver in the Divo inbox without sending a card', async () => {
+    const { service, calls } = makeService(null, {
+      createApproval: input => toolRowFromAsk(input),
+    });
+    const outcome = await service.ask({
+      ...toolAsk,
+      approver: { userId: 'user-manager', displayName: 'Priya Nair', larkOpenId: null },
+      channel: 'desktop',
+      initialStatus: 'pending',
+    });
+
+    assert.equal(outcome.ok && outcome.deliveredVia, 'desktop');
+    assert.equal(outcome.ok && outcome.row.channel, 'desktop');
+    assert.deepEqual(calls.delivered, []);
+  });
+
+  it('preserves a reused tool approval without sending a second card', async () => {
+    const { service, calls } = makeService(null, {
+      createApproval: input => toolRowFromAsk(input),
+      created: false,
+    });
+    const outcome = await service.ask(toolAsk);
+
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.ok && outcome.created, false);
+    assert.equal(outcome.ok && outcome.requestState, 'reused');
+    assert.deepEqual(calls.delivered, []);
+  });
+
+  it('checkpoints uncertain Lark delivery instead of allowing an unsafe retry', async () => {
+    const { service, calls } = makeService(null, {
+      createApproval: input => toolRowFromAsk(input),
+      courierResult: {
+        ok: false,
+        failure: { certainty: 'unknown', message: 'Lark timed out after accepting the request' },
+      },
+    });
+    const outcome = await service.ask(toolAsk);
+
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.ok === false && outcome.reason, 'delivery_unknown');
+    assert.equal(calls.checkpoints.length, 1);
+    assert.equal(calls.checkpoints[0].result.status, 'approval_delivery_unknown');
   });
 });
 
@@ -571,6 +774,30 @@ describe('decisions — asking the same thing twice', () => {
     const { service, calls } = makeService(null);
     await service.ask({ ...base, questions: [FLAVOURS], idempotencyKey: 'mine' });
     assert.equal(calls.created[0].idempotencyKey, 'mine');
+  });
+
+  it('refuses a link option that also claims to settle the decision', async () => {
+    const { service, calls } = makeService(null);
+    const outcome = await service.ask({
+      ...base,
+      questions: [{
+        id: 'connect',
+        ask: 'Connect Google',
+        pick: 'one',
+        options: [{
+          value: 'connect',
+          label: 'Connect',
+          href: 'https://accounts.google.com/',
+          settles: 'approved',
+        }],
+      }],
+    });
+    assert.deepEqual(outcome, {
+      ok: false,
+      reason: 'invalid',
+      message: 'A decision link cannot also settle the decision.',
+    });
+    assert.equal(calls.created.length, 0);
   });
 });
 
