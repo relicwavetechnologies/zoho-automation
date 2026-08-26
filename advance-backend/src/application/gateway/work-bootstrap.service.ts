@@ -159,7 +159,7 @@ export class WorkBootstrapService {
     const workContractBootstrap = this.deps.workContractBootstrap;
     const shouldLoadNativeContracts =
       tools.length > 0
-      && (Boolean(input.query) || contractMode === 'complete');
+      && (Boolean(input.query) || contractMode !== 'suggested');
     if (workContractBootstrap && shouldLoadNativeContracts) {
       let loaded;
       try {
@@ -194,7 +194,7 @@ export class WorkBootstrapService {
         advisories.push({
           code: 'native_contracts_loaded',
           level: 'required',
-          instruction: contractMode === 'complete'
+          instruction: contractMode !== 'suggested'
             ? 'Provider-native operation contracts for the requested tools are already loaded below. Use their exact field names and do not call describe again for these operations during this run.'
             : 'Likely native operation contracts for this workflow are already loaded below. Use their exact field names and do not call describe again for these operations during this run.',
         });

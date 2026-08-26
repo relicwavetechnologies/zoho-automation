@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, api, type DepartmentDetailSection } from '@/lib/api'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import type { Candidate } from './use-team'
 
 const base = '/api/admin'
 
@@ -237,6 +238,66 @@ export const useDepartmentDetail = (departmentId?: string) =>
     departmentId ? `/departments/${departmentId}?sections=${DETAIL_SECTIONS.join(',')}` : null,
     null,
   )
+
+/**
+ * Putting people into a department, through the admin door.
+ *
+ * The manager's version of this lives in `useDepartment`, on `/api/desktop`,
+ * and that route requires MANAGER membership of the team being edited. A
+ * company admin creating a brand-new department is a member of nothing and
+ * leads nothing, so the first person could never be added: the only surface
+ * that adds one was the surface only a manager could reach, and a manager is
+ * somebody who is already in the team.
+ *
+ * Same operations, same service behind them, different door.
+ */
+export const inviteLink = (token: string): string =>
+  `${window.location.origin}/signup/member-invite?token=${encodeURIComponent(token)}`
+
+export function useDepartmentPeopleAdmin(departmentId?: string) {
+  const { token } = useAdminAuth()
+
+  const findCandidates = useCallback(async (query: string): Promise<Candidate[]> => {
+    if (!token || !departmentId || query.trim().length === 0) return []
+    return api.get<Candidate[]>(
+      `${base}/departments/${departmentId}/candidates?query=${encodeURIComponent(query)}`,
+      token, { quiet: true },
+    ).catch(() => [])
+  }, [token, departmentId])
+
+  const addMember = useCallback(async (userId: string, roleId: string) => {
+    if (!token || !departmentId) return
+    await api.put(`${base}/departments/${departmentId}/memberships`, { userId, roleId }, token)
+  }, [token, departmentId])
+
+  /**
+   * Invite somebody who has no Divo account yet.
+   *
+   * Returns the link rather than sending it. Divo has no transactional mailer,
+   * and a button that claims to have emailed an invite when nothing left the
+   * building is worse than one that hands you a link to paste — the second is
+   * honest about who is doing the delivering.
+   *
+   * MEMBER, always. This is the door for somebody who needs one department's
+   * tab; a company administrator is made deliberately, elsewhere, by somebody
+   * who meant to.
+   */
+  const invite = useCallback(async (email: string, roleId: string): Promise<string> => {
+    if (!token) throw new Error('Not signed in')
+    const created = await api.post<{ id: string; email: string; token: string; expiresAt: string }>(
+      `${base}/company/invites`, { email: email.trim().toLowerCase(), roleId: 'MEMBER', departmentId, departmentRoleId: roleId }, token,
+    )
+    if (!created.token) {
+      // Created but unreadable. Said plainly rather than returning a broken
+      // link: the invite exists, and reporting a failure would have somebody
+      // make a second one for the same person.
+      throw new Error('The invite was created but its link came back empty. Check pending invites.')
+    }
+    return inviteLink(created.token)
+  }, [token, departmentId])
+
+  return { findCandidates, addMember, invite }
+}
 
 /* ── Runs ─────────────────────────────────────────────── */
 

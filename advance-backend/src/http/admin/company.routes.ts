@@ -28,6 +28,10 @@ import type { LarkOAuthService } from '../../infrastructure/lark/lark-oauth.serv
 import type { ZohoTokenService } from '../../infrastructure/zoho/zoho-token.service';
 import type { ZohoConnectionRepository } from '../../infrastructure/zoho/zoho-connection.repository';
 import {
+  placementFor,
+  type PlacementRefusal,
+} from '../../application/departments/invite-placement';
+import {
   COMPANY_CAPABILITIES,
   approvalModesForConnectionProvider,
   companyCapabilityPolicySchema,
@@ -189,10 +193,32 @@ function presentConnectionGovernance(connection: any) {
   };
 }
 
+/**
+ * The refusal, as a sentence somebody can act on.
+ *
+ * Beside the route rather than inside the domain module: the module answers
+ * whether the placement holds, and this is what an administrator reading a 400
+ * needs to do next.
+ */
+const describePlacementRefusal = (refusal: PlacementRefusal): string => {
+  switch (refusal.reason) {
+    case 'department_not_in_company':
+      return 'That department does not belong to this company.';
+    case 'department_archived':
+      return 'That department has been archived, so nobody can be invited into it.';
+    case 'role_not_in_department':
+      return 'That role does not belong to that department. Pick a role from the department you are inviting into.';
+    case 'department_has_no_role':
+      return 'That department has no default role to place somebody in. Give it one first.';
+  }
+};
+
 const createInviteSchema = z.object({
-  email:     z.string().email().max(200),
-  roleId:    z.string().min(1).max(50),
-  companyId: z.string().uuid().optional(),
+  email:            z.string().email().max(200),
+  roleId:           z.string().min(1).max(50),
+  companyId:        z.string().uuid().optional(),
+  departmentId:     z.string().uuid().nullable().optional(),
+  departmentRoleId: z.string().uuid().nullable().optional(),
 });
 
 // Company membership is deliberately simpler than platform administration.
@@ -658,10 +684,22 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
       take:    100,
     });
     const invites = rows.map(r => ({
-      id:        r.id,
-      email:     r.email,
-      role:      r.role,
-      status:    r.status,
+      id:               r.id,
+      email:            r.email,
+      role:             r.role,
+      status:           r.status,
+      // The token is the invite. It was withheld from both the list and the
+      // create response, which left it reachable only from the database — so
+      // the accept page existed, the endpoint behind it worked, and there was
+      // no way for an administrator to obtain the one string it needs.
+      //
+      // Returned to `adminAuth` callers, who can mint another of these at will;
+      // withholding it from them protected nothing and broke the flow. Returned
+      // on the list as well as on create, so closing the drawer before copying
+      // the link costs a click rather than a second invite.
+      token:            r.status === 'pending' ? r.token : null,
+      departmentId:     r.departmentId,
+      departmentRoleId: r.departmentRoleId,
       expiresAt: r.expiresAt.toISOString(),
       createdAt: r.createdAt.toISOString(),
     }));
@@ -674,6 +712,30 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
     const companyId = resolveCompanyId(res, payload.companyId);
     const invitedBy = (res.locals['userId'] as string | undefined) ?? 'unknown';
 
+    const rawDepartmentId = payload.departmentId ?? null;
+    const rawRoleId = payload.departmentRoleId ?? null;
+
+    // The lookup is skipped when there is no department to look up; the rule
+    // that a missing department means a company-only invite stays in
+    // `placementFor`, which is the only place it is written down.
+    const department = rawDepartmentId
+      ? await prisma.department.findUnique({
+        where: { id: rawDepartmentId },
+        select: { id: true, companyId: true, status: true, roles: { select: { id: true, isDefault: true } } },
+      })
+      : null;
+    const resolved = placementFor({
+      companyId,
+      departmentId: rawDepartmentId,
+      departmentRoleId: rawRoleId,
+      department,
+    });
+    if (!resolved.ok) {
+      fail(res, 400, describePlacementRefusal(resolved.error));
+      return;
+    }
+    const placement = resolved.value;
+
     const invite = await prisma.companyInvite.create({
       data: {
         companyId,
@@ -683,11 +745,23 @@ export function createCompanyRoutes(deps: CompanyRoutesDeps): Router {
         token:     randomUUID(),
         invitedBy,
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+        ...(placement.kind === 'department'
+          ? { departmentId: placement.departmentId, departmentRoleId: placement.roleId }
+          : { departmentId: null, departmentRoleId: null }),
       },
     });
     success(
       res,
-      { id: invite.id, email: invite.email, role: invite.role, status: invite.status, expiresAt: invite.expiresAt.toISOString() },
+      {
+        id: invite.id,
+        email: invite.email,
+        role: invite.role,
+        status: invite.status,
+        token: invite.token,
+        departmentId: (invite as any).departmentId ?? null,
+        departmentRoleId: (invite as any).departmentRoleId ?? null,
+        expiresAt: invite.expiresAt.toISOString(),
+      },
       'Invite created',
       201,
     );

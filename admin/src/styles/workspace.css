@@ -3572,3 +3572,148 @@
    hand the pointer to React Flow's pan handler mid-resize. */
 body.ws-resizing { cursor: col-resize; user-select: none; }
 body.ws-resizing * { pointer-events: none; }
+
+/* ══════════════════════════════════════════════════════
+   BROADCAST — the one surface that writes to WhatsApp.
+
+   Its own block rather than additions to the shared row and panel classes,
+   because almost everything here is specific to composing a send: a step
+   header, a selection tray, a WhatsApp bubble. Folding these into `.ws-row`
+   would put broadcast-only rules in front of every list in the product.
+   ══════════════════════════════════════════════════════ */
+
+/* Steps. Clickable backwards, and forwards only once the step can be satisfied
+   — arriving at an empty Message step to find Next dead is worse than not
+   being able to leave Audience. */
+.cur .bc-steps { display: flex; align-items: center; padding: 12px 18px; flex-wrap: wrap; gap: 0; }
+.cur .bc-step-wrap { display: inline-flex; align-items: center; }
+.cur .bc-step-sep { width: 22px; height: 1px; background: var(--cur-hairline-strong); margin: 0 12px; flex-shrink: 0; }
+.cur .bc-step {
+  display: inline-flex; align-items: center; gap: 8px; padding: 0; border: 0; background: none;
+  font-family: inherit; font-size: 12.5px; color: var(--cur-muted); cursor: pointer;
+}
+.cur .bc-step:disabled { cursor: default; opacity: 0.55; }
+.cur .bc-step .n {
+  width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 10.5px; font-weight: 600; background: var(--cur-surface-strong); color: var(--cur-body);
+  flex-shrink: 0;
+}
+.cur .bc-step[data-on="true"] { color: var(--cur-ink); font-weight: 500; }
+.cur .bc-step[data-on="true"] .n { background: var(--cur-ink); color: var(--cur-canvas); }
+.cur .bc-step[data-done="true"] .n { background: var(--cur-success); color: #fff; }
+.cur .bc-step-count { margin-left: auto; font-size: 11.5px; color: var(--cur-muted); font-variant-numeric: tabular-nums; }
+
+/* Three sources, side by side and ranked by risk. Paste is marked because it is
+   the one that starts conversations with strangers. */
+.cur .bc-sources { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--cur-hairline); }
+.cur .bc-source {
+  padding: 13px 14px; text-align: left; border: 0; border-left: 1px solid var(--cur-hairline);
+  background: transparent; cursor: pointer; font-family: inherit;
+}
+.cur .bc-source:first-child { border-left: 0; }
+.cur .bc-source:hover { background: var(--cur-canvas-soft); }
+.cur .bc-source[data-on="true"] { background: var(--cur-canvas-soft); }
+.cur .bc-source .t {
+  display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--cur-body);
+}
+.cur .bc-source[data-on="true"] .t { color: var(--cur-ink); font-weight: 500; }
+.cur .bc-source .t svg { color: var(--cur-muted); flex-shrink: 0; }
+.cur .bc-source[data-risk="true"] .t svg { color: var(--cur-error-ink); }
+.cur .bc-source .h { display: block; font-size: 11px; color: var(--cur-muted); margin-top: 4px; line-height: 1.45; }
+@media (max-width: 720px) { .cur .bc-sources { grid-template-columns: 1fr; }
+  .cur .bc-source { border-left: 0; border-top: 1px solid var(--cur-hairline); }
+  .cur .bc-source:first-child { border-top: 0; } }
+
+.cur .bc-toolbar { display: flex; gap: 9px; flex-wrap: wrap; align-items: center; padding: 12px 18px; border-bottom: 1px solid var(--cur-hairline); }
+.cur .bc-search { position: relative; display: flex; align-items: center; flex: 1; min-width: 170px; }
+.cur .bc-search > svg { position: absolute; left: 10px; color: var(--cur-muted); pointer-events: none; }
+.cur .bc-search .input { width: 100%; height: 32px; padding-left: 30px; font-family: inherit; }
+.cur .bc-clear {
+  position: absolute; right: 7px; border: 0; background: none; color: var(--cur-muted);
+  cursor: pointer; display: grid; place-items: center; padding: 3px; border-radius: 5px;
+}
+.cur .bc-clear:hover { background: var(--cur-canvas-soft); color: var(--cur-ink); }
+.cur .bc-chips { display: inline-flex; gap: 5px; flex-wrap: wrap; }
+.cur .bc-sublist { display: flex; align-items: center; gap: 10px; padding: 0 18px 12px; flex-wrap: wrap; }
+
+.cur .bc-allrow { border-top: 1px solid var(--cur-hairline); background: var(--cur-canvas-soft); padding-top: 10px; padding-bottom: 10px; }
+/* Capped so the tray and the summary stay visible while picking. A list that
+   pushes its own running total off screen is how somebody sends to sixty
+   people meaning to send to six. */
+.cur .bc-list { max-height: 300px; overflow-y: auto; }
+
+.cur .bc-box {
+  width: 17px; height: 17px; border-radius: 5px; border: 1.5px solid var(--cur-hairline-hover);
+  background: var(--cur-surface); display: grid; place-items: center; flex: 0 0 17px;
+  cursor: pointer; padding: 0; color: #fff;
+  transition: background .12s ease, border-color .12s ease;
+}
+.cur .bc-box[data-on="true"] { background: var(--cur-accent); border-color: var(--cur-accent); }
+
+/* Sticky so the count follows a long scroll. */
+.cur .bc-tray {
+  position: sticky; bottom: 0; background: var(--cur-surface); border-top: 1px solid var(--cur-hairline);
+  padding: 11px 18px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  box-shadow: 0 -6px 14px -10px rgba(16, 24, 40, 0.22);
+}
+.cur .bc-tray-n { font-size: 12.5px; font-weight: 500; }
+.cur .bc-tray-chips { display: flex; gap: 5px; flex-wrap: wrap; flex: 1; min-width: 0; align-items: center; }
+.cur .bc-selchip {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 5px 0 9px;
+  border-radius: 999px; background: var(--cur-canvas-soft); border: 1px solid var(--cur-hairline);
+  font-size: 11.5px; color: var(--cur-body);
+}
+.cur .bc-selchip button {
+  border: 0; background: none; color: var(--cur-muted); cursor: pointer;
+  display: grid; place-items: center; padding: 2px; border-radius: 50%;
+}
+.cur .bc-selchip button:hover { background: var(--cur-surface-strong); color: var(--cur-ink); }
+
+.cur .bc-kv {
+  display: flex; justify-content: space-between; gap: 12px; padding: 8px 0;
+  border-top: 1px solid var(--cur-hairline); font-size: 12.5px;
+}
+.cur .bc-kv:first-child { border-top: 0; }
+.cur .bc-kv .k { color: var(--cur-muted); }
+.cur .bc-kv .v { color: var(--cur-ink); text-align: right; font-variant-numeric: tabular-nums; }
+.cur .bc-kv .v[data-tone="bad"] { color: var(--cur-error-ink); }
+
+.cur .bc-note { padding: 0 18px 16px; }
+.cur .bc-foot { padding: 14px 18px; border-top: 1px solid var(--cur-hairline); display: flex; justify-content: flex-end; }
+.cur .bc-foot-split { justify-content: space-between; }
+
+.cur .bc-textarea { height: auto; min-height: 118px; padding: 10px 11px; line-height: 1.6; resize: vertical; }
+
+/* The preview, drawn as WhatsApp draws it. Not decoration: the point of a
+   preview is that a person recognises it as the thing their client will see,
+   and a plain grey box does not carry that. Fixed colours on purpose — this is
+   somebody else's product, and it does not follow our theme. */
+.cur .bc-wa {
+  background: #e6ddd4; border-radius: 10px; padding: 16px;
+  display: flex; flex-direction: column; min-height: 120px;
+}
+.cur[data-theme="dark"] .bc-wa, .dark .cur .bc-wa { background: #10171a; }
+.cur .bc-bubble {
+  align-self: flex-end; max-width: 86%; background: #d9fdd3; color: #111b21;
+  border-radius: 8px 2px 8px 8px; padding: 7px 10px 5px; font-size: 12.5px;
+  line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1);
+}
+.dark .cur .bc-bubble { background: #005c4b; color: #e9edef; }
+.cur .bc-bubble .tm { display: block; text-align: right; font-size: 9.5px; opacity: 0.55; margin-top: 3px; }
+
+.cur .bc-counts { display: flex; gap: 16px; margin-top: 11px; font-size: 12.5px; flex-wrap: wrap; align-items: center; }
+.cur .bc-counts .mono { font-variant-numeric: tabular-nums; }
+.cur .bc-counts b[data-bad="true"] { color: var(--cur-error-ink); }
+.cur .bc-counts > .ws-sub { margin-left: auto; }
+
+/* A warning that is about risk rather than about configuration. Red, not amber:
+   `.ws-ceiling` is the colour of "something needs attention", and messaging
+   strangers from a linked personal number is a different kind of statement. */
+.cur .ws-ceiling.bc-danger {
+  background: color-mix(in srgb, var(--cur-error) 9%, transparent);
+  border-color: color-mix(in srgb, var(--cur-error) 26%, transparent);
+}
+.cur .ws-ceiling.bc-danger svg { color: var(--cur-error-ink); }
+
+.cur .ws-sub[data-over="true"] { color: var(--cur-error-ink); }

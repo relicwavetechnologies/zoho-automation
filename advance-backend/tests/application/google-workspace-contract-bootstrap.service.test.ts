@@ -227,6 +227,39 @@ describe('Google Workspace work-contract bootstrap', () => {
     assert.equal(result.contracts.length, described.length);
   });
 
+  it('starts complete cache refresh without blocking speculative Pi preload', async () => {
+    const waits: Array<boolean | undefined> = [];
+    const service = new GoogleWorkspaceContractBootstrapService(async () => ({
+      status: 'resolved' as const,
+      connection: {
+        client: {
+          describeTool: async (
+            _name: string,
+            _signal?: AbortSignal,
+            options?: { readonly waitForProvider?: boolean },
+          ) => {
+            waits.push(options?.waitForProvider);
+            return null;
+          },
+          callTool: async () => undefined,
+        },
+      },
+    }));
+
+    const result = await service.load({
+      member,
+      query: '',
+      contractMode: 'complete_cached',
+      toolIds: ['googleSheets'],
+      connections: [connection],
+    });
+
+    assert.ok(waits.length > 1);
+    assert.equal(waits.every(wait => wait === false), true);
+    assert.equal(result.contracts.length, 0);
+    assert.equal(result.unavailableNativeTools.length, waits.length);
+  });
+
   it('reports missing schemas explicitly instead of implying they were loaded', async () => {
     const service = new GoogleWorkspaceContractBootstrapService(async () => ({
       status: 'resolved' as const,

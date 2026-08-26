@@ -75,6 +75,7 @@ export class GoogleWorkspaceContractBootstrapService implements WorkContractBoot
       const description = await resolution.connection.client.describeTool(
         item.nativeTool,
         input.abortSignal,
+        { waitForProvider: input.contractMode !== 'complete_cached' },
       );
       if (!description) return null;
       return {
@@ -99,7 +100,7 @@ export function googleWorkspaceNativeToolsForMode(
   toolIds: readonly string[],
   contractMode: WorkContractBootstrapMode,
 ): Array<{ toolId: string; nativeTool: string }> {
-  if (contractMode === 'complete') return completeGoogleWorkspaceNativeTools(toolIds);
+  if (contractMode !== 'suggested') return completeGoogleWorkspaceNativeTools(toolIds);
   const normalized = query.toLowerCase();
   const selected = new Set(toolIds);
   const suggestions: Array<{ toolId: string; nativeTool: string }> = [];

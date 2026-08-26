@@ -93,7 +93,15 @@ const base = '/api/desktop'
  * display name and no matching Divo user.
  */
 export type Candidate = {
-  channelIdentityId: string
+  /**
+   * Absent for somebody who reached Divo without Lark.
+   *
+   * The search used to start and end at this company's Lark directory, so every
+   * candidate had one. A team on a different Lark tenant — given accounts here
+   * by invite — has no identity on this install, and they are returned by their
+   * Divo account instead.
+   */
+  channelIdentityId?: string
   userId?: string
   name?: string
   email?: string
@@ -101,6 +109,18 @@ export type Candidate = {
   isWorkspaceMember: boolean
   isAlreadyAssigned: boolean
   larkDisplayName?: string
+}
+
+/**
+ * A stable React key, whichever door the candidate came through.
+ *
+ * Three kinds of row reach the list and only one of them is guaranteed a Lark
+ * identity, so keying on that alone gave every invited member the same
+ * `undefined` key — React then reuses one row's state for another as the search
+ * narrows, and the wrong person ends up selected.
+ */
+export function candidateKey(c: Candidate): string {
+  return c.channelIdentityId ?? (c.userId ? `user:${c.userId}` : `email:${c.email ?? ''}`)
 }
 
 /** Whether this candidate can actually be added, and if not, why. */
@@ -112,7 +132,10 @@ export function candidateBlock(c: Candidate): string | null {
 
 /** A name for a candidate that never assumes a field is present. */
 export function candidateLabel(c: Candidate): string {
-  return c.name ?? c.larkDisplayName ?? c.email ?? 'Unnamed Lark account'
+  // "Unnamed account" rather than "Unnamed Lark account": a row with no name
+  // may never have been near Lark, and naming the wrong system is how somebody
+  // goes looking for the fix in a directory this person is not in.
+  return c.name ?? c.larkDisplayName ?? c.email ?? 'Unnamed account'
 }
 
 export function useDepartment(departmentId?: string) {

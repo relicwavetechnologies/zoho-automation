@@ -266,7 +266,7 @@ export const toolsListPayloadSchema = z.object({
   toolIds: z.array(z.string().min(1)).min(1).max(100).optional(),
   family: z.enum(TOOL_FAMILY_IDS).optional(),
   query: z.string().trim().min(3).max(2_000).optional(),
-  contractMode: z.enum(['suggested', 'complete']).optional(),
+  contractMode: z.enum(['suggested', 'complete', 'complete_cached']).optional(),
 }).strict().refine(
   value => [value.toolId, value.toolIds, value.family].filter(Boolean).length <= 1,
   { message: 'Use one selector: toolId, toolIds, or family.' },

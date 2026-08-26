@@ -3,7 +3,7 @@ import type {
   LarkMessagingClientPort,
 } from '../../../../application/tools/families/lark-messaging.tool';
 import type { Client } from '@larksuiteoapi/node-sdk';
-import { LarkHttpClient, type LarkHttpClientDeps } from './lark-http.client';
+import { LarkHttpClient, type LarkHttpClientDeps, LarkApiError } from './lark-http.client';
 import type { Logger } from '../../../../shared/logger';
 import { planFinalCards } from '../lark-card.builder';
 import { extractInteractiveCardText } from '../lark-message-content';
@@ -177,6 +177,36 @@ export class LarkMessagingClient {
     const mode = data.chat_mode?.trim();
     if (mode === 'p2p' || mode === 'group' || mode === 'topic') return mode;
     throw new Error(`Lark chat response did not include a supported chat_mode for ${chatId}`);
+  }
+
+  /**
+   * Whether Divo's bot is in this chat, asked of Lark rather than inferred.
+   *
+   * A bot may only read a chat it belongs to, so a successful GET *is* the
+   * membership answer — that is the whole check, and it is one call.
+   *
+   * This exists because the alternative in use was worse: Divo recorded a room
+   * only when it happened to observe a message there, and a destination was
+   * refused until then. That proxy is both weaker than this — it proves traffic,
+   * not membership — and, as it turned out, not firing at all: no room had been
+   * recorded in twenty-four hours of the bot actively replying in one.
+   *
+   * A refusal is `false`. Anything else throws, because "we could not ask" must
+   * not arrive at the caller wearing the same face as "no".
+   */
+  async botIsInChat(chatId: string): Promise<boolean> {
+    try {
+      await this.sdk.request<{ chat_mode?: string }>(
+        'GET',
+        `/open-apis/im/v1/chats/${encodeURIComponent(chatId)}`,
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof LarkApiError && (error.status === 403 || error.status === 404)) {
+        return false;
+      }
+      throw error;
+    }
   }
 
   /** Resolve an exact chat's live open-ID membership with bounded pagination. */

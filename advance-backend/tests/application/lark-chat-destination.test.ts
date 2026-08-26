@@ -74,4 +74,69 @@ describe('Lark chat destinations', () => {
     );
     assert.equal(larkChatDeliveryAllowed({ status: 'other_company' }), false);
   });
+
+  // ── Asking Lark, rather than waiting to overhear it ─────────────────────
+
+  const membership = (answer: boolean | Error) => ({
+    async botIsInChat() {
+      return answer instanceof Error ? err({ message: answer.message }) : ok(answer);
+    },
+  });
+
+  it('allows a room Divo has never overheard but is demonstrably in', async () => {
+    // The failure this was built for. An administrator named a room, added the
+    // bot, and the digest still declined to post — because nothing had spoken
+    // there yet. The record that would have unblocked it was not being written
+    // at all, so the wait was for something that would never arrive.
+    const authorize = createLarkChatDestinationAuthorizer(directory([]), membership(true));
+    assert.deepEqual(
+      await authorize({ companyId: 'co-1', chatId: 'oc_quiet' }),
+      { status: 'allowed' },
+    );
+  });
+
+  it('still refuses a room the bot is not in', async () => {
+    const authorize = createLarkChatDestinationAuthorizer(directory([]), membership(false));
+    assert.deepEqual(
+      await authorize({ companyId: 'co-1', chatId: 'oc_elsewhere' }),
+      { status: 'unknown_chat' },
+    );
+  });
+
+  it('never lets membership overturn the cross-tenant refusal', async () => {
+    // One Lark install, two Divo companies, and a bot that is legitimately in
+    // both. Ownership is asked first and settles it: membership can rescue an
+    // unknown room, never a room known to be somebody else's.
+    const authorize = createLarkChatDestinationAuthorizer(
+      directory([{ companyId: 'co-2', chatId: 'oc_theirs' }]),
+      membership(true),
+    );
+    assert.deepEqual(
+      await authorize({ companyId: 'co-1', chatId: 'oc_theirs' }),
+      { status: 'other_company' },
+    );
+  });
+
+  it('a membership lookup that failed is unavailable, not a refusal', async () => {
+    // "We could not ask" must not arrive wearing the same face as "no": one is
+    // retried, the other sends somebody hunting for a permission problem that
+    // does not exist.
+    const authorize = createLarkChatDestinationAuthorizer(
+      directory([]),
+      membership(new Error('Lark timed out')),
+    );
+    const verdict = await authorize({ companyId: 'co-1', chatId: 'oc_quiet' });
+    assert.equal(verdict.status, 'unavailable');
+    // And delivery still goes ahead on it, because only `other_company` is a
+    // permanent no.
+    assert.equal(larkChatDeliveryAllowed(verdict), true);
+  });
+
+  it('without a membership port, an unknown room is still unknown', async () => {
+    const authorize = createLarkChatDestinationAuthorizer(directory([]));
+    assert.deepEqual(
+      await authorize({ companyId: 'co-1', chatId: 'oc_quiet' }),
+      { status: 'unknown_chat' },
+    );
+  });
 });

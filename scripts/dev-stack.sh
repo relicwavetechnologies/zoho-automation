@@ -175,6 +175,24 @@ cmd_start() {
     log "Tunnel and Redis ready"
   fi
 
+  # The tunnel is one ssh process to a VM, and ssh sessions end: a laptop
+  # sleeping, a wifi change, a blip on the way to the host. `dev:e2e` starts it
+  # once and exits, so nothing noticed — the backend then answered 503 for
+  # hours while every other row here still read green, because the process was
+  # alive and only its database had gone.
+  #
+  # `db-tunnel.sh watch` polls the same readiness check `status` uses and
+  # restarts the tunnel when it stops answering. It has existed since the
+  # watchdog was fixed; it was never started by anything.
+  if [[ -f "$RUN_DIR/tunnel-watch.pid" ]] && kill -0 "$(cat "$RUN_DIR/tunnel-watch.pid")" 2>/dev/null; then
+    warn "Tunnel watchdog already running — leaving it alone."
+  else
+    ( cd "$ROOT/advance-backend" && exec scripts/db-tunnel.sh watch ) \
+      >> "$LOG_DIR/infra.log" 2>&1 &
+    echo $! > "$RUN_DIR/tunnel-watch.pid"
+    log "Watching the DB tunnel every ${DB_TUNNEL_WATCH_INTERVAL:-15}s"
+  fi
+
   # 2. The Pi controller, before the backend, so an admitted run has somewhere
   #    to go the moment the backend accepts one.
   start_service "controller" "divo-pi" \
@@ -235,6 +253,13 @@ cmd_status() {
   controller_healthy && ok "Pi controller  http://127.0.0.1:4317"      || down "Pi controller  http://127.0.0.1:4317"
   mcp_healthy        && ok "Google MCP     http://127.0.0.1:18000/mcp" || down "Google MCP     http://127.0.0.1:18000/mcp"
   tunnel_healthy     && ok "Postgres       127.0.0.1:15432 (tunnel)"   || down "Postgres       127.0.0.1:15432 (tunnel)"
+  # Said out loud, because an unwatched tunnel is the difference between a blip
+  # and a dead afternoon, and there is nothing on screen to tell them apart.
+  if [[ -f "$RUN_DIR/tunnel-watch.pid" ]] && kill -0 "$(cat "$RUN_DIR/tunnel-watch.pid")" 2>/dev/null; then
+    ok "tunnel watchdog  every ${DB_TUNNEL_WATCH_INTERVAL:-15}s"
+  else
+    down "tunnel watchdog  not running — a dropped tunnel will stay dropped"
+  fi
   redis_healthy      && ok "Redis          127.0.0.1:6380 / 6381"      || down "Redis          127.0.0.1:6380 / 6381"
   docker info >/dev/null 2>&1 && report_image
 
@@ -246,6 +271,17 @@ cmd_status() {
 }
 
 cmd_stop() {
+  # Before the services, so it cannot helpfully restart a tunnel we are about
+  # to take down.
+  if [[ -f "$RUN_DIR/tunnel-watch.pid" ]]; then
+    local wpid; wpid=$(cat "$RUN_DIR/tunnel-watch.pid")
+    kill -- "-$(ps -o pgid= "$wpid" 2>/dev/null | tr -d ' ')" 2>/dev/null \
+      || kill "$wpid" 2>/dev/null \
+      || true
+    rm -f "$RUN_DIR/tunnel-watch.pid"
+    log "Stopped tunnel watchdog"
+  fi
+
   for name in admin backend controller; do
     local pidfile="$RUN_DIR/$name.pid"
     if [[ -f "$pidfile" ]]; then

@@ -94,6 +94,28 @@ export class LarkChannelAdapter implements ChannelAdapter {
     return Boolean(openId && this.botOpenId && openId === this.botOpenId);
   }
 
+  /**
+   * Whether Divo's bot is in this chat.
+   *
+   * Exposed because a chat *destination* has to be vetted before anything is
+   * posted to it, and the only honest way to vet one is to ask Lark. Wrapped as
+   * a `Result` at this seam, like every other outward call here, so a caller
+   * cannot mistake "we could not ask" for "no".
+   */
+  async botIsInChat(chatId: string): Promise<Result<boolean, ChannelError>> {
+    try {
+      return ok(await this.messagingClient.botIsInChat(chatId));
+    } catch (error) {
+      return err(new ChannelError({
+        channel: 'lark',
+        stage: 'edit_status',
+        reason: 'upstream_5xx',
+        cause: error,
+        message: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+
   async listThreadMessages(threadId: string, limit?: number) {
     return this.messagingClient.listThreadMessages(threadId, limit);
   }

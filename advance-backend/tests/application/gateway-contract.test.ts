@@ -136,6 +136,10 @@ describe('public gateway request contract', () => {
       toolIds: ['googleSheets'],
       contractMode: 'complete',
     }).success, true);
+    assert.equal(toolsListPayloadSchema.safeParse({
+      toolIds: ['googleSheets'],
+      contractMode: 'complete_cached',
+    }).success, true);
     assert.equal(toolsListPayloadSchema.safeParse({ family: 'unknown' }).success, false);
     assert.equal(toolsListPayloadSchema.safeParse({
       toolId: 'googleGmail',

@@ -20,3 +20,7 @@
 
 - Pi receives skills from the backend native-skill bootstrap. It never writes the mounted skill files.
 - A changed bootstrap digest replaces the warm Pi process between turns. The new skill is therefore promised from the next turn, not the turn that approved it.
+- A **member grant scope** is one fresh, principal-bound projection of the member's active department IDs, department-role IDs, and optional active admin role. Runtime context may share it with skill- and connection-grant adapters to avoid duplicate membership reads; it is input to those modules, never execution authority, and each module still evaluates its own grants.
+- A **provider schema artifact** is a sanitized, bounded, content-addressed snapshot of one reviewed external provider's tool schemas. It contains no member data, connection identifier, credential, endpoint URL, lease, permission snapshot, or execution authority.
+- Postgres owns immutable provider schema artifact bytes and a freshness-fenced current head keyed by an endpoint fingerprint. Backend and Pi process maps are read accelerators only, so process loss does not force Google or Airtable schema discovery back onto a member's turn.
+- Provider schema artifacts expire by policy and refresh through their provider adapter. Corrupt or expired bytes are never called current. Actual provider calls still cross the backend gateway and re-check current permission, connection, approval, and rate policy.

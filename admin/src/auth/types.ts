@@ -40,6 +40,7 @@ export type Session = {
   avatarUrl: string | null;
   role: CompanyRole;
   departments: SessionDepartment[];
+  capabilities: Record<string, readonly string[]> | null;
   /**
    * A session created by password sign-in carries no Lark identity, so that
    * person's Lark chat cannot resolve it until they link Lark once. Surfaced

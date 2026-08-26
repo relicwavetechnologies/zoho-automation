@@ -148,7 +148,7 @@ export function getWarmPiProcess(profile) {
 }
 
 export function hasWarmPiProcess(profile) {
-	return warmPiProcesses.has(profile);
+	return warmPiProcesses.get(profile)?.alive === true;
 }
 
 export async function discardWarmPiProcess(profile) {
@@ -169,8 +169,10 @@ async function stopWarmRuntime(profile) {
 }
 
 export function rememberWarmPiProcess(profile, entry) {
+	entry.alive = true;
 	warmPiProcesses.set(profile, entry);
 	void entry.exited.finally(() => {
+		entry.alive = false;
 		if (warmPiProcesses.get(profile) === entry) warmPiProcesses.delete(profile);
 	});
 }

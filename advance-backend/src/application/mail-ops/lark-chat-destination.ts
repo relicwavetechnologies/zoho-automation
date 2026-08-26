@@ -26,6 +26,26 @@ export interface LarkChatDirectoryPort {
   ): Promise<Result<readonly string[], InfraError>>;
 }
 
+/**
+ * Whether Divo's bot is in a chat, asked of Lark.
+ *
+ * A second source of truth for the same question, and deliberately so: the
+ * directory records a room Divo *observed a message in*, which is evidence of
+ * traffic rather than of membership, and is silent about a room that is
+ * perfectly legitimate and simply quiet. This one asks the provider.
+ */
+export interface LarkChatMembershipPort {
+  /**
+   * The failure is typed as a sentence, not as an `InfraError`.
+   *
+   * The only caller turns it into `unavailable` and shows the reason, and the
+   * adapter behind this raises a `ChannelError` — narrowing to what is actually
+   * read keeps a port in the application layer from naming an infrastructure
+   * error class it has no use for.
+   */
+  botIsInChat(chatId: string): Promise<Result<boolean, { readonly message: string }>>;
+}
+
 export interface AuthorizeLarkChatDestination {
   (input: {
     readonly companyId: string;
@@ -48,6 +68,20 @@ export interface AuthorizeLarkChatDestination {
  */
 export function createLarkChatDestinationAuthorizer(
   directory: LarkChatDirectoryPort,
+  /**
+   * Optional, and the difference between "quiet" and "forbidden".
+   *
+   * Without it a room Divo has never overheard is refused, which was the whole
+   * story of the follow-up digest: an administrator named a room, added the
+   * bot, and the digest still declined to post — because nothing had spoken
+   * there yet. Worse, the record that would have unblocked it was not being
+   * written at all, so the wait was for something that would never come.
+   *
+   * The cross-tenant guard is untouched. A room another company owns is refused
+   * before this is consulted, so membership can only ever rescue an unknown
+   * room, never overturn a known one.
+   */
+  membership?: LarkChatMembershipPort,
 ): AuthorizeLarkChatDestination {
   return async ({ companyId, chatId }) => {
     const own = await directory.get({ companyId, chatId });
@@ -60,9 +94,16 @@ export function createLarkChatDestinationAuthorizer(
     if (!owners.ok) {
       return { status: 'unavailable', reason: owners.error.message };
     }
-    return owners.value.length > 0
-      ? { status: 'other_company' }
-      : { status: 'unknown_chat' };
+    if (owners.value.length > 0) return { status: 'other_company' };
+
+    if (!membership) return { status: 'unknown_chat' };
+    const inChat = await membership.botIsInChat(chatId);
+    if (!inChat.ok) {
+      // Could not ask. Not the same as "not a member", and reported as the
+      // retryable thing it is rather than as a room this company may not have.
+      return { status: 'unavailable', reason: inChat.error.message };
+    }
+    return inChat.value ? { status: 'allowed' } : { status: 'unknown_chat' };
   };
 }
 

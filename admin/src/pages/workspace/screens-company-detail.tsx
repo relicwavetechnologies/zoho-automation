@@ -15,7 +15,7 @@ import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
   ArrowLeft, Ban, Brain, Building2, Check, ChevronDown, CircleAlert, Clock, Code2, Coins,
-  KeyRound, Link2, Lock, ShieldCheck, Sparkles, TriangleAlert, Users, Wrench,
+  KeyRound, Link2, Lock, ShieldCheck, Sparkles, TriangleAlert, UserPlus, Users, Wrench,
 } from 'lucide-react'
 import {
   Bar, ClickRow, Empty, Fade, NoAccess, PageHeader, Panel, Seg, Skel, SkelRows, Spark,
@@ -28,8 +28,10 @@ import { useCompanyScope, useDirectory, useMemberSpend } from '@/cursor/use-spen
 import { useProxyPolicy, useSaveProxyPolicy, type ProxyPolicyInput } from '@/cursor/use-proxy-policy'
 import { useProxyAudit, useProxyModels } from '@/cursor/use-proxy'
 import {
-  ROLE_LABEL, ago, displayName, initialsOf, useDepartmentDetail, useRuns,
+  ROLE_LABEL, ago, displayName, initialsOf, useDepartmentDetail, useDepartmentPeopleAdmin, useRuns,
 } from './data/use-company'
+import { AddPersonDrawer } from './screens-team'
+import { notify } from '@/lib/notify'
 import { describeTraceStep, foldRepeats, readStep, summarizeTraceValue } from './data/trace-step'
 import { runTitle } from './data/use-my-activity'
 import { useTeamUsage } from './data/use-team'
@@ -734,6 +736,8 @@ export function CompanyDepartmentDetail({ replay, go }: Props) {
   const [tab, setTab] = useState<'people' | 'roles' | 'access'>('people')
   const { data, loading, refused, notFound, error, refresh } = useDepartmentDetail(departmentId)
   const { usage } = useTeamUsage(departmentId)
+  const { findCandidates, addMember, invite } = useDepartmentPeopleAdmin(departmentId)
+  const [adding, setAdding] = useState(false)
 
   if (!loading && !data) {
     return (
@@ -792,6 +796,19 @@ export function CompanyDepartmentDetail({ replay, go }: Props) {
           dept?.description
           ?? `${members.length} ${members.length === 1 ? 'person' : 'people'}, ${roles.length} ${roles.length === 1 ? 'role' : 'roles'}. Managers govern their own department — this view is for when you need to reach in.`
         }
+        /*
+         * The reach-in that was missing.
+         *
+         * Adding somebody lived only on the manager's own page, and a manager
+         * is by definition already in the team — so a department created five
+         * minutes ago, with nobody in it and nobody leading it, could not be
+         * given its first member from anywhere in the product.
+         */
+        actions={dept ? (
+          <button type="button" className="btn primary" onClick={() => setAdding(true)}>
+            <UserPlus size={14} />Add someone
+          </button>
+        ) : undefined}
       />
 
       {/* The one condition an admin has to act on: with no manager, every gated
@@ -830,6 +847,24 @@ export function CompanyDepartmentDetail({ replay, go }: Props) {
           ]}
         />
       </div>
+
+      {adding && dept ? (
+        <AddPersonDrawer
+          roles={roles}
+          search={findCandidates}
+          onAdd={async (userId, roleId, name) => {
+            try {
+              await addMember(userId, roleId)
+              notify.done(`${name} added to ${dept.name}`)
+              await refresh()
+            } catch (e) {
+              notify.failed('They were not added', e instanceof Error ? e.message : null)
+            }
+          }}
+          onInvite={invite}
+          onClose={() => setAdding(false)}
+        />
+      ) : null}
 
       {tab === 'people' ? (
         <Panel source="teamPeople">

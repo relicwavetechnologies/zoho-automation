@@ -5,6 +5,8 @@ import type {
   AirtableMcpToolDescription,
 } from '../../application/tools/families/airtable-mcp.tool';
 import type { AirtableMcpSchemaCatalog } from './airtable-mcp-schema.catalog';
+import { AIRTABLE_MCP_AUTH_CONTRACT } from '../../application/airtable/airtable-mcp-manifest';
+import { findForbiddenProviderInputPath } from '../../shared/provider-schema-safety';
 
 export const AIRTABLE_MCP_DEFAULT_URL = 'https://mcp.airtable.com/mcp';
 
@@ -22,8 +24,11 @@ export class AirtableMcpClient implements AirtableMcpPort {
     private readonly mcpUrl = AIRTABLE_MCP_DEFAULT_URL,
   ) {}
 
-  async describeTool(name: string): Promise<AirtableMcpToolDescription | null> {
-    return this.schemas.describe(name, () => this.listTools());
+  async describeTool(
+    name: string,
+    options: { readonly waitForProvider?: boolean } = {},
+  ): Promise<AirtableMcpToolDescription | null> {
+    return this.schemas.describe(name, () => this.listTools(), options);
   }
 
   async callTool(
@@ -31,6 +36,7 @@ export class AirtableMcpClient implements AirtableMcpPort {
     input: Readonly<Record<string, unknown>>,
     options?: { readonly signal?: AbortSignal; readonly maxTotalTimeoutMs?: number },
   ): Promise<unknown> {
+    assertSafeAirtableMcpInput(input);
     return this.withClient(async (client) => {
       const result = await client.callTool(
         { name, arguments: { ...input } },
@@ -126,6 +132,18 @@ export class AirtableMcpClient implements AirtableMcpPort {
       await transport.terminateSession().catch(() => undefined);
       await client.close().catch(() => undefined);
     }
+  }
+}
+
+export function assertSafeAirtableMcpInput(value: unknown): void {
+  const forbiddenPath = findForbiddenProviderInputPath(value, [
+    ...AIRTABLE_MCP_AUTH_CONTRACT.forbiddenToolArguments,
+    ...AIRTABLE_MCP_AUTH_CONTRACT.forbiddenLocalFileArguments,
+  ]);
+  if (forbiddenPath) {
+    throw new Error(
+      `${forbiddenPath} is not allowed; Airtable identity and credentials come from the selected backend-owned connection`,
+    );
   }
 }
 

@@ -86,8 +86,9 @@ export const notify = {
   },
 
   /** It worked, and nothing on screen already says so. */
-  done(what: string, detailText?: string | null) {
-    toast.success(what, { description: detail(detailText), duration: DURATION.brief, id: idFor(what, detailText) })
+  done(what: string, detailText?: string | null, action?: NotifyAction) {
+    const duration = action ? DURATION.actionable : DURATION.brief
+    toast.success(what, { ...withAction(detailText, action), duration, id: idFor(what, detailText) })
   },
 
   /**

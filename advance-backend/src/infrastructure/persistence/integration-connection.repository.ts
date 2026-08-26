@@ -6,6 +6,11 @@ import { err, ok, type Result } from '../../shared/result';
 import { wrapInfra, type InfraError } from '../../shared/errors';
 import type { ConnectionProvider } from '../../domain/connections/connection-provider';
 import { normalizeShopDomain } from '../../domain/shopify/shopify-shop';
+import {
+  assertMemberGrantScope,
+  createMemberGrantScope,
+  type MemberGrantScope,
+} from '../../domain/permissions/member-grant-scope';
 
 export type IntegrationProvider = ConnectionProvider;
 
@@ -249,6 +254,20 @@ const accessRank: Record<IntegrationGrantAccess, number> = {
 
 function bestAccess(values: IntegrationGrantAccess[]): IntegrationGrantAccess {
   return values.sort((a, b) => accessRank[b] - accessRank[a])[0] ?? 'read_only';
+}
+
+function connectionGrantWhere(scope: MemberGrantScope) {
+  return [
+    { granteeType: 'user', granteeId: scope.userId },
+    { granteeType: 'company', granteeId: scope.companyId },
+    ...(scope.departmentIds.length > 0
+      ? [{ granteeType: 'department', granteeId: { in: [...scope.departmentIds] } }]
+      : []),
+    ...(scope.departmentRoleIds.length > 0
+      ? [{ granteeType: 'role', granteeId: { in: [...scope.departmentRoleIds] } }]
+      : []),
+    ...(scope.adminRole ? [{ granteeType: 'role', granteeId: scope.adminRole }] : []),
+  ];
 }
 
 function dedupeKey(input: {
@@ -1148,6 +1167,7 @@ export class IntegrationConnectionRepository {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     return this.listAccessibleProviderConnections(input, SHOPIFY_PROVIDER);
   }
@@ -1403,28 +1423,16 @@ export class IntegrationConnectionRepository {
     readonly userId: string;
     readonly includeReauthorizationRequired?: boolean;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
       input.abortSignal?.throwIfAborted();
-      const memberships = await this.db.departmentMembership.findMany({
-        where:  { userId: input.userId, status: 'active', department: { companyId: input.companyId, status: 'active' } },
-        select: { departmentId: true, roleId: true },
-      });
-      input.abortSignal?.throwIfAborted();
-      const departmentIds = memberships.map(m => m.departmentId);
-      const departmentRoleIds = memberships.map(m => m.roleId);
-      const adminMembership = await this.db.adminMembership.findFirst({
-        where:  { userId: input.userId, companyId: input.companyId, isActive: true },
-        select: { role: true },
-      });
-      input.abortSignal?.throwIfAborted();
-      const grantOr = [
-        { granteeType: 'user', granteeId: input.userId },
-        { granteeType: 'company', granteeId: input.companyId },
-        ...(departmentIds.length ? [{ granteeType: 'department', granteeId: { in: departmentIds } }] : []),
-        ...(departmentRoleIds.length ? [{ granteeType: 'role', granteeId: { in: departmentRoleIds } }] : []),
-        ...(adminMembership?.role ? [{ granteeType: 'role', granteeId: adminMembership.role }] : []),
-      ];
+      const grantOr = await this.grantScopeFor(
+        input.companyId,
+        input.userId,
+        input.abortSignal,
+        input.memberGrantScope,
+      );
 
       const rows = await this.db.integrationConnection.findMany({
         where: {
@@ -1537,6 +1545,7 @@ export class IntegrationConnectionRepository {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     return this.listAccessibleProviderConnections(input, LARK_PROVIDER);
   }
@@ -1675,28 +1684,16 @@ export class IntegrationConnectionRepository {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
       input.abortSignal?.throwIfAborted();
-      const memberships = await this.db.departmentMembership.findMany({
-        where:  { userId: input.userId, status: 'active', department: { companyId: input.companyId, status: 'active' } },
-        select: { departmentId: true, roleId: true },
-      });
-      input.abortSignal?.throwIfAborted();
-      const departmentIds = memberships.map(m => m.departmentId);
-      const departmentRoleIds = memberships.map(m => m.roleId);
-      const adminMembership = await this.db.adminMembership.findFirst({
-        where:  { userId: input.userId, companyId: input.companyId, isActive: true },
-        select: { role: true },
-      });
-      input.abortSignal?.throwIfAborted();
-      const grantOr = [
-        { granteeType: 'user', granteeId: input.userId },
-        { granteeType: 'company', granteeId: input.companyId },
-        ...(departmentIds.length ? [{ granteeType: 'department', granteeId: { in: departmentIds } }] : []),
-        ...(departmentRoleIds.length ? [{ granteeType: 'role', granteeId: { in: departmentRoleIds } }] : []),
-        ...(adminMembership?.role ? [{ granteeType: 'role', granteeId: adminMembership.role }] : []),
-      ];
+      const grantOr = await this.grantScopeFor(
+        input.companyId,
+        input.userId,
+        input.abortSignal,
+        input.memberGrantScope,
+      );
 
       const rows = await this.db.integrationConnection.findMany({
         where: {
@@ -1745,6 +1742,7 @@ export class IntegrationConnectionRepository {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
       input.abortSignal?.throwIfAborted();
@@ -1752,6 +1750,7 @@ export class IntegrationConnectionRepository {
         input.companyId,
         input.userId,
         input.abortSignal,
+        input.memberGrantScope,
       );
       input.abortSignal?.throwIfAborted();
       const rows = await this.db.integrationConnection.findMany({
@@ -1948,6 +1947,7 @@ export class IntegrationConnectionRepository {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
       input.abortSignal?.throwIfAborted();
@@ -1955,6 +1955,7 @@ export class IntegrationConnectionRepository {
         input.companyId,
         input.userId,
         input.abortSignal,
+        input.memberGrantScope,
       );
       input.abortSignal?.throwIfAborted();
       const rows = await this.db.integrationConnection.findMany({
@@ -2208,27 +2209,31 @@ export class IntegrationConnectionRepository {
     companyId: string,
     userId: string,
     abortSignal?: AbortSignal,
+    memberGrantScope?: MemberGrantScope,
   ) {
     abortSignal?.throwIfAborted();
-    const memberships = await this.db.departmentMembership.findMany({
-      where:  { userId, status: 'active', department: { companyId, status: 'active' } },
-      select: { departmentId: true, roleId: true },
-    });
+    if (memberGrantScope) {
+      assertMemberGrantScope(memberGrantScope, { companyId, userId });
+      return connectionGrantWhere(memberGrantScope);
+    }
+    const [memberships, adminMembership] = await Promise.all([
+      this.db.departmentMembership.findMany({
+        where:  { userId, status: 'active', department: { companyId, status: 'active' } },
+        select: { departmentId: true, roleId: true },
+      }),
+      this.db.adminMembership.findFirst({
+        where:  { userId, companyId, isActive: true },
+        select: { role: true },
+      }),
+    ]);
     abortSignal?.throwIfAborted();
-    const departmentIds = memberships.map(m => m.departmentId);
-    const departmentRoleIds = memberships.map(m => m.roleId);
-    const adminMembership = await this.db.adminMembership.findFirst({
-      where:  { userId, companyId, isActive: true },
-      select: { role: true },
-    });
-    abortSignal?.throwIfAborted();
-    return [
-      { granteeType: 'user', granteeId: userId },
-      { granteeType: 'company', granteeId: companyId },
-      ...(departmentIds.length ? [{ granteeType: 'department', granteeId: { in: departmentIds } }] : []),
-      ...(departmentRoleIds.length ? [{ granteeType: 'role', granteeId: { in: departmentRoleIds } }] : []),
-      ...(adminMembership?.role ? [{ granteeType: 'role', granteeId: adminMembership.role }] : []),
-    ];
+    return connectionGrantWhere(createMemberGrantScope({
+      companyId,
+      userId,
+      departmentIds: memberships.map(membership => membership.departmentId),
+      departmentRoleIds: memberships.map(membership => membership.roleId),
+      adminRole: adminMembership?.role ?? null,
+    }));
   }
 
   async findAccessibleCanvaConnection(input: {
@@ -2265,28 +2270,16 @@ export class IntegrationConnectionRepository {
     readonly companyId: string;
     readonly userId: string;
     readonly abortSignal?: AbortSignal;
+    readonly memberGrantScope?: MemberGrantScope;
   }): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
       input.abortSignal?.throwIfAborted();
-      const memberships = await this.db.departmentMembership.findMany({
-        where:  { userId: input.userId, status: 'active', department: { companyId: input.companyId, status: 'active' } },
-        select: { departmentId: true, roleId: true },
-      });
-      input.abortSignal?.throwIfAborted();
-      const departmentIds = memberships.map(m => m.departmentId);
-      const departmentRoleIds = memberships.map(m => m.roleId);
-      const adminMembership = await this.db.adminMembership.findFirst({
-        where:  { userId: input.userId, companyId: input.companyId, isActive: true },
-        select: { role: true },
-      });
-      input.abortSignal?.throwIfAborted();
-      const grantOr = [
-        { granteeType: 'user', granteeId: input.userId },
-        { granteeType: 'company', granteeId: input.companyId },
-        ...(departmentIds.length ? [{ granteeType: 'department', granteeId: { in: departmentIds } }] : []),
-        ...(departmentRoleIds.length ? [{ granteeType: 'role', granteeId: { in: departmentRoleIds } }] : []),
-        ...(adminMembership?.role ? [{ granteeType: 'role', granteeId: adminMembership.role }] : []),
-      ];
+      const grantOr = await this.grantScopeFor(
+        input.companyId,
+        input.userId,
+        input.abortSignal,
+        input.memberGrantScope,
+      );
 
       const rows = await this.db.integrationConnection.findMany({
         where: {
@@ -2378,30 +2371,18 @@ export class IntegrationConnectionRepository {
       readonly companyId: string;
       readonly userId: string;
       readonly abortSignal?: AbortSignal;
+      readonly memberGrantScope?: MemberGrantScope;
     },
     provider: IntegrationProvider,
   ): Promise<Result<ConnectionSummary[], InfraError>> {
     try {
       input.abortSignal?.throwIfAborted();
-      const memberships = await this.db.departmentMembership.findMany({
-        where: { userId: input.userId, status: 'active', department: { companyId: input.companyId, status: 'active' } },
-        select: { departmentId: true, roleId: true },
-      });
-      input.abortSignal?.throwIfAborted();
-      const departmentIds = memberships.map(membership => membership.departmentId);
-      const departmentRoleIds = memberships.map(membership => membership.roleId);
-      const adminMembership = await this.db.adminMembership.findFirst({
-        where: { userId: input.userId, companyId: input.companyId, isActive: true },
-        select: { role: true },
-      });
-      input.abortSignal?.throwIfAborted();
-      const grantOr = [
-        { granteeType: 'user', granteeId: input.userId },
-        { granteeType: 'company', granteeId: input.companyId },
-        ...(departmentIds.length ? [{ granteeType: 'department', granteeId: { in: departmentIds } }] : []),
-        ...(departmentRoleIds.length ? [{ granteeType: 'role', granteeId: { in: departmentRoleIds } }] : []),
-        ...(adminMembership?.role ? [{ granteeType: 'role', granteeId: adminMembership.role }] : []),
-      ];
+      const grantOr = await this.grantScopeFor(
+        input.companyId,
+        input.userId,
+        input.abortSignal,
+        input.memberGrantScope,
+      );
       const rows = await this.db.integrationConnection.findMany({
         where: {
           companyId: input.companyId,

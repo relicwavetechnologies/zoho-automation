@@ -84,7 +84,10 @@ import {
   WorkResolutionService,
   withWorkDiscoveryPermissions as withGatewayDiscoveryPermissions,
 } from './work-resolution.service';
-import type { WorkContractBootstrapPort } from './work-contract-bootstrap.port';
+import type {
+  WorkContractBootstrapMode,
+  WorkContractBootstrapPort,
+} from './work-contract-bootstrap.port';
 import {
   measureRunLatency,
   type RunLatencyTrace,
@@ -726,7 +729,7 @@ export class GatewayDispatcher {
     permission: PermissionResult;
     registryRevision: number;
     query?: string;
-    contractMode?: 'suggested' | 'complete';
+    contractMode?: WorkContractBootstrapMode;
     toolIds: readonly string[];
   }): Promise<WorkBootstrap> {
     return this.workBootstrap.build({

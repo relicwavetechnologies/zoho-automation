@@ -1,9 +1,30 @@
-import { AIRTABLE_PRODUCTS } from '../../application/airtable/airtable-mcp-manifest';
+import {
+  AIRTABLE_MCP_AUTH_CONTRACT,
+  AIRTABLE_MCP_SOURCE,
+  AIRTABLE_PRODUCTS,
+} from '../../application/airtable/airtable-mcp-manifest';
 import type { AirtableMcpToolDescription } from '../../application/tools/families/airtable-mcp.tool';
+import {
+  ProviderSchemaArtifactCatalogue,
+  type ProviderSchemaDescribeOptions,
+  type ProviderSchemaArtifactLogger,
+  type ProviderSchemaArtifactStore,
+} from '../../application/gateway/provider-schema-artifact-catalogue';
+import { sanitizeProviderSchemaTool } from '../../shared/provider-schema-safety';
 
 const APPROVED_NATIVE_TOOLS = new Set<string>(
   AIRTABLE_PRODUCTS.flatMap(product => product.operations.map(operation => operation.nativeTool)),
 );
+const AIRTABLE_SCHEMA_PROJECTION_REVISION = [
+  AIRTABLE_MCP_SOURCE.serverInfo.name,
+  AIRTABLE_MCP_SOURCE.serverInfo.version,
+  AIRTABLE_MCP_SOURCE.capturedAt,
+  'projection-v2',
+].join(':');
+const FORBIDDEN_SCHEMA_PROPERTIES = [
+  ...AIRTABLE_MCP_AUTH_CONTRACT.forbiddenToolArguments,
+  ...AIRTABLE_MCP_AUTH_CONTRACT.forbiddenLocalFileArguments,
+];
 
 /**
  * Process-level schema catalogue for Airtable's hosted MCP.
@@ -14,45 +35,50 @@ const APPROVED_NATIVE_TOOLS = new Set<string>(
  * connection's own token.
  */
 export class AirtableMcpSchemaCatalog {
-  private snapshot: ReadonlyMap<string, AirtableMcpToolDescription> | undefined;
-  private loading: Promise<ReadonlyMap<string, AirtableMcpToolDescription>> | undefined;
+  private readonly catalogue: ProviderSchemaArtifactCatalogue<AirtableMcpToolDescription>;
+
+  constructor(options: {
+    readonly store?: ProviderSchemaArtifactStore;
+    readonly logger?: ProviderSchemaArtifactLogger;
+    readonly partitionKey?: string;
+    readonly now?: () => number;
+    readonly ttlMs?: number;
+  } = {}) {
+    this.catalogue = new ProviderSchemaArtifactCatalogue({
+      provider: 'airtable',
+      partitionKey: options.partitionKey ?? 'approved-global',
+      projectionRevision: AIRTABLE_SCHEMA_PROJECTION_REVISION,
+      approvedNames: APPROVED_NATIVE_TOOLS,
+      project: sanitizeAirtableMcpToolDescription,
+      ...(options.store ? { store: options.store } : {}),
+      ...(options.logger ? { logger: options.logger } : {}),
+      ...(options.now ? { now: options.now } : {}),
+      ...(options.ttlMs !== undefined ? { ttlMs: options.ttlMs } : {}),
+    });
+  }
 
   async describe(
     name: string,
     loadAll: () => Promise<readonly AirtableMcpToolDescription[]>,
+    options: ProviderSchemaDescribeOptions = {},
   ): Promise<AirtableMcpToolDescription | null> {
-    // An unapproved native tool is never described, so the model cannot learn
-    // the shape of an operation the manifest deliberately withheld.
-    if (!APPROVED_NATIVE_TOOLS.has(name)) return null;
-    const schemas = this.snapshot ?? await this.load(loadAll);
-    return schemas.get(name) ?? null;
+    return this.catalogue.describe(name, loadAll, options);
   }
 
   invalidate(): void {
-    this.snapshot = undefined;
-    this.loading = undefined;
+    this.catalogue.invalidate();
   }
+}
 
-  private async load(
-    loadAll: () => Promise<readonly AirtableMcpToolDescription[]>,
-  ): Promise<ReadonlyMap<string, AirtableMcpToolDescription>> {
-    if (this.snapshot) return this.snapshot;
-    if (this.loading) return this.loading;
-
-    const pending = loadAll().then((tools) => {
-      const approved = new Map<string, AirtableMcpToolDescription>();
-      for (const tool of tools) {
-        if (!APPROVED_NATIVE_TOOLS.has(tool.name)) continue;
-        approved.set(tool.name, tool);
-      }
-      this.snapshot = approved;
-      return approved;
-    });
-    this.loading = pending;
-    try {
-      return await pending;
-    } finally {
-      if (this.loading === pending) this.loading = undefined;
-    }
-  }
+/** Produce the exact model-facing Airtable schema enforced at the call seam. */
+export function sanitizeAirtableMcpToolDescription(
+  tool: AirtableMcpToolDescription,
+): AirtableMcpToolDescription {
+  return sanitizeProviderSchemaTool(tool, {
+    forbiddenProperties: FORBIDDEN_SCHEMA_PROPERTIES,
+    appendedDescription: [
+      'Divo supplies Airtable identity from the selected backend-owned connection.',
+      'Sidecar-local files are unavailable; send ordinary Airtable values only.',
+    ],
+  });
 }

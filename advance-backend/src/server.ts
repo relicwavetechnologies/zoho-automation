@@ -22,6 +22,9 @@ import { createLarkAuthRoutes } from './http/lark/lark-auth.routes';
 import { buildSignInConnectedCard } from './infrastructure/channels/lark/lark-signin';
 import { createShopifyAuthRoutes } from './http/shopify/shopify-auth.routes';
 import { createShopifyWebhookRoutes } from './http/shopify/shopify-webhook.routes';
+import { createWhatsappWebhookRoutes } from './http/whatsapp/whatsapp.webhook.routes';
+import { createFollowUpRoutes } from './http/member/follow-ups.routes';
+import { createBroadcastRoutes } from './http/member/broadcasts.routes';
 import { ShopifyWebhookRepository } from './infrastructure/persistence/shopify-webhook.repository';
 import { PrismaShopifyPrivacyRepository } from './infrastructure/persistence/shopify-privacy.repository';
 import { drainExpiredShopifyPrivacyRequests } from './application/shopify/shopify-privacy-retention.service';
@@ -176,6 +179,40 @@ export const createServer = (c: Container): DivoServerApplication => {
     );
     googleExchangeRecoveryTimer.unref?.();
     c.mailOpsWorker.start();
+
+    // Both WhatsApp sweeps are background work and belong under the same gate as
+    // Mail Ops. The reconcile worker keeps the stream honest — replaying stuck
+    // receipts and calling out a handset that went dark — and the analysis
+    // worker is the one that spends money, bounded by its own quiet window and
+    // cooldown rather than by this flag.
+    if (c.whatsappFollowUps) {
+      c.whatsappFollowUps.reconcileWorker.start();
+      c.whatsappFollowUps.analysisWorker.start();
+      c.logger.info('whatsapp_followups.workers_started');
+    }
+  } else if (c.whatsappFollowUps) {
+    // Configured but not running. Said out loud, because the tab will look
+    // healthy and simply never produce a follow-up.
+    c.logger.warn('whatsapp_followups.workers_skipped', {
+      reason: 'disabled by DIVO_AUTONOMOUS_WORKERS_ENABLED',
+    });
+  }
+
+  /**
+   * The broadcast poller, started whatever `DIVO_AUTONOMOUS_WORKERS_ENABLED`
+   * says.
+   *
+   * Deliberately outside that gate, unlike the two sweeps above. Those are Divo
+   * acting on its own — reading chats, spending model calls — and turning them
+   * off is turning the agent off. This one is bookkeeping on work a person
+   * explicitly started: the gateway has no webhook for batch progress, so
+   * without something asking, a send whose author closed the tab stays marked
+   * `sending` forever and its recipients stay marked `pending` for messages that
+   * went out ten minutes ago.
+   */
+  if (c.whatsappFollowUps) {
+    c.whatsappFollowUps.broadcastWorker.start();
+    c.logger.info('whatsapp_broadcast.worker_started');
   }
 
   c.workbookConversionWorker.start();
@@ -610,6 +647,21 @@ export const createServer = (c: Container): DivoServerApplication => {
       frontendBaseUrl: c.env.APP_BASE_URL,
     }),
   );
+  // WhatsApp's one public route. Mounted only when a gateway is configured, so
+  // a deployment without OpenWA has no unauthenticated endpoint standing open.
+  if (c.whatsappFollowUps) {
+    app.use(
+      '/api/whatsapp',
+      createWhatsappWebhookRoutes({
+        ingest: c.whatsappFollowUps.ingest,
+        ...(c.whatsappFollowUps.webhookSecret
+          ? { webhookSecret: c.whatsappFollowUps.webhookSecret }
+          : {}),
+        logger: c.logger,
+      }),
+    );
+  }
+
   app.use(
     '/webhooks/shopify',
     createShopifyWebhookRoutes({
@@ -674,6 +726,45 @@ export const createServer = (c: Container): DivoServerApplication => {
       maxBytes: c.env.KNOWLEDGE_FILE_MAX_MB * 1_024 * 1_024,
     }),
   );
+
+  // The follow-ups tab. Member auth: a person at a keyboard, scoped to their own
+  // department server-side.
+  if (c.whatsappFollowUps) {
+    app.use(
+      '/api/follow-ups',
+      memberAuth,
+      createFollowUpRoutes({
+        followUps: c.whatsappFollowUps.followUpsRepo,
+        sessions: c.whatsappFollowUps.sessions,
+        historyRepair: c.whatsappFollowUps.historyRepair,
+        // The same resolver mail automations use. Two answers to "which
+        // department is this person in" is the duplicate authority rule 5
+        // forbids.
+        resolveDepartmentId: c.resolveMemberDepartmentId,
+        // `whatsappFollowUps`, per action group. Grant-only, so this refuses
+        // every department until one is granted it — including, deliberately,
+        // the department the handset is linked to.
+        authorize: c.canUseFollowUps,
+        auditService: c.auditService,
+        logger: c.logger,
+      }),
+    );
+
+    // The Broadcast tab. Same auth, the same department scope and the same
+    // capability, mounted apart because it is the one WhatsApp surface that
+    // writes — it is the `send` action group of one grant, not a second one.
+    app.use(
+      '/api/broadcasts',
+      memberAuth,
+      createBroadcastRoutes({
+        broadcasts: c.whatsappFollowUps.broadcasts,
+        resolveDepartmentId: c.resolveMemberDepartmentId,
+        authorize: c.canUseFollowUps,
+        auditService: c.auditService,
+        logger: c.logger,
+      }),
+    );
+  }
 
   // Divo answering in the browser. Member auth, not the Pi runtime lease: the
   // caller is a person at a keyboard, and the lease is minted for the container
@@ -832,6 +923,9 @@ export const createServer = (c: Container): DivoServerApplication => {
       mailBriefOnboarding:    c.mailBriefOnboarding,
       invalidateLarkIdentityCache: (larkOpenId: string) =>
         c.channelIdentityRepo.invalidateIdentityCache(larkOpenId),
+      // Which tabs the web shell may draw for this member. Absent, the shell
+      // shows everything and each route refuses for itself.
+      webCapabilities:        c.webCapabilities,
       runtimeContextLifecycle: c.runtimeContextLifecycle,
       logger:                 c.logger,
       env:                    c.env,
@@ -1061,6 +1155,11 @@ export const createServer = (c: Container): DivoServerApplication => {
       clearInterval(traceRetentionTimer);
       clearInterval(shopifyPrivacyRetentionTimer);
       c.mailOpsWorker.stop();
+      if (c.whatsappFollowUps) {
+        c.whatsappFollowUps.reconcileWorker.stop();
+        c.whatsappFollowUps.analysisWorker.stop();
+        c.whatsappFollowUps.broadcastWorker.stop();
+      }
       c.scheduledWorkflowService.stop();
 
       const errors: unknown[] = [];

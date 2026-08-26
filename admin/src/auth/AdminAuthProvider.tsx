@@ -26,6 +26,7 @@ type MeResponse = {
   avatarUrl?: string | null;
   role: CompanyRole;
   departments: SessionDepartment[];
+  capabilities?: Record<string, string[]> | null;
   lark: { connected: boolean } | null;
 };
 
@@ -160,6 +161,7 @@ export const AdminAuthProvider = ({ children }: { children: React.ReactNode }) =
       name: me.name ?? null,
       role: me.role,
       departments: me.departments ?? [],
+      capabilities: (me.capabilities as Record<string, readonly string[]> | null) ?? null,
       larkLinked: me.lark?.connected ?? false,
     });
   }, []);
