@@ -18,12 +18,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import {
   Activity, Building2, Check, ChevronsUpDown, CircleCheck, CircleDashed, FileClock,
-  Grid2X2, LogOut, Mail, Minus, Moon, MoreHorizontal, PanelLeft,
+  Grid2X2, LogOut, Mail, MessageSquare, Minus, Moon, MoreHorizontal, PanelLeft,
   PanelLeftClose, Pencil, Plus, Search, Settings, Sun, Trash2, Users, UserSquare,
   Waypoints, type LucideIcon,
 } from 'lucide-react'
 import { DivoMark } from '@/components/admin/divo-mark'
 import { useAdminAuth } from '@/auth/AdminAuthProvider'
+import { hasCapability } from '@/pages/workspace/data/capabilities'
 import { notify } from '@/lib/notify'
 import { useManagedDepartments } from '@/pages/workspace/data/use-team'
 import { useOnboarding } from '@/pages/workspace/data/use-onboarding'
@@ -73,7 +74,21 @@ const NAV: Record<ScopeKind, NavGroup[]> = {
      * Work, not configuration: a mail rule is Divo acting on your behalf every
      * hour of every day, and you come back to check it still is.
      */
-    { items: [{ to: '/me/mail', label: 'Mail', icon: Mail }] },
+    /*
+     * Mail and Follow-ups, grouped now that there are two of them.
+     *
+     * Both are the same kind of thing and belong together: Divo watching a
+     * stream you did not have to ask it to watch, and reporting what it found.
+     * The heading that read as a mistake over one row reads as a grouping over
+     * two.
+     */
+    {
+      label: 'Watching',
+      items: [
+        { to: '/me/mail', label: 'Mail', icon: Mail },
+        { to: '/me/follow-ups', label: 'Follow-ups', icon: MessageSquare },
+      ],
+    },
   ],
   team: [
     { label: 'Your team', items: [{ to: '/team', label: 'Overview', icon: Grid2X2, end: true }] },
@@ -159,7 +174,22 @@ export function WorkspaceShell() {
   }, [location.pathname])
 
   const scope = scopeOfPath(location.pathname)
-  const groups = NAV[scope]
+  const capabilities = (session as unknown as { capabilities?: Record<string, readonly string[]> | null })?.capabilities ?? null
+  const groups = useMemo(() => {
+    const raw = NAV[scope]
+    if (scope !== 'you') return raw
+    return raw
+      .map(g => {
+        if (g.label !== 'Watching') return g
+        const items = g.items.filter(item => {
+          if (item.label === 'Mail') return hasCapability(capabilities, 'mail')
+          if (item.label === 'Follow-ups') return hasCapability(capabilities, 'followUps')
+          return true
+        })
+        return { ...g, items }
+      })
+      .filter(g => g.items.length > 0)
+  }, [scope, capabilities])
 
   // Scopes come from the session now — a Team scope appears only when this
   // person actually leads a department, and Company only when their live
@@ -209,8 +239,14 @@ export function WorkspaceShell() {
     return [
       ...Object.values(NAV).flat().flatMap((g) => g.items),
       ...RAIL.filter((g) => held.has(g.scope)).flatMap((g) => g.items),
-    ].filter((item, i, all) => all.findIndex((x) => x.to === item.to) === i)
-  }, [scopes])
+    ]
+      .filter((item, i, all) => all.findIndex((x) => x.to === item.to) === i)
+      .filter(item => {
+        if (item.to === '/me/mail') return hasCapability(capabilities, 'mail')
+        if (item.to === '/me/follow-ups') return hasCapability(capabilities, 'followUps')
+        return true
+      })
+  }, [scopes, capabilities])
 
   return (
     <RoleProvider>

@@ -57,6 +57,14 @@ function fail<T>(error: DeptServiceError): ServiceResult<T> { return { ok: false
 
 // ── Slug helpers ──────────────────────────────────────────────────────────────
 
+/**
+ * Room for the company-wide skill reconciliation above, not for slow queries in
+ * general. Matched to the Teach transaction, which widened its own window for
+ * the same reason.
+ */
+const DEPARTMENT_CREATE_MAX_WAIT_MS = 10_000;
+const DEPARTMENT_CREATE_TIMEOUT_MS = 30_000;
+
 const normalizeSlug = (v: string) =>
   v.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
 
@@ -189,7 +197,16 @@ export interface DeptDetail {
 }
 
 export interface CandidateSummary {
-  channelIdentityId:   string;
+  /**
+   * Absent for somebody who reached Divo without Lark.
+   *
+   * Was required, which was a claim about how everybody arrives that stopped
+   * being true the moment a team on a *different* Lark tenant needed accounts
+   * here: they sign in with an email and a password and have no identity on
+   * this company's Lark install at all. Optional, rather than filled with a
+   * placeholder, because a synthetic id is one join away from being followed.
+   */
+  channelIdentityId?:  string;
   userId?:             string;
   name?:               string;
   email?:              string;
@@ -459,7 +476,50 @@ export class DepartmentAdminService {
         if (!memberByEmail.has(e)) memberByEmail.set(e, { userId: m.userId, role: m.role });
       }
 
-      return ok(identities.map(i => {
+      /*
+       * The other way somebody gets here.
+       *
+       * The search above starts at this company's Lark identities and finds the
+       * Divo account behind each one. That is every colleague on the same Lark
+       * install — and nobody else. An external team given accounts on this
+       * workspace (Urban Aura is on its own Lark tenant) has no identity to
+       * start from, so they were invisible: they could accept an invite, hold a
+       * workspace membership, and still never appear in the one search that
+       * puts a person into a department.
+       *
+       * Searched by their Divo account instead, and only within an active
+       * membership of this company, so the query cannot reach a user who
+       * belongs to somebody else's workspace.
+       */
+      const larkEmails = new Set(emails);
+      const directRows = await this.deps.prisma.adminMembership.findMany({
+        where: {
+          companyId,
+          isActive: true,
+          user: {
+            OR: [
+              { email: { contains: q, mode: 'insensitive' } },
+              { name:  { contains: q, mode: 'insensitive' } },
+            ],
+          },
+        },
+        select: { role: true, user: { select: { id: true, email: true, name: true } } },
+        take: 40,
+      });
+      const direct: CandidateSummary[] = directRows
+        // Already described by a Lark row, which carries strictly more.
+        .filter(m => !larkEmails.has(m.user.email.trim().toLowerCase()))
+        .map(m => ({
+          userId: m.user.id,
+          ...(m.user.name ? { name: m.user.name } : {}),
+          email: m.user.email,
+          workspaceRole: m.role,
+          isWorkspaceMember: true,
+          isAlreadyAssigned: assignedUserIds.has(m.user.id),
+          larkSourceRoles: [],
+        }));
+
+      return ok([...direct, ...identities.map(i => {
         const email   = i.email?.trim().toLowerCase();
         const user    = email ? userByEmail.get(email) : undefined;
         const member  = email ? memberByEmail.get(email) : undefined;
@@ -477,7 +537,7 @@ export class DepartmentAdminService {
           larkOpenId:        i.larkOpenId ?? undefined,
           larkSourceRoles:   i.sourceRoles,
         } as CandidateSummary;
-      }));
+      })]);
     } catch (e) {
       this.log.error('dept.candidates.failed', { departmentId, error: String(e) });
       return fail({ kind: 'internal', message: 'Failed to search candidates' });
@@ -486,6 +546,23 @@ export class DepartmentAdminService {
 
   // ── Create ────────────────────────────────────────────────────────────────
 
+  /**
+   * Creating a department does more than the five-second default allows.
+   *
+   * Four writes are the department's own — the row, two system roles, its agent
+   * config — and one is a bulk seed of the MEMBER-template grants for both
+   * roles. The two after that are company-wide: system skills are provisioned
+   * and their routes synced for the whole company, so the new roles have skills
+   * to resolve rather than an empty catalogue on their first request.
+   *
+   * That last pair is what overruns. It upserts one `SkillAccessGrant` per
+   * skill per role, and against a database reached over a tunnel the round
+   * trips alone pass five seconds — the transaction expires mid-upsert and the
+   * department is rolled back with nothing to show for it but "Failed to create
+   * department". Widened rather than split, because the reconciliation is what
+   * makes a new department's roles usable and a department that exists without
+   * it is a worse outcome than one that took eight seconds to appear.
+   */
   async createDepartment(
     companyId: string,
     createdBy: string,
@@ -538,6 +615,9 @@ export class DepartmentAdminService {
         await syncSystemSkillRoutes(tx, companyId);
 
         return { created, managerRole, memberRole };
+      }, {
+        maxWait: DEPARTMENT_CREATE_MAX_WAIT_MS,
+        timeout: DEPARTMENT_CREATE_TIMEOUT_MS,
       });
 
       return ok({ id: result.created.id, companyId, name: result.created.name, slug: result.created.slug, status: result.created.status, managerRoleId: result.managerRole.id, memberRoleId: result.memberRole.id });

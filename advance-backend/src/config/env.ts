@@ -409,6 +409,38 @@ export const EnvSchema = z.object({
   // Disable only autonomous DB-scanning work while cloning an environment.
   // Interactive Lark, OAuth, tools, and queue-backed work remain available.
   DIVO_AUTONOMOUS_WORKERS_ENABLED: booleanStr.default('true'),
+
+  // ── WhatsApp follow-ups ───────────────────────────────────────────────
+  // Off unless a gateway is configured. The feature is one department's, and a
+  // deployment without OpenWA should boot cleanly rather than log a connection
+  // failure every five minutes.
+  WHATSAPP_FOLLOWUPS_ENABLED: booleanStr.default('false'),
+  OPENWA_URL: z.string().url().optional(),
+  OPENWA_API_KEY: z.string().optional(),
+  /**
+   * Where OpenWA posts webhooks back to Divo.
+   *
+   * Must also appear in the gateway's own `SSRF_ALLOWED_HOSTS`, or webhook
+   * registration is refused outright — the gateway will not post to a host it
+   * was not told about, and the refusal happens at registration rather than at
+   * the first message.
+   */
+  WHATSAPP_PUBLIC_URL: z.string().url().optional(),
+  /** Signs the webhook. Absent means every payload is trusted; production must set it. */
+  /**
+   * Shared with the gateway, which enforces a 16-character floor of its own.
+   *
+   * Checked here so a short one fails at boot naming the variable, rather than
+   * at link time as an opaque 400 from the gateway ("secret must be longer than
+   * or equal to 16 characters") that reads as a bug in Divo.
+   */
+  WHATSAPP_WEBHOOK_SECRET: z.string().min(16, {
+    message: 'WHATSAPP_WEBHOOK_SECRET must be at least 16 characters — the gateway rejects shorter ones when the webhook is registered.',
+  }).optional(),
+  WHATSAPP_ANALYSIS_MODEL_ID: z.string().default('deepseek-v4-flash'),
+  WHATSAPP_TIMEZONE: z.string().default('Asia/Kolkata'),
+  /** How long transcript is kept. Ninety days unless told otherwise. */
+  WHATSAPP_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
   SCHEDULED_WORKFLOW_POLL_INTERVAL_MS: z.coerce.number().int().min(10_000).default(120_000),
   // How many mailboxes and deliveries Mail Ops works at once. Set either to 1
   // to restore the strictly serial worker, which is the escape hatch if
@@ -577,6 +609,25 @@ export const validateProductionEnv = (env: TypedEnv): string[] => {
   }
   if (!env.OPENROUTER_API_KEY) {
     issues.push('OPENROUTER_API_KEY is required to index approved images and scanned PDFs in production.');
+  }
+  if (env.WHATSAPP_FOLLOWUPS_ENABLED) {
+    // Named individually rather than as one "WhatsApp is misconfigured": the
+    // whole point of failing at startup is that the operator is told which
+    // variable to set, not that something somewhere is missing.
+    if (!env.OPENWA_URL) {
+      issues.push('OPENWA_URL is required when WHATSAPP_FOLLOWUPS_ENABLED is on.');
+    }
+    if (!env.OPENWA_API_KEY) {
+      issues.push('OPENWA_API_KEY is required when WHATSAPP_FOLLOWUPS_ENABLED is on.');
+    }
+    if (!env.WHATSAPP_PUBLIC_URL) {
+      issues.push('WHATSAPP_PUBLIC_URL is required when WHATSAPP_FOLLOWUPS_ENABLED is on; OpenWA has nowhere to post webhooks without it.');
+    }
+    if (!env.WHATSAPP_WEBHOOK_SECRET) {
+      // An unsigned webhook is an open endpoint that writes customer
+      // conversations into a tenant, chosen by a body anyone can send.
+      issues.push('WHATSAPP_WEBHOOK_SECRET is required in production; without it the WhatsApp webhook accepts unsigned payloads.');
+    }
   }
   if (env.SHOPIFY_REDIRECT_URI) {
     if (!env.SHOPIFY_CLIENT_ID) {

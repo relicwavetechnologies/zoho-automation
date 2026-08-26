@@ -246,6 +246,7 @@ model User {
   scheduledWorkflowsCreated          ScheduledWorkflow[]             @relation("ScheduledWorkflowCreatedBy")
   executionRuns                      ExecutionRun[]
   larkAuthLinks                      LarkUserAuthLink[]
+  connectionRefusals                 ConnectionRefusal[]
   ownedIntegrationConnections        IntegrationConnection[]         @relation("IntegrationConnectionOwner")
   createdIntegrationConnections      IntegrationConnection[]         @relation("IntegrationConnectionCreatedBy")
   createdSerperConnections           CompanySerperConnection[]       @relation("CompanySerperConnectionCreatedBy")
@@ -269,6 +270,7 @@ model User {
   knowledgeLearningJobs              KnowledgeLearningJob[]
   knowledgeFileAssetsUploaded        KnowledgeFileAsset[]            @relation("KnowledgeFileAssetUploadedBy")
   integrationOAuthAttempts           IntegrationOAuthAttempt[]
+  whatsappBroadcastsRequested        WhatsappBroadcast[]             @relation("WhatsappBroadcastRequestedBy")
 }
 
 model Company {
@@ -342,6 +344,13 @@ model Company {
   shopifyPrivacyRequests          ShopifyPrivacyRequest[]
   shopifyRunProvenance            ShopifyRunProvenance[]
   shopifyRunErasureFences         ShopifyRunErasureFence[]
+  whatsappSessions                WhatsappSession[]
+  whatsappChats                   WhatsappChat[]
+  whatsappMessages                WhatsappMessage[]
+  whatsappBroadcasts              WhatsappBroadcast[]
+  followUps                       FollowUp[]
+  followUpDigests                 FollowUpDigest[]
+  connectionRefusals              ConnectionRefusal[]
 }
 
 model RegisteredTool {
@@ -362,12 +371,12 @@ model RegisteredTool {
 }
 
 model UserDepartmentPreference {
-  id                 String   @id @default(uuid())
-  companyId          String
-  company            Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  userId             String   @unique
-  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  activeDepartmentId String?
+  id                    String   @id @default(uuid())
+  companyId             String
+  company               Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeDepartmentId    String?
   /// "Ask me before Divo does this", chosen by the person themselves, per action.
   ///
   /// A preference rather than a policy: the department's approval gate decides
@@ -383,8 +392,8 @@ model UserDepartmentPreference {
   /// `domain/approval/personal-gate.ts` owns reading and writing it; nothing
   /// else should touch the raw column.
   personalApprovalsJson Json?
-  updatedAt          DateTime @updatedAt
-  createdAt          DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  createdAt             DateTime @default(now())
 
   @@unique([companyId, userId])
   @@index([userId, companyId])
@@ -834,18 +843,40 @@ model CompanyInvite {
   status     String
   token      String    @unique
   invitedBy  String
+  /// The department this invite was raised from, when it was raised from one.
+  ///
+  /// Nullable because a company invite is still a legitimate thing on its own.
+  /// Set, it is the whole intent of the invite: somebody stood on a
+  /// department's page, typed an email and expected that person to arrive *in
+  /// that department*. Without it the invite granted a company membership and
+  /// nothing else, and the person had to be found and added a second time —
+  /// which is exactly what the admin thought they had just done.
+  ///
+  /// `SetNull` rather than `Cascade`: if the department is archived before the
+  /// invite is used, the person still deserves the account they were promised.
+  /// It degrades to a company invite rather than disappearing.
+  departmentId     String?
+  department       Department?     @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  /// Which role they land in. Falls back to the department's default role when
+  /// this is null — including when the named role was deleted before the invite
+  /// was accepted, which is the only way it becomes null after being set.
+  departmentRoleId String?
+  departmentRole   DepartmentRole? @relation(fields: [departmentRoleId], references: [id], onDelete: SetNull)
   expiresAt  DateTime
   acceptedAt DateTime?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
   @@index([companyId, status, createdAt])
+  @@index([departmentId, status])
 }
 
 model Department {
   id                             String                          @id @default(uuid())
   companyId                      String
   company                        Company                         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  /// Invites raised from this department's page, still to be accepted.
+  pendingInvites                 CompanyInvite[]
   name                           String
   slug                           String
   description                    String?
@@ -870,6 +901,11 @@ model Department {
   mailAutomationRules            MailAutomationRule[]
   knowledgeResources             KnowledgeResource[]
   knowledgeMutations             KnowledgeMutation[]
+  whatsappSessions               WhatsappSession[]
+  whatsappChats                  WhatsappChat[]
+  whatsappBroadcasts             WhatsappBroadcast[]
+  followUps                      FollowUp[]
+  followUpDigests                FollowUpDigest[]
 
   @@unique([companyId, slug])
   @@unique([id, companyId])
@@ -1064,6 +1100,8 @@ model DepartmentRole {
   id                     String                     @id @default(uuid())
   departmentId           String
   department             Department                 @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  /// Invites that named this role as where the person should land.
+  pendingInvites         CompanyInvite[]
   name                   String
   slug                   String
   isSystem               Boolean                    @default(false)
@@ -1344,6 +1382,7 @@ model IntegrationConnection {
   governance            IntegrationConnectionGovernance?
   authorizationIntents  ConnectionAuthorizationIntent[]
   mailboxSubscription   MailboxSubscription?
+  refusals              ConnectionRefusal[]
 
   @@unique([companyId, dedupeKey])
   @@unique([id, companyId, ownerUserId])
@@ -2597,27 +2636,27 @@ model ConversationAttachment {
 /// provider action needs an owned, scoped, expiring asset rather than a fake
 /// Lark key or a container path that disappears with the run.
 model ConversationAttachmentAsset {
-  id                  String    @id @default(uuid())
-  companyId           String
-  userId              String
-  channel             String
-  conversationKey     String
-  chatId              String
-  fileName            String
-  mimeType            String
-  sizeBytes           Int
-  sha256              String
-  storageProvider     String
-  storageKey          String
-  resourceType        String
-  deliveryType        String
-  threatScanProvider  String?
-  threatScanVersion   String?
-  threatScannedAt     DateTime?
-  receivedAt          DateTime  @default(now())
-  expiresAt           DateTime
-  consumedAt          DateTime?
-  uncertainAt         DateTime?
+  id                 String    @id @default(uuid())
+  companyId          String
+  userId             String
+  channel            String
+  conversationKey    String
+  chatId             String
+  fileName           String
+  mimeType           String
+  sizeBytes          Int
+  sha256             String
+  storageProvider    String
+  storageKey         String
+  resourceType       String
+  deliveryType       String
+  threatScanProvider String?
+  threatScanVersion  String?
+  threatScannedAt    DateTime?
+  receivedAt         DateTime  @default(now())
+  expiresAt          DateTime
+  consumedAt         DateTime?
+  uncertainAt        DateTime?
 
   @@index([companyId, userId, channel, chatId, expiresAt], map: "ConversationAttachmentAsset_scope_live_idx")
   @@index([companyId, userId, channel, chatId, fileName, receivedAt], map: "ConversationAttachmentAsset_name_idx")
@@ -3170,26 +3209,399 @@ model ProxyRequestLog {
 /// may legitimately be made outside one. Ownership is the company/user pair, and
 /// every read is checked against it.
 model Artifact {
-  id             String   @id @default(uuid())
-  companyId      String
-  userId         String
+  id                  String    @id @default(uuid())
+  companyId           String
+  userId              String
   /// Runtime-derived stable key. Same file path, same artifact, new version.
-  artifactId     String
+  artifactId          String
   /// The conversation it came out of, when there was one.
-  threadId       String?
-  executionRunId String?
-  title          String
-  mime           String   @default("text/markdown")
-  body           String
-  version        Int      @default(1)
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-  publishedUrl   String?
-  publishedAt   DateTime?
-  publishGateHash String?
+  threadId            String?
+  executionRunId      String?
+  title               String
+  mime                String    @default("text/markdown")
+  body                String
+  version             Int       @default(1)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  publishedUrl        String?
+  publishedAt         DateTime?
+  publishGateHash     String?
   publishDeploymentId String?
 
   @@unique([companyId, userId, artifactId])
   @@index([companyId, userId, updatedAt])
   @@index([companyId, userId, threadId, updatedAt])
+}
+
+/// A connection a member was refused the use of.
+///
+/// Reconstructed from the live `divo_dev` schema, not written from scratch: the
+/// table was already there and this file had no record of it, so `db push`
+/// proposed dropping it. Every column, type, nullability and index below is what
+/// introspection reported — the only change is relation field names, put in the
+/// camelCase this file uses everywhere else.
+///
+/// Nothing in `src` reads or writes it and it holds no rows. It is described
+/// here so the schema stops disagreeing with the database, which is the
+/// disagreement that made a routine push destructive.
+model ConnectionRefusal {
+  id             String                @id
+  companyId      String
+  company        Company               @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  connectionId   String
+  connection     IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  provider       String
+  kind           String
+  toolId         String?
+  reason         String
+  userId         String?
+  user           User?                 @relation(fields: [userId], references: [id])
+  executionRunId String?
+  createdAt      DateTime              @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([connectionId, createdAt])
+}
+
+// ─── WhatsApp follow-ups ────────────────────────────────────────────────────
+//
+// A watched source, in the shape Mail Ops established: something outside Divo
+// is observed, rules are applied without anybody asking, and the result is
+// delivered on a schedule. WhatsApp is not a runtime channel — no Pi turn ever
+// runs on it, so it earns no ChannelAdapter and no ChannelKey. It is a data
+// source, like a mailbox.
+
+/// One linked handset.
+///
+/// `departmentId` alongside `companyId` because Urban Aura shares a company
+/// with other departments, and a customer conversation pulled off somebody's
+/// phone should not be readable from a department that has no part in it.
+/// There are no roles below this line: every member of the department sees
+/// every follow-up.
+model WhatsappSession {
+  id              String               @id @default(uuid())
+  companyId       String
+  company         Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId    String
+  department      Department           @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  /// What the team calls this handset, e.g. "Bookings desk". Theirs to choose:
+  /// a phone number is not how anyone refers to a colleague's line.
+  label           String
+  /// The session as OpenWA knows it. One gateway holds all ten.
+  openwaSessionId String
+  /// Known only after the link completes, and never for a session that failed
+  /// to pair. Display only — nothing keys on it.
+  phoneE164       String?
+  /// `pending` → `linked` → `disconnected`. A handset that logged out is not an
+  /// error to clear away: it is the state most worth showing, because a dark
+  /// number silently stops producing follow-ups while looking fine.
+  status          String               @default("pending")
+  /// Last webhook seen from this session. The staleness alarm reads this: the
+  /// imported agent had no way to notice its own stream stopping.
+  lastSeenAt      DateTime?
+  /// When this handset was last found dark, and still unresolved.
+  ///
+  /// Set when the liveness sweep confirms the gateway has lost the session, and
+  /// cleared only when somebody re-reads the missed history. It deliberately
+  /// survives the handset coming back: once messages flow again `lastSeenAt`
+  /// refreshes and every other trace of the outage is gone, but the messages
+  /// sent *during* it are still missing. This field is the only thing that
+  /// remembers there is a hole, and roughly how wide.
+  darkSince       DateTime?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  chats           WhatsappChat[]
+  digestCards     FollowUpDigestCard[]
+  broadcasts      WhatsappBroadcast[]
+
+  /// Globally unique, not merely unique per company.
+  ///
+  /// The webhook arrives carrying nothing but this id, so the lookup that
+  /// assigns the event its tenant cannot itself be scoped by tenant. That is
+  /// only sound if the id identifies exactly one row anywhere — otherwise the
+  /// lookup picks arbitrarily and one company's conversation lands in another's
+  /// digest. Ids are minted by Divo, so uniqueness is ours to guarantee.
+  @@unique([openwaSessionId])
+  @@index([companyId, departmentId, status])
+  @@index([status, lastSeenAt])
+}
+
+/// A conversation, held once however many handsets can see it.
+///
+/// The unique key is the whole point. Ten linked numbers in one event team see
+/// the same supplier group from ten sides; keyed per session, Divo would
+/// analyse it ten times, pay ten times, and post ten near-identical follow-ups
+/// about one loose end. The first session to observe a chat owns it and the
+/// rest defer. This de-duplicates work — it assigns nothing to anybody.
+model WhatsappChat {
+  id                    String            @id @default(uuid())
+  companyId             String
+  company               Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId          String
+  department            Department        @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  waChatId              String
+  owningSessionId       String
+  owningSession         WhatsappSession   @relation(fields: [owningSessionId], references: [id], onDelete: Cascade)
+  name                  String?
+  isGroup               Boolean           @default(false)
+  /// On for every chat, direct messages included.
+  ///
+  /// An event business does most of its client work one-to-one, so a
+  /// groups-only rule would drop the majority of the leads this exists to
+  /// catch. Privacy is handled per chat through `muted` instead: a blanket
+  /// rule cannot tell a client thread from a personal one.
+  analysisEnabled       Boolean           @default(true)
+  muted                 Boolean           @default(false)
+  lastMessageAt         DateTime?
+  lastAnalyzedAt        DateTime?
+  /// Timestamp of the newest message the last analysis actually read.
+  ///
+  /// Distinct from `lastAnalyzedAt`, which records when we ran. A chat that has
+  /// moved on since is due again; one that has not is not, however long ago the
+  /// run was — that difference is what keeps the model bill flat.
+  lastAnalyzedMessageAt DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  messages              WhatsappMessage[]
+  followUps             FollowUp[]
+
+  @@unique([companyId, waChatId])
+  @@index([companyId, departmentId, lastMessageAt])
+  @@index([owningSessionId, lastMessageAt])
+  @@index([analysisEnabled, muted, lastMessageAt])
+}
+
+/// Stored transcript, kept only as long as analysis needs it.
+///
+/// These are other people's words — customers, suppliers — held because a
+/// follow-up has to be able to quote what was actually said. The retention
+/// sweep is not housekeeping; it is the reason keeping them is defensible.
+model WhatsappMessage {
+  id          String       @id @default(uuid())
+  companyId   String
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  chatId      String
+  chat        WhatsappChat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  waMessageId String
+  senderName  String?
+  fromMe      Boolean      @default(false)
+  body        String?
+  type        String       @default("text")
+  quotedText  String?
+  occurredAt  DateTime
+  createdAt   DateTime     @default(now())
+
+  @@unique([companyId, waMessageId])
+  @@index([chatId, occurredAt])
+  @@index([companyId, occurredAt])
+}
+
+/// One loose end.
+///
+/// `owner` is the analyser's binary verdict and means the Urban Aura *side*,
+/// not a person: `me` renders as "We owe", `them` as "Waiting on <counterparty>".
+/// There is deliberately no assignee. The team asked for one shared pool, and a
+/// nullable assignee column would quietly invite the feature back in.
+model FollowUp {
+  id             String       @id @default(uuid())
+  companyId      String
+  company        Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId   String
+  department     Department   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  chatId         String
+  chat           WhatsappChat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  title          String
+  detail         String
+  /// commitment | unanswered_question | request | deadline | decision_pending
+  kind           String
+  /// `us` | `them` — the UA side, never a member. Matches `FollowUpOwner` in
+  /// `domain/follow-ups/follow-up.ts`, which is the authority: `us` renders as
+  /// "We owe", `them` as "Waiting on <counterparty>". The imported agent used
+  /// `me` because it served one account holder; storing that word here would
+  /// render every item we owe as one we are waiting on.
+  owner          String
+  counterparty   String       @default("")
+  dueDate        DateTime?
+  urgency        String       @default("medium")
+  confidence     Float
+  /// Verbatim quotes that justify the item. Without them a follow-up is an
+  /// assertion the team has no way to check, and the first wrong one costs more
+  /// trust than the feature earns back.
+  evidenceJson   Json
+  suggestedReply String       @default("")
+  /// `open` | `resolved` | `dismissed`.
+  status         String       @default("open")
+  resolvedReason String?
+  remindAt       DateTime?
+  remindCount    Int          @default(0)
+  lastRemindedAt DateTime?
+  /// `analysis` when the model spotted it, `manual` when a member added it.
+  source         String       @default("analysis")
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([companyId, departmentId, status, remindAt])
+  @@index([chatId, status])
+  @@index([companyId, departmentId, status, dueDate])
+}
+
+/// The scheduled delivery, one row per destination.
+///
+/// Field-for-field the scheduling half of `MailBrief`, including the reasoning
+/// on `coveredThrough`: a run missed to an outage must widen the next digest
+/// rather than drop the window, because that gap is exactly when somebody most
+/// needs telling.
+model FollowUpDigest {
+  id             String               @id @default(uuid())
+  companyId      String
+  company        Company              @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId   String
+  department     Department           @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  /// The Lark room the cards land in. Grounded through the same authorizer Mail
+  /// Ops uses, so a room this company has never been in is refused rather than
+  /// guessed at.
+  larkChatId     String
+  /// Local times of day, e.g. `["09:00","18:00"]`.
+  timesJson      Json
+  /// Weekdays it runs on, as `MO`…`SU`.
+  daysJson       Json
+  /// IANA name. Required, never guessed.
+  timeZone       String
+  status         String               @default("active")
+  nextRunAt      DateTime?
+  lastRunAt      DateTime?
+  /// The instant the last delivered digest covered up to.
+  coveredThrough DateTime?
+  claimToken     String?
+  claimedAt      DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+  cards          FollowUpDigestCard[]
+
+  @@unique([companyId, departmentId, larkChatId])
+  @@index([status, nextRunAt])
+  @@index([claimedAt])
+}
+
+/// What one number said, on one run.
+///
+/// The digest is several cards rather than one — the data is pooled across every
+/// handset, but each number posts its own card so the group can see which line
+/// is carrying what. A single `lastDigestText` on the parent would only ever
+/// hold whichever card happened to go last.
+model FollowUpDigestCard {
+  id        String          @id @default(uuid())
+  digestId  String
+  digest    FollowUpDigest  @relation(fields: [digestId], references: [id], onDelete: Cascade)
+  sessionId String
+  session   WhatsappSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sentAt    DateTime        @default(now())
+  itemCount Int
+  /// The card's own markdown, not the Lark envelope: the envelope is one
+  /// renderer's shape, the markdown is what it was built from.
+  cardText  String
+
+  @@index([digestId, sentAt])
+  @@index([sessionId, sentAt])
+}
+
+/// One human-initiated broadcast: the same message, sent to many chats at once.
+///
+/// This is the only place Divo writes to WhatsApp. The follow-up agent reads and
+/// reports and has no send of its own — the message here was typed by a person,
+/// reviewed by a person, and sent from a handset that person chose.
+///
+/// It maps one-to-one onto a gateway batch, deliberately. The gateway accepts at
+/// most 100 messages per request, so capping a broadcast at the same number
+/// keeps one broadcast equal to one batch: one idempotency key, one cancel, one
+/// progress figure. Above that every one of those becomes plural and the
+/// progress bar starts being able to lie.
+model WhatsappBroadcast {
+  id             String                       @id @default(uuid())
+  companyId      String
+  company        Company                      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  departmentId   String
+  department     Department                   @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  /// The handset it sends from. Not decoration: the recipients see this number,
+  /// and its own daily allowance is what the send is spent against.
+  sessionId      String
+  session        WhatsappSession              @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  /// The batch id handed to the gateway, minted here rather than by it.
+  ///
+  /// The gateway treats `(session, batchId)` as unique and refuses a repeat by
+  /// name, which makes this the idempotency key: a retried request cannot
+  /// deliver the same message twice. Written before the gateway is called, so a
+  /// crash between the two leaves a row that names what may already be running
+  /// instead of an untraceable send.
+  gatewayBatchId String
+  /// What a person would call this send, shown in the history list.
+  label          String
+  /// The message as typed, `{{name}}` placeholders and all. Stored unrendered
+  /// because that is what was reviewed and approved; the per-recipient text is
+  /// derived from it and kept on the recipient row.
+  body           String
+  /// `queued` → `sending` → `completed` | `cancelled` | `failed`.
+  ///
+  /// `failed` here means the batch as a whole never ran or was abandoned by a
+  /// gateway restart — not that individual messages bounced, which is counted
+  /// per recipient. The gateway deliberately does not resume a batch across its
+  /// own restart, because resuming risks double-sends, so a broadcast can end
+  /// `failed` with some messages already delivered. The recipient rows are the
+  /// only record of which.
+  status         String                       @default("queued")
+  total          Int
+  sent           Int                          @default(0)
+  failed         Int                          @default(0)
+  /// Who asked for it. Kept even after the person leaves: an outbound message
+  /// to a client with nobody's name against it is worse than none.
+  requestedById  String
+  requestedBy    User                         @relation("WhatsappBroadcastRequestedBy", fields: [requestedById], references: [id])
+  /// Last time the poller read the gateway's batch status. There is no webhook
+  /// for batch progress, so this is the only freshness signal the tab has.
+  lastPolledAt   DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime                     @default(now())
+  updatedAt      DateTime                     @updatedAt
+  recipients     WhatsappBroadcastRecipient[]
+
+  /// Matches the gateway's own namespace, which scopes batch ids per session
+  /// rather than globally.
+  @@unique([sessionId, gatewayBatchId])
+  @@index([companyId, departmentId, createdAt])
+  @@index([status, lastPolledAt])
+}
+
+/// One recipient of one broadcast, and what happened to them.
+///
+/// A row per recipient rather than a JSON blob on the parent because these are
+/// asked two different questions — "how far along is this send" and "did Ritu
+/// get it" — and the second one is the one somebody asks under pressure.
+model WhatsappBroadcastRecipient {
+  id           String            @id @default(uuid())
+  broadcastId  String
+  broadcast    WhatsappBroadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+  /// The WhatsApp chat id, e.g. `919845010001@c.us` or `1203630@g.us`.
+  waChatId     String
+  /// What the picker showed when this was chosen. Denormalised on purpose: a
+  /// chat can be renamed or stop being tracked, and the history of a send must
+  /// keep saying who it went to at the time.
+  displayName  String
+  isGroup      Boolean           @default(false)
+  /// The message this recipient actually got, `{{name}}` already substituted.
+  /// Kept per row because the whole point of a variable is that no two
+  /// recipients received the same string.
+  renderedBody String
+  /// `pending` → `sent` | `failed` | `cancelled`.
+  status       String            @default("pending")
+  /// Assigned when the gateway accepts the message. Acceptance is not delivery:
+  /// WhatsApp answers success for a number that is not registered, so this
+  /// records that it was handed over, nothing more.
+  waMessageId  String?
+  /// Why it did not send, in the gateway's words. Only ever set with `failed`.
+  error        String?
+  sentAt       DateTime?
+
+  @@unique([broadcastId, waChatId])
+  @@index([broadcastId, status])
 }

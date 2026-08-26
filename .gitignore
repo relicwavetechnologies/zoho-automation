@@ -59,3 +59,13 @@ output/
 /px.html
 /research-*.html
 /review-*.html
+
+# Local reference clone (not part of Divo)
+whatsapp-followup-agent/
+
+# Runtime pids written by scripts/dev-stack.sh
+.context/
+
+# Scratch prototypes, same as the research-/review- ones above
+/plan-*.html
+/proto-*.html

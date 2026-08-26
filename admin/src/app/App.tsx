@@ -34,6 +34,7 @@ import { MailRuleDetail, MailRules } from "@/pages/workspace/screens-mail"
 import { MailRuleEdit, MailRuleNew } from "@/pages/workspace/screens-mail-new"
 import { MailSettings } from "@/pages/workspace/screens-mail-settings"
 import { MailCaught } from "@/pages/workspace/screens-mail-caught"
+import { FollowUpsScreen } from "@/pages/workspace/followups/screens-followups"
 import { MailHome } from "@/pages/workspace/screens-mail-home"
 import {
   TeamHome, TeamPeople, TeamRoles, TeamUsage,
@@ -299,6 +300,7 @@ const MeHome = routed(WorkspaceHome, { full: true })
 const MeChat = routed(WorkspaceChat, { full: true })
 const MeConnections = routed(YouConnections)
 const MeMail = routed(MailRules)
+const MeFollowUps = routed(FollowUpsScreen)
 const MeMailNew = routed(MailRuleNew)
 const MeMailEdit = routed(MailRuleEdit)
 const MeMailDetail = routed(MailRuleDetail)
@@ -390,6 +392,9 @@ export function App() {
           <Route path="chat" element={<RequireWorkspace><MeChat /></RequireWorkspace>} />
           <Route path="chat/:threadId" element={<RequireWorkspace><MeChat /></RequireWorkspace>} />
           <Route path="me/mail" element={<MeMail />} />
+          {/* Beside Mail rather than under it: the same shape of feature — a
+              stream Divo watches without being asked — over a different source. */}
+          <Route path="me/follow-ups" element={<MeFollowUps />} />
           {/* The member's settings page. Inside the app rather than behind the
               Settings takeover, because for a member it is one screen and the
               takeover exists to hold four groups of them. */}

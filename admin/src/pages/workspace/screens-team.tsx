@@ -26,7 +26,7 @@ import {
 import type { Toast } from './ui'
 import { notify } from '@/lib/notify'
 import {
-  candidateBlock, candidateLabel,
+  candidateBlock, candidateKey, candidateLabel,
   useApprovalPolicy, useDepartment, useDepartmentMatrix, useManagedDepartments, useTeamUsage,
   type Candidate, type DeptRole, type MemberActionState, type RoleActionState, type ToolScopeSnapshot,
 } from './data/use-team'
@@ -829,10 +829,24 @@ export function TeamPeople({ replay, toast }: Props) {
  * A role is required rather than defaulted, because "which role" is the whole
  * decision and silently picking one hides it.
  */
-function AddPersonDrawer({ roles, search, onAdd, onClose }: {
+/**
+ * Shared with the company's own view of a department.
+ *
+ * Exported rather than copied. A second drawer is a second answer to "who may
+ * be added and on what terms", and the copy that drifts would be the one
+ * deciding it — the whole reason `candidateBlock` lives beside the type.
+ *
+ * `onInvite` is what the two surfaces do differ on. A manager can only work
+ * with people the company already has; an administrator is the person who can
+ * create an account for somebody who has none, which is the only way a team on
+ * a different Lark tenant ever gets one. Absent, the drawer simply says nobody
+ * matched, which is the truth from where a manager is standing.
+ */
+export function AddPersonDrawer({ roles, search, onAdd, onInvite, onClose }: {
   roles: { id: string; name: string }[]
   search: (query: string) => Promise<Candidate[]>
   onAdd: (userId: string, roleId: string, name: string) => Promise<void>
+  onInvite?: (email: string, roleId: string) => Promise<string>
   onClose: () => void
 }) {
   const [query, setQuery] = useState('')
@@ -840,6 +854,8 @@ function AddPersonDrawer({ roles, search, onAdd, onClose }: {
   const [picked, setPicked] = useState<Candidate | null>(null)
   const [roleId, setRoleId] = useState(roles[0]?.id ?? '')
   const [busy, setBusy] = useState(false)
+  const [link, setLink] = useState<string | null>(null)
+  const [inviteError, setInviteError] = useState<string | null>(null)
 
   useEffect(() => {
     if (query.trim().length < 2) { setResults([]); return }
@@ -889,7 +905,12 @@ function AddPersonDrawer({ roles, search, onAdd, onClose }: {
         <div className="ws-rows" style={{ marginTop: 10 }}>
           {results.length === 0 ? (
             <div style={{ padding: 16 }}>
-              <Empty title="Nobody matches" body="They may already be in this team, or not in the company yet." />
+              <Empty
+                title="Nobody matches"
+                body={onInvite
+                  ? 'Nobody with that name or email has a Divo account here. Invite them below.'
+                  : 'They may already be in this team, or not in the company yet.'}
+              />
             </div>
           ) : results.map((r) => {
             const blocked = candidateBlock(r)
@@ -897,7 +918,7 @@ function AddPersonDrawer({ roles, search, onAdd, onClose }: {
             return (
               <div
                 className={blocked ? 'ws-row' : 'ws-row click'}
-                key={r.channelIdentityId}
+                key={candidateKey(r)}
                 data-muted={blocked ? '' : undefined}
                 onClick={blocked ? undefined : () => setPicked(r)}
               >
@@ -910,6 +931,70 @@ function AddPersonDrawer({ roles, search, onAdd, onClose }: {
               </div>
             )
           })}
+        </div>
+      ) : null}
+
+      {/*
+        * Offered only once the search has actually come back empty.
+        *
+        * Shown earlier it competes with the list, and the common case by far is
+        * that the person already has an account and simply has not been typed
+        * out in full yet — an invite sent to somebody who is already here
+        * creates a second account on the same email.
+        */}
+      {!picked && onInvite && query.trim().length >= 2 && results.length === 0 ? (
+        <div style={{ marginTop: 18 }}>
+          <div className="ws-lbl">No account yet?</div>
+          {link ? (
+            <>
+              <p className="ws-sentence-note" style={{ marginTop: 8 }}>
+                Send them this link. It works once, expires in seven days, and lets them
+                set their own password. Add them to this team after they have used it.
+              </p>
+              <div className="search" style={{ marginTop: 8 }}>
+                <input readOnly value={link} onFocus={(e) => e.currentTarget.select()} />
+              </div>
+              <button
+                type="button"
+                className="btn"
+                style={{ marginTop: 8 }}
+                onClick={() => { void navigator.clipboard.writeText(link) }}
+              >
+                Copy link
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="ws-sentence-note" style={{ marginTop: 8 }}>
+                Divo does not email invites. You will get a link to send them yourself.
+              </p>
+              <p className="ws-sentence-note" style={{ marginTop: 8 }}>
+                They will land in this department in the selected role as soon as they accept.
+              </p>
+              <select className="select" style={{ width: '100%', marginTop: 8 }} value={roleId} onChange={(e) => setRoleId(e.target.value)}>
+                {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+              <button
+                type="button"
+                className="btn"
+                style={{ marginTop: 10 }}
+                disabled={busy || !query.includes('@') || !roleId}
+                onClick={async () => {
+                  setBusy(true)
+                  setInviteError(null)
+                  try { setLink(await onInvite(query.trim(), roleId)) }
+                  catch (e) { setInviteError(e instanceof Error ? e.message : 'The invite was not created.') }
+                  finally { setBusy(false) }
+                }}
+              >
+                {busy ? 'Creating…' : `Invite ${query.trim()}`}
+              </button>
+              {!query.includes('@') ? (
+                <p className="ws-sentence-note">Type their full email address to invite them.</p>
+              ) : null}
+              {inviteError ? <p className="ws-sentence-note" style={{ color: 'var(--cur-danger)' }}>{inviteError}</p> : null}
+            </>
+          )}
         </div>
       ) : null}
 

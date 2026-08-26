@@ -1,5 +1,5 @@
 import { FormEvent, useState } from "react"
-import { Link } from "react-router-dom"
+import { Link, useSearchParams } from "react-router-dom"
 import { Check, Loader2 } from "lucide-react"
 import { AuthCard, AuthError, Field } from "@/components/admin/auth-card"
 import { api } from "@/lib/api"
@@ -10,7 +10,17 @@ type InviteResult = {
 }
 
 export function MemberInviteAcceptPage() {
-  const [inviteToken, setInviteToken] = useState("")
+  /*
+   * The token arrives in the link, or it is pasted.
+   *
+   * Both, because both happen. An administrator copies a link out of the invite
+   * drawer and sends it, and somebody else forwards the token alone out of a
+   * chat message — asking that second person to reconstruct a URL is how an
+   * invite goes unused. Prefilled rather than hidden, so what is about to be
+   * submitted is visible and correctable.
+   */
+  const [params] = useSearchParams()
+  const [inviteToken, setInviteToken] = useState(params.get("token") ?? "")
   const [name, setName] = useState("")
   const [password, setPassword] = useState("")
   const [submitting, setSubmitting] = useState(false)
@@ -42,8 +52,7 @@ export function MemberInviteAcceptPage() {
             <span>{accepted.role} access granted.</span>
           </div>
           <p className="ws-sub" style={{ lineHeight: 1.55 }}>
-            Divo lives in Lark and in the desktop app — that is where you will actually work with it. Sign in here only
-            if you also administer the company.
+            Your access is ready — sign in to continue to your workspace.
           </p>
           <Link className="btn primary" to="/login" style={{ justifyContent: "center" }}>Go to sign in</Link>
         </div>
@@ -54,10 +63,10 @@ export function MemberInviteAcceptPage() {
   return (
     <AuthCard
       title="Accept your invite"
-      description="Paste the token your admin sent you, then choose a password."
+      description="Choose a password to finish setting up your account."
     >
       <form className="ws-auth-form" onSubmit={submit}>
-        <Field label="Invite token" hint="A long string from the invite message. It can only be used once.">
+        <Field label="Invite token" hint="Filled in from your invite link. It can only be used once.">
           <input className="input" value={inviteToken} onChange={(event) => setInviteToken(event.target.value)} required />
         </Field>
 

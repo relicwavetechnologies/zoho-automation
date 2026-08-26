@@ -20,6 +20,7 @@ import { provisionFilesAndDocumentsSystemSkills } from '../../application/skills
 import { provisionMailOpsSystemSkills } from '../../application/skills/mail-ops-system-skills';
 import { provisionSystemSkillRoutes } from '../../application/skills/system-skill-routes';
 import { provisionMenhoodDataSystemSkill } from '../../application/skills/menhood-data-system-skill';
+import { placementFor } from '../../application/departments/invite-placement';
 
 type AdminRole = 'SUPER_ADMIN' | 'COMPANY_ADMIN' | 'DEPARTMENT_MANAGER';
 
@@ -480,6 +481,7 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
     if (invite.expiresAt.getTime() < Date.now()) throw routeError(410, 'Invite has expired');
 
     const hashedPassword = await bcrypt.hash(payload.password, 10);
+    let departmentPlaced = false;
     const user = await deps.prisma.$transaction(async (tx) => {
       const existingUser = await tx.user.findUnique({ where: { email: invite.email } });
       const nextUser = existingUser
@@ -523,6 +525,47 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
         });
       }
 
+      /*
+       * Where the invite said to put them.
+       *
+       * Re-decided here rather than trusted from the invite row, because the
+       * invite named a department on the day it was raised and this is another
+       * day: it may have been archived since, or the role deleted. Same
+       * function the create side used, against a fresher world.
+       *
+       * A refusal never fails the signup. They were promised an account and the
+       * account is the part that is theirs; the placement is bookkeeping an
+       * administrator can redo. Reported rather than swallowed, and the caller
+       * is told which of the two it got.
+       */
+      if (invite.departmentId) {
+        const department = await tx.department.findUnique({
+          where: { id: invite.departmentId },
+          select: { id: true, companyId: true, status: true, roles: { select: { id: true, isDefault: true } } },
+        });
+        const placement = placementFor({
+          companyId: invite.companyId,
+          departmentId: invite.departmentId,
+          departmentRoleId: invite.departmentRoleId,
+          department,
+        });
+        if (!placement.ok) {
+          log.warn('invite.placement_dropped', {
+            inviteId: invite.id,
+            departmentId: invite.departmentId,
+            reason: placement.error.reason,
+          });
+        } else if (placement.value.kind === 'department') {
+          const { departmentId, roleId } = placement.value;
+          await tx.departmentMembership.upsert({
+            where: { departmentId_userId: { departmentId, userId: nextUser.id } },
+            update: { roleId, status: 'active' },
+            create: { departmentId, userId: nextUser.id, roleId, status: 'active' },
+          });
+          departmentPlaced = true;
+        }
+      }
+
       await tx.companyInvite.update({
         where: { id: invite.id },
         data: {
@@ -551,6 +594,7 @@ export const createAdminAuthRoutes = (deps: AdminAuthRouteDeps): Router => {
       companyId: invite.companyId,
       userId: user.id,
       email: user.email,
+      departmentPlaced,
     }, 'Invite accepted', 201);
   }));
 

@@ -175,6 +175,14 @@ import { ConnectionAskCourier } from './application/connections/connection-ask-c
 import { ConnectionResumeService } from './application/connections/connection-resume';
 import { RunOriginStore } from './application/connections/run-origin.store';
 import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
+import {
+  followUpsGrants,
+  followUpsPermission,
+  followUpsRefusal,
+  type FollowUpsOperation,
+  type FollowUpsStanding,
+} from './application/follow-ups/follow-ups-permission';
+import type { MemberAuthorization } from './http/member/member-scope';
 import { createMailRuleWriter } from './application/mail-ops/mail-rule-writer';
 import {
   mailRulePermission,
@@ -313,6 +321,22 @@ import type { ApiKeyProvider } from './application/governance/api-key-exhaustion
 // AI model
 import { createDeepSeek } from '@ai-sdk/deepseek';
 import { wrapLanguageModel, type LanguageModel } from 'ai';
+import { OpenWaClient } from './infrastructure/whatsapp/openwa.client';
+import { WhatsappRepository } from './infrastructure/persistence/whatsapp.repository';
+import { FollowUpsRepository } from './infrastructure/persistence/follow-ups.repository';
+import { WhatsappIngestService } from './application/whatsapp/whatsapp-ingest.service';
+import { WhatsappSessionService } from './application/whatsapp/whatsapp-session.service';
+import { WhatsappHistoryRepair } from './application/whatsapp/whatsapp-history-repair';
+import { WhatsappReconcileWorker } from './application/whatsapp/whatsapp-reconcile.worker';
+import { FollowUpAnalysisWorker } from './application/follow-ups/follow-up-analysis.worker';
+import {
+  BROADCAST_DELAY_MS,
+  WhatsappBroadcastService,
+} from './application/whatsapp/whatsapp-broadcast.service';
+import { MAX_BROADCAST_RECIPIENTS } from './domain/follow-ups/broadcast';
+import { WhatsappBroadcastWorker } from './application/whatsapp/whatsapp-broadcast.worker';
+import { BroadcastsRepository } from './infrastructure/persistence/broadcasts.repository';
+import { createFollowUpDigestRunner } from './application/follow-ups/follow-up-digest.runner';
 
 const GATEWAY_PROVIDER_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -361,6 +385,27 @@ export const resolveApprovalGateOptions = (
     env.NODE_ENV !== 'production' && env.DIVO_APPROVAL_CARDS_ENABLED === false,
 });
 
+
+/** Everything the WhatsApp follow-ups feature needs, assembled or not at all. */
+export interface WhatsappFollowUps {
+  readonly ingest: WhatsappIngestService;
+  readonly sessions: WhatsappSessionService;
+  readonly historyRepair: WhatsappHistoryRepair;
+  readonly followUpsRepo: FollowUpsRepository;
+  readonly reconcileWorker: WhatsappReconcileWorker;
+  readonly analysisWorker: FollowUpAnalysisWorker;
+  /**
+   * Bulk send, and the worker that keeps its progress honest.
+   *
+   * Assembled with the rest rather than behind its own switch: it shares the
+   * gateway client, the sessions and the department scope, and a broadcast
+   * surface that could be on while the numbers feeding it are off would only
+   * ever show an empty picker.
+   */
+  readonly broadcasts: WhatsappBroadcastService;
+  readonly broadcastWorker: WhatsappBroadcastWorker;
+  readonly webhookSecret: string | undefined;
+}
 
 export interface Container {
   env: TypedEnv;
@@ -428,10 +473,45 @@ export interface Container {
     departmentId?: string;
     operation: MailRuleOperation;
   }) => Promise<{ kind: 'allowed' | 'denied' | 'unavailable'; message?: string }>;
+  /**
+   * Whether a member may do this on the Follow-ups tab.
+   *
+   * The same three-state answer as mail rules and for the same reason: a
+   * permission store that could not be read is a 503, not a refusal. The
+   * decision itself comes from `followUpsPermission`, so the browser and any
+   * future agent tool cannot answer one member two different ways.
+   */
+  canUseFollowUps: (input: {
+    companyId: string;
+    userId: string;
+    companyRole: string;
+    departmentId: string;
+    operation: FollowUpsOperation;
+  }) => Promise<MemberAuthorization>;
+  /**
+   * Which web surfaces this member may be shown, as action groups per
+   * capability. Null when it could not be worked out — the shell shows
+   * everything and lets each route answer rather than hiding what somebody
+   * holds.
+   */
+  webCapabilities: (input: {
+    companyId: string;
+    userId: string;
+    companyRole: string;
+  }) => Promise<Record<string, readonly string[]> | null>;
   /** One sentence into a draft rule. Creates nothing. */
   compileMailRule: ReturnType<typeof createMailRuleCompiler>;
   mailBriefOnboarding: ReturnType<typeof createMailBriefOnboarding>;
   mailOpsWorker: MailOpsWorker;
+  /**
+   * WhatsApp follow-ups, or null when no gateway is configured.
+   *
+   * Null rather than a disabled stub: the routes are not mounted and the workers
+   * are not started when the feature is off, so a deployment without OpenWA
+   * boots clean instead of failing a connection every five minutes. The state is
+   * logged at boot either way.
+   */
+  whatsappFollowUps: WhatsappFollowUps | null;
   canvaMcpOAuthService: CanvaMcpOAuthService;
   airtableMcpOAuthService: AirtableMcpOAuthService;
   /** AITable has no OAuth; this proves a pasted API key before it is stored. */
@@ -674,7 +754,26 @@ export async function buildContainer(
   // discovery" rule lived only in prompt text, so any room the bot could reach
   // was a legal destination — including, where one Lark install serves two Divo
   // companies, the other company's rooms.
-  const authorizeMailOpsLarkChat = createLarkChatDestinationAuthorizer(larkChatContextRepo);
+  /**
+   * One answer to "may this company's content go to this Lark room".
+   *
+   * Named for the question rather than for Mail Ops, which was its only caller
+   * until the follow-up digest became its second. There must not be two places
+   * deciding this: the guard exists because a chat id is caller-supplied, and a
+   * second implementation is exactly how one company's room stops being refused.
+   */
+  /*
+   * Two sources, asked in order: the room Divo has recorded, then Lark itself.
+   *
+   * The membership check reads `larkAdapter`, which is built much further down.
+   * That is safe because this is only ever *called* at request time, long after
+   * composition has finished — and it is the reason the port is a closure
+   * rather than the adapter passed directly.
+   */
+  const authorizeLarkChatDestination = createLarkChatDestinationAuthorizer(
+    larkChatContextRepo,
+    { botIsInChat: (chatId: string) => larkAdapter.botIsInChat(chatId) },
+  );
   const ingressReceiptRepo    = new IngressReceiptRepository(prisma);
   const connectionAuthorizationRepo = new ConnectionAuthorizationRepository(
     prisma,
@@ -2000,7 +2099,7 @@ export async function buildContainer(
     },
     resolveConnection: resolveMailAutomationGoogleConnection,
     connectionRequest,
-    authorizeLarkChat: authorizeMailOpsLarkChat,
+    authorizeLarkChat: authorizeLarkChatDestination,
     connectionApproval: input => connectionRateLimits.approval(input),
     // The read repository, not `mailOpsRepo`: a dry run must not be able to
     // touch a lease, a cursor, or a rule status even by accident.
@@ -2023,7 +2122,7 @@ export async function buildContainer(
       workersEnabled: env.DIVO_AUTONOMOUS_WORKERS_ENABLED,
     },
     resolveConnection: resolveMailAutomationGoogleConnection,
-    authorizeLarkChat: authorizeMailOpsLarkChat,
+    authorizeLarkChat: authorizeLarkChatDestination,
     /*
      * One live call, so a rule is never created on a grant Google has already
      * ended. `googleAccessTokenFor` both discovers that and records it — it
@@ -2469,7 +2568,7 @@ export async function buildContainer(
             reason: 'You no longer have permission to run mail automations.',
           };
     },
-    authorizeLarkChat: authorizeMailOpsLarkChat,
+    authorizeLarkChat: authorizeLarkChatDestination,
     connectionRateLimits,
     // The rule owner's own DM. Same adapter, same idempotency key; only the
     // receive-id type differs, because Lark takes an open id directly and a DM
@@ -2559,6 +2658,116 @@ export async function buildContainer(
     wakeMailOps: () => mailOpsWorker.wake(),
     logger,
   });
+
+  /**
+   * WhatsApp follow-ups, assembled only when a gateway is configured.
+   *
+   * Null when off, rather than a disabled stub whose methods quietly do nothing:
+   * the routes then go unmounted and the workers unstarted, so a deployment with
+   * no OpenWA boots clean instead of failing a connection every five minutes.
+   * Either way the state is logged, because a feature that is off must say so.
+   */
+  let whatsappFollowUps: WhatsappFollowUps | null = null;
+  if (
+    env.WHATSAPP_FOLLOWUPS_ENABLED
+    && env.OPENWA_URL
+    && env.OPENWA_API_KEY
+    && env.WHATSAPP_PUBLIC_URL
+  ) {
+    const whatsappRepo = new WhatsappRepository(prisma);
+    const followUpsRepo = new FollowUpsRepository(prisma);
+    const openwa = new OpenWaClient({
+      baseUrl: env.OPENWA_URL,
+      apiKey: env.OPENWA_API_KEY,
+      publicUrl: env.WHATSAPP_PUBLIC_URL,
+      ...(env.WHATSAPP_WEBHOOK_SECRET ? { webhookSecret: env.WHATSAPP_WEBHOOK_SECRET } : {}),
+    });
+
+    const whatsappIngest = new WhatsappIngestService({
+      receipts: ingressReceiptRepo,
+      repo: whatsappRepo,
+      logger,
+    });
+
+    const whatsappSessions = new WhatsappSessionService({
+      repo: whatsappRepo, gateway: openwa, logger,
+    });
+    const broadcasts = new WhatsappBroadcastService({
+      repo: new BroadcastsRepository(prisma),
+      sessions: whatsappSessions,
+      gateway: openwa,
+      logger,
+    });
+
+    whatsappFollowUps = {
+      ingest: whatsappIngest,
+      sessions: whatsappSessions,
+      historyRepair: new WhatsappHistoryRepair({ repo: whatsappRepo, gateway: openwa, logger }),
+      followUpsRepo,
+      reconcileWorker: new WhatsappReconcileWorker({
+        receipts: ingressReceiptRepo,
+        repo: whatsappRepo,
+        ingest: whatsappIngest,
+        gateway: openwa,
+        logger,
+        retentionMs: env.WHATSAPP_RETENTION_DAYS * 24 * 60 * 60_000,
+      }),
+      analysisWorker: new FollowUpAnalysisWorker({
+        repo: followUpsRepo,
+        // DeepSeek, like every other backend-side model. The imported agent
+        // defaulted to Claude; the house rule is one provider.
+        model: deepSeekModel(env.WHATSAPP_ANALYSIS_MODEL_ID),
+        logger,
+        timeZone: env.WHATSAPP_TIMEZONE,
+        runDigest: createFollowUpDigestRunner({
+          repo: followUpsRepo,
+          deliver: async input => {
+            const sent = await larkAdapter.sendToChatId(
+              input.chatId,
+              input.text,
+              undefined,
+              input.idempotencyKey,
+            );
+            if (!sent.ok) throw sent.error;
+            return sent.value;
+          },
+          // The same guard Mail Ops uses, not a second copy of the rule. It
+          // grounds the room in one Divo has actually been in, and refuses one
+          // belonging to another company on the same Lark install.
+          authorizeLarkChat: authorizeLarkChatDestination,
+          appBaseUrl: env.APP_BASE_URL,
+          auditService,
+          logger,
+        }),
+      }),
+      broadcasts,
+      broadcastWorker: new WhatsappBroadcastWorker({ broadcasts, logger }),
+      webhookSecret: env.WHATSAPP_WEBHOOK_SECRET,
+    };
+    logger.info('whatsapp_followups.enabled', {
+      gateway: env.OPENWA_URL,
+      model: env.WHATSAPP_ANALYSIS_MODEL_ID,
+      signed: Boolean(env.WHATSAPP_WEBHOOK_SECRET),
+      retentionDays: env.WHATSAPP_RETENTION_DAYS,
+      // The outbound half says its own settings out loud. A broadcast paced at
+      // an unexpected rate, or a cap somebody thinks is different from what is
+      // compiled in, is exactly the kind of thing that is only discovered
+      // mid-send otherwise.
+      broadcastMaxRecipients: MAX_BROADCAST_RECIPIENTS,
+      broadcastDelayMs: BROADCAST_DELAY_MS,
+      // Who can see any of this. Said out loud because the tab looks broken
+      // rather than forbidden when the answer is no — an operator reading
+      // "enabled" and then finding nothing needs this line to know where to
+      // look.
+      access: 'department members read and edit; managers also send; company admins hold all three',
+    });
+  } else {
+    logger.info('whatsapp_followups.disabled', {
+      reason: env.WHATSAPP_FOLLOWUPS_ENABLED
+        ? 'WHATSAPP_FOLLOWUPS_ENABLED is on but OPENWA_URL, OPENWA_API_KEY or WHATSAPP_PUBLIC_URL is unset'
+        : 'disabled by WHATSAPP_FOLLOWUPS_ENABLED',
+    });
+  }
 
   const channelRegistry = new ChannelAdapterRegistry();
   channelRegistry.register(larkAdapter);
@@ -2739,6 +2948,128 @@ export async function buildContainer(
           kind: 'denied',
           message: mailRuleRefusal(input.operation, verdict.missing),
         };
+  };
+
+  /**
+   * Whether a member may do this on the Follow-ups tab.
+   *
+   * `departmentId` is required rather than optional, unlike mail rules. Every
+   * follow-up, conversation and broadcast is department-scoped, so a request
+   * without one has no rows to be permitted *to* — `createMemberScope` has
+   * already answered 409 before this is reached, and accepting an optional one
+   * here would mean resolving a company-wide ceiling and calling it a grant.
+   */
+  /**
+   * The three facts `followUpsGrants` decides from, read once.
+   *
+   * Null when the store could not be read — unreadable, not refused. Telling
+   * somebody they lack access when the database blinked sends them asking an
+   * administrator for something they already hold, and the administrator then
+   * finds nothing wrong.
+   */
+  const followUpsStandingFor = async (input: {
+    companyId: string;
+    userId: string;
+    companyRole: string;
+    departmentId: string;
+  }): Promise<FollowUpsStanding | null> => {
+    try {
+      const [membership, numbers] = await Promise.all([
+        prisma.departmentMembership.findFirst({
+          where: {
+            userId: input.userId,
+            departmentId: input.departmentId,
+            status: 'active',
+            department: { companyId: input.companyId },
+          },
+          select: { role: { select: { slug: true } } },
+        }),
+        prisma.whatsappSession.count({
+          where: { companyId: input.companyId, departmentId: input.departmentId },
+        }),
+      ]);
+      return {
+        isCompanyAdmin: input.companyRole === 'COMPANY_ADMIN' || input.companyRole === 'SUPER_ADMIN',
+        isDepartmentMember: Boolean(membership),
+        // Slug, never the display name — `DepartmentRole.name` is editable and
+        // renaming "Manager" would silently withdraw everyone's send access.
+        isDepartmentManager: membership?.role.slug === 'MANAGER',
+        departmentHasNumber: numbers > 0,
+      };
+    } catch (error) {
+      logger.error('follow_ups.permission_lookup_failed', {
+        userId: input.userId,
+        departmentId: input.departmentId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+
+  const canUseFollowUps = async (input: {
+    companyId: string;
+    userId: string;
+    companyRole: string;
+    departmentId: string;
+    operation: FollowUpsOperation;
+  }): Promise<MemberAuthorization> => {
+    const standing = await followUpsStandingFor(input);
+    if (!standing) {
+      return {
+        kind: 'unavailable',
+        message: 'Divo could not check your access just now. Try again shortly.',
+      };
+    }
+
+    const verdict = followUpsPermission(input.operation, followUpsGrants(standing));
+    return verdict.allowed
+      ? { kind: 'allowed' }
+      : { kind: 'denied', message: followUpsRefusal(verdict.missing) };
+  };
+
+  /**
+   * What the web shell may put in front of this person, per capability.
+   *
+   * An explicit list rather than the whole resolved permission map. Every
+   * capability named here gates a surface a browser actually draws, and adding
+   * a tool to the registry must not silently widen what the browser is told
+   * about somebody.
+   *
+   * Null means "could not work it out", and the shell is expected to show
+   * everything and let each route answer. That asymmetry is deliberate: hiding
+   * a tab from somebody who holds it looks like a product with a missing
+   * feature, and they have no way to discover otherwise. Offering one they do
+   * not hold costs them a refusal they can read.
+   */
+  const webCapabilities = async (input: {
+    companyId: string;
+    userId: string;
+    companyRole: string;
+  }): Promise<Record<string, readonly string[]> | null> => {
+    const departmentId = await resolveMemberDepartmentId({
+      companyId: input.companyId,
+      userId: input.userId,
+    });
+    // No department is not a failure to look: it is a real answer, and it means
+    // every department-scoped surface is empty for them.
+    if (!departmentId) return { followUps: [], mail: [] };
+
+    const [standing, resolved] = await Promise.all([
+      followUpsStandingFor({ ...input, departmentId }),
+      permissions.resolve({
+        companyId: asCompanyId(input.companyId),
+        userId: asUserId(input.userId),
+        companyRole: asCompanyRoleSlug(input.companyRole),
+        departmentId: asDepartmentId(departmentId),
+        channel: 'lark',
+      }),
+    ]);
+    if (!standing || !resolved.ok) return null;
+
+    return {
+      followUps: [...followUpsGrants(standing)],
+      mail: [...(resolved.value.allowedActionsByTool.get(asToolId('mailAutomations')) ?? [])],
+    };
   };
 
   /*
@@ -3040,8 +3371,11 @@ export async function buildContainer(
     mailOpsReadRepo,
     writeMailRule,
     requestMailRuleExternalApproval,
+    whatsappFollowUps,
     resolveMemberDepartmentId,
     canRunMailRules,
+    canUseFollowUps,
+    webCapabilities,
     compileMailRule,
     mailBriefOnboarding,
     mailOpsWorker,

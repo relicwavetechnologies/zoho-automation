@@ -22,6 +22,7 @@ const PATHS: Record<string, string> = {
   home: '/',
   chat: '/chat',
   'mail-rules': '/me/mail',
+  'follow-ups': '/me/follow-ups',
   /* Retired — the real artifacts are read from the chat panel and Home's
      "Made" band. Any caller still naming this lands on Home. */
   artifacts: '/',

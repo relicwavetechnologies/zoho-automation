@@ -62,6 +62,20 @@ export interface DesktopAuthRoutesDeps {
   mailBriefOnboarding?: (
     input: MailBriefOnboardingInput,
   ) => Promise<Result<MailBriefOnboardingResult, InfraError>>;
+  /**
+   * What this member may reach on the web, as action groups per capability.
+   *
+   * Here rather than left to each screen, because a tab that appears and then
+   * refuses is a worse answer than a tab that is not offered. Null when Divo
+   * could not work them out: the shell then shows everything and lets each
+   * route answer for itself, since hiding a tab somebody actually holds is the
+   * more expensive mistake.
+   */
+  webCapabilities?: (input: {
+    companyId: string;
+    userId: string;
+    companyRole: string;
+  }) => Promise<Record<string, readonly string[]> | null>;
   runtimeContextLifecycle: RuntimeContextLifecycle;
   logger:                 Logger;
   env:                    TypedEnv;
@@ -1489,6 +1503,13 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
         // Slug is the stable identifier; DepartmentRole.name is user-editable.
         isManager: m.role.slug === 'MANAGER',
       }));
+      const capabilities = deps.webCapabilities
+        ? await deps.webCapabilities({
+          userId,
+          companyId,
+          companyRole: String(res.locals['aiRole'] ?? 'MEMBER'),
+        })
+        : null;
       const larkConnections = await deps.connectionRepo.listAccessibleLarkConnections({ userId, companyId });
       const googleConnections = await deps.connectionRepo.listAccessibleGoogleConnections({ userId, companyId });
 
@@ -1504,6 +1525,7 @@ export function createDesktopAuthRoutes(deps: DesktopAuthRoutesDeps): Router {
           // surface reads as "draw initials" rather than as a broken image.
           avatarUrl: user?.avatarUrl ?? null,
           departments,
+          capabilities,
           lark: larkConnections.ok ? {
             connected: larkConnections.value.length > 0,
             connections: larkConnections.value.map(connection => ({
