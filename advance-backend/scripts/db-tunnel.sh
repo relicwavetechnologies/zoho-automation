@@ -61,6 +61,21 @@ SSH_USER="$(env_or_file DB_TUNNEL_SSH_USER deploy)"
 SSH_HOST="$(env_or_file DB_TUNNEL_SSH_HOST 103.172.92.187)"
 SSH_IDENTITY_FILE="$(env_or_file DB_TUNNEL_SSH_IDENTITY_FILE '')"
 DB_NAME="$(env_or_file DB_TUNNEL_DB_NAME divo_dev)"
+# The role `pg_isready` should introduce itself as.
+#
+# Not cosmetic. Without `-U`, pg_isready uses the OS username — `abhishekverma`
+# on a laptop — which is not a role on the server. Postgres closes that
+# connection in a way pg_isready reports as exit 2, "no response": the same
+# answer it gives for a tunnel that is genuinely dead. The watcher below then
+# tore down a perfectly healthy tunnel every fifteen seconds and rebuilt it,
+# which read from the outside as the tunnel flapping.
+#
+# Read from DATABASE_URL rather than hardcoded, so it cannot drift from the
+# credentials everything else uses.
+DB_USER="$(env_or_file DB_TUNNEL_DB_USER "$(
+  sed -n 's|^DATABASE_URL=.*://\([^:]*\):.*|\1|p' "$ENV_FILE" 2>/dev/null | head -n 1
+)")"
+DB_USER="${DB_USER:-postgres}"
 SSH_PASSWORD="$(env_or_file DB_TUNNEL_SSH_PASSWORD "${SSHPASS:-}")"
 
 mkdir -p "$STATE_DIR"
@@ -71,7 +86,17 @@ tunnel_pids() {
 
 is_postgres_ready() {
   if command -v pg_isready >/dev/null 2>&1; then
-    pg_isready -h "$LOCAL_HOST" -p "$LOCAL_PORT" -d "$DB_NAME" >/dev/null 2>&1
+    if pg_isready -h "$LOCAL_HOST" -p "$LOCAL_PORT" -d "$DB_NAME" -U "$DB_USER" >/dev/null 2>&1; then
+      return 0
+    fi
+    # pg_isready said no. Before believing it, check whether anything is
+    # listening at all: exit 2 means "connected but the answer was not one I
+    # understood", which a role or auth mismatch produces just as readily as a
+    # dead tunnel. Tearing down a working tunnel on that ambiguity is worse than
+    # missing a genuinely dead one for one more cycle — the port test is
+    # unambiguous about the case that actually matters, an ssh process that has
+    # gone away and taken its listener with it.
+    nc -z "$LOCAL_HOST" "$LOCAL_PORT" >/dev/null 2>&1
     return $?
   fi
   nc -z "$LOCAL_HOST" "$LOCAL_PORT" >/dev/null 2>&1
