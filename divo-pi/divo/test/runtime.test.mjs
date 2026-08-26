@@ -355,6 +355,12 @@ describe("Pi session scope", () => {
 		const workflow = path.join(workspace, ".divo", "threads", thread, "work", "workflows", "export-abc");
 		fs.mkdirSync(oldRun, { recursive: true });
 		fs.mkdirSync(workflow, { recursive: true });
+		// Relative to now, not a fixed date. `prepareDivoPiRun` sweeps against the
+		// real clock, so an absolute timestamp here is a test that passes until it
+		// drifts past THREAD_WORKFLOW_TTL_MS and then fails every run afterwards —
+		// which is exactly what it did, fourteen days after the date was written.
+		// What the test means is "a workflow still in flight", so say that.
+		const inFlight = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
 		fs.writeFileSync(
 			path.join(workflow, THREAD_WORKFLOW_MANIFEST_FILE),
 			`${JSON.stringify({
@@ -363,8 +369,8 @@ describe("Pi session scope", () => {
 				source: "airtable",
 				destination: "google-sheets",
 				resumeStep: "write-sheet",
-				createdAt: "2026-08-11T00:00:00.000Z",
-				updatedAt: "2026-08-11T00:00:00.000Z",
+				createdAt: inFlight,
+				updatedAt: inFlight,
 			})}\n`,
 		);
 
