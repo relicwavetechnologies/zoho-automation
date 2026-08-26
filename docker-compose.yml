@@ -3,8 +3,8 @@ name: divo-main
 x-default-logging: &default-logging
   driver: local
   options:
-    max-size: "10m"
-    max-file: "3"
+    max-size: "50m"
+    max-file: "5"
     compress: "true"
 
 services:
