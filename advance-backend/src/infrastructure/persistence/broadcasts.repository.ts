@@ -162,6 +162,13 @@ export interface BroadcastsRepoPort {
 
 /** Non-terminal states. The poller's whole job is to move rows out of these. */
 const LIVE_STATUSES = ['queued', 'sending'] as const;
+const BROADCAST_STATUS_RANK: Readonly<Record<BroadcastStatus, number>> = {
+  queued: 0,
+  sending: 1,
+  completed: 2,
+  cancelled: 2,
+  failed: 2,
+};
 
 export class BroadcastsRepository implements BroadcastsRepoPort {
   constructor(private readonly db: PrismaClient) {}
@@ -352,18 +359,35 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
   }): Promise<Result<void, InfraError>> {
     try {
       await this.db.$transaction(async tx => {
-        // Claim a monotonic parent transition first. A slower queued reading
-        // cannot move a sending batch backwards, and a reading that reaches
-        // this transaction after terminalization changes nothing at all.
-        const currentStatuses: readonly BroadcastStatus[] = input.status === 'queued'
-          ? ['queued']
-          : [...LIVE_STATUSES];
+        // Polls can finish out of order on different workers. Serialize one
+        // broadcast's fold so both its state and cumulative progress move only
+        // forward. The exact id is still queried after the advisory lock, so a
+        // hash collision can only make an unrelated broadcast wait.
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtext('whatsapp-broadcast-poll'),
+            hashtext(${input.broadcastId})
+          )::text AS lock_result
+        `;
+        const current = await tx.whatsappBroadcast.findUnique({
+          where: { id: input.broadcastId },
+          select: { status: true, sent: true, failed: true },
+        });
+        if (!current || !LIVE_STATUSES.includes(current.status as typeof LIVE_STATUSES[number])) return;
+
+        const currentStatus = current.status as BroadcastStatus;
+        if (BROADCAST_STATUS_RANK[input.status] < BROADCAST_STATUS_RANK[currentStatus]) return;
+        if (
+          input.status === currentStatus
+          && (input.sent < current.sent || input.failed < current.failed)
+        ) return;
+
         const parent = await tx.whatsappBroadcast.updateMany({
-          where: { id: input.broadcastId, status: { in: [...currentStatuses] } },
+          where: { id: input.broadcastId, status: current.status },
           data: {
             status: input.status,
-            sent: input.sent,
-            failed: input.failed,
+            sent: Math.max(current.sent, input.sent),
+            failed: Math.max(current.failed, input.failed),
             lastPolledAt: new Date(),
             ...(input.completedAt ? { completedAt: input.completedAt } : {}),
           },
@@ -372,13 +396,18 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
 
         for (const result of input.results) {
           await tx.whatsappBroadcastRecipient.updateMany({
-            where: { broadcastId: input.broadcastId, waChatId: result.waChatId },
+            where: {
+              broadcastId: input.broadcastId,
+              waChatId: result.waChatId,
+              // Pending may advance to a terminal recipient result; a repeated
+              // terminal result may enrich its message id/error/timestamp. No
+              // response can move a terminal recipient back to pending or to a
+              // different terminal outcome.
+              status: { in: result.status === 'pending' ? ['pending'] : ['pending', result.status] },
+            },
             data: {
               status: result.status,
               ...(result.waMessageId ? { waMessageId: result.waMessageId } : {}),
-              // Cleared on success as well as set on failure: a recipient that
-              // failed and was later retried must not keep the old reason
-              // beside a `sent` badge.
               error: result.status === 'failed' ? (result.error ?? 'unknown error') : null,
               ...(result.sentAt ? { sentAt: result.sentAt } : {}),
             },
