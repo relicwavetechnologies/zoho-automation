@@ -83,6 +83,10 @@ services:
       # WHATSAPP_WEBHOOK_SECRET) come from the env file, not from here.
       OPENWA_URL: http://divo-openwa:2785
       WHATSAPP_PUBLIC_URL: http://divo-backend:3001
+      # Not a secret, so it lives here where a reviewer can see it rather than
+      # inside an opaque env blob. Overridable from the env file for a fast
+      # kill-switch that does not need a code change.
+      WHATSAPP_FOLLOWUPS_ENABLED: ${WHATSAPP_FOLLOWUPS_ENABLED:-true}
     depends_on:
       divo-schema-sync:
         condition: service_completed_successfully

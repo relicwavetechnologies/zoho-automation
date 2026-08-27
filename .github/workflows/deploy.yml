@@ -315,11 +315,20 @@ jobs:
         env:
           PRODUCTION_ENV_FILE: ${{ secrets.PRODUCTION_ENV_FILE }}
           LOGO_DEV_PUBLISHABLE_KEY: ${{ secrets.LOGO_DEV_PUBLISHABLE_KEY }}
+          # The WhatsApp gateway's two shared secrets are kept out of
+          # PRODUCTION_ENV_FILE deliberately. That secret holds one 90-odd-line
+          # blob, and GitHub never hands a secret's value back — so changing a
+          # single key there means resupplying every other one, with no record
+          # of what moved. As standalone secrets these rotate independently.
+          OPENWA_API_KEY: ${{ secrets.OPENWA_API_KEY }}
+          WHATSAPP_WEBHOOK_SECRET: ${{ secrets.WHATSAPP_WEBHOOK_SECRET }}
           VPS_PASSWORD: ${{ secrets.VPS_PASSWORD }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           test -n "${PRODUCTION_ENV_FILE}"
           test -n "${LOGO_DEV_PUBLISHABLE_KEY}"
+          test -n "${OPENWA_API_KEY}"
+          test -n "${WHATSAPP_WEBHOOK_SECRET}"
           test -n "${VPS_PASSWORD}"
           test -n "${VPS_USER}"
           sudo apt-get update
@@ -327,8 +336,16 @@ jobs:
 
           merged_env="$(mktemp)"
           trap 'rm -f "${merged_env}"' EXIT
-          printf '%s\n' "${PRODUCTION_ENV_FILE}" | sed '/^LOGO_DEV_PUBLISHABLE_KEY=/d' > "${merged_env}"
+          printf '%s\n' "${PRODUCTION_ENV_FILE}" \
+            | sed -e '/^LOGO_DEV_PUBLISHABLE_KEY=/d' \
+                  -e '/^OPENWA_API_KEY=/d' \
+                  -e '/^WHATSAPP_WEBHOOK_SECRET=/d' > "${merged_env}"
           printf 'LOGO_DEV_PUBLISHABLE_KEY=%s\n' "${LOGO_DEV_PUBLISHABLE_KEY}" >> "${merged_env}"
+          # Stripped above before being appended here, so the standalone secret
+          # wins even if a copy is ever pasted into the blob — one authority for
+          # the value, not two that can drift apart.
+          printf 'OPENWA_API_KEY=%s\n' "${OPENWA_API_KEY}" >> "${merged_env}"
+          printf 'WHATSAPP_WEBHOOK_SECRET=%s\n' "${WHATSAPP_WEBHOOK_SECRET}" >> "${merged_env}"
           SSHPASS="${VPS_PASSWORD}" sshpass -e \
             ssh -o StrictHostKeyChecking=yes "${VPS_USER}@${DIVO_MAIN_HOST}" \
             "test \"\$(id -u)\" = 0 && install -d -m 700 -o deploy -g deploy '${DEPLOY_DIR}' && if test -s '${DEPLOY_DIR}/.env.production.local'; then cp -p '${DEPLOY_DIR}/.env.production.local' '${DEPLOY_DIR}/.release-rollback.env.production.local'; fi && cat > '${DEPLOY_DIR}/.env.production.local' && chown deploy:deploy '${DEPLOY_DIR}/.env.production.local' && chmod 600 '${DEPLOY_DIR}/.env.production.local'" < "${merged_env}"
