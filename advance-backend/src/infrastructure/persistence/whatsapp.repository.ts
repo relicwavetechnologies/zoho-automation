@@ -199,8 +199,15 @@ export class WhatsappRepository implements WhatsappRepoPort {
     try {
       const rows = await this.db.whatsappSession.findMany({
         where: {
-          status: 'linked',
-          OR: [{ lastSeenAt: null }, { lastSeenAt: { lt: quietSince } }],
+          OR: [
+            {
+              status: 'linked',
+              OR: [{ lastSeenAt: null }, { lastSeenAt: { lt: quietSince } }],
+            },
+            // A disconnected row stays probeable so a recovered gateway session
+            // can restore it without somebody reopening the pairing dialog.
+            { status: 'disconnected' },
+          ],
         },
         select: SESSION_SELECT,
       });

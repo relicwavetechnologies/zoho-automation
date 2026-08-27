@@ -30,8 +30,9 @@ import {
  * `coveredThrough` untouched so whatever it would have reported folds into the
  * next digest rather than being lost.
  *
- * Every exit releases the claim. A digest that throws while holding one is a
- * group that silently stops being told anything until somebody notices.
+ * Failures before delivery release the claim into the next slot. Once delivery
+ * starts, the claim stays on the same slot until its lease expires so a retry
+ * reuses the same Lark idempotency keys.
  *
  * No model runs here. Every line on every card is a row we already hold.
  */
@@ -100,6 +101,8 @@ export function createFollowUpDigestRunner(deps: DigestRunnerDeps) {
   return async function runFollowUpDigest(claim: ClaimedDigest): Promise<void> {
     const ranAt = now();
     const after = nextSlot(claim, ranAt);
+    let auditId: string | undefined;
+    let deliveryStarted = false;
 
     try {
       if (deps.authorizeLarkChat) {
@@ -202,11 +205,27 @@ export function createFollowUpDigestRunner(deps: DigestRunnerDeps) {
         return;
       }
 
+      // A delivery cannot start without a durable audit checkpoint. The row is
+      // `pending` until the same run commits its window and cards.
+      auditId = await deps.auditService.beginRequired({
+        actorId: 'system',
+        companyId: claim.companyId,
+        action: 'followups.digest.delivered',
+        metadata: {
+          digestId: claim.digestId,
+          departmentId: claim.departmentId,
+          cards: cards.length,
+          items: read.value.items.length,
+          darkNumbers: read.value.dark.length,
+        },
+      });
+
       const sent: { sessionId: string; itemCount: number; cardText: string }[] = [];
       for (const card of cards) {
         // Keyed by digest, slot and card so a retry of the same slot cannot
         // post the same card twice into the group.
         const idempotencyKey = `followup-digest:${claim.digestId}:${claim.scheduledFor.toISOString()}:${card.sessionId ?? 'health'}`;
+        deliveryStarted = true;
         await deps.deliver({
           chatId: claim.larkChatId,
           text: card.card,
@@ -238,11 +257,8 @@ export function createFollowUpDigestRunner(deps: DigestRunnerDeps) {
         items: read.value.items.length,
         darkNumbers: read.value.dark.length,
       });
-
-      deps.auditService.record({
-        actorId: 'system',
-        companyId: claim.companyId,
-        action: 'followups.digest.delivered',
+      deps.auditService.settle({
+        checkpointId: auditId,
         outcome: 'success',
         metadata: {
           digestId: claim.digestId,
@@ -258,21 +274,26 @@ export function createFollowUpDigestRunner(deps: DigestRunnerDeps) {
         error: error instanceof Error ? error.message : String(error),
       });
 
-      deps.auditService.record({
-        actorId: 'system',
-        companyId: claim.companyId,
-        action: 'followups.digest.delivered',
-        outcome: 'failure',
-        metadata: {
+      if (auditId && !deliveryStarted) {
+        deps.auditService.settle({
+          checkpointId: auditId,
+          outcome: 'failure',
+          metadata: {
+            digestId: claim.digestId,
+            departmentId: claim.departmentId,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        });
+      }
+      if (deliveryStarted) {
+        // Do not move to the next slot. The stale-claim path will retry this same
+        // scheduledFor value, which preserves every Lark idempotency key.
+        log.warn('follow_up_digest.claim_retained_for_retry', {
           digestId: claim.digestId,
-          departmentId: claim.departmentId,
-          // The reason, not just the fact. `log.error` above carries it too, but
-          // that line rolls off with the container's log cap; this row is the
-          // copy that survives long enough to answer "why did the group go quiet
-          // last Tuesday".
-          error: error instanceof Error ? error.message : String(error),
-        },
-      });
+          scheduledFor: claim.scheduledFor.toISOString(),
+        });
+        return;
+      }
       // `coveredThrough` untouched on purpose: this window folds into the next
       // digest rather than being dropped.
       const released = await deps.repo.releaseDigest({

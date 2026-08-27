@@ -173,6 +173,7 @@ export type Preview = {
 }
 
 export type SendInput = {
+  requestId: string
   sessionId: string
   label: string
   body: string
@@ -184,6 +185,7 @@ export function useBroadcastSend(token?: string): {
     broadcastId: string
     skipped: string[]
     unverified: string[]
+    gatewayAcknowledged: boolean
   }>
   sending: boolean
 } {
@@ -193,7 +195,7 @@ export function useBroadcastSend(token?: string): {
     setSending(true)
     try {
       return await api.post<{
-        broadcastId: string; skipped: string[]; unverified: string[]
+        broadcastId: string; skipped: string[]; unverified: string[]; gatewayAcknowledged: boolean
       }>(BASE, input, token, { raw: true })
     } finally {
       setSending(false)

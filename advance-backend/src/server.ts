@@ -1,4 +1,4 @@
-import express, { type Express, type RequestHandler } from 'express';
+import express, { type Express } from 'express';
 import { randomUUID } from 'node:crypto';
 import type { Container } from './composition';
 import { createHealthRoutes } from './http/health.routes';
@@ -23,6 +23,7 @@ import { buildSignInConnectedCard } from './infrastructure/channels/lark/lark-si
 import { createShopifyAuthRoutes } from './http/shopify/shopify-auth.routes';
 import { createShopifyWebhookRoutes } from './http/shopify/shopify-webhook.routes';
 import { createWhatsappWebhookRoutes } from './http/whatsapp/whatsapp.webhook.routes';
+import { createRequireChatEnabled } from './http/desktop/web-chat-access.middleware';
 import { createFollowUpRoutes } from './http/member/follow-ups.routes';
 import { createBroadcastRoutes } from './http/member/broadcasts.routes';
 import { ShopifyWebhookRepository } from './infrastructure/persistence/shopify-webhook.repository';
@@ -773,41 +774,10 @@ export const createServer = (c: Container): DivoServerApplication => {
   // Divo answering in the browser. Member auth, not the Pi runtime lease: the
   // caller is a person at a keyboard, and the lease is minted for the container
   // this route is about to start.
-  /*
-   * The door, not just the hidden button.
-   *
-   * The nav stops offering chat when the department's capability map says so,
-   * but a bookmark, a forwarded link or a stale tab all reach this router
-   * anyway — and a surface that answers normally to anyone who knows its URL is
-   * not off, it is merely out of sight. Both this and the capability map read
-   * `DepartmentAgentConfig.chatEnabled`, so they cannot disagree about who has
-   * it.
-   *
-   * Failing open is deliberate and matches the capability map: a lookup that
-   * cannot answer must not lock people out of the assistant they do hold, since
-   * the whole failure would be an absence with nothing on screen to explain it.
-   */
-  const requireChatEnabled: RequestHandler = (req, res, next) => {
-    void (async () => {
-      const companyId = String(res.locals['companyId'] ?? '');
-      const userId    = String(res.locals['userId'] ?? '');
-      if (!companyId || !userId) { next(); return; }
-      let enabled = true;
-      try {
-        enabled = await c.chatEnabledFor({ companyId, userId });
-      } catch (error) {
-        c.logger.error('web_chat.gate.error', { error: String(error) });
-        next();
-        return;
-      }
-      if (enabled) { next(); return; }
-      c.logger.info('web_chat.refused', { companyId, userId, path: req.path });
-      res.status(403).json({
-        success: false,
-        message: 'Divo chat is not enabled for your team. Mail and Follow-ups are still yours.',
-      });
-    })();
-  };
+  const requireChatEnabled = createRequireChatEnabled({
+    chatEnabledFor: c.chatEnabledFor,
+    logger: c.logger,
+  });
 
   app.use(
     '/api/web-chat',

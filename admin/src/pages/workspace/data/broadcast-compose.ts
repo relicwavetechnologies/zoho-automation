@@ -150,10 +150,19 @@ export type PickedRecipient = {
   cold: boolean
 }
 
-export function pickedFrom(pool: Candidate[], selected: ReadonlySet<string>): PickedRecipient[] {
+export function pickedFrom(
+  pool: Candidate[],
+  selected: ReadonlySet<string>,
+  sendingSessionId?: string,
+): PickedRecipient[] {
   return pool
     .filter(c => selected.has(c.waChatId))
-    .map(c => ({ waChatId: c.waChatId, name: c.name, isGroup: c.isGroup, cold: false }))
+    .map(c => ({
+      waChatId: c.waChatId,
+      name: c.name,
+      isGroup: c.isGroup,
+      cold: Boolean(sendingSessionId && c.sessionId !== sendingSessionId),
+    }))
 }
 
 export type Reach = {

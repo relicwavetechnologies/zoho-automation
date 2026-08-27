@@ -8,14 +8,14 @@
  * to catch, silently inverted.
  *
  * The gateway's documented statuses are matched exactly, from a table. Anything
- * outside that table falls back to patterns that test disconnection *first*, and
- * anything still unrecognised is treated as disconnected. Failing towards "dark"
- * is the safe direction: the cost of a false alarm is somebody glancing at a
- * number, and the cost of a false all-clear is a client's messages quietly not
- * being read.
+ * outside that table falls back to ordered patterns. Pairing's normalized view
+ * remains conservative and calls unknown vocabulary disconnected; the liveness
+ * worker uses the tri-state classifier and makes no stored-state change until a
+ * usable or unusable status is confirmed.
  */
 
 export type WhatsappSessionStatus = 'linked' | 'pending' | 'disconnected';
+export type GatewaySessionStatus = WhatsappSessionStatus | 'unknown';
 
 /**
  * The gateway's own vocabulary, from its `openapi.json`.
@@ -52,11 +52,24 @@ const LINKED = /^connected$|\bready\b|authenticated|\bopen\b|\bactive\b|\bonline
 export function normalizeGatewaySessionStatus(
   remote: string | undefined | null,
 ): WhatsappSessionStatus {
+  const classified = classifyGatewaySessionStatus(remote);
+  return classified === 'unknown' ? 'disconnected' : classified;
+}
+
+/**
+ * Classify a liveness response without treating new provider vocabulary as a
+ * confirmed outage. Pairing keeps its conservative fallback through
+ * `normalizeGatewaySessionStatus`; the worker uses this tri-state result before
+ * changing stored state.
+ */
+export function classifyGatewaySessionStatus(
+  remote: string | undefined | null,
+): GatewaySessionStatus {
   // Underscores and hyphens are word characters to a regex, so `\bqr\b` does not
   // match inside `awaiting_qr`. Normalising separators to spaces first is what
   // lets the word-boundary anchors below mean what they look like they mean.
   const raw = (remote ?? '').trim().toLowerCase();
-  if (!raw) return 'disconnected';
+  if (!raw) return 'unknown';
 
   // The documented vocabulary answers first and exactly. The patterns below are
   // the fallback for a gateway version that adds a word we have not seen.
@@ -71,8 +84,7 @@ export function normalizeGatewaySessionStatus(
   if (PENDING.test(value)) return 'pending';
   if (LINKED.test(value)) return 'linked';
 
-  // Unknown vocabulary from a gateway we do not control. Assume the worst.
-  return 'disconnected';
+  return 'unknown';
 }
 
 /** Convenience for the liveness sweep, which only cares about one question. */

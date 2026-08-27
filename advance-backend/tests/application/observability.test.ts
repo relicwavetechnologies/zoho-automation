@@ -145,6 +145,48 @@ describe('AuditService', () => {
       assert.equal(capturedTake, 100);
     });
   });
+
+  describe('required checkpoints', () => {
+    it('persists pending before work and settles the same row', async () => {
+      const writes: any[] = [];
+      const updates: any[] = [];
+      const prisma = {
+        auditLog: {
+          create: async (args: any) => { writes.push(args); return { id: 'audit-1' }; },
+          update: async (args: any) => { updates.push(args); return {}; },
+        },
+      } as any;
+      const svc = new AuditService(prisma, noopLogger);
+
+      const id = await svc.beginRequired({
+        actorId: 'u1', companyId: 'co-1', action: 'followups.test', metadata: { count: 2 },
+      });
+      assert.equal(id, 'audit-1');
+      assert.equal(writes[0].data.outcome, 'pending');
+
+      svc.settle({ checkpointId: id, outcome: 'success', metadata: { count: 2 } });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      assert.equal(updates[0].where.id, 'audit-1');
+      assert.equal(updates[0].data.outcome, 'success');
+    });
+
+    it('rejects admission when the audit row cannot be persisted', async () => {
+      const prisma = {
+        auditLog: { create: async () => { throw new Error('db down'); } },
+      } as any;
+      const svc = new AuditService(prisma, noopLogger);
+      await assert.rejects(() => svc.beginRequired({ actorId: 'u1', action: 'followups.test' }));
+    });
+
+    it('leaves a pending checkpoint instead of throwing after settlement failure', async () => {
+      const prisma = {
+        auditLog: { update: async () => { throw new Error('db down'); } },
+      } as any;
+      const svc = new AuditService(prisma, noopLogger);
+      assert.doesNotThrow(() => svc.settle({ checkpointId: 'audit-1', outcome: 'failure' }));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+  });
 });
 
 // ─── TokenUsageService ────────────────────────────────────────────────────────

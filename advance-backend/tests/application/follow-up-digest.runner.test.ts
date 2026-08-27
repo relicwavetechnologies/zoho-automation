@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createFollowUpDigestRunner } from '../../src/application/follow-ups/follow-up-digest.runner.ts';
-import { ok } from '../../src/shared/result.ts';
+import { err, ok } from '../../src/shared/result.ts';
+import { InfraError } from '../../src/shared/errors.ts';
 import type { ClaimedDigest } from '../../src/infrastructure/persistence/follow-ups.repository.ts';
-import type { AuditService } from '../../src/application/observability/audit.service.ts';
 
 const noopLogger = {
   info: () => {}, warn: () => {}, error: () => {}, debug: () => {},
@@ -46,7 +46,11 @@ function makeRepo(window: { items?: any[]; dark?: any[] } = {}) {
 }
 
 import type { AuditService } from '../../src/application/observability/audit.service.ts';
-const fakeAudit = { record: () => {} } as unknown as AuditService;
+const fakeAudit = {
+  record: () => {},
+  beginRequired: async () => 'audit-1',
+  settle: () => {},
+} as unknown as AuditService;
 
 const runner = (repo: any, deliver: any, authorize?: any) =>
   createFollowUpDigestRunner({
@@ -79,8 +83,7 @@ describe('follow-up digest runner', () => {
     await runner(repo, async () => { throw new Error('lark down'); })(claim);
 
     assert.equal(repo.completed.length, 0, 'window not advanced');
-    assert.equal(repo.released.length, 1, 'claim released so it retries');
-    assert.ok(repo.released[0].nextRunAt, 'and it keeps its schedule');
+    assert.equal(repo.released.length, 0, 'same slot is retained for an idempotent retry');
   });
 
   it('sends a health card when a number is dark, even with no follow-ups', async () => {
@@ -138,5 +141,37 @@ describe('follow-up digest runner', () => {
     assert.match(sent[0].idempotencyKey, /digest-1/);
     assert.match(sent[0].idempotencyKey, /sess-1/);
     assert.match(sent[0].idempotencyKey, /2026-08-25T03:30/);
+  });
+
+  it('does not deliver when the durable audit checkpoint is unavailable', async () => {
+    const sent: any[] = [];
+    const repo = makeRepo({ items: [followUp()] });
+    const audit = {
+      beginRequired: async () => { throw new Error('audit database unavailable'); },
+      settle: () => {},
+    } as unknown as AuditService;
+    const run = createFollowUpDigestRunner({
+      repo,
+      deliver: async (input: any) => { sent.push(input); return 'x'; },
+      logger: noopLogger,
+      now: () => RAN_AT,
+      auditService: audit,
+    });
+
+    await run(claim);
+    assert.equal(sent.length, 0);
+    assert.equal(repo.released.length, 1, 'failure before delivery moves to the next slot');
+  });
+
+  it('retains the same slot when completion fails after delivery', async () => {
+    const sent: any[] = [];
+    const repo = makeRepo({ items: [followUp()] });
+    repo.completeDigest = async () => err(new InfraError({
+      layer: 'prisma', op: 'followUps.completeDigest', cause: 'db', message: 'db unavailable',
+    }));
+    await runner(repo, async (input: any) => { sent.push(input); return 'x'; })(claim);
+
+    assert.equal(sent.length, 1);
+    assert.equal(repo.released.length, 0, 'stale-claim recovery reuses scheduledFor');
   });
 });

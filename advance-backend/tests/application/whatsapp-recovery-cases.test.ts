@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { WhatsappIngestService } from '../../src/application/whatsapp/whatsapp-ingest.service.ts';
 import { WhatsappReconcileWorker } from '../../src/application/whatsapp/whatsapp-reconcile.worker.ts';
-import { ok } from '../../src/shared/result.ts';
+import { err, ok } from '../../src/shared/result.ts';
+import { InfraError } from '../../src/shared/errors.ts';
 import type { IngressReceiptRepoPort } from '../../src/infrastructure/persistence/ingress-receipt.repository.ts';
 import type {
   WhatsappRepoPort,
@@ -128,6 +129,10 @@ class FakeWhatsappRepo implements WhatsappRepoPort {
   async createSession() { return ok(SESSION); }
   async updateSessionStatus(input: any) {
     this.statusWrites.push({ sessionId: input.sessionId, status: input.status });
+    const current = this.sessionRow;
+    if (current && current.id === input.sessionId) {
+      this.sessionRow = { ...current, status: String(input.status) };
+    }
     return ok(undefined);
   }
   async touchSession(sessionId: string) { this.touched.push(sessionId); return ok(undefined); }
@@ -146,7 +151,8 @@ class FakeWhatsappRepo implements WhatsappRepoPort {
   }
   async listStaleSessions(quietSince: Date) {
     const row = this.sessionRow;
-    if (!row || row.status !== 'linked') return ok([]);
+    if (!row || (row.status !== 'linked' && row.status !== 'disconnected')) return ok([]);
+    if (row.status === 'disconnected') return ok([row]);
     const stale = row.lastSeenAt === null || row.lastSeenAt.getTime() < quietSince.getTime();
     return ok(stale ? [row] : []);
   }
@@ -228,6 +234,28 @@ describe('WhatsApp durability — the three failure cases', () => {
     assert.deepEqual(repo.stored, ['wa-dup'], 'stored exactly once');
   });
 
+  it('CASE 2b: admission survives the session-registration race', async () => {
+    const receipts = new FakeReceipts();
+    const repo = new FakeWhatsappRepo();
+    const ingest = new WhatsappIngestService({ receipts, repo, logger: noopLogger });
+    repo.sessionRow = null;
+
+    const admitted = await ingest.admit(envelope('wa-early'), 'idem-early');
+    assert.equal(admitted.status, 'accepted');
+    if (admitted.status !== 'accepted') return;
+    const first = await ingest.process(admitted.receiptId);
+    assert.equal(first.status, 'unknown_session');
+    assert.equal(receipts.rows[0]!.status, 'failed', 'retryable, not dead-lettered');
+
+    repo.sessionRow = SESSION;
+    await new WhatsappReconcileWorker({
+      receipts, repo, ingest, gateway: gatewayStub(true), logger: noopLogger,
+    }).runOnce();
+
+    assert.deepEqual(repo.stored, ['wa-early']);
+    assert.equal(receipts.rows[0]!.status, 'completed');
+  });
+
   it('CASE 3: a dark handset raises the alarm — and no message is recovered', async () => {
     const receipts = new FakeReceipts();
     const repo = new FakeWhatsappRepo();
@@ -249,8 +277,8 @@ describe('WhatsApp durability — the three failure cases', () => {
     assert.equal(repo.darkMarks.length, 1);
     assert.equal(repo.darkMarks[0]!.since.getTime(), repo.sessionRow!.lastSeenAt!.getTime());
 
-    // Still no automatic recovery, and that remains deliberate: the repair is
-    // the button, not the sweep.
+    // There is still no automatic history recovery. Restoring a session later
+    // leaves the gap marker until the explicit re-read fills it.
     assert.equal(receipts.rows.length, 0, 'nothing to replay — no receipt was ever created');
     assert.deepEqual(repo.stored, [], 'the sweep does not fetch what it missed');
   });
@@ -287,5 +315,56 @@ describe('WhatsApp durability — the three failure cases', () => {
 
     // Asking the gateway before shouting keeps a slow week from reading as a fault.
     assert.deepEqual(repo.statusWrites, [], 'still connected, so not marked dark');
+  });
+
+  it('CASE 3d: a gateway outage does not turn silence into a confirmed disconnect', async () => {
+    const receipts = new FakeReceipts();
+    const repo = new FakeWhatsappRepo();
+    const ingest = new WhatsappIngestService({ receipts, repo, logger: noopLogger });
+    repo.sessionRow = { ...SESSION, lastSeenAt: new Date(Date.now() - 48 * 60 * 60_000) };
+    const gateway = {
+      session: async () => err(new InfraError({
+        layer: 'http', op: 'openwa.session', cause: 'down', message: 'gateway unavailable',
+      })),
+      chats: async () => ok([]),
+    } as any;
+
+    await new WhatsappReconcileWorker({ receipts, repo, ingest, gateway, logger: noopLogger }).runOnce();
+
+    assert.deepEqual(repo.statusWrites, []);
+    assert.deepEqual(repo.darkMarks, []);
+  });
+
+  it('CASE 3e: unknown gateway vocabulary makes no liveness claim', async () => {
+    const receipts = new FakeReceipts();
+    const repo = new FakeWhatsappRepo();
+    const ingest = new WhatsappIngestService({ receipts, repo, logger: noopLogger });
+    repo.sessionRow = { ...SESSION, lastSeenAt: new Date(Date.now() - 48 * 60 * 60_000) };
+    const gateway = {
+      session: async () => ok({ id: SESSION.openwaSessionId, status: 'warming_v2' }),
+      chats: async () => ok([]),
+    } as any;
+
+    await new WhatsappReconcileWorker({ receipts, repo, ingest, gateway, logger: noopLogger }).runOnce();
+
+    assert.deepEqual(repo.statusWrites, []);
+    assert.deepEqual(repo.darkMarks, []);
+  });
+
+  it('CASE 3f: a recovered disconnected session becomes linked without clearing its gap', async () => {
+    const receipts = new FakeReceipts();
+    const repo = new FakeWhatsappRepo();
+    const ingest = new WhatsappIngestService({ receipts, repo, logger: noopLogger });
+    const darkSince = new Date(Date.now() - 48 * 60 * 60_000);
+    repo.sessionRow = { ...SESSION, status: 'disconnected', darkSince, lastSeenAt: darkSince };
+    repo.darkMarks.push({ sessionId: SESSION.id, since: darkSince });
+
+    await new WhatsappReconcileWorker({
+      receipts, repo, ingest, gateway: gatewayStub(true), logger: noopLogger,
+    }).runOnce();
+
+    assert.deepEqual(repo.statusWrites, [{ sessionId: SESSION.id, status: 'linked' }]);
+    assert.equal(repo.sessionRow?.darkSince, darkSince);
+    assert.deepEqual(repo.darkCleared, []);
   });
 });

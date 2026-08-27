@@ -20,15 +20,35 @@ const noopLogger = {
 
 const allowed = async () => ({ kind: 'allowed' as const });
 const resolveDept = async () => 'dept-1';
+const authorizeLarkChat = async () => ({ status: 'allowed' as const });
 
-type Captured = RecordAuditInput;
+type Captured = Omit<RecordAuditInput, 'outcome'> & {
+  outcome: RecordAuditInput['outcome'] | 'pending';
+};
 
 function makeAudit(captured: Captured[]): AuditService {
+  const checkpoints = new Map<string, number>();
+  let seq = 0;
   const svc = {
     record(input: RecordAuditInput) {
       captured.push(input);
     },
-  } satisfies Pick<AuditService, 'record'>;
+    async beginRequired(input: Omit<RecordAuditInput, 'outcome'>) {
+      const id = `audit-${++seq}`;
+      checkpoints.set(id, captured.length);
+      captured.push({ ...input, outcome: 'pending' });
+      return id;
+    },
+    settle(input: { checkpointId: string; outcome: 'success' | 'failure'; metadata?: Record<string, unknown> }) {
+      const index = checkpoints.get(input.checkpointId);
+      if (index === undefined) return;
+      captured[index] = {
+        ...captured[index]!,
+        outcome: input.outcome,
+        ...(input.metadata ? { metadata: input.metadata } : {}),
+      };
+    },
+  } satisfies Pick<AuditService, 'record' | 'beginRequired' | 'settle'>;
   return svc as unknown as AuditService;
 }
 
@@ -146,7 +166,7 @@ describe('follow-ups audit', () => {
     const captured: Captured[] = [];
     const audit = makeAudit(captured);
     const broadcasts = {
-      send: async () => ok({ broadcastId: 'b-1', skipped: ['a'], unverified: [] }),
+      send: async () => ok({ broadcastId: 'b-1', skipped: ['a'], unverified: [], gatewayAcknowledged: true }),
       cancel: async () => ok({ stopped: true }),
     } as unknown as import('../../src/application/whatsapp/whatsapp-broadcast.service.ts').WhatsappBroadcastService;
 
@@ -160,6 +180,7 @@ describe('follow-ups audit', () => {
 
     const { status } = await callRoute(router, 'POST', '/', {
       body: {
+        requestId: '8dbca8a5-2d5a-4ee5-b8a4-a6fd3f706389',
         sessionId: 'sess-1',
         label: 'test',
         body: 'hello world',
@@ -206,6 +227,7 @@ describe('follow-ups audit', () => {
 
     await callRoute(router, 'POST', '/', {
       body: {
+        requestId: '8dbca8a5-2d5a-4ee5-b8a4-a6fd3f706389',
         sessionId: 'sess-1',
         label: 'test',
         body: 'hello',
@@ -224,12 +246,48 @@ describe('follow-ups audit', () => {
     assert.equal(failMeta['departmentId'], 'dept-1');
   });
 
+  it('does not start a broadcast when its audit checkpoint cannot be persisted', async () => {
+    let sendCalls = 0;
+    const audit = {
+      beginRequired: async () => { throw new Error('audit database unavailable'); },
+      settle: () => {},
+    } as unknown as AuditService;
+    const broadcasts = {
+      send: async () => {
+        sendCalls += 1;
+        return ok({
+          broadcastId: 'b-1', skipped: [], unverified: [], gatewayAcknowledged: true,
+        });
+      },
+    } as unknown as import('../../src/application/whatsapp/whatsapp-broadcast.service.ts').WhatsappBroadcastService;
+    const router = createBroadcastRoutes({
+      broadcasts,
+      resolveDepartmentId: resolveDept,
+      authorize: allowed as unknown as import('../../src/http/member/broadcasts.routes.ts').BroadcastRoutesDeps['authorize'],
+      auditService: audit,
+      logger: noopLogger,
+    });
+
+    const result = await callRoute(router, 'POST', '/', {
+      body: {
+        requestId: '8dbca8a5-2d5a-4ee5-b8a4-a6fd3f706389',
+        sessionId: 'sess-1',
+        label: 'test',
+        body: 'hello',
+        recipients: [{ waChatId: '12592995127491@lid', displayName: 'Priya', isGroup: false }],
+      },
+    });
+
+    assert.equal(result.status, 503);
+    assert.equal(sendCalls, 0);
+  });
+
   it('broadcast cancelled records success', async () => {
     const captured: Captured[] = [];
     const audit = makeAudit(captured);
     const broadcasts = {
       cancel: async () => ok({ stopped: true }),
-      send: async () => ok({ broadcastId: 'b-1', skipped: [], unverified: [] }),
+      send: async () => ok({ broadcastId: 'b-1', skipped: [], unverified: [], gatewayAcknowledged: true }),
     } as unknown as import('../../src/application/whatsapp/whatsapp-broadcast.service.ts').WhatsappBroadcastService;
 
     const router = createBroadcastRoutes({
@@ -271,6 +329,7 @@ describe('follow-ups audit', () => {
       historyRepair: { repair: async () => ok({ chatsRead: 0, messagesRecovered: 0, failures: [] }) } as unknown as import('../../src/application/whatsapp/whatsapp-history-repair.ts').WhatsappHistoryRepair,
       resolveDepartmentId: resolveDept,
       authorize: allowed as unknown as import('../../src/http/member/follow-ups.routes.ts').FollowUpRoutesDeps['authorize'],
+      authorizeLarkChat,
       auditService: audit,
       logger: noopLogger,
     });
@@ -287,7 +346,7 @@ describe('follow-ups audit', () => {
     assert.equal((captured[0]!.metadata as Record<string, unknown>)['followUpId'], 'f-1');
   });
 
-  it('404 on follow-up records nothing', async () => {
+  it('404 on follow-up settles the durable attempt as failure', async () => {
     const captured: Captured[] = [];
     const audit = makeAudit(captured);
     const followUps = {
@@ -307,6 +366,7 @@ describe('follow-ups audit', () => {
       historyRepair: { repair: async () => ok({ chatsRead: 0, messagesRecovered: 0, failures: [] }) } as unknown as import('../../src/application/whatsapp/whatsapp-history-repair.ts').WhatsappHistoryRepair,
       resolveDepartmentId: resolveDept,
       authorize: allowed as unknown as import('../../src/http/member/follow-ups.routes.ts').FollowUpRoutesDeps['authorize'],
+      authorizeLarkChat,
       auditService: audit,
       logger: noopLogger,
     });
@@ -317,7 +377,9 @@ describe('follow-ups audit', () => {
     });
 
     assert.equal(status, 404);
-    assert.equal(captured.length, 0);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0]!.outcome, 'failure');
+    assert.equal((captured[0]!.metadata as Record<string, unknown>)['error'], 'not_found');
   });
 
   it('followups.number.linked records success with id only', async () => {
@@ -340,6 +402,7 @@ describe('follow-ups audit', () => {
       historyRepair: { repair: async () => ok({ chatsRead: 0, messagesRecovered: 0, failures: [] }) } as unknown as import('../../src/application/whatsapp/whatsapp-history-repair.ts').WhatsappHistoryRepair,
       resolveDepartmentId: resolveDept,
       authorize: allowed as unknown as import('../../src/http/member/follow-ups.routes.ts').FollowUpRoutesDeps['authorize'],
+      authorizeLarkChat,
       auditService: audit,
       logger: noopLogger,
     });
@@ -375,6 +438,7 @@ describe('follow-ups audit', () => {
       historyRepair: { repair: async () => ok({ chatsRead: 0, messagesRecovered: 0, failures: [] }) } as unknown as import('../../src/application/whatsapp/whatsapp-history-repair.ts').WhatsappHistoryRepair,
       resolveDepartmentId: resolveDept,
       authorize: allowed as unknown as import('../../src/http/member/follow-ups.routes.ts').FollowUpRoutesDeps['authorize'],
+      authorizeLarkChat,
       auditService: audit,
       logger: noopLogger,
     });
@@ -431,7 +495,7 @@ describe('follow-ups audit', () => {
     assert.equal(typeof m['cards'], 'number');
   });
 
-  it('digest delivered failure uses system actor', async () => {
+  it('digest delivery uncertainty leaves a durable pending checkpoint', async () => {
     const captured: Captured[] = [];
     const audit = makeAudit(captured);
     const repo = {
@@ -465,11 +529,10 @@ describe('follow-ups audit', () => {
     assert.equal(captured.length, 1);
     assert.equal(captured[0]!.actorId, 'system');
     assert.equal(captured[0]!.action, 'followups.digest.delivered');
-    assert.equal(captured[0]!.outcome, 'failure');
-    // The reason is the whole point of the durable copy: `log.error` carries it
-    // too, but that line rolls off with the container's log cap.
+    assert.equal(captured[0]!.outcome, 'pending');
+    // A thrown delivery may have reached Lark. Pending says the outcome needs
+    // reconciliation instead of claiming it definitely failed.
     const digestMeta = captured[0]!.metadata as Record<string, unknown>;
-    assert.equal(digestMeta['error'], 'lark down');
     assert.equal(digestMeta['departmentId'], 'dept-1');
   });
 });

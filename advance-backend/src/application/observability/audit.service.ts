@@ -23,6 +23,15 @@ export interface RecordAuditInput {
   metadata?:  Record<string, unknown>;
 }
 
+export type BeginAuditInput = Omit<RecordAuditInput, 'outcome'>;
+
+export interface SettleAuditInput {
+  checkpointId: string;
+  outcome: RecordAuditInput['outcome'];
+  /** Full final metadata. Omit it to keep what admission recorded. */
+  metadata?: Record<string, unknown>;
+}
+
 export interface AuditLogView {
   id:        string;
   actorId:   string;
@@ -70,6 +79,56 @@ export class AuditService {
       });
       throw error;
     }
+  }
+
+  /**
+   * Persist an audit checkpoint before work that cannot safely be retried.
+   *
+   * `pending` is deliberate and truthful. If outcome settlement later fails,
+   * the durable row still proves who started what and gives operators a record
+   * to reconcile instead of losing the action entirely.
+   */
+  async beginRequired(input: BeginAuditInput): Promise<string> {
+    try {
+      const row = await this.prisma.auditLog.create({
+        data: {
+          actorId: input.actorId,
+          action: input.action,
+          outcome: 'pending',
+          ...(input.companyId ? { companyId: input.companyId } : {}),
+          ...(input.metadata ? { metadata: sanitizeMeta(input.metadata) as object } : {}),
+        },
+        select: { id: true },
+      });
+      return row.id;
+    } catch (error) {
+      this.logger.error('audit.checkpoint.failed', {
+        action: input.action,
+        error: String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Settle a checkpoint without turning an already-applied effect into a false
+   * HTTP failure. A failed update leaves the durable row visibly `pending`.
+   */
+  settle(input: SettleAuditInput): void {
+    const metadata = input.metadata ? sanitizeMeta(input.metadata) : undefined;
+    this.prisma.auditLog.update({
+      where: { id: input.checkpointId },
+      data: {
+        outcome: input.outcome,
+        ...(metadata ? { metadata: metadata as object } : {}),
+      },
+    }).catch(error => {
+      this.logger.warn('audit.checkpoint_settle.failed', {
+        checkpointId: input.checkpointId,
+        outcome: input.outcome,
+        error: String(error),
+      });
+    });
   }
 
   /** Query audit logs for a company, newest first. */

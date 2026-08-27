@@ -59,6 +59,7 @@ export interface PollableBroadcast {
   /** The gateway's own session id, not Divo's row id — that is what it keys on. */
   readonly openwaSessionId: string;
   readonly status: string;
+  readonly createdAt: Date;
 }
 
 /**
@@ -91,8 +92,13 @@ export interface BroadcastsRepoPort {
   }): Promise<Result<readonly BroadcastCandidate[], InfraError>>;
   resolveKnownChats(input: {
     companyId: string;
+    sessionId?: string;
     waChatIds: readonly string[];
   }): Promise<Result<ReadonlySet<string>, InfraError>>;
+  findIdempotent(input: {
+    sessionId: string;
+    gatewayBatchId: string;
+  }): Promise<Result<string | null, InfraError>>;
   create(input: {
     companyId: string;
     departmentId: string;
@@ -107,7 +113,7 @@ export interface BroadcastsRepoPort {
       isGroup: boolean;
       renderedBody: string;
     }[];
-  }): Promise<Result<string, InfraError>>;
+  }): Promise<Result<{ broadcastId: string; created: boolean }, InfraError>>;
   markStatus(input: {
     broadcastId: string;
     status: BroadcastStatus;
@@ -128,6 +134,7 @@ export interface BroadcastsRepoPort {
       sentAt?: Date;
     }[];
   }): Promise<Result<void, InfraError>>;
+  touchPoll(broadcastId: string): Promise<Result<void, InfraError>>;
   list(scope: {
     companyId: string;
     departmentId: string;
@@ -201,25 +208,48 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
   /**
    * Which of these WhatsApp ids Divo has already seen a conversation with.
    *
-   * Company-scoped rather than department-scoped, deliberately. The question is
-   * "has this number ever spoken to us", and answering it narrowly would mark a
-   * long-standing client as a cold contact because the conversation happens to
-   * live in another department — overstating the risk on the one screen where
-   * the risk figure is supposed to be trusted.
+   * Sending-session scoped when one is named. WhatsApp's first-contact limits
+   * belong to the handset doing the sending, so a conversation on another team
+   * number does not make this sender warm.
    */
   async resolveKnownChats(input: {
     companyId: string;
+    sessionId?: string;
     waChatIds: readonly string[];
   }): Promise<Result<ReadonlySet<string>, InfraError>> {
     if (input.waChatIds.length === 0) return ok(new Set());
     try {
       const rows = await this.db.whatsappChat.findMany({
-        where: { companyId: input.companyId, waChatId: { in: [...input.waChatIds] } },
+        where: {
+          companyId: input.companyId,
+          ...(input.sessionId ? { owningSessionId: input.sessionId } : {}),
+          waChatId: { in: [...input.waChatIds] },
+        },
         select: { waChatId: true },
       });
       return ok(new Set(rows.map(row => row.waChatId)));
     } catch (cause) {
       return err(wrapInfra('prisma', 'broadcasts.resolveKnownChats', cause));
+    }
+  }
+
+  async findIdempotent(input: {
+    sessionId: string;
+    gatewayBatchId: string;
+  }): Promise<Result<string | null, InfraError>> {
+    try {
+      const row = await this.db.whatsappBroadcast.findUnique({
+        where: {
+          sessionId_gatewayBatchId: {
+            sessionId: input.sessionId,
+            gatewayBatchId: input.gatewayBatchId,
+          },
+        },
+        select: { id: true },
+      });
+      return ok(row?.id ?? null);
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'broadcasts.findIdempotent', cause));
     }
   }
 
@@ -237,7 +267,7 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
       isGroup: boolean;
       renderedBody: string;
     }[];
-  }): Promise<Result<string, InfraError>> {
+  }): Promise<Result<{ broadcastId: string; created: boolean }, InfraError>> {
     try {
       const created = await this.db.whatsappBroadcast.create({
         data: {
@@ -261,8 +291,13 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
         },
         select: { id: true },
       });
-      return ok(created.id);
+      return ok({ broadcastId: created.id, created: true });
     } catch (cause) {
+      if ((cause as { code?: string }).code === 'P2002') {
+        const existing = await this.findIdempotent(input);
+        if (!existing.ok) return existing;
+        if (existing.value) return ok({ broadcastId: existing.value, created: false });
+      }
       return err(wrapInfra('prisma', 'broadcasts.create', cause));
     }
   }
@@ -348,6 +383,18 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
     }
   }
 
+  async touchPoll(broadcastId: string): Promise<Result<void, InfraError>> {
+    try {
+      await this.db.whatsappBroadcast.update({
+        where: { id: broadcastId },
+        data: { lastPolledAt: new Date() },
+      });
+      return ok(undefined);
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'broadcasts.touchPoll', cause));
+    }
+  }
+
   async list(scope: {
     companyId: string;
     departmentId: string;
@@ -417,7 +464,7 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
           departmentId: scope.departmentId,
         },
         select: {
-          id: true, gatewayBatchId: true, status: true,
+          id: true, gatewayBatchId: true, status: true, createdAt: true,
           session: { select: { openwaSessionId: true } },
         },
       });
@@ -427,6 +474,7 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
         gatewayBatchId: row.gatewayBatchId,
         openwaSessionId: row.session.openwaSessionId,
         status: row.status,
+        createdAt: row.createdAt,
       });
     } catch (cause) {
       return err(wrapInfra('prisma', 'broadcasts.findForScope', cause));
@@ -454,15 +502,16 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
         orderBy: { lastPolledAt: { sort: 'asc', nulls: 'first' } },
         take: input.limit,
         select: {
-          id: true, gatewayBatchId: true, status: true,
+          id: true, gatewayBatchId: true, status: true, createdAt: true,
           session: { select: { openwaSessionId: true } },
         },
       });
       return ok(rows.map(row => ({
         id: row.id,
         gatewayBatchId: row.gatewayBatchId,
-        openwaSessionId: row.session.openwaSessionId,
-        status: row.status,
+          openwaSessionId: row.session.openwaSessionId,
+          status: row.status,
+          createdAt: row.createdAt,
       })));
     } catch (cause) {
       return err(wrapInfra('prisma', 'broadcasts.claimPollable', cause));
