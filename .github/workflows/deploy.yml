@@ -550,6 +550,7 @@ jobs:
               && test "$(docker inspect --format='{{range .Config.Env}}{{println .}}{{end}}' divo-main-divo-pi-controller-1 | sed -n 's/^DIVO_PI_IMAGE=//p')" = "${DIVO_PI_IMAGE}" \
               && curl -fsS --max-time 10 http://127.0.0.1:13002/health >/dev/null \
               && curl -fsS --max-time 10 http://127.0.0.1:18082/ >/dev/null \
+              && test "$(docker inspect --format='{{.State.Health.Status}}' divo-main-divo-openwa-1)" = healthy \
               && curl -fsS --max-time 15 --resolve "${DIVO_MAIN_DOMAIN}:443:127.0.0.1" "https://${DIVO_MAIN_DOMAIN}/" >/dev/null \
               && DIVO_BACKEND_IMAGE="${DIVO_BACKEND_IMAGE}" \
                  DIVO_ADMIN_IMAGE="${DIVO_ADMIN_IMAGE}" \
@@ -573,7 +574,7 @@ jobs:
 
           docker compose --env-file .env.production.local ps
           docker compose --env-file .env.production.local logs --tail=160 \
-            divo-backend divo-admin google-workspace-mcp divo-pi-controller
+            divo-backend divo-admin google-workspace-mcp divo-pi-controller divo-openwa
           exit 1
           REMOTE
 
