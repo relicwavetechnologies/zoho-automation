@@ -10,7 +10,7 @@
  * All reads are company-scoped.
  */
 
-import type { PrismaClient } from '../../generated/prisma';
+import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -93,23 +93,12 @@ export class AuditService {
    */
   async beginRequired(input: BeginAuditInput): Promise<string> {
     try {
-      if (input.checkpointKey) {
-        const existing = await this.prisma.auditLog.findFirst({
-          where: {
-            ...(input.companyId ? { companyId: input.companyId } : {}),
-            action: input.action,
-            outcome: 'pending',
-            metadata: { path: ['checkpointKey'], equals: input.checkpointKey },
-          },
-          select: { id: true },
-        });
-        if (existing) return existing.id;
-      }
+      const checkpointKey = input.checkpointKey;
       const metadata = {
         ...(input.metadata ?? {}),
-        ...(input.checkpointKey ? { checkpointKey: input.checkpointKey } : {}),
+        ...(checkpointKey ? { checkpointKey } : {}),
       };
-      const row = await this.prisma.auditLog.create({
+      const create = async (store: Pick<Prisma.TransactionClient, 'auditLog'>) => store.auditLog.create({
         data: {
           actorId: input.actorId,
           action: input.action,
@@ -119,7 +108,32 @@ export class AuditService {
         },
         select: { id: true },
       });
-      return row.id;
+
+      if (!checkpointKey) return (await create(this.prisma)).id;
+
+      const lockKey = JSON.stringify([input.companyId ?? '', input.action, checkpointKey]);
+      return await this.prisma.$transaction(async tx => {
+        // The exact row still decides reuse; a hash collision can only make an
+        // unrelated checkpoint wait. The transaction lock closes the
+        // find-then-create race across backend processes without a schema change.
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtext('audit-checkpoint'),
+            hashtext(${lockKey})
+          )::text AS lock_result
+        `;
+        const existing = await tx.auditLog.findFirst({
+          where: {
+            companyId: input.companyId ?? null,
+            action: input.action,
+            outcome: 'pending',
+            metadata: { path: ['checkpointKey'], equals: checkpointKey },
+          },
+          select: { id: true },
+        });
+        if (existing) return existing.id;
+        return (await create(tx)).id;
+      });
     } catch (error) {
       this.logger.error('audit.checkpoint.failed', {
         action: input.action,

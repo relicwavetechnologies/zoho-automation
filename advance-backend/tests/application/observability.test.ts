@@ -189,11 +189,15 @@ describe('AuditService', () => {
 
     it('reuses a pending checkpoint for the same idempotent effect', async () => {
       let creates = 0;
-      const prisma = {
+      const tx = {
+        $queryRaw: async () => [{ lock_result: '' }],
         auditLog: {
           findFirst: async () => ({ id: 'audit-existing' }),
           create: async () => { creates += 1; return { id: 'audit-new' }; },
         },
+      };
+      const prisma = {
+        $transaction: async (run: (client: typeof tx) => Promise<unknown>) => run(tx),
       } as any;
       const svc = new AuditService(prisma, noopLogger);
       const id = await svc.beginRequired({
@@ -204,6 +208,53 @@ describe('AuditService', () => {
       });
       assert.equal(id, 'audit-existing');
       assert.equal(creates, 0);
+    });
+
+    it('serializes concurrent admission for one checkpoint key', async () => {
+      let pendingId: string | null = null;
+      let creates = 0;
+      let lockCalls = 0;
+      let lockTail = Promise.resolve();
+
+      const prisma = {
+        $transaction: async (run: (client: any) => Promise<string>) => {
+          const previousLock = lockTail;
+          let releaseLock!: () => void;
+          lockTail = new Promise<void>(resolve => { releaseLock = resolve; });
+          const tx = {
+            $queryRaw: async () => {
+              lockCalls += 1;
+              await previousLock;
+              return [{ lock_result: '' }];
+            },
+            auditLog: {
+              findFirst: async () => pendingId ? { id: pendingId } : null,
+              create: async () => {
+                creates += 1;
+                await new Promise(resolve => setTimeout(resolve, 0));
+                pendingId = `audit-${creates}`;
+                return { id: pendingId };
+              },
+            },
+          };
+          try {
+            return await run(tx);
+          } finally {
+            releaseLock();
+          }
+        },
+      } as any;
+      const svc = new AuditService(prisma, noopLogger);
+      const input = {
+        actorId: 'system', companyId: 'co-1', action: 'followups.digest.delivered',
+        checkpointKey: 'digest-1:slot-1',
+      };
+
+      const ids = await Promise.all([svc.beginRequired(input), svc.beginRequired(input)]);
+
+      assert.deepEqual(ids, ['audit-1', 'audit-1']);
+      assert.equal(creates, 1);
+      assert.equal(lockCalls, 2);
     });
   });
 });

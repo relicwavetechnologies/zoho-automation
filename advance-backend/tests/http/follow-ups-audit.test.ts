@@ -4,7 +4,11 @@ import type { Request, Response } from 'express';
 import { createBroadcastRoutes } from '../../src/http/member/broadcasts.routes.ts';
 import { createFollowUpRoutes } from '../../src/http/member/follow-ups.routes.ts';
 import { createFollowUpDigestRunner } from '../../src/application/follow-ups/follow-up-digest.runner.ts';
-import type { AuditService, RecordAuditInput } from '../../src/application/observability/audit.service.ts';
+import type {
+  AuditService,
+  BeginAuditInput,
+  RecordAuditInput,
+} from '../../src/application/observability/audit.service.ts';
 import { ok, err } from '../../src/shared/result.ts';
 import { InfraError } from '../../src/shared/errors.ts';
 
@@ -23,19 +27,32 @@ const resolveDept = async () => 'dept-1';
 const authorizeLarkChat = async () => ({ status: 'allowed' as const });
 
 type Captured = Omit<RecordAuditInput, 'outcome'> & {
+  checkpointKey?: string;
   outcome: RecordAuditInput['outcome'] | 'pending';
 };
 
 function makeAudit(captured: Captured[]): AuditService {
   const checkpoints = new Map<string, number>();
+  const pendingByKey = new Map<string, string>();
   let seq = 0;
   const svc = {
     record(input: RecordAuditInput) {
       captured.push(input);
     },
-    async beginRequired(input: Omit<RecordAuditInput, 'outcome'>) {
+    async beginRequired(input: BeginAuditInput) {
+      const stableKey = input.checkpointKey
+        ? `${input.companyId ?? ''}:${input.action}:${input.checkpointKey}`
+        : null;
+      const pendingId = stableKey ? pendingByKey.get(stableKey) : undefined;
+      if (pendingId) {
+        const pendingIndex = checkpoints.get(pendingId);
+        if (pendingIndex !== undefined && captured[pendingIndex]?.outcome === 'pending') {
+          return pendingId;
+        }
+      }
       const id = `audit-${++seq}`;
       checkpoints.set(id, captured.length);
+      if (stableKey) pendingByKey.set(stableKey, id);
       captured.push({ ...input, outcome: 'pending' });
       return id;
     },
@@ -347,6 +364,31 @@ describe('follow-ups audit', () => {
     assert.equal(captured[0]!.outcome, 'pending');
   });
 
+  it('settles the original cancellation checkpoint when an unknown attempt is retried', async () => {
+    const captured: Captured[] = [];
+    let calls = 0;
+    const router = createBroadcastRoutes({
+      broadcasts: {
+        cancel: async () => ok(++calls === 1
+          ? { outcome: 'unknown' }
+          : { outcome: 'confirmed', stopped: true }),
+      } as unknown as import('../../src/application/whatsapp/whatsapp-broadcast.service.ts').WhatsappBroadcastService,
+      resolveDepartmentId: resolveDept,
+      authorize: allowed as unknown as import('../../src/http/member/broadcasts.routes.ts').BroadcastRoutesDeps['authorize'],
+      auditService: makeAudit(captured),
+      logger: noopLogger,
+    });
+
+    const first = await callRoute(router, 'POST', '/b-1/cancel', { params: { id: 'b-1' } });
+    const second = await callRoute(router, 'POST', '/b-1/cancel', { params: { id: 'b-1' } });
+
+    assert.equal(first.status, 202);
+    assert.equal(second.status, 200);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0]!.outcome, 'success');
+    assert.equal(captured[0]!.checkpointKey, 'dept-1:b-1');
+  });
+
   it('followups.item.resolved verb on done', async () => {
     const captured: Captured[] = [];
     const audit = makeAudit(captured);
@@ -457,6 +499,46 @@ describe('follow-ups audit', () => {
     assert.equal(captured[0]!.action, 'followups.number.linked');
     assert.equal(captured[0]!.outcome, 'success');
     assert.equal((captured[0]!.metadata as Record<string, unknown>)['numberId'], 'n-99');
+  });
+
+  it('settles the original number-link checkpoint when provisioning is retried', async () => {
+    const captured: Captured[] = [];
+    let calls = 0;
+    const followUps = {
+      listOpen: async () => ok([]),
+      listChats: async () => ok([]),
+    } as unknown as import('../../src/infrastructure/persistence/follow-ups.repository.ts').FollowUpsRepoPort;
+    const sessions = {
+      list: async () => ok([]),
+      create: async () => ++calls === 1
+        ? err(new InfraError({
+          layer: 'http', op: 'whatsapp.sessionProvisionUnknown', cause: 'timeout',
+        }))
+        : ok({ id: 'n-99', label: 'Bookings' }),
+    } as unknown as import('../../src/application/whatsapp/whatsapp-session.service.ts').WhatsappSessionService;
+    const router = createFollowUpRoutes({
+      followUps,
+      sessions,
+      historyRepair: { repair: async () => ok({ chatsRead: 0, messagesRecovered: 0, failures: [] }) } as unknown as import('../../src/application/whatsapp/whatsapp-history-repair.ts').WhatsappHistoryRepair,
+      resolveDepartmentId: resolveDept,
+      authorize: allowed as unknown as import('../../src/http/member/follow-ups.routes.ts').FollowUpRoutesDeps['authorize'],
+      authorizeLarkChat,
+      auditService: makeAudit(captured),
+      logger: noopLogger,
+    });
+    const body = {
+      label: 'Bookings desk',
+      requestId: '8dbca8a5-2d5a-4ee5-b8a4-a6fd3f706389',
+    };
+
+    const first = await callRoute(router, 'POST', '/numbers', { body });
+    const second = await callRoute(router, 'POST', '/numbers', { body });
+
+    assert.equal(first.status, 503);
+    assert.equal(second.status, 200);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0]!.outcome, 'success');
+    assert.equal(captured[0]!.checkpointKey, `dept-1:${body.requestId}`);
   });
 
   it('followups.chat.tracking_changed records muted', async () => {

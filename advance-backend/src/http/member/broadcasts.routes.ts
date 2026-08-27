@@ -435,6 +435,7 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
       actorId: scope.userId,
       companyId: scope.companyId,
       action: 'followups.broadcast.cancelled',
+      checkpointKey: `${scope.departmentId}:${broadcastId}`,
       metadata: { broadcastId, departmentId: scope.departmentId },
     });
     if (!auditId) return;

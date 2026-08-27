@@ -37,4 +37,38 @@ describe('BroadcastsRepository terminal monotonicity', () => {
     assert.equal(status, 'cancelled');
     assert.equal(recipientWrites, 0, 'stale recipient results are ignored too');
   });
+
+  it('does not let a stale pending poll move sending back to queued', async () => {
+    let status = 'queued';
+    let recipientWrites = 0;
+    const tx = {
+      whatsappBroadcast: {
+        updateMany: async (args: any) => {
+          if (!args.where.status.in.includes(status)) return { count: 0 };
+          status = args.data.status;
+          return { count: 1 };
+        },
+      },
+      whatsappBroadcastRecipient: {
+        updateMany: async () => { recipientWrites += 1; return { count: 1 }; },
+      },
+    };
+    const repo = new BroadcastsRepository({
+      $transaction: async (run: (client: typeof tx) => Promise<void>) => run(tx),
+    } as any);
+
+    await repo.applyBatchStatus({
+      broadcastId: 'b-1', status: 'sending', sent: 1, failed: 0,
+      completedAt: null,
+      results: [{ waChatId: '1@c.us', status: 'sent' }],
+    });
+    await repo.applyBatchStatus({
+      broadcastId: 'b-1', status: 'queued', sent: 0, failed: 0,
+      completedAt: null,
+      results: [{ waChatId: '1@c.us', status: 'pending' }],
+    });
+
+    assert.equal(status, 'sending');
+    assert.equal(recipientWrites, 1, 'the stale pending result is ignored');
+  });
 });

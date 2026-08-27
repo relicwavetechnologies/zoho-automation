@@ -352,11 +352,14 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
   }): Promise<Result<void, InfraError>> {
     try {
       await this.db.$transaction(async tx => {
-        // Claim the live parent transition first. A slower concurrent poll that
-        // reaches this transaction after a terminal result must change nothing,
-        // including recipient rows.
+        // Claim a monotonic parent transition first. A slower queued reading
+        // cannot move a sending batch backwards, and a reading that reaches
+        // this transaction after terminalization changes nothing at all.
+        const currentStatuses: readonly BroadcastStatus[] = input.status === 'queued'
+          ? ['queued']
+          : [...LIVE_STATUSES];
         const parent = await tx.whatsappBroadcast.updateMany({
-          where: { id: input.broadcastId, status: { in: [...LIVE_STATUSES] } },
+          where: { id: input.broadcastId, status: { in: [...currentStatuses] } },
           data: {
             status: input.status,
             sent: input.sent,

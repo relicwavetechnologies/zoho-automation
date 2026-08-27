@@ -359,6 +359,7 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       actorId: scope.userId,
       companyId: scope.companyId,
       action: 'followups.number.linked',
+      checkpointKey: `${scope.departmentId}:${parsed.data.requestId}`,
       metadata: {
         departmentId: scope.departmentId,
         label: parsed.data.label,
