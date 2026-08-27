@@ -331,7 +331,13 @@ jobs:
           test -n "${WHATSAPP_WEBHOOK_SECRET}"
           test -n "${VPS_PASSWORD}"
           test -n "${VPS_USER}"
-          sudo apt-get update
+          # Tolerant on purpose. This runner image carries Microsoft's apt repos,
+          # which are nothing to do with Divo and which answered 403 on
+          # 2026-08-27 — `apt-get update` exits 100 on any failing source, so an
+          # outage in somebody else's package host aborted a production deploy
+          # before it had touched anything. The install below stays strict, so a
+          # genuinely broken archive still fails loudly and at the right step.
+          sudo apt-get update || echo "apt-get update reported errors; continuing to the install, which is the thing that matters."
           sudo apt-get install -y sshpass
 
           merged_env="$(mktemp)"
@@ -434,6 +440,7 @@ jobs:
           REMOTE
 
       - name: Pull images, optionally clone data, and restart
+        id: restart
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CLONE_DEVELOPMENT_DATABASE: ${{ inputs.clone_development_database }}
@@ -595,8 +602,20 @@ jobs:
           exit 1
           REMOTE
 
+      # Only when the release actually changed something.
+      #
+      # `failure()` alone was too broad, and it cost an outage: on 2026-08-27 the
+      # very first step died on an unrelated apt 403, having touched nothing on
+      # the host — and this step then dutifully restored the compose file and env
+      # saved by the *previous* release, removing a service that release had
+      # added. A deploy that never started has nothing to roll back to, and
+      # rolling back anyway un-deploys whatever the last successful run shipped.
+      #
+      # `steps.restart.conclusion` is the honest test: that step is the first
+      # thing to pull images and recreate containers, so anything before it
+      # leaves production exactly as it was found.
       - name: Roll back main release after failure
-        if: ${{ failure() }}
+        if: ${{ failure() && steps.restart.conclusion != 'skipped' }}
         run: |
           ssh -i ~/.ssh/id_ed25519 "${DIVO_MAIN_USER}@${DIVO_MAIN_HOST}" \
             "DEPLOY_DIR='${DEPLOY_DIR}' DIVO_MAIN_DOMAIN='${DIVO_MAIN_DOMAIN}' bash -s" <<'REMOTE'
