@@ -50,3 +50,21 @@ test('holds does not treat null as empty', () => {
   assert.equal(holds(null, 'mail', 'read'), true)
   assert.equal(hasCapability(null, 'mail'), true)
 })
+
+test('chat: an explicit refusal hides it, and only an explicit one', () => {
+  // The department bought Divo for what it watches and not for chatting with
+  // it. `[]` is the only thing that withdraws the assistant.
+  assert.equal(hasCapability({ chat: [] }, 'chat'), false)
+  assert.equal(hasCapability({ chat: ['use'] }, 'chat'), true)
+})
+
+test('chat: no department is not the same as no chat', () => {
+  // The server omits `chat` when it cannot resolve a department, rather than
+  // reporting `[]`. Company admins who belong to no department are the ones
+  // this protects: reporting an empty array there would take the assistant away
+  // from every one of them the moment this capability shipped, and the only
+  // symptom would be a button that stopped existing.
+  assert.equal(hasCapability({ followUps: [], mail: [] }, 'chat'), true)
+  assert.equal(hasCapability(null, 'chat'), true)
+  assert.equal(hasCapability({}, 'chat'), true)
+})

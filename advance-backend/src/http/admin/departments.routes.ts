@@ -109,6 +109,12 @@ const updateConfigSchema = z.object({
   desktopPersonaPrompt: z.string().max(6000).optional(),
   managerApproval: z.unknown().optional(),
   isActive:        z.boolean().optional(),
+  /*
+   * Whether this department is offered Divo's chat assistant. Optional, so a
+   * caller that has never heard of it leaves whatever is set alone rather than
+   * silently switching chat back on for a department that turned it off.
+   */
+  chatEnabled:     z.boolean().optional(),
 });
 
 const createRoleSchema = z.object({
