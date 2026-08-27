@@ -70,6 +70,23 @@ services:
       KNOWLEDGE_FILE_MALWARE_SCAN_MODE: required
       CLAMAV_HOST: divo-clamav
       CLAMAV_PORT: 3310
+      # WhatsApp follow-ups. Both halves of the round trip are container names
+      # on divo-main-internal: the gateway is never published to the host, and
+      # the webhook never leaves the Docker network on its way back.
+      #
+      # WHATSAPP_PUBLIC_URL is where the gateway posts; it is "public" only in
+      # the sense of "the address Divo answers on from the gateway's side". It
+      # is a private name, so it must also appear in divo-openwa's
+      # SSRF_ALLOWED_HOSTS or the gateway refuses the webhook at registration.
+      #
+      # The feature flag and the two shared secrets (OPENWA_API_KEY,
+      # WHATSAPP_WEBHOOK_SECRET) come from the env file, not from here.
+      OPENWA_URL: http://divo-openwa:2785
+      WHATSAPP_PUBLIC_URL: http://divo-backend:3001
+      # Not a secret, so it lives here where a reviewer can see it rather than
+      # inside an opaque env blob. Overridable from the env file for a fast
+      # kill-switch that does not need a code change.
+      WHATSAPP_FOLLOWUPS_ENABLED: ${WHATSAPP_FOLLOWUPS_ENABLED:-true}
     depends_on:
       divo-schema-sync:
         condition: service_completed_successfully
@@ -240,6 +257,93 @@ services:
       start_period: 30s
       retries: 5
 
+  # WhatsApp gateway for Urban Aura's follow-ups: a pinned upstream image, run
+  # the same way as every other third-party service in this file.
+  #
+  # Deliberately unpublished — note the absence of `ports:`. This container
+  # holds the pairing credentials for a real company handset, and Divo's own
+  # follow-ups UI is the only place a session is created, paired or logged out.
+  # Publishing the gateway's bundled dashboard, even on 127.0.0.1, would stand
+  # up a second console over the same sessions with its own login and its own
+  # idea of who may unlink a phone. One authority; reached over the internal
+  # network only.
+  divo-openwa:
+    image: ghcr.io/rmyndharis/openwa:0.23.3
+    environment:
+      # Everything the image already sets correctly is left to the image:
+      # NODE_ENV, the 2785 default port, and HOME=/app/data. Upstream's compose
+      # overrides HOME to the tmpfs, but that is a Chromium workaround — under
+      # Baileys it would only move state off the volume onto a disk that empties
+      # on restart.
+      LOG_LEVEL: ${OPENWA_LOG_LEVEL:-info}
+      # Browser-free engine. The gateway defaults to whatsapp-web.js, which runs
+      # a full Chromium per session; this host has two cores and already carries
+      # eleven containers. Every capability Divo's client actually calls —
+      # pairing, QR, pairing code, sends, chat history, number checks, webhooks,
+      # logout — is supported on Baileys by the gateway's own engine capability
+      # matrix, so the browser buys nothing here. Pinned rather than left to the
+      # dashboard's default, because the default is the expensive one.
+      ENGINE_TYPE: baileys
+      # Shared with the backend's OPENWA_API_KEY. Required, not defaulted: a
+      # gateway with no master key is one that anything on the network can drive.
+      API_MASTER_KEY: ${OPENWA_API_KEY:?OPENWA_API_KEY is required — the WhatsApp gateway will not run unauthenticated}
+      # The gateway refuses to register a webhook aimed at a private address
+      # unless the host is named here, and it refuses at registration time
+      # rather than at the first message — so the failure would look like
+      # "pairing worked, nothing ever arrives". divo-backend is a container name
+      # on divo-main-internal, hence private, hence listed.
+      SSRF_ALLOWED_HOSTS: divo-backend
+      # Re-adopt already-paired sessions after a restart, so a redeploy does not
+      # need somebody standing by with the handset to re-scan a QR.
+      AUTO_START_SESSIONS: "true"
+      # Session ownership is leased per node, and the gateway's default node id
+      # is the container hostname — which Docker regenerates on every recreate.
+      # Left alone, each deploy would present as a brand-new node to the
+      # outgoing one's lease and sit out its TTL before touching the session,
+      # so follow-ups would go quiet for minutes after every release. Pinned.
+      NODE_ID: ${OPENWA_NODE_ID:-divo-main-openwa-1}
+      ENABLE_SWAGGER: "false"
+    volumes:
+      - divo_main_openwa_data:/app/data
+    restart: unless-stopped
+    networks:
+      - divo-main-internal
+    # Upstream's own hardening, carried over: the container is the confinement
+    # boundary. Capabilities drop to the five the entrypoint needs to chown the
+    # data volume and gosu down from root; once it drops, the Node process holds
+    # none of them.
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp
+    # A fork-bomb ceiling, not an allocation — the kernel only refuses forks
+    # once the count is reached, so the headroom is free on a single-process
+    # engine.
+    pids_limit: 2048
+    mem_limit: ${OPENWA_MEM_LIMIT:-2g}
+    # The graceful drain plus per-engine teardown can outrun Docker's 10s
+    # default, which would kill the engine mid-teardown and orphan the session.
+    stop_grace_period: 45s
+    logging: *default-logging
+    # Upstream's readiness probe, plus the error handler it omits: without one a
+    # refused connection never calls back, so a gateway that is down reads as a
+    # probe that hangs to its timeout instead of a probe that failed.
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:2785/api/health/ready', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
   divo-admin:
     image: ${DIVO_ADMIN_IMAGE:?DIVO_ADMIN_IMAGE is required}
     environment:
@@ -320,3 +424,4 @@ volumes:
   divo_main_redis_memory_data:
   divo_main_hindsight_postgres_data:
   divo_main_clamav_signatures:
+  divo_main_openwa_data:
