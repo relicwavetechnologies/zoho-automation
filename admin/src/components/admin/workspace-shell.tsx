@@ -174,7 +174,17 @@ export function WorkspaceShell() {
   }, [location.pathname])
 
   const scope = scopeOfPath(location.pathname)
-  const capabilities = (session as unknown as { capabilities?: Record<string, readonly string[]> | null })?.capabilities ?? null
+  const capabilities = session?.capabilities ?? null
+  /*
+   * Whether this department was sold the assistant at all.
+   *
+   * A different question from the mail/workspace split above it, which asks
+   * whether this person administers anything. A company can hold the whole
+   * workspace — a team, mail rules, follow-ups — and still not want Divo
+   * answering in a chat box. Absent from the map means yes, like every other
+   * capability here.
+   */
+  const chatOffered = hasCapability(capabilities, 'chat')
   const groups = useMemo(() => {
     const raw = NAV[scope]
     if (scope !== 'you') return raw
@@ -363,11 +373,17 @@ export function WorkspaceShell() {
           </button>
 
           {/* Home, because Home is the composer — landing on the empty chat
-              screen asked you to start over on a page with nothing on it. */}
-          <button type="button" className="ws-new-chat" onClick={() => navigate('/')}>
-            <span>New chat</span>
-            <span className="ws-new-chat-plus" aria-hidden="true"><Plus size={10} /></span>
-          </button>
+              screen asked you to start over on a page with nothing on it.
+
+              Gone entirely for a department without the assistant, rather than
+              disabled: a greyed-out control is a promise that something could
+              happen here, and nothing can. */}
+          {chatOffered ? (
+            <button type="button" className="ws-new-chat" onClick={() => navigate('/')}>
+              <span>New chat</span>
+              <span className="ws-new-chat-plus" aria-hidden="true"><Plus size={10} /></span>
+            </button>
+          ) : null}
 
           <WorkspaceNav groups={groups} pathname={location.pathname} />
 
@@ -376,7 +392,8 @@ export function WorkspaceShell() {
               want their own half-finished setup in the corner of it. */}
           {scope === 'you' ? (
             <>
-              <RecentChats />
+              {/* Recent is a list of conversations, so it goes with them. */}
+              {chatOffered ? <RecentChats /> : null}
               <GettingStarted onGo={(to) => navigate(to)} />
             </>
           ) : null}

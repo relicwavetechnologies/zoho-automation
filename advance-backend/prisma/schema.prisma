@@ -1086,6 +1086,17 @@ model DepartmentAgentConfig {
   desktopPersonaPrompt String     @default("")
   managerApprovalJson  Json?
   isActive             Boolean    @default(true)
+  /// Whether this department is offered Divo's chat assistant at all.
+  ///
+  /// Not the same question as `surfaceFor` on the web, which asks whether a
+  /// person administers anything and hands them Mail or the workspace
+  /// accordingly. This asks whether the department bought the assistant: a
+  /// company can want the workspace — managers, team views, mail rules,
+  /// follow-ups — and not want Divo answering in a chat box.
+  ///
+  /// Defaulted true so every department that exists today keeps what it has;
+  /// turning it off is a deliberate act per department.
+  chatEnabled          Boolean    @default(true)
   createdBy            String
   createdByUser        User       @relation("DepartmentAgentConfigCreatedBy", fields: [createdBy], references: [id], onDelete: Restrict)
   updatedBy            String

@@ -21,6 +21,7 @@ import { holds } from '../data/capabilities'
 import { notify } from '@/lib/notify'
 import {
   useFollowUps, useLinkedNumbers, useTrackedChats,
+  useDigest,
   type FollowUp, type FollowUpAction, type LinkedNumber,
 } from '../data/use-follow-ups'
 import {
@@ -33,6 +34,7 @@ import {
 import { Empty, Fade, PageHeader, Panel, RowMenu, Seg, SkelRows, Switch } from '../ui'
 import { LinkNumberFlow } from './link-number-dialog'
 import { BroadcastTab } from './broadcast-tab'
+import { DigestTab } from './digest-tab'
 
 /** What each number state says, and how loudly. */
 const NUMBER_STATE: Record<NumberState, { label: string; tone: string }> = {
@@ -59,14 +61,19 @@ const dueLabel = (iso: string | null): string | null => {
 }
 
 /**
- * Four tabs, and the fourth is a different verb.
+ * Five tabs, and the last two are different verbs.
  *
  * Broadcast sits here rather than in its own sidebar item because it reuses two
  * things this page already owns: the number scope and the chat list. A separate
  * page would duplicate both, and the duplicate scope control is the one that
  * would drift.
+ *
+ * Digest is here for the same reason and answers about this page's own output:
+ * when the team is told what is outstanding, and whether the last one actually
+ * went. Both are Divo acting outward rather than a view of the list, which is
+ * why they sit together at the end and share one permission.
  */
-type Tab = 'open' | 'numbers' | 'chats' | 'broadcast'
+type Tab = 'open' | 'numbers' | 'chats' | 'broadcast' | 'digest'
 
 export function FollowUpsScreen() {
   const { token, session } = useAdminAuth()
@@ -75,7 +82,7 @@ export function FollowUpsScreen() {
   const [tab, setTab] = useState<Tab>('open')
 
   useEffect(() => {
-    if (!canBroadcast && tab === 'broadcast') setTab('open')
+    if (!canBroadcast && (tab === 'broadcast' || tab === 'digest')) setTab('open')
   }, [canBroadcast, tab])
   // Set by the digest card's link, so tapping one number's card lands on that
   // number rather than the whole team's list.
@@ -88,6 +95,9 @@ export function FollowUpsScreen() {
   const items = useFollowUps(auth, numberId)
   const numbers = useLinkedNumbers(auth)
   const chats = useTrackedChats(auth, numberId)
+  // Read here rather than inside the tab so the schedule is already in hand
+  // when somebody opens it, the same way the other tabs' data is.
+  const digest = useDigest(auth)
   // Global counts for the scope menu — the menu must show the whole team's
   // pool even when the list is narrowed, otherwise "All numbers (2)" would
   // read as the total when it is only one handset's.
@@ -143,7 +153,10 @@ export function FollowUpsScreen() {
                   { value: 'numbers', label: `Numbers${attention.length ? ` (${attention.length})` : ''}` },
                   { value: 'chats', label: 'Chats' },
                 ]
-                if (canBroadcast) opts.push({ value: 'broadcast', label: 'Broadcast' })
+                if (canBroadcast) {
+                  opts.push({ value: 'broadcast', label: 'Broadcast' })
+                  opts.push({ value: 'digest', label: 'Digest' })
+                }
                 return opts
               })()}
             />
@@ -198,6 +211,16 @@ export function FollowUpsScreen() {
           {...(numberId ? { numberId } : {})}
           numbers={numbers.numbers}
           {...(auth ? { token: auth } : {})}
+        />
+      ) : null}
+      {tab === 'digest' ? (
+        <DigestTab
+          digest={digest.digest}
+          cards={digest.cards}
+          loading={digest.loading}
+          error={digest.error}
+          refusal={digest.refusal}
+          save={digest.save}
         />
       ) : null}
     </Fade>

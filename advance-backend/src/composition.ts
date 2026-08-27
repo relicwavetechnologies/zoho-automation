@@ -174,6 +174,7 @@ import {
 import { ConnectionAskCourier } from './application/connections/connection-ask-courier';
 import { ConnectionResumeService } from './application/connections/connection-resume';
 import { RunOriginStore } from './application/connections/run-origin.store';
+import type { AuthorizeLarkChatDestination } from './application/mail-ops/lark-chat-destination';
 import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
 import {
   followUpsGrants,
@@ -404,6 +405,16 @@ export interface WhatsappFollowUps {
    */
   readonly broadcasts: WhatsappBroadcastService;
   readonly broadcastWorker: WhatsappBroadcastWorker;
+  /**
+   * The Lark room guard, carried here so the digest settings route can ground a
+   * room at the moment somebody points the digest at it.
+   *
+   * The runner already applies the same guard at delivery. Both, deliberately:
+   * creation is where a room is really vetted and a refusal there costs one
+   * setup step, while a refusal at delivery is a digest that quietly never
+   * arrives. One function though, not two copies of the rule.
+   */
+  readonly authorizeLarkChat: AuthorizeLarkChatDestination;
   readonly webhookSecret: string | undefined;
 }
 
@@ -499,6 +510,15 @@ export interface Container {
     userId: string;
     companyRole: string;
   }) => Promise<Record<string, readonly string[]> | null>;
+  /**
+   * Whether this person's department is offered the chat assistant, asked on
+   * its own so the web-chat mount can refuse rather than rely on a hidden
+   * button. Reads the same column the capability map does.
+   */
+  chatEnabledFor: (input: {
+    companyId: string;
+    userId: string;
+  }) => Promise<boolean>;
   /** One sentence into a draft rule. Creates nothing. */
   compileMailRule: ReturnType<typeof createMailRuleCompiler>;
   mailBriefOnboarding: ReturnType<typeof createMailBriefOnboarding>;
@@ -2742,6 +2762,7 @@ export async function buildContainer(
       }),
       broadcasts,
       broadcastWorker: new WhatsappBroadcastWorker({ broadcasts, logger }),
+      authorizeLarkChat: authorizeLarkChatDestination,
       webhookSecret: env.WHATSAPP_WEBHOOK_SECRET,
     };
     logger.info('whatsapp_followups.enabled', {
@@ -3054,7 +3075,7 @@ export async function buildContainer(
     // every department-scoped surface is empty for them.
     if (!departmentId) return { followUps: [], mail: [] };
 
-    const [standing, resolved] = await Promise.all([
+    const [standing, resolved, agentConfig] = await Promise.all([
       followUpsStandingFor({ ...input, departmentId }),
       permissions.resolve({
         companyId: asCompanyId(input.companyId),
@@ -3063,13 +3084,48 @@ export async function buildContainer(
         departmentId: asDepartmentId(departmentId),
         channel: 'lark',
       }),
+      prisma.departmentAgentConfig.findUnique({
+        where: { departmentId },
+        select: { chatEnabled: true },
+      }),
     ]);
     if (!standing || !resolved.ok) return null;
 
     return {
       followUps: [...followUpsGrants(standing)],
       mail: [...(resolved.value.allowedActionsByTool.get(asToolId('mailAutomations')) ?? [])],
+      /*
+       * A department with no agent config row at all is not a department that
+       * said no — it is one nobody has configured yet, and it keeps the
+       * assistant. Only an explicit `false` withdraws it.
+       */
+      chat: agentConfig?.chatEnabled === false ? [] : ['use'],
     };
+  };
+
+  /**
+   * Whether this person's department is offered the chat assistant.
+   *
+   * The same question `webCapabilities` answers for the nav, asked on its own
+   * so the HTTP layer can refuse a request rather than merely hiding a button.
+   * Both read the one column, so the nav and the door cannot disagree.
+   *
+   * Absent a department or a config row the answer is yes, matching the
+   * capability map's fail-open rule: refusing somebody who does hold a surface
+   * is the more expensive mistake, because the whole failure is an absence with
+   * nothing on screen to discover.
+   */
+  const chatEnabledFor = async (input: {
+    companyId: string;
+    userId: string;
+  }): Promise<boolean> => {
+    const departmentId = await resolveMemberDepartmentId(input);
+    if (!departmentId) return true;
+    const config = await prisma.departmentAgentConfig.findUnique({
+      where: { departmentId },
+      select: { chatEnabled: true },
+    });
+    return config?.chatEnabled !== false;
   };
 
   /*
@@ -3376,6 +3432,7 @@ export async function buildContainer(
     canRunMailRules,
     canUseFollowUps,
     webCapabilities,
+    chatEnabledFor,
     compileMailRule,
     mailBriefOnboarding,
     mailOpsWorker,

@@ -757,17 +757,17 @@ export class DepartmentAdminService {
     departmentId: string,
     companyId: string,
     updatedBy: string,
-    input: { systemPrompt: string; desktopPersonaPrompt?: string | undefined; managerApproval?: unknown; isActive?: boolean | undefined },
-  ): Promise<ServiceResult<{ departmentId: string; systemPrompt: string; desktopPersonaPrompt: string; isActive: boolean; updatedAt: string }>> {
+    input: { systemPrompt: string; desktopPersonaPrompt?: string | undefined; managerApproval?: unknown; isActive?: boolean | undefined; chatEnabled?: boolean | undefined },
+  ): Promise<ServiceResult<{ departmentId: string; systemPrompt: string; desktopPersonaPrompt: string; isActive: boolean; chatEnabled: boolean; updatedAt: string }>> {
     const check = await this.assertDepartmentInCompany(departmentId, companyId);
-    if (!check.ok) return check as ServiceResult<{ departmentId: string; systemPrompt: string; desktopPersonaPrompt: string; isActive: boolean; updatedAt: string }>;
+    if (!check.ok) return check as ServiceResult<{ departmentId: string; systemPrompt: string; desktopPersonaPrompt: string; isActive: boolean; chatEnabled: boolean; updatedAt: string }>;
     try {
       const updated = await this.deps.prisma.departmentAgentConfig.upsert({
         where:  { departmentId },
-        update: { systemPrompt: input.systemPrompt, ...(input.desktopPersonaPrompt !== undefined ? { desktopPersonaPrompt: input.desktopPersonaPrompt } : {}), ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), ...(input.isActive !== undefined ? { isActive: input.isActive } : {}), updatedBy },
-        create: { departmentId, systemPrompt: input.systemPrompt, desktopPersonaPrompt: input.desktopPersonaPrompt ?? '', ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), isActive: input.isActive ?? true, createdBy: updatedBy, updatedBy },
+        update: { systemPrompt: input.systemPrompt, ...(input.desktopPersonaPrompt !== undefined ? { desktopPersonaPrompt: input.desktopPersonaPrompt } : {}), ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), ...(input.isActive !== undefined ? { isActive: input.isActive } : {}), ...(input.chatEnabled !== undefined ? { chatEnabled: input.chatEnabled } : {}), updatedBy },
+        create: { departmentId, systemPrompt: input.systemPrompt, desktopPersonaPrompt: input.desktopPersonaPrompt ?? '', ...(input.managerApproval !== undefined ? { managerApprovalJson: input.managerApproval as object } : {}), isActive: input.isActive ?? true, chatEnabled: input.chatEnabled ?? true, createdBy: updatedBy, updatedBy },
       });
-      return ok({ departmentId, systemPrompt: updated.systemPrompt, desktopPersonaPrompt: updated.desktopPersonaPrompt, isActive: updated.isActive, updatedAt: updated.updatedAt.toISOString() });
+      return ok({ departmentId, systemPrompt: updated.systemPrompt, desktopPersonaPrompt: updated.desktopPersonaPrompt, isActive: updated.isActive, chatEnabled: updated.chatEnabled, updatedAt: updated.updatedAt.toISOString() });
     } catch (e) {
       this.log.error('dept.config.update.failed', { departmentId, error: String(e) });
       return fail({ kind: 'internal', message: 'Failed to update department config' });

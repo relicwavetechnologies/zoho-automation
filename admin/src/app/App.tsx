@@ -5,6 +5,7 @@ import { WorkspaceShell } from "@/components/admin/workspace-shell"
 import { MailShell } from "@/components/admin/mail-shell"
 import { useAdminAuth } from "@/auth/AdminAuthProvider"
 import { isMailSurface } from "@/auth/surface"
+import { hasCapability } from "@/pages/workspace/data/capabilities"
 import type { ScopeKind } from "@/auth/types"
 import { CompanyAdminSignupPage } from "@/pages/CompanyAdminSignupPage"
 import { Landing } from "@/pages/landing/landing"
@@ -238,9 +239,53 @@ const SettingsEntry = () => {
   return <SettingsShell />
 }
 
+/**
+ * Where a member goes when chat is not theirs to go to.
+ *
+ * Follow-ups before Mail because a department that turned the assistant off
+ * kept Divo for what it watches, and Follow-ups is the busier of the two — but
+ * either beats landing on a composer that will refuse them.
+ */
+const firstWatching = (capabilities: Record<string, readonly string[]> | null): string =>
+  hasCapability(capabilities, 'followUps') ? '/me/follow-ups' : '/me/mail'
+
+/**
+ * Chat, for a department that was never offered it.
+ *
+ * Hiding the button in the rail is not enough on its own: a bookmark, a link a
+ * colleague forwarded, or a tab left open since before the change all arrive
+ * here directly. Says what happened rather than bouncing to `/`, which reads
+ * like the app is broken — the same call `RequireScope` makes below.
+ */
+const RequireChat = ({ children }: { children: JSX.Element }) => {
+  const { session } = useAdminAuth()
+  const capabilities = session?.capabilities ?? null
+  if (hasCapability(capabilities, 'chat')) return children
+
+  return (
+    <div className="page">
+      <NoAccess
+        what="Divo chat"
+        who="Your Divo is set up for what it watches rather than for chatting with it. Whoever administers Divo where you work can turn chat on."
+        action={<Link className="btn" to={firstWatching(capabilities)}>Go to your workspace</Link>}
+      />
+    </div>
+  )
+}
+
 const MeHomeEntry = () => {
-  const { scopes } = useAdminAuth()
+  const { session, scopes } = useAdminAuth()
   if (isMailSurface(scopes)) return <Navigate to="/me/mail" replace />
+  /*
+   * Home *is* the composer, so a department without the assistant has no home
+   * to be sent to — landing here would put them in front of a chat box that
+   * refuses every message. Redirected rather than refused, because this is the
+   * URL they get for free by opening Divo at all: being told "no access" for
+   * doing nothing but arriving is not a refusal anybody can act on.
+   */
+  if (!hasCapability(session?.capabilities ?? null, 'chat')) {
+    return <Navigate to={firstWatching(session?.capabilities ?? null)} replace />
+  }
   return <MeHome />
 }
 
@@ -389,8 +434,8 @@ export function App() {
           {/* `/chat` mints a thread id and redirects onto it, so every
               conversation is somewhere you can be sent, reload into, and keep
               open in a second tab beside another one. */}
-          <Route path="chat" element={<RequireWorkspace><MeChat /></RequireWorkspace>} />
-          <Route path="chat/:threadId" element={<RequireWorkspace><MeChat /></RequireWorkspace>} />
+          <Route path="chat" element={<RequireWorkspace><RequireChat><MeChat /></RequireChat></RequireWorkspace>} />
+          <Route path="chat/:threadId" element={<RequireWorkspace><RequireChat><MeChat /></RequireChat></RequireWorkspace>} />
           <Route path="me/mail" element={<MeMail />} />
           {/* Beside Mail rather than under it: the same shape of feature — a
               stream Divo watches without being asked — over a different source. */}

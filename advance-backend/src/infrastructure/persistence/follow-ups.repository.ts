@@ -119,6 +119,48 @@ export interface FollowUpsRepoPort {
     claimToken: string;
     nextRunAt: Date | null;
   }): Promise<Result<void, InfraError>>;
+
+  listDigests(input: {
+    companyId: string;
+    departmentId: string;
+  }): Promise<Result<readonly DigestRow[], InfraError>>;
+
+  upsertDigest(input: {
+    digestId?: string | undefined;
+    companyId: string;
+    departmentId: string;
+    larkChatId: string;
+    times: readonly string[];
+    days: readonly string[];
+    timeZone: string;
+    status: string;
+    nextRunAt: Date | null;
+  }): Promise<Result<DigestRow, InfraError>>;
+
+  recentDigestCards(input: {
+    digestId: string;
+    limit: number;
+  }): Promise<Result<readonly DigestCardRow[], InfraError>>;
+}
+
+/** A configured digest, as the settings screen reads it. */
+export interface DigestRow {
+  readonly id: string;
+  readonly larkChatId: string;
+  readonly times: readonly string[];
+  readonly days: readonly string[];
+  readonly timeZone: string;
+  readonly status: string;
+  readonly nextRunAt: Date | null;
+  readonly lastRunAt: Date | null;
+}
+
+/** One card a past run posted, for the "did it go out?" list. */
+export interface DigestCardRow {
+  readonly id: string;
+  readonly sessionLabel: string;
+  readonly itemCount: number;
+  readonly sentAt: Date;
 }
 
 export interface ClaimedDigest {
@@ -766,6 +808,145 @@ export class FollowUpsRepository implements FollowUpsRepoPort {
       return err(wrapInfra('prisma', 'followUps.releaseDigest', cause));
     }
   }
+  /**
+   * Every digest configured for one department.
+   *
+   * A list rather than a single row because the unique key is
+   * `[companyId, departmentId, larkChatId]` — the schema permits a department
+   * to report into more than one room. Nothing creates a second one today, and
+   * the settings screen models one; returning the list lets the caller say so
+   * out loud instead of picking one of two and appearing to lose the other.
+   */
+  async listDigests(input: {
+    companyId: string;
+    departmentId: string;
+  }): Promise<Result<readonly DigestRow[], InfraError>> {
+    try {
+      const rows = await this.db.followUpDigest.findMany({
+        where: { companyId: input.companyId, departmentId: input.departmentId },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          id: true, larkChatId: true, timesJson: true, daysJson: true,
+          timeZone: true, status: true, nextRunAt: true, lastRunAt: true,
+        },
+      });
+      return ok(rows.map(row => ({
+        id: row.id,
+        larkChatId: row.larkChatId,
+        /*
+         * Read defensively. These are `Json` columns, so the database will
+         * hand back whatever was written — including, for a row somebody
+         * edited by hand, something that is not an array of strings at all.
+         * The runner already refuses to guess at an unreadable schedule; the
+         * screen should show an empty field rather than throw on the way in.
+         */
+        times: Array.isArray(row.timesJson) ? row.timesJson.filter((t): t is string => typeof t === 'string') : [],
+        days: Array.isArray(row.daysJson) ? row.daysJson.filter((d): d is string => typeof d === 'string') : [],
+        timeZone: row.timeZone,
+        status: row.status,
+        nextRunAt: row.nextRunAt,
+        lastRunAt: row.lastRunAt,
+      })));
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'followUps.listDigests', cause));
+    }
+  }
+
+  /**
+   * Create the department's digest, or move it.
+   *
+   * Keyed on `digestId` when one is already configured, so changing the room
+   * edits the row that exists rather than leaving the old one behind still
+   * posting on its own schedule — which the composite unique key would happily
+   * allow, and which nobody would notice until two digests arrived.
+   *
+   * `coveredThrough` is deliberately untouched on an edit. It is how far the
+   * last delivered digest reported to, and a schedule change is not a reason to
+   * re-report a week nobody asked for, nor to skip one.
+   */
+  async upsertDigest(input: {
+    digestId?: string | undefined;
+    companyId: string;
+    departmentId: string;
+    larkChatId: string;
+    times: readonly string[];
+    days: readonly string[];
+    timeZone: string;
+    status: string;
+    nextRunAt: Date | null;
+  }): Promise<Result<DigestRow, InfraError>> {
+    const data = {
+      larkChatId: input.larkChatId,
+      timesJson: [...input.times] as unknown as Prisma.InputJsonValue,
+      daysJson: [...input.days] as unknown as Prisma.InputJsonValue,
+      timeZone: input.timeZone,
+      status: input.status,
+      nextRunAt: input.nextRunAt,
+    };
+    try {
+      const row = input.digestId
+        ? await this.db.followUpDigest.update({
+          where: { id: input.digestId },
+          data,
+          select: {
+            id: true, larkChatId: true, timesJson: true, daysJson: true,
+            timeZone: true, status: true, nextRunAt: true, lastRunAt: true,
+          },
+        })
+        : await this.db.followUpDigest.create({
+          data: { companyId: input.companyId, departmentId: input.departmentId, ...data },
+          select: {
+            id: true, larkChatId: true, timesJson: true, daysJson: true,
+            timeZone: true, status: true, nextRunAt: true, lastRunAt: true,
+          },
+        });
+      return ok({
+        id: row.id,
+        larkChatId: row.larkChatId,
+        times: Array.isArray(row.timesJson) ? row.timesJson.filter((t): t is string => typeof t === 'string') : [],
+        days: Array.isArray(row.daysJson) ? row.daysJson.filter((d): d is string => typeof d === 'string') : [],
+        timeZone: row.timeZone,
+        status: row.status,
+        nextRunAt: row.nextRunAt,
+        lastRunAt: row.lastRunAt,
+      });
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'followUps.upsertDigest', cause));
+    }
+  }
+
+  /**
+   * What the last few runs actually posted.
+   *
+   * The half of the screen that answers "did the nine o'clock one go out?",
+   * which is the question a schedule alone cannot answer — and the one people
+   * open this page for after a quiet morning.
+   */
+  async recentDigestCards(input: {
+    digestId: string;
+    limit: number;
+  }): Promise<Result<readonly DigestCardRow[], InfraError>> {
+    try {
+      const rows = await this.db.followUpDigestCard.findMany({
+        where: { digestId: input.digestId },
+        orderBy: { sentAt: 'desc' },
+        take: input.limit,
+        select: {
+          id: true, itemCount: true, sentAt: true,
+          session: { select: { label: true } },
+        },
+      });
+      return ok(rows.map(row => ({
+        id: row.id,
+        sessionLabel: row.session.label,
+        itemCount: row.itemCount,
+        sentAt: row.sentAt,
+      })));
+    } catch (cause) {
+      return err(wrapInfra('prisma', 'followUps.recentDigestCards', cause));
+    }
+  }
+
 }
 
 /** A claim older than this belonged to a worker that is not coming back. */
