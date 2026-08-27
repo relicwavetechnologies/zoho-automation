@@ -42,7 +42,10 @@ export type FollowUpsOperation =
   | 'pickRecipients'
   | 'previewBroadcast'
   | 'sendBroadcast'
-  | 'cancelBroadcast';
+  | 'cancelBroadcast'
+  /* Scheduling what Divo posts to the team's room. */
+  | 'readDigest'
+  | 'setDigest';
 
 /**
  * The action group an operation belongs to.
@@ -58,6 +61,13 @@ export type FollowUpsOperation =
  * picker and the history are not general-purpose views that happen to live
  * there — they are the tab, and showing them to somebody who cannot send is a
  * dead end with a disabled button at the end of it.
+ *
+ * The digest is `send` for the same reason and one more. Reading it is reading
+ * a schedule and the record of what already went out, which is the same dead
+ * end; and setting it decides what the whole team is told and when, which is
+ * the authority a broadcast needs rather than the one editing your own list
+ * needs. It is not a second capability: somebody who may send on behalf of this
+ * department may also schedule what gets sent.
  */
 export const followUpsActionGroup = (
   operation: FollowUpsOperation,
@@ -80,6 +90,8 @@ export const followUpsActionGroup = (
     case 'previewBroadcast':
     case 'sendBroadcast':
     case 'cancelBroadcast':
+    case 'readDigest':
+    case 'setDigest':
       return 'send';
   }
 };

@@ -354,3 +354,90 @@ export function usePairing(numberId: string | null, token?: string): {
 
   return { pairing, error, linked: pairing?.status === 'linked', requestCode }
 }
+
+/** The room, the schedule, and what the last few runs actually posted. */
+export type DigestSettings = {
+  id: string
+  chatId: string
+  times: string[]
+  days: string[]
+  timeZone: string
+  status: string
+  nextRunAt: string | null
+  lastRunAt: string | null
+}
+
+export type DigestCard = {
+  id: string
+  number: string
+  itemCount: number
+  sentAt: string
+}
+
+/**
+ * The digest, read and written.
+ *
+ * `digest` is null for a department that has never configured one, which is a
+ * real answer and not a loading state — the tab shows an empty form rather than
+ * a spinner that never resolves.
+ *
+ * `save` deliberately does not swallow its error. The room can be refused for
+ * reasons only the server knows (Divo has never been in it; it belongs to
+ * another company on the same Lark install), and those have to reach the person
+ * who typed it rather than turn into a generic failure.
+ */
+export function useDigest(token?: string): Loadable & {
+  digest: DigestSettings | null
+  cards: DigestCard[]
+  save: (input: {
+    chatId: string
+    times: string[]
+    days: string[]
+    timeZone: string
+    paused: boolean
+  }) => Promise<void>
+} {
+  const [digest, setDigest] = useState<DigestSettings | null>(null)
+  const [cards, setCards] = useState<DigestCard[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refusal, setRefusal] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    if (!token) return
+    try {
+      const data = await api.get<{ digest: DigestSettings | null; cards: DigestCard[] }>(
+        `${BASE}/digest`, token, { quiet: true, raw: true },
+      )
+      setDigest(data.digest ?? null)
+      setCards(data.cards ?? [])
+      setError(null)
+      setRefusal(null)
+    } catch (e) {
+      const msg = refusalMessage(e)
+      if (msg) {
+        setRefusal(msg)
+        setError(null)
+      } else {
+        setRefusal(null)
+        setError(READ_FAILED)
+      }
+    } finally {
+      setLoading(false)
+    }
+  }, [token])
+
+  const save = useCallback(async (input: {
+    chatId: string
+    times: string[]
+    days: string[]
+    timeZone: string
+    paused: boolean
+  }) => {
+    await api.put(`${BASE}/digest`, input, token, { raw: true })
+    await load()
+  }, [token, load])
+
+  useEffect(() => { void load() }, [load])
+  return { digest, cards, loading, error, refusal, refresh: load, save }
+}

@@ -737,6 +737,10 @@ export const createServer = (c: Container): DivoServerApplication => {
         followUps: c.whatsappFollowUps.followUpsRepo,
         sessions: c.whatsappFollowUps.sessions,
         historyRepair: c.whatsappFollowUps.historyRepair,
+        // The same guard the digest runner applies at delivery, applied again
+        // where the room is chosen — a refusal here is one setup step, a
+        // refusal there is a digest nobody ever receives.
+        authorizeLarkChat: c.whatsappFollowUps.authorizeLarkChat,
         // The same resolver mail automations use. Two answers to "which
         // department is this person in" is the duplicate authority rule 5
         // forbids.

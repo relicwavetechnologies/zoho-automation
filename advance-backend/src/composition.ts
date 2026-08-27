@@ -174,6 +174,7 @@ import {
 import { ConnectionAskCourier } from './application/connections/connection-ask-courier';
 import { ConnectionResumeService } from './application/connections/connection-resume';
 import { RunOriginStore } from './application/connections/run-origin.store';
+import type { AuthorizeLarkChatDestination } from './application/mail-ops/lark-chat-destination';
 import { createLarkChatDestinationAuthorizer } from './application/mail-ops/lark-chat-destination';
 import {
   followUpsGrants,
@@ -404,6 +405,16 @@ export interface WhatsappFollowUps {
    */
   readonly broadcasts: WhatsappBroadcastService;
   readonly broadcastWorker: WhatsappBroadcastWorker;
+  /**
+   * The Lark room guard, carried here so the digest settings route can ground a
+   * room at the moment somebody points the digest at it.
+   *
+   * The runner already applies the same guard at delivery. Both, deliberately:
+   * creation is where a room is really vetted and a refusal there costs one
+   * setup step, while a refusal at delivery is a digest that quietly never
+   * arrives. One function though, not two copies of the rule.
+   */
+  readonly authorizeLarkChat: AuthorizeLarkChatDestination;
   readonly webhookSecret: string | undefined;
 }
 
@@ -2751,6 +2762,7 @@ export async function buildContainer(
       }),
       broadcasts,
       broadcastWorker: new WhatsappBroadcastWorker({ broadcasts, logger }),
+      authorizeLarkChat: authorizeLarkChatDestination,
       webhookSecret: env.WHATSAPP_WEBHOOK_SECRET,
     };
     logger.info('whatsapp_followups.enabled', {

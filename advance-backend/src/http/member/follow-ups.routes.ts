@@ -37,6 +37,11 @@ import { ownerLabel, type FollowUpOwner } from '../../domain/follow-ups/follow-u
 import { createMemberScope, type MemberAuthorization } from './member-scope';
 import { createAsyncRoute } from '../middleware/async-route';
 import type { FollowUpsOperation } from '../../application/follow-ups/follow-ups-permission';
+import {
+  recurringScheduleSchema,
+  nextRecurringRunAt,
+} from '../../application/scheduling/recurring-schedule';
+import type { AuthorizeLarkChatDestination } from '../../application/mail-ops/lark-chat-destination';
 
 /** A list route does not let its caller choose how much of the table to read. */
 const LIST_LIMIT = { default: 100, max: 200 } as const;
@@ -111,6 +116,15 @@ export interface FollowUpRoutesDeps {
     readonly companyRole: string;
     readonly operation: FollowUpsOperation;
   }) => Promise<MemberAuthorization>;
+  /**
+   * Grounds a Lark room before the digest is pointed at it.
+   *
+   * The same guard Mail Ops uses and the runner already applies at delivery,
+   * called here as well because this is where a room is really vetted: a
+   * refusal at creation is one setup step, and a refusal at delivery is a
+   * digest that silently never arrives.
+   */
+  readonly authorizeLarkChat: AuthorizeLarkChatDestination;
   readonly auditService: AuditService;
   readonly logger: Logger;
 }
@@ -131,6 +145,7 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
   const get = (path: string, handler: Handler) => router.get(path, route(handler));
   const post = (path: string, handler: Handler) => router.post(path, route(handler));
   const patch = (path: string, handler: Handler) => router.patch(path, route(handler));
+  const put = (path: string, handler: Handler) => router.put(path, route(handler));
 
   /** Resolve the caller's scope, or answer for them. Shared with the broadcast routes. */
   const scoped = createMemberScope<FollowUpsOperation>({
@@ -554,6 +569,237 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       },
     });
     res.json({ ok: true, muted: parsed.data.muted });
+  });
+
+  // ── The digest ───────────────────────────────────────────────────────────
+
+  /*
+   * Where and when this department is told what is outstanding.
+   *
+   * One digest per department in this API, though the schema's unique key is
+   * `[companyId, departmentId, larkChatId]` and so permits several. Nothing has
+   * ever created a second, and the screen models one — so more than one is
+   * answered as the ambiguity it is rather than by picking the oldest and
+   * appearing to have lost the other.
+   */
+  get('/digest', async (_req, res) => {
+    const scope = await scoped(res, 'readDigest');
+    if (!scope) return;
+
+    const rows = await deps.followUps.listDigests({
+      companyId: scope.companyId,
+      departmentId: scope.departmentId,
+    });
+    if (!rows.ok) {
+      log.error('follow_ups.digest.read_failed', { error: rows.error.message });
+      res.status(500).json({ ok: false, error: 'digest_unavailable' });
+      return;
+    }
+    if (rows.value.length > 1) {
+      log.error('follow_ups.digest.ambiguous', {
+        departmentId: scope.departmentId, count: rows.value.length,
+      });
+      res.status(409).json({
+        ok: false,
+        error: 'multiple_digests',
+        detail: 'This department reports into more than one room. Divo will not guess which one this screen edits.',
+      });
+      return;
+    }
+
+    const digest = rows.value[0];
+    if (!digest) { res.json({ ok: true, digest: null, cards: [] }); return; }
+
+    /*
+     * History is best-effort. A schedule that cannot show what it last sent is
+     * still worth showing — failing the whole screen would hide the field
+     * somebody came here to fix.
+     */
+    const cards = await deps.followUps.recentDigestCards({ digestId: digest.id, limit: 10 });
+    if (!cards.ok) {
+      log.error('follow_ups.digest.cards_failed', { digestId: digest.id, error: cards.error.message });
+    }
+
+    res.json({
+      ok: true,
+      digest: {
+        id: digest.id,
+        chatId: digest.larkChatId,
+        times: digest.times,
+        days: digest.days,
+        timeZone: digest.timeZone,
+        status: digest.status,
+        nextRunAt: digest.nextRunAt?.toISOString() ?? null,
+        lastRunAt: digest.lastRunAt?.toISOString() ?? null,
+      },
+      cards: cards.ok
+        ? cards.value.map(card => ({
+          id: card.id,
+          number: card.sessionLabel,
+          itemCount: card.itemCount,
+          sentAt: card.sentAt.toISOString(),
+        }))
+        : [],
+    });
+  });
+
+  const digestBodySchema = z.object({
+    chatId: z.string().trim().min(1).max(200),
+    times: z.array(z.string()).min(1).max(4),
+    days: z.array(z.string()).min(1).max(7),
+    timeZone: z.string().trim().min(1).max(100),
+    /* Pausing is not deleting: the room, the schedule and how far the last run
+       reported all survive being switched off for a week. */
+    paused: z.boolean().optional(),
+  });
+
+  put('/digest', async (req, res) => {
+    const scope = await scoped(res, 'setDigest');
+    if (!scope) return;
+
+    const body = digestBodySchema.safeParse(req.body);
+    if (!body.success) {
+      res.status(400).json({ ok: false, error: 'invalid_body', detail: body.error.issues[0]?.message });
+      return;
+    }
+
+    /*
+     * Validated by the scheduler's own schema, not by a second copy of the
+     * rules here. It is the thing that will later read this back and find the
+     * next slot, so it is the thing that decides what it can read — a `25:00`
+     * accepted here and refused there would be a digest that saves cleanly and
+     * then never fires.
+     */
+    const schedule = recurringScheduleSchema.safeParse({
+      times: body.data.times,
+      days: body.data.days,
+      timeZone: body.data.timeZone,
+    });
+    if (!schedule.success) {
+      res.status(400).json({
+        ok: false,
+        error: 'invalid_schedule',
+        detail: schedule.error.issues[0]?.message,
+      });
+      return;
+    }
+
+    const verdict = await deps.authorizeLarkChat({
+      companyId: scope.companyId,
+      chatId: body.data.chatId,
+    });
+    if (verdict.status !== 'allowed') {
+      deps.auditService.record({
+        actorId: scope.userId,
+        companyId: scope.companyId,
+        action: 'followups.digest.refused',
+        outcome: 'failure',
+        metadata: {
+          departmentId: scope.departmentId,
+          chatId: body.data.chatId,
+          reason: verdict.status,
+        },
+      });
+      /*
+       * `unknown_chat` is the member's to fix — add Divo to the room — and
+       * `other_company` never is: that is one Lark install serving two Divo
+       * companies, and the room belongs to the other one.
+       */
+      res.status(verdict.status === 'unavailable' ? 502 : 400).json({
+        ok: false,
+        error: `chat_${verdict.status}`,
+        detail: verdict.status === 'unknown_chat'
+          ? 'Divo has never been in that Lark room. Add Divo to it and try again.'
+          : verdict.status === 'other_company'
+            ? 'That room belongs to a different company on this Lark installation.'
+            : 'Lark did not answer. The schedule was not changed.',
+      });
+      return;
+    }
+
+    const existing = await deps.followUps.listDigests({
+      companyId: scope.companyId,
+      departmentId: scope.departmentId,
+    });
+    if (!existing.ok) {
+      log.error('follow_ups.digest.read_failed', { error: existing.error.message });
+      res.status(500).json({ ok: false, error: 'digest_unavailable' });
+      return;
+    }
+    if (existing.value.length > 1) {
+      res.status(409).json({ ok: false, error: 'multiple_digests' });
+      return;
+    }
+
+    const paused = body.data.paused === true;
+    /*
+     * The first slot is computed from now, so a schedule saved at 08:55 for
+     * 09:00 fires at 09:00 today rather than tomorrow. Null while paused: the
+     * claimer looks for a due `nextRunAt`, so leaving one set would have a
+     * paused digest go out anyway.
+     */
+    const nextRunAt = paused ? null : nextRecurringRunAt(schedule.data, new Date());
+
+    const saved = await deps.followUps.upsertDigest({
+      ...(existing.value[0] ? { digestId: existing.value[0].id } : {}),
+      companyId: scope.companyId,
+      departmentId: scope.departmentId,
+      larkChatId: body.data.chatId,
+      times: schedule.data.times,
+      days: schedule.data.days,
+      timeZone: schedule.data.timeZone,
+      status: paused ? 'paused' : 'active',
+      nextRunAt,
+    });
+    if (!saved.ok) {
+      log.error('follow_ups.digest.save_failed', { error: saved.error.message });
+      deps.auditService.record({
+        actorId: scope.userId,
+        companyId: scope.companyId,
+        action: 'followups.digest.set',
+        outcome: 'failure',
+        metadata: {
+          departmentId: scope.departmentId,
+          chatId: body.data.chatId,
+          error: saved.error.message,
+        },
+      });
+      res.status(500).json({ ok: false, error: 'digest_unavailable' });
+      return;
+    }
+
+    deps.auditService.record({
+      actorId: scope.userId,
+      companyId: scope.companyId,
+      action: 'followups.digest.set',
+      outcome: 'success',
+      metadata: {
+        departmentId: scope.departmentId,
+        digestId: saved.value.id,
+        chatId: saved.value.larkChatId,
+        /* The schedule itself, so the trail says what was set and not merely
+           that somebody set something. */
+        times: saved.value.times,
+        days: saved.value.days,
+        timeZone: saved.value.timeZone,
+        status: saved.value.status,
+        created: existing.value.length === 0,
+      },
+    });
+
+    res.json({
+      ok: true,
+      digest: {
+        id: saved.value.id,
+        chatId: saved.value.larkChatId,
+        times: saved.value.times,
+        days: saved.value.days,
+        timeZone: saved.value.timeZone,
+        status: saved.value.status,
+        nextRunAt: saved.value.nextRunAt?.toISOString() ?? null,
+        lastRunAt: saved.value.lastRunAt?.toISOString() ?? null,
+      },
+    });
   });
 
   return router;
