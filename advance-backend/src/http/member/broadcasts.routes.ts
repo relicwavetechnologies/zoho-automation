@@ -19,7 +19,6 @@
  * and never a silent truncation to the first hundred.
  */
 import { Router, type Request, type Response } from 'express';
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Logger } from '../../shared/logger';
 import type { AuditService } from '../../application/observability/audit.service';
@@ -79,9 +78,7 @@ const previewSchema = z.object({
 });
 
 const sendSchema = z.object({
-  // Optional only for a tab left open across this deployment. Current clients
-  // always send it; the fallback preserves old-client compatibility.
-  requestId: z.string().uuid().optional(),
+  requestId: z.string().uuid(),
   sessionId: z.string().trim().min(1),
   label: z.string().trim().max(80).optional(),
   body: z.string().min(1).max(MAX_BROADCAST_BODY),
@@ -306,7 +303,7 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
     const sent = await deps.broadcasts.send({
       companyId: scope.companyId,
       departmentId: scope.departmentId,
-      requestId: parsed.data.requestId ?? randomUUID(),
+      requestId: parsed.data.requestId,
       sessionId: parsed.data.sessionId,
       label: parsed.data.label ?? '',
       body: parsed.data.body,
@@ -467,6 +464,13 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
       res.status(404).json({ ok: false, error: 'broadcast_not_found' });
       return;
     }
+    if (cancelled.value.outcome === 'unknown') {
+      log.warn('broadcasts.cancel_unknown', { broadcastId, userId: scope.userId });
+      // Keep the audit checkpoint pending. The gateway may already have applied
+      // the cancellation, so neither success nor failure is proven yet.
+      res.status(202).json({ ok: true, outcome: 'unknown' });
+      return;
+    }
 
     log.info('broadcasts.cancelled', {
       broadcastId,
@@ -486,7 +490,7 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
     // `stopped: false` means it had already finished. The caller got what it
     // asked for either way, but the screen must not claim to have stopped a send
     // that had already gone out in full.
-    res.json({ ok: true, stopped: cancelled.value.stopped });
+    res.json({ ok: true, outcome: 'confirmed', stopped: cancelled.value.stopped });
   });
 
   return router;

@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   WhatsappSessionService,
   isMissingSession,
+  isSessionProvisionUnknown,
 } from '../../src/application/whatsapp/whatsapp-session.service.ts';
 import { InfraError } from '../../src/shared/errors.ts';
 import { err, ok } from '../../src/shared/result.ts';
@@ -149,5 +150,89 @@ describe('isMissingSession', () => {
     const result = await service.pairing('session-1', SCOPE);
     assert.equal(result.ok, false);
     assert.equal(!result.ok && isMissingSession(result.error), false);
+  });
+});
+
+describe('session provisioning', () => {
+  const request = {
+    ...SCOPE,
+    label: 'Bookings desk',
+    requestId: '8dbca8a5-2d5a-4ee5-b8a4-a6fd3f706389',
+  };
+
+  it('adopts the deterministic gateway session on a retry', async () => {
+    let createdName = '';
+    let createCalls = 0;
+    const remote: any[] = [];
+    const gateway = {
+      listSessions: async () => ok(remote),
+      createSession: async (name: string) => {
+        createCalls += 1;
+        createdName = name;
+        const row = { id: 'gw-1', name, status: 'ready' };
+        remote.push(row);
+        return ok(row);
+      },
+      startSession: async () => ok({}),
+      ensureWebhook: async () => ok({ created: true, url: 'http://divo/webhook' }),
+    } as any;
+    const repo = {
+      createSession: async (input: any) => ok({ ...SESSION, openwaSessionId: input.openwaSessionId }),
+    } as any;
+    const service = new WhatsappSessionService({ repo, gateway, logger: noopLogger });
+
+    const first = await service.create(request);
+    const second = await service.create(request);
+
+    assert.equal(first.ok, true);
+    assert.equal(second.ok, true);
+    assert.equal(createCalls, 1);
+    assert.match(createdName, /^divo-dept-ua-/);
+  });
+
+  it('recovers a session whose create response was lost', async () => {
+    let lists = 0;
+    let createdName = '';
+    let startedSession = '';
+    const gateway = {
+      listSessions: async () => {
+        lists += 1;
+        return ok(lists === 1 ? [] : [{ id: 'gw-lost', name: createdName, status: 'created' }]);
+      },
+      createSession: async (name: string) => {
+        createdName = name;
+        return err(new InfraError({ layer: 'http', op: 'openwa.createSession', cause: 'timeout' }));
+      },
+      startSession: async (sessionId: string) => {
+        startedSession = sessionId;
+        return ok({});
+      },
+      ensureWebhook: async () => ok({ created: true, url: 'http://divo/webhook' }),
+    } as any;
+    const repo = {
+      createSession: async (input: any) => ok({ ...SESSION, openwaSessionId: input.openwaSessionId }),
+    } as any;
+    const result = await new WhatsappSessionService({ repo, gateway, logger: noopLogger }).create(request);
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.value.openwaSessionId, 'gw-lost');
+    assert.equal(startedSession, 'gw-lost');
+  });
+
+  it('marks a post-create webhook failure as provisioning uncertainty', async () => {
+    const gateway = {
+      listSessions: async () => ok([]),
+      createSession: async (name: string) => ok({ id: 'gw-1', name, status: 'ready' }),
+      startSession: async () => ok({}),
+      ensureWebhook: async () => err(new InfraError({
+        layer: 'http', op: 'openwa.createWebhook', cause: 'timeout', message: 'timeout',
+      })),
+    } as any;
+    const result = await new WhatsappSessionService({
+      repo: { createSession: async () => ok(SESSION) } as any,
+      gateway,
+      logger: noopLogger,
+    }).create(request);
+    assert.equal(result.ok, false);
+    assert.equal(!result.ok && isSessionProvisionUnknown(result.error), true);
   });
 });

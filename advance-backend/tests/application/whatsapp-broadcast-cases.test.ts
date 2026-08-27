@@ -467,7 +467,30 @@ describe('cancel', () => {
     });
 
     const result = await service(repo, gateway).cancel({ ...scope, broadcastId: 'bc-1' });
-    assert.equal(result.ok && result.value?.stopped, false);
+    assert.equal(result.ok && result.value?.outcome, 'confirmed');
+    assert.equal(result.ok && result.value?.outcome === 'confirmed' && result.value.stopped, false);
+  });
+
+  it('keeps cancellation unknown when the gateway response is lost', async () => {
+    const repo = makeRepo({ findForScope: async () => ok(found) });
+    const gateway = makeGateway({
+      cancelBatch: async () => err(new InfraError({
+        layer: 'http', op: 'openwa.cancelBatch', cause: 'timeout', message: 'timeout',
+      })),
+    });
+    const result = await service(repo, gateway).cancel({ ...scope, broadcastId: 'bc-1' });
+    assert.equal(result.ok && result.value?.outcome, 'unknown');
+  });
+
+  it('keeps cancellation unknown when its immediate status poll fails', async () => {
+    const repo = makeRepo({ findForScope: async () => ok(found) });
+    const gateway = makeGateway({
+      batchStatus: async () => err(new InfraError({
+        layer: 'http', op: 'openwa.batchStatus', cause: 'timeout', message: 'timeout',
+      })),
+    });
+    const result = await service(repo, gateway).cancel({ ...scope, broadcastId: 'bc-1' });
+    assert.equal(result.ok && result.value?.outcome, 'unknown');
   });
 
   /**

@@ -167,7 +167,7 @@ describe('follow-ups audit', () => {
     const audit = makeAudit(captured);
     const broadcasts = {
       send: async () => ok({ broadcastId: 'b-1', skipped: ['a'], unverified: [], gatewayAcknowledged: true }),
-      cancel: async () => ok({ stopped: true }),
+      cancel: async () => ok({ outcome: 'confirmed', stopped: true }),
     } as unknown as import('../../src/application/whatsapp/whatsapp-broadcast.service.ts').WhatsappBroadcastService;
 
     const router = createBroadcastRoutes({
@@ -282,11 +282,33 @@ describe('follow-ups audit', () => {
     assert.equal(sendCalls, 0);
   });
 
+  it('refuses a broadcast without a stable request id', async () => {
+    let sendCalls = 0;
+    const router = createBroadcastRoutes({
+      broadcasts: {
+        send: async () => { sendCalls += 1; return ok({}); },
+      } as unknown as import('../../src/application/whatsapp/whatsapp-broadcast.service.ts').WhatsappBroadcastService,
+      resolveDepartmentId: resolveDept,
+      authorize: allowed as unknown as import('../../src/http/member/broadcasts.routes.ts').BroadcastRoutesDeps['authorize'],
+      auditService: makeAudit([]),
+      logger: noopLogger,
+    });
+    const result = await callRoute(router, 'POST', '/', {
+      body: {
+        sessionId: 'sess-1',
+        body: 'hello',
+        recipients: [{ waChatId: '12592995127491@lid', displayName: 'Priya', isGroup: false }],
+      },
+    });
+    assert.equal(result.status, 400);
+    assert.equal(sendCalls, 0);
+  });
+
   it('broadcast cancelled records success', async () => {
     const captured: Captured[] = [];
     const audit = makeAudit(captured);
     const broadcasts = {
-      cancel: async () => ok({ stopped: true }),
+      cancel: async () => ok({ outcome: 'confirmed', stopped: true }),
       send: async () => ok({ broadcastId: 'b-1', skipped: [], unverified: [], gatewayAcknowledged: true }),
     } as unknown as import('../../src/application/whatsapp/whatsapp-broadcast.service.ts').WhatsappBroadcastService;
 
@@ -307,6 +329,22 @@ describe('follow-ups audit', () => {
     assert.equal(captured[0]!.action, 'followups.broadcast.cancelled');
     assert.equal(captured[0]!.outcome, 'success');
     assert.equal((captured[0]!.metadata as Record<string, unknown>)['departmentId'], 'dept-1');
+  });
+
+  it('leaves cancellation audit pending when the gateway outcome is unknown', async () => {
+    const captured: Captured[] = [];
+    const router = createBroadcastRoutes({
+      broadcasts: {
+        cancel: async () => ok({ outcome: 'unknown' }),
+      } as unknown as import('../../src/application/whatsapp/whatsapp-broadcast.service.ts').WhatsappBroadcastService,
+      resolveDepartmentId: resolveDept,
+      authorize: allowed as unknown as import('../../src/http/member/broadcasts.routes.ts').BroadcastRoutesDeps['authorize'],
+      auditService: makeAudit(captured),
+      logger: noopLogger,
+    });
+    const result = await callRoute(router, 'POST', '/b-1/cancel', { params: { id: 'b-1' } });
+    assert.equal(result.status, 202);
+    assert.equal(captured[0]!.outcome, 'pending');
   });
 
   it('followups.item.resolved verb on done', async () => {
@@ -408,7 +446,10 @@ describe('follow-ups audit', () => {
     });
 
     const { status } = await callRoute(router, 'POST', '/numbers', {
-      body: { label: 'Bookings desk' },
+      body: {
+        label: 'Bookings desk',
+        requestId: '8dbca8a5-2d5a-4ee5-b8a4-a6fd3f706389',
+      },
     });
 
     assert.equal(status, 200);

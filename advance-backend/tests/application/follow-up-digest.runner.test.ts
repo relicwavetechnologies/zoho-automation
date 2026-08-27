@@ -174,4 +174,39 @@ describe('follow-up digest runner', () => {
     assert.equal(sent.length, 1);
     assert.equal(repo.released.length, 0, 'stale-claim recovery reuses scheduledFor');
   });
+
+  it('reuses one audit checkpoint when the retained slot is retried', async () => {
+    const keys: string[] = [];
+    const settled: string[] = [];
+    const audit = {
+      beginRequired: async (input: { checkpointKey?: string }) => {
+        keys.push(input.checkpointKey ?? '');
+        return 'audit-slot-1';
+      },
+      settle: (input: { checkpointId: string }) => { settled.push(input.checkpointId); },
+    } as unknown as AuditService;
+    const repo = makeRepo({ items: [followUp()] });
+    let completes = 0;
+    repo.completeDigest = async (input: any) => {
+      completes += 1;
+      repo.completed.push(input);
+      return completes === 1
+        ? err(new InfraError({ layer: 'prisma', op: 'complete', cause: 'db' }))
+        : ok(undefined);
+    };
+    const run = createFollowUpDigestRunner({
+      repo,
+      deliver: async () => 'x',
+      logger: noopLogger,
+      now: () => RAN_AT,
+      auditService: audit,
+    });
+
+    await run(claim);
+    await run(claim);
+
+    assert.equal(keys.length, 2);
+    assert.equal(keys[0], keys[1]);
+    assert.deepEqual(settled, ['audit-slot-1']);
+  });
 });

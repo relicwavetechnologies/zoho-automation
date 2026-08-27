@@ -10,10 +10,31 @@
  * member routes rather than `{ success, data }`, and the escape hatch is
  * declared at the call site the way `api.ts` asks.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, api } from '@/lib/api'
 
 const BASE = '/api/follow-ups'
+const LINK_NUMBER_REQUESTS_KEY = 'divo.followups.link-number-requests'
+
+function readLinkNumberRequests(): Map<string, string> {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(LINK_NUMBER_REQUESTS_KEY) ?? '{}') as Record<string, unknown>
+    return new Map(
+      Object.entries(stored).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+    )
+  } catch {
+    return new Map()
+  }
+}
+
+function writeLinkNumberRequests(requests: Map<string, string>): void {
+  try {
+    window.localStorage.setItem(LINK_NUMBER_REQUESTS_KEY, JSON.stringify(Object.fromEntries(requests)))
+  } catch {
+    // Private browsing can make storage unavailable; the in-memory map still
+    // keeps retries idempotent while this page is open.
+  }
+}
 
 export type FollowUp = {
   id: string
@@ -166,6 +187,7 @@ export function useLinkedNumbers(token?: string): Loadable & {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refusal, setRefusal] = useState<string | null>(null)
+  const createRequests = useRef(readLinkNumberRequests())
 
   const load = useCallback(async () => {
     if (!token) return
@@ -199,9 +221,15 @@ export function useLinkedNumbers(token?: string): Loadable & {
   }, [token, load])
 
   const create = useCallback(async (label: string): Promise<string> => {
+    const requestKey = label.trim()
+    const requestId = createRequests.current.get(requestKey) ?? crypto.randomUUID()
+    createRequests.current.set(requestKey, requestId)
+    writeLinkNumberRequests(createRequests.current)
     const data = await api.post<{ number: { id: string; label: string } }>(
-      `${BASE}/numbers`, { label }, token, { raw: true },
+      `${BASE}/numbers`, { label, requestId }, token, { raw: true },
     )
+    createRequests.current.delete(requestKey)
+    writeLinkNumberRequests(createRequests.current)
     await load()
     return data.number.id
   }, [token, load])

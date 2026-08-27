@@ -424,7 +424,12 @@ export class WhatsappBroadcastService {
    * claims work is queued when nothing will run.
    */
   async cancel(scope: Scope & { broadcastId: string }): Promise<
-    Result<{ stopped: boolean } | null, InfraError>
+    Result<
+      | { readonly outcome: 'confirmed'; readonly stopped: boolean }
+      | { readonly outcome: 'unknown' }
+      | null,
+      InfraError
+    >
   > {
     const found = await this.deps.repo.findForScope(scope);
     if (!found.ok) return found;
@@ -433,12 +438,24 @@ export class WhatsappBroadcastService {
     const cancelled = await this.deps.gateway.cancelBatch(
       found.value.openwaSessionId, found.value.gatewayBatchId,
     );
-    if (!cancelled.ok) return cancelled;
+    if (!cancelled.ok) {
+      this.log.warn('broadcast.cancel_unknown', {
+        broadcastId: found.value.id,
+        error: cancelled.error.message,
+      });
+      return ok({ outcome: 'unknown' });
+    }
 
     const polled = await this.poll(found.value);
-    if (!polled.ok) return polled;
+    if (!polled.ok) {
+      this.log.warn('broadcast.cancel_reconcile_unknown', {
+        broadcastId: found.value.id,
+        error: polled.error.message,
+      });
+      return ok({ outcome: 'unknown' });
+    }
 
-    return ok({ stopped: !cancelled.value.alreadyFinished });
+    return ok({ outcome: 'confirmed', stopped: !cancelled.value.alreadyFinished });
   }
 
   /** Broadcasts the worker should read, oldest reading first. */

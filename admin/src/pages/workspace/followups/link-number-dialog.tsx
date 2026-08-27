@@ -272,9 +272,11 @@ export function LinkNumberFlow({ token, onCreate, onLinked, onClose }: {
             ((e.status === 403 && e.code === 'not_permitted') ||
               (e.status === 503 && e.code === 'permission_unavailable') ||
               (e.status === 409 && e.code === 'no_active_department'))
+          const provisioningUnknown =
+            e instanceof ApiError && e.code === 'number_provisioning_unknown'
           notify.failed(
-            'Could not register the number',
-            isRefusal && e instanceof Error && e.message
+            provisioningUnknown ? 'Divo is still checking that number' : 'Could not register the number',
+            (isRefusal || provisioningUnknown) && e instanceof Error && e.message
               ? e.message
               : 'The WhatsApp gateway did not answer, so nothing was created.',
           )

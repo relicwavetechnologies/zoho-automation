@@ -186,6 +186,25 @@ describe('AuditService', () => {
       assert.doesNotThrow(() => svc.settle({ checkpointId: 'audit-1', outcome: 'failure' }));
       await new Promise(resolve => setTimeout(resolve, 0));
     });
+
+    it('reuses a pending checkpoint for the same idempotent effect', async () => {
+      let creates = 0;
+      const prisma = {
+        auditLog: {
+          findFirst: async () => ({ id: 'audit-existing' }),
+          create: async () => { creates += 1; return { id: 'audit-new' }; },
+        },
+      } as any;
+      const svc = new AuditService(prisma, noopLogger);
+      const id = await svc.beginRequired({
+        actorId: 'system',
+        companyId: 'co-1',
+        action: 'followups.digest.delivered',
+        checkpointKey: 'digest-1:slot-1',
+      });
+      assert.equal(id, 'audit-existing');
+      assert.equal(creates, 0);
+    });
   });
 });
 

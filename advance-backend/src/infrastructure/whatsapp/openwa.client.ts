@@ -18,6 +18,7 @@ import { err, ok, type Result } from '../../shared/result';
 
 export interface OpenWaSessionSummary {
   readonly id: string;
+  readonly name: string;
   readonly status: string;
   readonly phone?: string;
 }
@@ -207,16 +208,20 @@ export class OpenWaClient {
     if (!created.ok) return created;
 
     const id = created.value.id;
-    const started = await this.request<unknown>(
+    const started = await this.startSession(id);
+    if (!started.ok) return started;
+
+    return ok({ ...created.value, id });
+  }
+
+  startSession(sessionId: string): Promise<Result<unknown, InfraError>> {
+    return this.request(
       'POST',
-      `/sessions/${enc(id)}/start`,
+      `/sessions/${enc(sessionId)}/start`,
       null,
       {},
       'startSession',
     );
-    if (!started.ok) return started;
-
-    return ok({ ...created.value, id });
   }
 
   /**

@@ -309,8 +309,8 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
     completedAt?: Date;
   }): Promise<Result<void, InfraError>> {
     try {
-      await this.db.whatsappBroadcast.update({
-        where: { id: input.broadcastId },
+      await this.db.whatsappBroadcast.updateMany({
+        where: { id: input.broadcastId, status: { in: [...LIVE_STATUSES] } },
         data: {
           status: input.status,
           ...(input.startedAt ? { startedAt: input.startedAt } : {}),
@@ -352,6 +352,21 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
   }): Promise<Result<void, InfraError>> {
     try {
       await this.db.$transaction(async tx => {
+        // Claim the live parent transition first. A slower concurrent poll that
+        // reaches this transaction after a terminal result must change nothing,
+        // including recipient rows.
+        const parent = await tx.whatsappBroadcast.updateMany({
+          where: { id: input.broadcastId, status: { in: [...LIVE_STATUSES] } },
+          data: {
+            status: input.status,
+            sent: input.sent,
+            failed: input.failed,
+            lastPolledAt: new Date(),
+            ...(input.completedAt ? { completedAt: input.completedAt } : {}),
+          },
+        });
+        if (parent.count === 0) return;
+
         for (const result of input.results) {
           await tx.whatsappBroadcastRecipient.updateMany({
             where: { broadcastId: input.broadcastId, waChatId: result.waChatId },
@@ -366,16 +381,6 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
             },
           });
         }
-        await tx.whatsappBroadcast.update({
-          where: { id: input.broadcastId },
-          data: {
-            status: input.status,
-            sent: input.sent,
-            failed: input.failed,
-            lastPolledAt: new Date(),
-            ...(input.completedAt ? { completedAt: input.completedAt } : {}),
-          },
-        });
       });
       return ok(undefined);
     } catch (cause) {
@@ -385,8 +390,8 @@ export class BroadcastsRepository implements BroadcastsRepoPort {
 
   async touchPoll(broadcastId: string): Promise<Result<void, InfraError>> {
     try {
-      await this.db.whatsappBroadcast.update({
-        where: { id: broadcastId },
+      await this.db.whatsappBroadcast.updateMany({
+        where: { id: broadcastId, status: { in: [...LIVE_STATUSES] } },
         data: { lastPolledAt: new Date() },
       });
       return ok(undefined);

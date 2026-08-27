@@ -29,5 +29,6 @@
 
 - A WhatsApp webhook is **admitted** only after its ingress receipt is persisted. HTTP acknowledgement follows admission; message processing may continue asynchronously because the receipt is recoverable.
 - A `queued` broadcast means Divo has a durable request but may not yet know whether OpenWA accepted it. The same reviewed client request produces the same gateway batch id, and polling owns the transition to a terminal result.
+- A number-link request has a stable request id and therefore a deterministic OpenWA session name. A retry adopts that named session before creating anything, so a lost create, start, webhook, or database response does not create a second gateway session.
 - A WhatsApp session becomes `disconnected` only after a successful gateway probe reports a confirmed unusable state. A gateway error or unknown status changes nothing. Recovery restores `linked` but does not clear `darkSince`; only a completed history repair proves the gap is filled.
 - A required audit checkpoint is written as `pending` before an irreversible follow-up effect. Outcome settlement changes it to `success` or `failure`; a settlement outage leaves the pending row as explicit reconciliation work rather than erasing the audit trail or returning a false failure after the effect.

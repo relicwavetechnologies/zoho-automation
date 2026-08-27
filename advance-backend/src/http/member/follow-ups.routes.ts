@@ -29,6 +29,7 @@ import type { Logger } from '../../shared/logger';
 import type { AuditService } from '../../application/observability/audit.service';
 import {
   isMissingSession,
+  isSessionProvisionUnknown,
   type WhatsappSessionService,
 } from '../../application/whatsapp/whatsapp-session.service';
 import type { WhatsappHistoryRepair } from '../../application/whatsapp/whatsapp-history-repair';
@@ -49,6 +50,7 @@ const LIST_LIMIT = { default: 100, max: 200 } as const;
 
 const createNumberSchema = z.object({
   label: z.string().trim().min(1).max(60),
+  requestId: z.string().uuid(),
 });
 
 const muteSchema = z.object({
@@ -357,7 +359,11 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       actorId: scope.userId,
       companyId: scope.companyId,
       action: 'followups.number.linked',
-      metadata: { departmentId: scope.departmentId, label: parsed.data.label },
+      metadata: {
+        departmentId: scope.departmentId,
+        label: parsed.data.label,
+        requestId: parsed.data.requestId,
+      },
     });
     if (!auditId) return;
 
@@ -365,8 +371,24 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       companyId: scope.companyId,
       departmentId: scope.departmentId,
       label: parsed.data.label,
+      requestId: parsed.data.requestId,
     });
     if (!created.ok) {
+      if (isSessionProvisionUnknown(created.error)) {
+        log.warn('follow_ups.number_provisioning_unknown', {
+          requestId: parsed.data.requestId,
+          departmentId: scope.departmentId,
+          error: created.error.message,
+        });
+        // Keep the audit checkpoint pending. Retrying this same request id will
+        // adopt the deterministic OpenWA session if it exists.
+        res.status(503).json({
+          ok: false,
+          code: 'number_provisioning_unknown',
+          message: 'Divo could not confirm whether the number finished provisioning. Try the same link again; it will not create a second session.',
+        });
+        return;
+      }
       requiredAudit.settle(auditId, {
         outcome: 'failure',
         metadata: {

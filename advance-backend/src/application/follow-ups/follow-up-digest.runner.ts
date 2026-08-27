@@ -211,9 +211,11 @@ export function createFollowUpDigestRunner(deps: DigestRunnerDeps) {
         actorId: 'system',
         companyId: claim.companyId,
         action: 'followups.digest.delivered',
+        checkpointKey: `${claim.digestId}:${claim.scheduledFor.toISOString()}`,
         metadata: {
           digestId: claim.digestId,
           departmentId: claim.departmentId,
+          scheduledFor: claim.scheduledFor.toISOString(),
           cards: cards.length,
           items: read.value.items.length,
           darkNumbers: read.value.dark.length,

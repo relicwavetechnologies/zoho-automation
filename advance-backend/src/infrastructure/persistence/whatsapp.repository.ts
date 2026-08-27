@@ -108,6 +108,21 @@ export class WhatsappRepository implements WhatsappRepoPort {
       });
       return ok(row);
     } catch (cause) {
+      if ((cause as { code?: string }).code === 'P2002') {
+        try {
+          const existing = await this.db.whatsappSession.findUnique({
+            where: { openwaSessionId: input.openwaSessionId },
+            select: SESSION_SELECT,
+          });
+          if (
+            existing
+            && existing.companyId === input.companyId
+            && existing.departmentId === input.departmentId
+          ) return ok(existing);
+        } catch (lookupCause) {
+          return err(wrapInfra('prisma', 'whatsapp.findIdempotentSession', lookupCause));
+        }
+      }
       return err(wrapInfra('prisma', 'whatsapp.createSession', cause));
     }
   }

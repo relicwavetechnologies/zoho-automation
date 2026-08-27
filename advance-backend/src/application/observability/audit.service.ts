@@ -23,7 +23,10 @@ export interface RecordAuditInput {
   metadata?:  Record<string, unknown>;
 }
 
-export type BeginAuditInput = Omit<RecordAuditInput, 'outcome'>;
+export type BeginAuditInput = Omit<RecordAuditInput, 'outcome'> & {
+  /** Reuse one still-pending checkpoint across an idempotent retry. */
+  checkpointKey?: string;
+};
 
 export interface SettleAuditInput {
   checkpointId: string;
@@ -90,13 +93,29 @@ export class AuditService {
    */
   async beginRequired(input: BeginAuditInput): Promise<string> {
     try {
+      if (input.checkpointKey) {
+        const existing = await this.prisma.auditLog.findFirst({
+          where: {
+            ...(input.companyId ? { companyId: input.companyId } : {}),
+            action: input.action,
+            outcome: 'pending',
+            metadata: { path: ['checkpointKey'], equals: input.checkpointKey },
+          },
+          select: { id: true },
+        });
+        if (existing) return existing.id;
+      }
+      const metadata = {
+        ...(input.metadata ?? {}),
+        ...(input.checkpointKey ? { checkpointKey: input.checkpointKey } : {}),
+      };
       const row = await this.prisma.auditLog.create({
         data: {
           actorId: input.actorId,
           action: input.action,
           outcome: 'pending',
           ...(input.companyId ? { companyId: input.companyId } : {}),
-          ...(input.metadata ? { metadata: sanitizeMeta(input.metadata) as object } : {}),
+          ...(Object.keys(metadata).length > 0 ? { metadata: sanitizeMeta(metadata) as object } : {}),
         },
         select: { id: true },
       });
