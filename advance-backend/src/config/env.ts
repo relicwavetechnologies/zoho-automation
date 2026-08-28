@@ -330,11 +330,11 @@ export const EnvSchema = z.object({
   // ── Manager persona learning ─────────────────────────────────────────────
   REDIS_PERSONA_LEARNING_QUEUE_NAME: z.string().default('persona-learning'),
   PERSONA_LEARNING_WORKER_CONCURRENCY: positiveInt(1),
-  PERSONA_LEARNING_MODEL_ID: z.string().default('muse-spark-1.2-contributor'),
+  PERSONA_LEARNING_MODEL_ID: z.string().default('deepseek-v4-flash'),
   // Group-room transcript compaction. DeepSeek like every other model Divo
   // runs, and a flash tier because this is high-volume background work whose
   // output is a summary, not a user-facing answer.
-  GROUP_SUMMARY_MODEL_ID: z.string().default('muse-spark-1.2-contributor'),
+  GROUP_SUMMARY_MODEL_ID: z.string().default('deepseek-v4-flash'),
 
   // ── Explicit manager Teach ingestion ────────────────────────────────────
   REDIS_MANAGER_TEACH_QUEUE_NAME: z.string().default('manager-teach'),
@@ -438,7 +438,7 @@ export const EnvSchema = z.object({
   WHATSAPP_WEBHOOK_SECRET: z.string().min(16, {
     message: 'WHATSAPP_WEBHOOK_SECRET must be at least 16 characters — the gateway rejects shorter ones when the webhook is registered.',
   }).optional(),
-  WHATSAPP_ANALYSIS_MODEL_ID: z.string().default('muse-spark-1.2-contributor'),
+  WHATSAPP_ANALYSIS_MODEL_ID: z.string().default('deepseek-v4-flash'),
   WHATSAPP_TIMEZONE: z.string().default('Asia/Kolkata'),
   /** How long transcript is kept. Ninety days unless told otherwise. */
   WHATSAPP_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
@@ -487,7 +487,7 @@ export const EnvSchema = z.object({
   KNOWLEDGE_LEARNING_ENABLED: booleanStr.default('true'),
   REDIS_KNOWLEDGE_LEARNING_QUEUE_NAME: z.string().default('knowledge-learning'),
   KNOWLEDGE_LEARNING_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(1),
-  KNOWLEDGE_LEARNING_MODEL_ID: z.string().default('muse-spark-1.2-contributor'),
+  KNOWLEDGE_LEARNING_MODEL_ID: z.string().default('deepseek-v4-flash'),
   KNOWLEDGE_LEARNING_IMMEDIATE_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.9),
   KNOWLEDGE_LEARNING_REPEATED_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.75),
   KNOWLEDGE_LEARNING_REPEATED_EVIDENCE_COUNT: z.coerce.number().int().min(2).max(10).default(3),

@@ -53,7 +53,7 @@ import {
 import type { ExecutionRunLifecycle } from '../observability/execution-run-lifecycle';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
-const LARK_RUNTIME_MODEL: ProxyModel = 'muse-spark-1.2-contributor';
+const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
 const MAX_CONTROLLER_STREAM_LINE_BYTES = 2 * 1_024 * 1_024;
 
 interface ControllerLatencySample {
