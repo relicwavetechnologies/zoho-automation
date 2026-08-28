@@ -1022,7 +1022,11 @@ export const createServer = (c: Container): DivoServerApplication => {
         store:   c.proxyKeyStore,
         service: c.llmProxyService,
         latencyRecorder: c.runLatencyRecorder,
-        baseUrls: { deepseek: c.env.DEEPSEEK_BASE_URL, openai: c.env.OPENAI_BASE_URL },
+        baseUrls: {
+          deepseek: c.env.DEEPSEEK_BASE_URL,
+          openai: c.env.OPENAI_BASE_URL,
+          meta: c.env.META_BASE_URL,
+        },
         apiKeyExhaustion: c.apiKeyExhaustionNotifier,
       }),
     );
@@ -1145,7 +1149,11 @@ export const createServer = (c: Container): DivoServerApplication => {
   // Proxy control plane (Guardrails) — key store + status.
   app.use('/api/admin/proxy', adminAuth, createProxyRoutes({
     prisma: c.prisma, store: c.proxyKeyStore, logger: c.logger, enabled: c.env.LLM_PROXY_ENABLED,
-    upstreams: { deepseek: c.env.DEEPSEEK_BASE_URL, openai: c.env.OPENAI_BASE_URL },
+    upstreams: {
+      deepseek: c.env.DEEPSEEK_BASE_URL,
+      openai: c.env.OPENAI_BASE_URL,
+      meta: c.env.META_BASE_URL,
+    },
   }));
 
   // 404

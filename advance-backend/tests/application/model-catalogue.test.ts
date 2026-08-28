@@ -10,6 +10,7 @@ import {
   bestGrantedModel,
   supportsVision,
   supportsReasoningEffort,
+  rateFor,
 } from '../../src/application/observability/pricing.ts';
 import { ProxyKeyStore } from '../../src/application/proxy/proxy-key.store.ts';
 
@@ -78,7 +79,7 @@ describe('model catalogue', () => {
   });
 
   it('offers every catalogue model to the admin grant', () => {
-    assert.deepEqual([...PROXY_MODELS], ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.6-luna']);
+    assert.deepEqual([...PROXY_MODELS], ['muse-spark-1.2-contributor', 'muse-spark-1.2', 'deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.6-luna']);
   });
 
   it('allows the Pro model for members without a custom proxy policy', () => {
@@ -130,5 +131,32 @@ describe('provider keys', () => {
       assert.equal(await store.resolve(provider, 'company-1'), null, `resolve ${provider}`);
       assert.equal((await store.status(provider, 'company-1')).configured, false, `status ${provider}`);
     }
+  });
+});
+
+describe('pricing is never guessed', () => {
+  it('refuses to ship a model carrying the unverified placeholder rate', () => {
+    /*
+     * The per-person limit is enforced in dollars — the proxy refuses the call
+     * when the budget is reached — so a rate nobody checked is not a cosmetic
+     * gap. Too low and people are stopped before they should be; too high and
+     * they are never stopped at all, which is the failure that costs money and
+     * the reason a cheaper model was wanted in the first place.
+     *
+     * This is deliberately a test rather than a runtime check: the moment to
+     * catch an unpriced model is before it reaches production, not on the first
+     * call that overspends.
+     */
+    const unpriced = PROXY_MODELS
+      .map(id => ({ id, rate: rateFor(id) }))
+      .filter(({ rate }) => rate.cacheHitIn < 0 || rate.cacheMissIn < 0 || rate.output < 0)
+      .map(({ id }) => id);
+
+    assert.deepEqual(
+      unpriced,
+      [],
+      `Priced from guesswork or not at all: ${unpriced.join(', ')}. `
+      + 'Put the provider\'s published USD-per-1M-token rates in SPECS before deploying.',
+    );
   });
 });

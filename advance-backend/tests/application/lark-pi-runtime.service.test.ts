@@ -1791,7 +1791,7 @@ test('a caller-issued session is used verbatim, not the member\'s own sign-in', 
   assert.equal(where['revokedAt'], null);
 });
 
-test('the run asks for Flash at high reasoning when Lark supplies no choice', async () => {
+test('the run asks for Spark when Lark supplies no choice', async () => {
   let runBody: Record<string, unknown> | undefined;
   const service = new LarkPiRuntimeService({
     prisma: {
@@ -1820,9 +1820,13 @@ test('the run asks for Flash at high reasoning when Lark supplies no choice', as
 
   await service.run(runtimeInput());
 
-  assert.equal(runBody?.['model'], 'deepseek-v4-flash');
-  assert.equal(runBody?.['provider'], 'deepseek');
-  assert.equal(runBody?.['thinkingLevel'], 'high');
+  // Moved off DeepSeek deliberately; DeepSeek stays selectable, it is simply no
+  // longer what a Lark run gets when nobody chose. `medium` is Spark's own
+  // default rung, and there is no `off` to fall back to — Spark reasons on
+  // every call.
+  assert.equal(runBody?.['model'], 'muse-spark-1.2-contributor');
+  assert.equal(runBody?.['provider'], 'meta');
+  assert.equal(runBody?.['thinkingLevel'], 'medium');
 });
 
 test('an allowed web choice reaches the controller as the exact model and effort pair', async () => {
