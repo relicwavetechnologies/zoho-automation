@@ -175,8 +175,22 @@ const SPECS: readonly ProxyModelSpec[] = [
 
 const SPEC_BY_ID = new Map<string, ProxyModelSpec>(SPECS.map((spec) => [spec.id, spec]))
 
-/** Fallback rate for unknown models — the cheap flash tier (never over-bills). */
-const DEFAULT_RATE: ModelRate = SPEC_BY_ID.get('deepseek-v4-flash')!.rate
+/**
+ * The cheapest model Divo prices, computed rather than named.
+ *
+ * Two places want it — the rate an unknown id is billed at, and the model an
+ * unrecognised id resolves to — and both are promises about never over-billing
+ * for input that means nothing. Writing the name by hand made that promise
+ * true on the day it was written and silent afterwards: Spark undercut Flash
+ * on every axis and the constant went on saying Flash. Ranked on output rate,
+ * which dominates every real run.
+ */
+const CHEAPEST_MODEL: ProxyModel = SPECS
+  .reduce((cheapest, spec) => (spec.rate.output < cheapest.rate.output ? spec : cheapest))
+  .id
+
+/** Fallback rate for unknown models — the cheapest tier (never over-bills). */
+const DEFAULT_RATE: ModelRate = SPEC_BY_ID.get(CHEAPEST_MODEL)!.rate
 
 export const PROXY_MODEL_SPECS: readonly ProxyModelSpec[] = SPECS
 
@@ -196,7 +210,7 @@ const isProxyModel = (value: string): value is ProxyModel =>
   (PROXY_MODELS as readonly string[]).includes(value)
 
 export function canonicalModel(raw: string | undefined | null): ProxyModel {
-  if (!raw) return 'deepseek-v4-flash'
+  if (!raw) return CHEAPEST_MODEL
   const key = raw.trim().toLowerCase()
   if (isProxyModel(key)) return key
   const alias = MODEL_ALIASES[key]
@@ -211,13 +225,13 @@ export function canonicalModel(raw: string | undefined | null): ProxyModel {
   if (key.includes('muse') || key.includes('spark')) return 'muse-spark-1.2-contributor'
   if (key.includes('pro') || key.includes('reason')) return 'deepseek-v4-pro'
   /*
-   * An id nobody recognises still lands on the cheapest *priced* model, not on
-   * the one the defaults now use. Moving the default is a decision about what
-   * Divo runs on; this is about what to do with input that means nothing, and
-   * the safe answer there is the smallest bill — which a model carrying
-   * `UNPRICED` cannot claim to be.
+   * An id nobody recognises still lands on the cheapest priced model, not on
+   * whatever the defaults happen to be. Moving the default is a decision about
+   * what Divo runs on; this is about what to do with input that means nothing,
+   * and the safe answer there is the smallest bill. That the two are currently
+   * the same model is a coincidence of Spark's pricing, not a rule.
    */
-  return 'deepseek-v4-flash'
+  return CHEAPEST_MODEL
 }
 
 export function rateFor(modelId: string): ModelRate {
@@ -241,23 +255,35 @@ export function providerOf(modelId: string): ModelProvider {
  * used — nobody grants Luna hoping the run keeps choosing Flash — so the best
  * granted model wins and removing it is how you go back.
  *
- * Luna leads on capability, not price: it reasons better than either DeepSeek
- * tier and it is the only model here that can look at a picture.
+ * Spark leads because it is what Divo now runs on: it reasons on every call,
+ * it can look at a picture, and it costs a fraction of what the DeepSeek tiers
+ * were charging. Luna keeps second place on capability; the DeepSeek pair are
+ * kept behind it so a member whose grant still names them can run, not so that
+ * anything chooses them.
  */
 export const RUNTIME_MODEL_PREFERENCE = [
+  'muse-spark-1.2-contributor',
   'gpt-5.6-luna',
   'deepseek-v4-flash',
   'deepseek-v4-pro',
 ] as const satisfies readonly ProxyModel[]
 
-/** The lowest-privilege model, and what a member with no grant at all runs on. */
-export const DEFAULT_MODEL: ProxyModel = 'deepseek-v4-flash'
+/** What a member with no grant at all runs on. */
+export const DEFAULT_MODEL: ProxyModel = 'muse-spark-1.2-contributor'
 
-/** Models available to every unblocked member before an admin customizes access. */
+/**
+ * Models available to every unblocked member before an admin customizes access.
+ *
+ * This is only reached when a member has no stored policy row. A row that names
+ * models wins over this list, so changing it does not re-grant anybody who has
+ * one — see `scripts/backfill-member-model-grants.ts`, which is how the members
+ * who already have a row are moved.
+ */
 export const DEFAULT_ALLOWED_MODELS: readonly ProxyModel[] = [
   DEFAULT_MODEL,
-  'deepseek-v4-pro',
   'gpt-5.6-luna',
+  'deepseek-v4-flash',
+  'deepseek-v4-pro',
 ]
 
 /**

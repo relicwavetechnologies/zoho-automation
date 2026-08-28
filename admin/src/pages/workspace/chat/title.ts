@@ -25,7 +25,7 @@ import { API_BASE_URL } from '@/lib/api-base'
  * two places — a title generated on the desktop and one generated here should
  * be indistinguishable, so changing any of them means changing both.
  */
-const MODEL = 'deepseek-v4-flash'
+const MODEL = 'muse-spark-1.2-contributor'
 const MAX_TOKENS = 64
 const MAX_TRANSCRIPT_CHARS = 3_000
 const MAX_TITLE_WORDS = 10

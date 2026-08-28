@@ -36,8 +36,12 @@ describe('model catalogue', () => {
   });
 
   it('still routes an unrecognised id to the cheapest model rather than guessing high', () => {
-    assert.equal(canonicalModel('something-nobody-has-heard-of'), 'deepseek-v4-flash');
-    assert.equal(canonicalModel(undefined), 'deepseek-v4-flash');
+    // Derived, so the test asserts the rule and not a name that outlives it:
+    // this caught nothing when Spark undercut Flash and the fallback did not move.
+    const cheapest = [...PROXY_MODEL_SPECS]
+      .sort((a, b) => a.rate.output - b.rate.output)[0]!.id;
+    assert.equal(canonicalModel('something-nobody-has-heard-of'), cheapest);
+    assert.equal(canonicalModel(undefined), cheapest);
   });
 
   it('names exactly which models can see an image', () => {

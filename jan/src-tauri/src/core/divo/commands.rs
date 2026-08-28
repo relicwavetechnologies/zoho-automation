@@ -33,7 +33,7 @@ const DIVO_OCR_IMAGE_DIR: &str = "divo/ocr-images";
 const MAX_BACKEND_OCR_IMAGE_BYTES: u64 = 1_250_000;
 const OCR_IMAGE_MAX_EDGE_STEPS: [u32; 5] = [1800, 1500, 1200, 1000, 850];
 const OCR_IMAGE_JPEG_QUALITY_STEPS: [u8; 4] = [85, 75, 65, 55];
-const THREAD_TITLE_MODEL: &str = "deepseek-v4-flash";
+const THREAD_TITLE_MODEL: &str = "muse-spark-1.2-contributor";
 // A title needs only a few visible tokens, but DeepSeek's default thinking
 // mode can spend a small completion allowance entirely on reasoning and leave
 // `message.content` empty. Keep this auxiliary request non-thinking and give
@@ -854,7 +854,7 @@ mod tests {
     fn thread_title_requests_use_the_governed_auxiliary_contract() {
         let body = thread_title_request_body("thread-123", "Review Razorpay account health");
 
-        assert_eq!(body["model"], "deepseek-v4-flash");
+        assert_eq!(body["model"], "muse-spark-1.2-contributor");
         assert_eq!(body["stream"], false);
         assert_eq!(body["max_tokens"], 64);
         assert_eq!(body["thinking"]["type"], "disabled");

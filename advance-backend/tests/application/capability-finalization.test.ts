@@ -415,9 +415,12 @@ describe('Lark engine harness controls', () => {
       () => parseEngineHarnessArgs(['--user', 'Anish Suman'], {}),
       /--allow-impersonation/,
     );
+    // The names come off the harness's own model map, so this asserts that an
+    // unknown one is refused and that the message lists the real choices —
+    // not a second copy of the list, which is what would go stale.
     assert.throws(
       () => parseEngineHarnessArgs(['--model', 'ultra'], {}),
-      /flash, pro, or luna/,
+      /--model must be one of: .*\bspark\b/,
     );
     assert.throws(
       () => parseEngineHarnessArgs(['--backend-url', 'not-a-url'], {}),
