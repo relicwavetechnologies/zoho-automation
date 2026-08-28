@@ -57,6 +57,7 @@ const HARNESS_MODEL_IDS = {
   flash: 'deepseek-v4-flash',
   pro: 'deepseek-v4-pro',
   luna: 'gpt-5.6-luna',
+  spark: 'muse-spark-1.2-contributor',
 } as const;
 const DEFAULT_PROMPT = 'Reply with exactly: Divo Pi harness is working. Do not call any tools.';
 const DEFAULT_USER_SELECTOR = 'abhishek@emiactech.com';
@@ -65,6 +66,10 @@ const GROUP_CHAT_ID    = 'oc_b9169aab0765f46b2fe9147068e3c79f';
 const TRACE_PATH       = join(tmpdir(), 'divo-harness-latest.jsonl');
 
 export type HarnessModel = keyof typeof HARNESS_MODEL_IDS;
+
+const HARNESS_MODEL_NAMES = Object.keys(HARNESS_MODEL_IDS) as HarnessModel[];
+const isHarnessModel = (value: string): value is HarnessModel =>
+  Object.hasOwn(HARNESS_MODEL_IDS, value);
 
 export interface EngineHarnessOptions {
   readonly userSelector: string;
@@ -241,8 +246,10 @@ export function parseEngineHarnessArgs(
       if (value === '--chat-id') explicitChatId = optionValue;
       if (value === '--thread-root') threadRootMessageId = optionValue;
       if (value === '--model') {
-        if (optionValue !== 'flash' && optionValue !== 'pro' && optionValue !== 'luna') {
-          throw new Error('--model must be flash, pro, or luna');
+        // Read off the map rather than repeated here: a second list is how
+        // `--model spark` would parse cleanly and then compare against nothing.
+        if (!isHarnessModel(optionValue)) {
+          throw new Error(`--model must be one of: ${HARNESS_MODEL_NAMES.join(', ')}`);
         }
         model = optionValue;
       }
@@ -579,7 +586,7 @@ async function printPersistedTrace(input: {
 async function main() {
   const options = parseEngineHarnessArgs(process.argv.slice(2));
   if (options.help) {
-    console.log('Usage: pnpm tsx scripts/run-engine-harness.ts [--model flash|pro|luna] [--backend-url <local-backend-url>] [--fresh-context] [--no-final-delivery] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--group-mode threaded|inline] [--thread-root <message-id>] [--no-trace] [prompt]');
+    console.log(`Usage: pnpm tsx scripts/run-engine-harness.ts [--model ${HARNESS_MODEL_NAMES.join('|')}] [--backend-url <local-backend-url>] [--fresh-context] [--no-final-delivery] [--allow-impersonation --user <email|name|open_id>] [--chat-id <allowed-id>] [--chat-type p2p|group] [--group] [--group-mode threaded|inline] [--thread-root <message-id>] [--no-trace] [prompt]`);
     return;
   }
   assertPiHarnessOptions(options);

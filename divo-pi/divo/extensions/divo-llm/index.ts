@@ -26,6 +26,16 @@ const REQUEST_TOO_LARGE_PATTERN =
 	/\b413\b|request[_ ]too[_ ]large|payload[_ ]too[_ ]large|entity\.too\.large|PayloadTooLargeError/i;
 
 /**
+ * Every provider name that is really the Divo proxy wearing a different hat.
+ *
+ * Listed once and read by both the registration below and the 413 rewrite, so a
+ * provider added to one cannot be missed by the other — which is how `meta`
+ * would otherwise have kept the raw Express 413 while the other two got the
+ * readable one.
+ */
+const DIVO_PROXIED_PROVIDERS = new Set(["deepseek", "openai", "meta"]);
+
+/**
  * GPT-5.6 Luna, as Pi needs to know it.
  *
  * `input` carries the whole point: it is the one model here that can be handed
@@ -54,13 +64,42 @@ export const DIVO_LUNA_MODEL = {
 	maxTokens: 128_000,
 };
 
+/**
+ * Muse Spark 1.2 (contributor), as Pi needs to know it.
+ *
+ * `input` is the load-bearing field, exactly as it is on Luna above: Pi's `read`
+ * tool consults it to decide whether to hand the model image bytes or a note
+ * saying it cannot see them, and getting it wrong does not error — it silently
+ * turns every image into "I can't view that". Spark takes pictures, so it says
+ * so.
+ *
+ * `max` maps to null rather than to itself. Spark's ceiling is `xhigh`; asking
+ * for `max` clamps down instead of 400ing at the provider, which is the same
+ * trick Luna uses for the `minimal` it no longer implements. There is no `off`
+ * rung at all — Spark reasons on every call — so none is named.
+ *
+ * Costs are Pi's own display only; the backend prices the run from the
+ * provider's authoritative usage and never reads these.
+ */
+export const DIVO_SPARK_MODEL = {
+	id: "muse-spark-1.2-contributor",
+	name: "Muse Spark 1.2 (contributor)",
+	api: "openai-responses" as const,
+	reasoning: true,
+	thinkingLevelMap: { max: null } as const,
+	input: ["text", "image"] as ("text" | "image")[],
+	cost: { input: 0.1, output: 0.2, cacheRead: 0.002, cacheWrite: 0 },
+	contextWindow: 1_048_576,
+	maxTokens: 131_072,
+};
+
 export function normalizeDivoLlmRequestError<T>(message: T): T {
 	if (typeof message !== "object" || message === null) return message;
 	const candidate = message as Record<string, unknown>;
 	if (candidate.role !== "assistant" || candidate.stopReason !== "error") return message;
 	// Every provider here is the Divo proxy behind a different name, so the 413
 	// Express raises before the proxy is reached looks the same on all of them.
-	if (candidate.provider !== "deepseek" && candidate.provider !== "openai") return message;
+	if (!DIVO_PROXIED_PROVIDERS.has(String(candidate.provider))) return message;
 	const errorMessage = typeof candidate.errorMessage === "string" ? candidate.errorMessage : "";
 	if (!REQUEST_TOO_LARGE_PATTERN.test(errorMessage)) return message;
 	if (errorMessage === DIVO_REQUEST_TOO_LARGE_ERROR) return message;
@@ -88,6 +127,16 @@ export function registerDivoLlmProviders(pi: ExtensionAPI, config: { backendUrl:
 		...proxied,
 		api: "openai-responses",
 		models: [DIVO_LUNA_MODEL],
+	});
+	// Meta is not a provider Pi ships with, so without this a run launched on
+	// Spark dies at startup with `Unknown provider "meta"` and the container
+	// exits 1 — before any model is reached and with nothing in the room but a
+	// generic apology. Declared here rather than in vendored Pi core, like the
+	// two above.
+	pi.registerProvider("meta", {
+		...proxied,
+		api: "openai-responses",
+		models: [DIVO_SPARK_MODEL],
 	});
 	// The trace extension uses this process-local marker to add Divo correlation
 	// fields only when DeepSeek is actually repointed to our proxy. It prevents

@@ -83,20 +83,28 @@ describe("Divo LLM proxy failure normalization", () => {
 
 		// Every provider goes to the Divo proxy with the member token, never to
 		// the vendor with a key — Pi holds none.
-		assert.deepEqual([...providers.keys()].sort(), ["deepseek", "openai"]);
+		assert.deepEqual([...providers.keys()].sort(), ["deepseek", "meta", "openai"]);
 		for (const config of providers.values()) {
 			assert.equal(config.apiKey, "member-token");
 			assert.equal(config.baseUrl, "http://localhost:4000/api/llm/v1");
 		}
 		assert.equal(process.env.DIVO_MEMBER_TOKEN, undefined);
 
-		// Luna is the only model that can be shown a picture, and Pi's read tool
-		// consults exactly this to decide whether to hand over image bytes. A
-		// wrong value here does not error — it silently blinds the model.
+		// Both named models can be shown a picture, and Pi's read tool consults
+		// exactly this to decide whether to hand over image bytes. A wrong value
+		// here does not error — it silently blinds the model.
 		const luna = providers.get("openai").models[0];
 		assert.equal(luna.id, "gpt-5.6-luna");
 		assert.deepEqual(luna.input, ["text", "image"]);
 		assert.equal(luna.api, "openai-responses");
+
+		// Meta is not a provider Pi ships with. Without this registration a run
+		// launched on Spark dies at startup with `Unknown provider "meta"`, so the
+		// name and the model behind it are asserted rather than assumed.
+		const spark = providers.get("meta").models[0];
+		assert.equal(spark.id, "muse-spark-1.2-contributor");
+		assert.deepEqual(spark.input, ["text", "image"]);
+		assert.equal(spark.api, "openai-responses");
 
 		providers.clear();
 		divoLlmExtension({
