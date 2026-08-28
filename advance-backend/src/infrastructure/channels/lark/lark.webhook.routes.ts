@@ -97,6 +97,7 @@ import type {
 } from '../../../domain/channel/outbound';
 import {
   isUntaggedGroupMessage,
+  isSendOnlyDigestRoom,
   mayPrepareAttachment,
   mayPrepareAttachments,
   resolveCompanyUntaggedGroupPolicy,
@@ -2202,7 +2203,40 @@ async function processInBackground(
   // read — it pulls the image out of Lark and sends it to an OCR provider. That
   // only happens on an explicit opt-in, and the decision must be made *before*
   // the work, not after.
-  const untagged = isUntaggedGroupMessage(incoming) && !continuesDivoThread;
+  const ambient = isUntaggedGroupMessage(incoming) && !continuesDivoThread;
+  /*
+   * A follow-up digest room is a delivery target, not a conversation.
+   *
+   * The room exists because somebody pointed a digest at it, and what arrives
+   * there is a schedule's output. Divo answering an @mention in it turns a
+   * mechanical feed into a chat surface nobody asked for — and worse, into one
+   * that can fail visibly in front of the whole team when a model call drops.
+   *
+   * Modelled as "always ambient" rather than as a new early return, so a message
+   * here takes the path an untagged group message already takes: kept in the
+   * room transcript, attachments left alone, nothing said. One behaviour, one
+   * place it is implemented.
+   *
+   * The lookup is only paid for when Divo would otherwise answer. Ambient
+   * traffic is most of what a group produces and already short-circuits, so the
+   * query runs on the rare message that actually addresses Divo in a group.
+   */
+  const sendOnlyRoom = !ambient && incoming.chatType === 'group'
+    ? await isSendOnlyDigestRoom({
+      prisma: deps.prisma,
+      companyId: identity.companyId,
+      chatId: incoming.chatId,
+      log,
+    })
+    : false;
+  const untagged = ambient || sendOnlyRoom;
+  if (sendOnlyRoom) {
+    log.info('webhook.group_message.send_only_room', {
+      chatId: incoming.chatId,
+      messageId: incoming.messageId,
+      reason: 'follow-up digest room: Divo posts here and does not answer here',
+    });
+  }
   // Only an untagged message consults the policy, so only an untagged message
   // pays for the lookup. Resolved here rather than inside the branch below
   // because the decision has to precede the work, not filter its output.

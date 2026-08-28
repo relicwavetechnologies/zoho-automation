@@ -68,6 +68,7 @@ export function DigestTab({ digest, cards, loading, error, refusal, save }: {
     days: string[]
     timeZone: string
     paused: boolean
+    sendOnly: boolean
   }) => Promise<void>
 }) {
   const [chatId, setChatId] = useState('')
@@ -75,6 +76,7 @@ export function DigestTab({ digest, cards, loading, error, refusal, save }: {
   const [days, setDays] = useState<string[]>(DEFAULT_DAYS)
   const [timeZone, setTimeZone] = useState(localZone)
   const [paused, setPaused] = useState(false)
+  const [sendOnly, setSendOnly] = useState(true)
   const [saving, setSaving] = useState(false)
 
   /*
@@ -89,7 +91,8 @@ export function DigestTab({ digest, cards, loading, error, refusal, save }: {
     setDays(digest.days.length ? [...digest.days] : DEFAULT_DAYS)
     setTimeZone(digest.timeZone)
     setPaused(digest.status !== 'active')
-  }, [digest?.id, digest?.chatId, digest?.status, digest?.timeZone, digest?.times.join(','), digest?.days.join(',')])
+    setSendOnly(digest.sendOnly)
+  }, [digest?.id, digest?.chatId, digest?.status, digest?.timeZone, digest?.times.join(','), digest?.days.join(','), digest?.sendOnly])
 
   const toggleDay = (code: string) => {
     setDays(prev => prev.includes(code) ? prev.filter(d => d !== code) : [...prev, code])
@@ -114,6 +117,7 @@ export function DigestTab({ digest, cards, loading, error, refusal, save }: {
         days: DAYS.filter(d => days.includes(d.code)).map(d => d.code),
         timeZone: timeZone.trim(),
         paused,
+        sendOnly,
       })
       notify.done('Digest saved', paused ? 'Paused — nothing goes out until you switch it on.' : null)
     } catch (e) {
@@ -154,6 +158,24 @@ export function DigestTab({ digest, cards, loading, error, refusal, save }: {
               onChange={e => setChatId(e.target.value)}
             />
           </label>
+
+          {/* On by default, and deliberately stated rather than assumed. A room
+              made for a schedule's output is a feed: somebody typing @Divo in
+              it is talking to the team, not asking Divo for something, and an
+              answer there turns a mechanical channel into a chat surface that
+              can fail out loud in front of everyone. */}
+          <div className="dg-field dg-row">
+            <Switch
+              on={sendOnly}
+              onToggle={() => setSendOnly(v => !v)}
+              label="Post only, never reply in this room"
+            />
+            <span className="dg-lbl">
+              {sendOnly
+                ? 'Post only — Divo will not answer @mentions here'
+                : 'Divo will also answer when mentioned here'}
+            </span>
+          </div>
         </div>
       </Panel>
 
