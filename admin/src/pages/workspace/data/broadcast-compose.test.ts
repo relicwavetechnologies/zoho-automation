@@ -343,9 +343,17 @@ describe('pickedFrom', () => {
     assert.deepEqual(picked, [{ waChatId: 'b@c.us', name: 'B', isGroup: false, cold: false }])
   })
 
-  /** A tracked chat has exchanged messages by definition, so it is never cold. */
-  it('never marks a tracked chat as a cold contact', () => {
-    const picked = pickedFrom([chat({ waChatId: 'a@c.us' })], new Set(['a@c.us']))
+  it('keeps a chat warm when it belongs to the sending handset', () => {
+    const picked = pickedFrom([chat({ waChatId: 'a@c.us' })], new Set(['a@c.us']), 'n1')
     assert.equal(picked[0]!.cold, false)
+  })
+
+  it('marks a chat from another handset as first contact for this sender', () => {
+    const picked = pickedFrom(
+      [chat({ waChatId: 'a@c.us', sessionId: 'n2' })],
+      new Set(['a@c.us']),
+      'n1',
+    )
+    assert.equal(picked[0]!.cold, true)
   })
 })

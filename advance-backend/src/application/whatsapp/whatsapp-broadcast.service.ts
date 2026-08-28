@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import type { Logger } from '../../shared/logger';
+import { sha256 } from '../../shared/hash';
 import { InfraError } from '../../shared/errors';
 import { err, ok, type Result } from '../../shared/result';
 import {
@@ -57,6 +58,8 @@ export const BROADCAST_DELAY_MS = 3000;
 
 /** How stale a live broadcast's reading may get before the worker re-reads it. */
 export const POLL_INTERVAL_MS = 5000;
+/** Give OpenWA time to publish a batch whose POST response was lost. */
+export const BATCH_DISCOVERY_GRACE_MS = 30_000;
 
 const REFUSED_OP = 'whatsapp.broadcastRefused';
 
@@ -232,6 +235,7 @@ export class WhatsappBroadcastService {
    */
   async send(input: Scope & {
     readonly sessionId: string;
+    readonly requestId: string;
     readonly label: string;
     readonly body: string;
     readonly requestedById: string;
@@ -242,9 +246,26 @@ export class WhatsappBroadcastService {
     readonly skipped: readonly string[];
     /** Cold recipients sent to without a completed check — reported, not hidden. */
     readonly unverified: readonly string[];
+    /** False when the durable row exists but OpenWA's POST response was lost. */
+    readonly gatewayAcknowledged: boolean;
   }, InfraError>> {
     const session = await this.deps.sessions.findInScope(input.sessionId, input);
     if (!session.ok) return session;
+
+    const gatewayBatchId = broadcastBatchId(input);
+    const existing = await this.deps.repo.findIdempotent({
+      sessionId: input.sessionId,
+      gatewayBatchId,
+    });
+    if (!existing.ok) return existing;
+    if (existing.value) {
+      return ok({
+        broadcastId: existing.value,
+        skipped: [],
+        unverified: [],
+        gatewayAcknowledged: false,
+      });
+    }
 
     const resolved = await this.resolve(input);
     if (!resolved.ok) return resolved;
@@ -273,11 +294,9 @@ export class WhatsappBroadcastService {
       renderedBody: renderBody(body, recipient),
     }));
 
-    // Minted here, written here, and only then handed over. The gateway refuses
-    // a repeat of this pair by name, so a timeout on the call below can be
-    // retried without any risk of sending twice.
-    const gatewayBatchId = `divo_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
-
+    // Stable for one reviewed request. A repeated HTTP request, double click, or
+    // response-loss retry reaches the same unique `(sessionId, gatewayBatchId)`
+    // row and never hands OpenWA a second batch.
     const created = await this.deps.repo.create({
       companyId: input.companyId,
       departmentId: input.departmentId,
@@ -289,6 +308,14 @@ export class WhatsappBroadcastService {
       recipients,
     });
     if (!created.ok) return created;
+    if (!created.value.created) {
+      return ok({
+        broadcastId: created.value.broadcastId,
+        skipped: screened.value.skipped,
+        unverified: screened.value.unverified,
+        gatewayAcknowledged: false,
+      });
+    }
 
     const accepted = await this.deps.gateway.sendBulk(session.value.openwaSessionId, {
       batchId: gatewayBatchId,
@@ -300,27 +327,37 @@ export class WhatsappBroadcastService {
     });
 
     if (!accepted.ok) {
-      // The row stays, marked `failed`. Deleting it would be tidier and wrong:
-      // the gateway may have accepted the batch and failed only to tell us, and
-      // a broadcast that might be running needs a name somebody can look up.
-      const marked = await this.deps.repo.markStatus({
-        broadcastId: created.value, status: 'failed', completedAt: new Date(),
+      // A failed response is not proof that the gateway rejected the request.
+      // Keep `queued` pollable and hand the caller the durable id so it watches
+      // this batch instead of retrying a second one.
+      this.log.warn('broadcast.acceptance_unknown', {
+        broadcastId: created.value.broadcastId,
+        gatewayBatchId,
+        sessionId: input.sessionId,
+        error: accepted.error.message,
       });
-      if (!marked.ok) {
-        this.log.error('broadcast.markFailedAfterGatewayError', {
-          broadcastId: created.value, error: marked.error.message,
-        });
-      }
-      return accepted;
+      return ok({
+        broadcastId: created.value.broadcastId,
+        skipped: screened.value.skipped,
+        unverified: screened.value.unverified,
+        gatewayAcknowledged: false,
+      });
     }
 
     const started = await this.deps.repo.markStatus({
-      broadcastId: created.value, status: 'sending', startedAt: new Date(),
+      broadcastId: created.value.broadcastId, status: 'sending', startedAt: new Date(),
     });
-    if (!started.ok) return started;
+    if (!started.ok) {
+      // OpenWA accepted the batch. The row is still `queued`, which is live and
+      // will be reconciled by the poller; returning an error would invite a retry.
+      this.log.error('broadcast.markSendingFailed', {
+        broadcastId: created.value.broadcastId,
+        error: started.error.message,
+      });
+    }
 
     this.log.info('broadcast.sent', {
-      broadcastId: created.value,
+      broadcastId: created.value.broadcastId,
       gatewayBatchId,
       sessionId: input.sessionId,
       requestedById: input.requestedById,
@@ -333,9 +370,10 @@ export class WhatsappBroadcastService {
     });
 
     return ok({
-      broadcastId: created.value,
+      broadcastId: created.value.broadcastId,
       skipped: screened.value.skipped,
       unverified: screened.value.unverified,
+      gatewayAcknowledged: true,
     });
   }
 
@@ -386,7 +424,12 @@ export class WhatsappBroadcastService {
    * claims work is queued when nothing will run.
    */
   async cancel(scope: Scope & { broadcastId: string }): Promise<
-    Result<{ stopped: boolean } | null, InfraError>
+    Result<
+      | { readonly outcome: 'confirmed'; readonly stopped: boolean }
+      | { readonly outcome: 'unknown' }
+      | null,
+      InfraError
+    >
   > {
     const found = await this.deps.repo.findForScope(scope);
     if (!found.ok) return found;
@@ -395,12 +438,24 @@ export class WhatsappBroadcastService {
     const cancelled = await this.deps.gateway.cancelBatch(
       found.value.openwaSessionId, found.value.gatewayBatchId,
     );
-    if (!cancelled.ok) return cancelled;
+    if (!cancelled.ok) {
+      this.log.warn('broadcast.cancel_unknown', {
+        broadcastId: found.value.id,
+        error: cancelled.error.message,
+      });
+      return ok({ outcome: 'unknown' });
+    }
 
     const polled = await this.poll(found.value);
-    if (!polled.ok) return polled;
+    if (!polled.ok) {
+      this.log.warn('broadcast.cancel_reconcile_unknown', {
+        broadcastId: found.value.id,
+        error: polled.error.message,
+      });
+      return ok({ outcome: 'unknown' });
+    }
 
-    return ok({ stopped: !cancelled.value.alreadyFinished });
+    return ok({ outcome: 'confirmed', stopped: !cancelled.value.alreadyFinished });
   }
 
   /** Broadcasts the worker should read, oldest reading first. */
@@ -427,6 +482,15 @@ export class WhatsappBroadcastService {
 
     if (!status.ok) {
       if (!/-> 404:/.test(status.error.message)) return status;
+      const youngQueued = broadcast.status === 'queued'
+        && Date.now() - broadcast.createdAt.getTime() < BATCH_DISCOVERY_GRACE_MS;
+      if (youngQueued) {
+        this.log.info('broadcast.batchNotVisibleYet', {
+          broadcastId: broadcast.id,
+          gatewayBatchId: broadcast.gatewayBatchId,
+        });
+        return this.deps.repo.touchPoll(broadcast.id);
+      }
       this.log.warn('broadcast.batchGone', {
         broadcastId: broadcast.id, gatewayBatchId: broadcast.gatewayBatchId,
       });
@@ -462,10 +526,12 @@ export class WhatsappBroadcastService {
    * screening that flag triggers.
    */
   private async resolve(input: Scope & {
+    readonly sessionId?: string;
     readonly recipients: readonly RequestedRecipient[];
   }): Promise<Result<readonly BroadcastRecipientInput[], InfraError>> {
     const known = await this.deps.repo.resolveKnownChats({
       companyId: input.companyId,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       waChatIds: input.recipients.map(recipient => recipient.waChatId),
     });
     if (!known.ok) return known;
@@ -514,7 +580,8 @@ export class WhatsappBroadcastService {
         // told which recipients went out unchecked rather than being handed a
         // result indistinguishable from one where every number was verified.
         this.log.warn('broadcast.numberCheckFailed', {
-          waChatId: recipient.waChatId, error: check.error.message,
+          waChatIdHash: sha256(recipient.waChatId).slice(0, 16),
+          error: check.error.message,
         });
         unverified.push(recipient.waChatId);
         continue;
@@ -528,6 +595,32 @@ export class WhatsappBroadcastService {
       unverified,
     });
   }
+}
+
+/** A content-bound idempotency key for one client request. */
+function broadcastBatchId(input: {
+  readonly requestId: string;
+  readonly sessionId: string;
+  readonly body: string;
+  readonly recipients: readonly RequestedRecipient[];
+}): string {
+  const recipients = [...input.recipients]
+    .map(recipient => ({
+      waChatId: recipient.waChatId,
+      displayName: recipient.displayName,
+      isGroup: recipient.isGroup,
+    }))
+    .sort((a, b) => a.waChatId.localeCompare(b.waChatId));
+  const digest = createHash('sha256')
+    .update(JSON.stringify({
+      requestId: input.requestId,
+      sessionId: input.sessionId,
+      body: input.body.trim(),
+      recipients,
+    }))
+    .digest('hex')
+    .slice(0, 24);
+  return `divo_${digest}`;
 }
 
 const toCandidateView = (row: BroadcastCandidate): CandidateView => ({

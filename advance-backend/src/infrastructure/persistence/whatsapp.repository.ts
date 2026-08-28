@@ -108,6 +108,21 @@ export class WhatsappRepository implements WhatsappRepoPort {
       });
       return ok(row);
     } catch (cause) {
+      if ((cause as { code?: string }).code === 'P2002') {
+        try {
+          const existing = await this.db.whatsappSession.findUnique({
+            where: { openwaSessionId: input.openwaSessionId },
+            select: SESSION_SELECT,
+          });
+          if (
+            existing
+            && existing.companyId === input.companyId
+            && existing.departmentId === input.departmentId
+          ) return ok(existing);
+        } catch (lookupCause) {
+          return err(wrapInfra('prisma', 'whatsapp.findIdempotentSession', lookupCause));
+        }
+      }
       return err(wrapInfra('prisma', 'whatsapp.createSession', cause));
     }
   }
@@ -199,8 +214,15 @@ export class WhatsappRepository implements WhatsappRepoPort {
     try {
       const rows = await this.db.whatsappSession.findMany({
         where: {
-          status: 'linked',
-          OR: [{ lastSeenAt: null }, { lastSeenAt: { lt: quietSince } }],
+          OR: [
+            {
+              status: 'linked',
+              OR: [{ lastSeenAt: null }, { lastSeenAt: { lt: quietSince } }],
+            },
+            // A disconnected row stays probeable so a recovered gateway session
+            // can restore it without somebody reopening the pairing dialog.
+            { status: 'disconnected' },
+          ],
         },
         select: SESSION_SELECT,
       });

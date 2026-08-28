@@ -7,7 +7,7 @@ import {
   type WhatsappIngestService,
 } from './whatsapp-ingest.service';
 import { SESSION_STALE_AFTER_MS } from './whatsapp-session.service';
-import { isGatewaySessionUsable } from '../../domain/follow-ups/session-status';
+import { classifyGatewaySessionStatus } from '../../domain/follow-ups/session-status';
 
 /**
  * The safety net the imported agent does not have.
@@ -169,32 +169,87 @@ export class WhatsappReconcileWorker {
       return 0;
     }
 
+    let alarms = 0;
     for (const session of stale.value) {
       // Ask the gateway before shouting: a handset can be legitimately quiet,
       // and the gateway is the only thing that knows whether it is still linked.
       const remote = await this.deps.gateway.session(session.openwaSessionId);
-      // Never test this with a bare substring: "disconnected" contains "connect".
-      const connected = remote.ok && isGatewaySessionUsable(remote.value.status);
+      if (!remote.ok) {
+        this.log.warn('whatsapp_reconcile.session_check_failed', {
+          sessionId: session.id,
+          error: remote.error.message,
+        });
+        continue;
+      }
 
-      if (!connected) {
-        await this.deps.repo.updateSessionStatus({
+      const status = classifyGatewaySessionStatus(remote.value.status);
+      if (status === 'unknown' || status === 'pending') {
+        this.log.warn('whatsapp_reconcile.session_status_unrecognized', {
+          sessionId: session.id,
+          gatewayStatus: remote.value.status ?? null,
+        });
+        continue;
+      }
+
+      if (status === 'linked') {
+        if (session.status === 'disconnected') {
+          const restored = await this.deps.repo.updateSessionStatus({
+            sessionId: session.id,
+            status: 'linked',
+          });
+          if (!restored.ok) {
+            this.log.error('whatsapp_reconcile.session_restore_failed', {
+              sessionId: session.id,
+              error: restored.error.message,
+            });
+            continue;
+          }
+          this.log.info('whatsapp_reconcile.session_recovered', { sessionId: session.id });
+        } else {
+          this.log.warn('whatsapp_reconcile.session_stale', {
+            sessionId: session.id,
+            label: session.label,
+            lastSeenAt: session.lastSeenAt?.toISOString() ?? null,
+            gatewaySaysConnected: true,
+          });
+        }
+        continue;
+      }
+
+      if (session.status !== 'disconnected') {
+        const disconnected = await this.deps.repo.updateSessionStatus({
           sessionId: session.id,
           status: 'disconnected',
         });
-        // Stamp the gap from the last message we actually received, not from
-        // now: the hole started when delivery stopped, not when we noticed.
-        await this.deps.repo.markDark(session.id, session.lastSeenAt ?? new Date());
+        if (!disconnected.ok) {
+          this.log.error('whatsapp_reconcile.session_disconnect_write_failed', {
+            sessionId: session.id,
+            error: disconnected.error.message,
+          });
+          continue;
+        }
       }
-
+      const dark = await this.deps.repo.markDark(
+        session.id,
+        session.lastSeenAt ?? new Date(),
+      );
+      if (!dark.ok) {
+        this.log.error('whatsapp_reconcile.session_dark_write_failed', {
+          sessionId: session.id,
+          error: dark.error.message,
+        });
+        continue;
+      }
+      alarms += 1;
       this.log.warn('whatsapp_reconcile.session_stale', {
         sessionId: session.id,
         label: session.label,
         lastSeenAt: session.lastSeenAt?.toISOString() ?? null,
-        gatewaySaysConnected: connected,
+        gatewaySaysConnected: false,
       });
     }
 
-    return stale.value.length;
+    return alarms;
   }
 
   /** Fill in group subjects, which webhook payloads never carry. */

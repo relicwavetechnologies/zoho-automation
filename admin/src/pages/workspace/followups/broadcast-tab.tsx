@@ -61,6 +61,7 @@ export function BroadcastTab({ numberId, numbers, token }: {
   const [pasted, setPasted] = useState('')
   const [body, setBody] = useState('')
   const [label, setLabel] = useState('')
+  const [requestId, setRequestId] = useState(() => crypto.randomUUID())
   const [previewIdx, setPreviewIdx] = useState(0)
   /** Set once a send has been accepted. The screen becomes a progress view. */
   const [runId, setRunId] = useState<string | null>(null)
@@ -89,21 +90,25 @@ export function BroadcastTab({ numberId, numbers, token }: {
 
   /** Pasted numbers matched against chats Divo already knows, so a client is not called cold. */
   const knownNames = useMemo(
-    () => new Map(candidates.candidates.map(c => [c.waChatId, c.name] as const)),
-    [candidates.candidates],
+    () => new Map(
+      candidates.candidates
+        .filter(candidate => candidate.sessionId === from)
+        .map(candidate => [candidate.waChatId, candidate.name] as const),
+    ),
+    [candidates.candidates, from],
   )
   const pastedResult = useMemo(() => parsePasted(pasted, knownNames), [pasted, knownNames])
 
   const picked: PickedRecipient[] = source === 'paste'
     ? pastedResult.recipients
-    : pickedFrom(pool, selected)
+    : pickedFrom(pool, selected, from)
 
   const reach = summarizeReach(picked)
   const refusal = refusalFor(picked, body)
 
   const reset = () => {
     setRunId(null); setStep(1); setSelected(new Set()); setPasted('')
-    setBody(''); setLabel(''); setPreviewIdx(0)
+    setBody(''); setLabel(''); setPreviewIdx(0); setRequestId(crypto.randomUUID())
     history.refresh()
   }
 
@@ -114,6 +119,7 @@ export function BroadcastTab({ numberId, numbers, token }: {
     }
     try {
       const result = await send({
+        requestId,
         sessionId: from,
         label,
         body,
@@ -122,6 +128,12 @@ export function BroadcastTab({ numberId, numbers, token }: {
         })),
       })
       setRunId(result.broadcastId)
+      if (!result.gatewayAcknowledged) {
+        notify.heads(
+          'Divo is checking whether the batch started',
+          'The gateway did not confirm the request. Do not send it again; this run will reconcile the result.',
+        )
+      }
       if (result.unverified.length > 0) {
         // "Sent" and "sent without knowing the number exists" are different
         // claims, and folding the second into the first is exactly the silent

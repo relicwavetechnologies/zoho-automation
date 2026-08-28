@@ -1,5 +1,6 @@
 import type { Logger } from '../../shared/logger';
 import { InfraError } from '../../shared/errors';
+import { sha256 } from '../../shared/hash';
 import { err, ok, type Result } from '../../shared/result';
 import {
   normalizeGatewaySessionStatus,
@@ -86,6 +87,17 @@ export interface LinkedSessionView {
  * silence reads as a slow week.
  */
 export const SESSION_STALE_AFTER_MS = 36 * 60 * 60_000;
+const PROVISION_UNKNOWN_OP = 'whatsapp.sessionProvisionUnknown';
+
+export const isSessionProvisionUnknown = (error: InfraError): boolean =>
+  error.payload.op === PROVISION_UNKNOWN_OP;
+
+const provisionUnknown = (cause: InfraError): InfraError => new InfraError({
+  layer: 'http',
+  op: PROVISION_UNKNOWN_OP,
+  cause,
+  message: 'Divo could not confirm whether the WhatsApp session finished provisioning.',
+});
 
 export class WhatsappSessionService {
   private readonly log: Logger;
@@ -122,28 +134,54 @@ export class WhatsappSessionService {
     companyId: string;
     departmentId: string;
     label: string;
+    requestId: string;
   }): Promise<Result<WhatsappSessionRow, InfraError>> {
-    // A *name*, not an id — the gateway assigns the id itself and rejects a
-    // request that tries to supply one. Derived rather than random so a session
-    // listed in the gateway's own dashboard can be traced back to a department
-    // without a lookup.
-    const gatewayName = `divo-${input.departmentId.slice(0, 8)}-${slug(input.label)}-${Date.now().toString(36)}`;
+    // OpenWA assigns the id, but it returns this name from `GET /sessions`.
+    // Binding the reviewed request to a stable name lets a retry adopt a session
+    // whose create/start response was lost instead of creating another one.
+    const gatewayName = [
+      'divo',
+      input.departmentId.slice(0, 8),
+      sha256(input.requestId).slice(0, 12),
+      slug(input.label).slice(0, 24),
+    ].join('-');
 
-    const created = await this.deps.gateway.createSession(gatewayName);
-    if (!created.ok) return created;
+    const listed = await this.deps.gateway.listSessions();
+    if (!listed.ok) return listed;
+    let remote = listed.value.find(session => session.name === gatewayName);
 
-    // The UUID the gateway just minted. Everything downstream addresses the
-    // session by this, and nothing else: the name is a label on its side.
-    const gatewayId = created.value.id;
+    if (!remote) {
+      const created = await this.deps.gateway.createSession(gatewayName);
+      if (created.ok) {
+        remote = created.value;
+      } else {
+        // The POST or its `/start` call may have succeeded before the response
+        // was lost. Re-read by deterministic name before declaring uncertainty.
+        const recovered = await this.deps.gateway.listSessions();
+        remote = recovered.ok
+          ? recovered.value.find(session => session.name === gatewayName)
+          : undefined;
+        if (!remote) return err(provisionUnknown(created.error));
+      }
+    }
+
+    if (remote.status === 'created' || remote.status === 'failed') {
+      const started = await this.deps.gateway.startSession(remote.id);
+      if (!started.ok) return err(provisionUnknown(started.error));
+    }
+
+    const gatewayId = remote.id;
 
     const hooked = await this.deps.gateway.ensureWebhook(gatewayId);
-    if (!hooked.ok) return hooked;
+    if (!hooked.ok) return err(provisionUnknown(hooked.error));
 
     const row = await this.deps.repo.createSession({
-      ...input,
+      companyId: input.companyId,
+      departmentId: input.departmentId,
+      label: input.label,
       openwaSessionId: gatewayId,
     });
-    if (!row.ok) return row;
+    if (!row.ok) return err(provisionUnknown(row.error));
 
     this.log.info('whatsapp.session_created', {
       sessionId: row.value.id,

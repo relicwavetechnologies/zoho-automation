@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  classifyGatewaySessionStatus,
   isGatewaySessionUsable,
   normalizeGatewaySessionStatus,
 } from '../../src/domain/follow-ups/session-status.ts';
@@ -43,6 +44,14 @@ describe('normalizeGatewaySessionStatus', () => {
     for (const value of ['something_new', '', '   ', undefined, null]) {
       assert.equal(normalizeGatewaySessionStatus(value), 'disconnected', String(value));
     }
+  });
+
+  it('lets the liveness worker distinguish unknown vocabulary from a disconnect', () => {
+    for (const value of ['something_new', '', undefined, null]) {
+      assert.equal(classifyGatewaySessionStatus(value), 'unknown', String(value));
+    }
+    assert.equal(classifyGatewaySessionStatus('disconnected'), 'disconnected');
+    assert.equal(classifyGatewaySessionStatus('ready'), 'linked');
   });
 });
 

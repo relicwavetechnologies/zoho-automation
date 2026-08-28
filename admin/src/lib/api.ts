@@ -37,6 +37,7 @@ const extractErrorMessage = (raw: string, status: number): string => {
   try {
     const parsed = JSON.parse(raw) as {
       message?: string;
+      detail?: string;
       meta?: { message?: string };
       error?: string | { message?: string };
     };
@@ -46,6 +47,7 @@ const extractErrorMessage = (raw: string, status: number): string => {
        written for the person. Reading the code first meant every carefully
        worded refusal in the product surfaced as `already_resolved`. */
     if (typeof parsed.message === "string" && parsed.message) return parsed.message;
+    if (typeof parsed.detail === "string" && parsed.detail) return parsed.detail;
     if (typeof parsed.error === "string") return parsed.error;
     if (parsed.error && typeof parsed.error === "object" && typeof parsed.error.message === "string") {
       return parsed.error.message;

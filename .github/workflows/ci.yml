@@ -294,7 +294,11 @@ jobs:
           --input-type=module --eval "await import('./divo/local-rpc-server.mjs')"
 
       - name: Validate Compose config
-        run: DIVO_ENV_FILE=/dev/null docker compose --env-file .env.production.example config >/dev/null
+        run: >-
+          OPENWA_API_KEY=ci-placeholder
+          WHATSAPP_WEBHOOK_SECRET=ci-placeholder-at-least-16
+          DIVO_ENV_FILE=/dev/null
+          docker compose --env-file .env.production.example config >/dev/null
 
       - name: Validate development Compose config
         run: |

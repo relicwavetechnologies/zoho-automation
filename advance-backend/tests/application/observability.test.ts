@@ -145,6 +145,118 @@ describe('AuditService', () => {
       assert.equal(capturedTake, 100);
     });
   });
+
+  describe('required checkpoints', () => {
+    it('persists pending before work and settles the same row', async () => {
+      const writes: any[] = [];
+      const updates: any[] = [];
+      const prisma = {
+        auditLog: {
+          create: async (args: any) => { writes.push(args); return { id: 'audit-1' }; },
+          update: async (args: any) => { updates.push(args); return {}; },
+        },
+      } as any;
+      const svc = new AuditService(prisma, noopLogger);
+
+      const id = await svc.beginRequired({
+        actorId: 'u1', companyId: 'co-1', action: 'followups.test', metadata: { count: 2 },
+      });
+      assert.equal(id, 'audit-1');
+      assert.equal(writes[0].data.outcome, 'pending');
+
+      svc.settle({ checkpointId: id, outcome: 'success', metadata: { count: 2 } });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      assert.equal(updates[0].where.id, 'audit-1');
+      assert.equal(updates[0].data.outcome, 'success');
+    });
+
+    it('rejects admission when the audit row cannot be persisted', async () => {
+      const prisma = {
+        auditLog: { create: async () => { throw new Error('db down'); } },
+      } as any;
+      const svc = new AuditService(prisma, noopLogger);
+      await assert.rejects(() => svc.beginRequired({ actorId: 'u1', action: 'followups.test' }));
+    });
+
+    it('leaves a pending checkpoint instead of throwing after settlement failure', async () => {
+      const prisma = {
+        auditLog: { update: async () => { throw new Error('db down'); } },
+      } as any;
+      const svc = new AuditService(prisma, noopLogger);
+      assert.doesNotThrow(() => svc.settle({ checkpointId: 'audit-1', outcome: 'failure' }));
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+
+    it('reuses a pending checkpoint for the same idempotent effect', async () => {
+      let creates = 0;
+      const tx = {
+        $queryRaw: async () => [{ lock_result: '' }],
+        auditLog: {
+          findFirst: async () => ({ id: 'audit-existing' }),
+          create: async () => { creates += 1; return { id: 'audit-new' }; },
+        },
+      };
+      const prisma = {
+        $transaction: async (run: (client: typeof tx) => Promise<unknown>) => run(tx),
+      } as any;
+      const svc = new AuditService(prisma, noopLogger);
+      const id = await svc.beginRequired({
+        actorId: 'system',
+        companyId: 'co-1',
+        action: 'followups.digest.delivered',
+        checkpointKey: 'digest-1:slot-1',
+      });
+      assert.equal(id, 'audit-existing');
+      assert.equal(creates, 0);
+    });
+
+    it('serializes concurrent admission for one checkpoint key', async () => {
+      let pendingId: string | null = null;
+      let creates = 0;
+      let lockCalls = 0;
+      let lockTail = Promise.resolve();
+
+      const prisma = {
+        $transaction: async (run: (client: any) => Promise<string>) => {
+          const previousLock = lockTail;
+          let releaseLock!: () => void;
+          lockTail = new Promise<void>(resolve => { releaseLock = resolve; });
+          const tx = {
+            $queryRaw: async () => {
+              lockCalls += 1;
+              await previousLock;
+              return [{ lock_result: '' }];
+            },
+            auditLog: {
+              findFirst: async () => pendingId ? { id: pendingId } : null,
+              create: async () => {
+                creates += 1;
+                await new Promise(resolve => setTimeout(resolve, 0));
+                pendingId = `audit-${creates}`;
+                return { id: pendingId };
+              },
+            },
+          };
+          try {
+            return await run(tx);
+          } finally {
+            releaseLock();
+          }
+        },
+      } as any;
+      const svc = new AuditService(prisma, noopLogger);
+      const input = {
+        actorId: 'system', companyId: 'co-1', action: 'followups.digest.delivered',
+        checkpointKey: 'digest-1:slot-1',
+      };
+
+      const ids = await Promise.all([svc.beginRequired(input), svc.beginRequired(input)]);
+
+      assert.deepEqual(ids, ['audit-1', 'audit-1']);
+      assert.equal(creates, 1);
+      assert.equal(lockCalls, 2);
+    });
+  });
 });
 
 // ─── TokenUsageService ────────────────────────────────────────────────────────

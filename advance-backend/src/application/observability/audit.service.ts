@@ -10,7 +10,7 @@
  * All reads are company-scoped.
  */
 
-import type { PrismaClient } from '../../generated/prisma';
+import { Prisma, type PrismaClient } from '../../generated/prisma';
 import type { Logger } from '../../shared/logger';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -21,6 +21,18 @@ export interface RecordAuditInput {
   action:     string;            // e.g. 'permission.set_company', 'permission.delete_dept'
   outcome:    'success' | 'failure';
   metadata?:  Record<string, unknown>;
+}
+
+export type BeginAuditInput = Omit<RecordAuditInput, 'outcome'> & {
+  /** Reuse one still-pending checkpoint across an idempotent retry. */
+  checkpointKey?: string;
+};
+
+export interface SettleAuditInput {
+  checkpointId: string;
+  outcome: RecordAuditInput['outcome'];
+  /** Full final metadata. Omit it to keep what admission recorded. */
+  metadata?: Record<string, unknown>;
 }
 
 export interface AuditLogView {
@@ -70,6 +82,86 @@ export class AuditService {
       });
       throw error;
     }
+  }
+
+  /**
+   * Persist an audit checkpoint before work that cannot safely be retried.
+   *
+   * `pending` is deliberate and truthful. If outcome settlement later fails,
+   * the durable row still proves who started what and gives operators a record
+   * to reconcile instead of losing the action entirely.
+   */
+  async beginRequired(input: BeginAuditInput): Promise<string> {
+    try {
+      const checkpointKey = input.checkpointKey;
+      const metadata = {
+        ...(input.metadata ?? {}),
+        ...(checkpointKey ? { checkpointKey } : {}),
+      };
+      const create = async (store: Pick<Prisma.TransactionClient, 'auditLog'>) => store.auditLog.create({
+        data: {
+          actorId: input.actorId,
+          action: input.action,
+          outcome: 'pending',
+          ...(input.companyId ? { companyId: input.companyId } : {}),
+          ...(Object.keys(metadata).length > 0 ? { metadata: sanitizeMeta(metadata) as object } : {}),
+        },
+        select: { id: true },
+      });
+
+      if (!checkpointKey) return (await create(this.prisma)).id;
+
+      const lockKey = JSON.stringify([input.companyId ?? '', input.action, checkpointKey]);
+      return await this.prisma.$transaction(async tx => {
+        // The exact row still decides reuse; a hash collision can only make an
+        // unrelated checkpoint wait. The transaction lock closes the
+        // find-then-create race across backend processes without a schema change.
+        await tx.$queryRaw`
+          SELECT pg_advisory_xact_lock(
+            hashtext('audit-checkpoint'),
+            hashtext(${lockKey})
+          )::text AS lock_result
+        `;
+        const existing = await tx.auditLog.findFirst({
+          where: {
+            companyId: input.companyId ?? null,
+            action: input.action,
+            outcome: 'pending',
+            metadata: { path: ['checkpointKey'], equals: checkpointKey },
+          },
+          select: { id: true },
+        });
+        if (existing) return existing.id;
+        return (await create(tx)).id;
+      });
+    } catch (error) {
+      this.logger.error('audit.checkpoint.failed', {
+        action: input.action,
+        error: String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Settle a checkpoint without turning an already-applied effect into a false
+   * HTTP failure. A failed update leaves the durable row visibly `pending`.
+   */
+  settle(input: SettleAuditInput): void {
+    const metadata = input.metadata ? sanitizeMeta(input.metadata) : undefined;
+    this.prisma.auditLog.update({
+      where: { id: input.checkpointId },
+      data: {
+        outcome: input.outcome,
+        ...(metadata ? { metadata: metadata as object } : {}),
+      },
+    }).catch(error => {
+      this.logger.warn('audit.checkpoint_settle.failed', {
+        checkpointId: input.checkpointId,
+        outcome: input.outcome,
+        error: String(error),
+      });
+    });
   }
 
   /** Query audit logs for a company, newest first. */

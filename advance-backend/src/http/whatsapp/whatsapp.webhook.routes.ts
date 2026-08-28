@@ -18,6 +18,7 @@ import type { Logger } from '../../shared/logger';
 import { verifyWhatsappSignature } from '../../infrastructure/whatsapp/whatsapp-webhook.security';
 import type { WhatsappIngestService } from '../../application/whatsapp/whatsapp-ingest.service';
 import type { WhatsappWebhookEnvelope } from '../../application/whatsapp/whatsapp-message.normalize';
+import { createAsyncRoute } from '../middleware/async-route';
 
 const header = (req: Request, name: string): string | undefined => {
   const value = req.headers[name];
@@ -31,8 +32,9 @@ export function createWhatsappWebhookRoutes(deps: {
 }): Router {
   const router = Router();
   const log = deps.logger.child({ router: 'whatsapp-webhook' });
+  const route = createAsyncRoute(log);
 
-  router.post('/webhook', (req: Request, res: Response) => {
+  router.post('/webhook', route(async (req: Request, res: Response) => {
     const rawBody = (req as unknown as Record<string, unknown>)['rawBody'];
     if (typeof rawBody !== 'string') {
       // The body never reached the JSON parser's verify hook, so there is
@@ -54,13 +56,33 @@ export function createWhatsappWebhookRoutes(deps: {
       return;
     }
 
-    // Answer first. Everything after this point is durable through the ingress
-    // receipt, so a crash here is recovered by the reconcile sweep rather than
-    // lost.
+    // The acknowledgement comes only after the receipt exists. OpenWA will
+    // retry a 503, while a 200 closes its delivery path permanently.
+    const admitted = await deps.ingest.admit(
+      envelope,
+      header(req, 'x-openwa-idempotency-key'),
+    );
+    if (admitted.status === 'failed') {
+      log.error('whatsapp.admission_failed', { error: admitted.error });
+      res.status(503).json({ error: 'whatsapp_ingress_unavailable' });
+      return;
+    }
+    if (admitted.status === 'rejected') {
+      if (admitted.reason === 'malformed') {
+        log.warn('whatsapp.admission_rejected', { reason: admitted.reason });
+      }
+      res.json({ ok: true, ignored: true });
+      return;
+    }
+    if (admitted.status === 'duplicate') {
+      res.json({ ok: true, duplicate: true });
+      return;
+    }
+
     res.json({ ok: true });
 
     void deps.ingest
-      .ingest(envelope, header(req, 'x-openwa-idempotency-key'))
+      .process(admitted.receiptId)
       .then(outcome => {
         if (outcome.status === 'failed') {
           log.error('whatsapp.ingest_failed', { error: outcome.error });
@@ -73,7 +95,7 @@ export function createWhatsappWebhookRoutes(deps: {
           error: error instanceof Error ? error.message : String(error),
         });
       });
-  });
+  }));
 
   return router;
 }

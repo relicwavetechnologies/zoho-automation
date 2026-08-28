@@ -37,6 +37,19 @@ export type WhatsappIngestOutcome =
   | { readonly status: 'unknown_session'; readonly openwaSessionId: string }
   | { readonly status: 'failed'; readonly error: string };
 
+/**
+ * The durable half of webhook handling.
+ *
+ * `accepted` means the exact provider payload is in Postgres and may safely be
+ * acknowledged. Processing is deliberately a second step: a process can die
+ * after the acknowledgement and the recovery sweep still has the receipt.
+ */
+export type WhatsappIngressAdmission =
+  | { readonly status: 'accepted'; readonly receiptId: string }
+  | { readonly status: 'duplicate' }
+  | { readonly status: 'rejected'; readonly reason: WhatsappIngestRejection }
+  | { readonly status: 'failed'; readonly error: string };
+
 export class WhatsappIngestService {
   private readonly log: Logger;
 
@@ -62,6 +75,22 @@ export class WhatsappIngestService {
     envelope: WhatsappWebhookEnvelope,
     idempotencyKey: string | undefined,
   ): Promise<WhatsappIngestOutcome> {
+    const admitted = await this.admit(envelope, idempotencyKey);
+    if (admitted.status === 'accepted') return this.process(admitted.receiptId);
+    return admitted;
+  }
+
+  /**
+   * Persist a provider delivery before the HTTP route acknowledges it.
+   *
+   * Admission does not require a Divo session row. Session registration and
+   * webhook delivery can race by milliseconds after a number is created; the
+   * receipt keeps that event recoverable until the session row appears.
+   */
+  async admit(
+    envelope: WhatsappWebhookEnvelope,
+    idempotencyKey: string | undefined,
+  ): Promise<WhatsappIngressAdmission> {
     const normalized = normalizeWhatsappEnvelope(envelope);
     if (!normalized.ok) {
       // Not a failure worth a receipt. Status posts and unsubscribed event types
@@ -71,28 +100,16 @@ export class WhatsappIngestService {
 
     const { sessionId: openwaSessionId, message } = normalized;
 
-    const session = await this.deps.repo.findSessionByOpenwaId(openwaSessionId);
-    if (!session.ok) return { status: 'failed', error: session.error.message };
-    if (!session.value) {
-      // A gateway session Divo has no record of. Never guess a tenant from an
-      // unrecognised id — that is how one company's conversation lands in
-      // another's digest.
-      this.log.warn('whatsapp.unknown_session', { openwaSessionId });
-      return { status: 'unknown_session', openwaSessionId };
-    }
-
     const accepted = await this.deps.receipts.accept({
       channel: WHATSAPP_INGRESS_CHANNEL,
       tenantKey: openwaSessionId,
-      companyId: session.value.companyId,
       messageId: message.waMessageId,
       payload: envelope as unknown as Record<string, unknown>,
       ...(idempotencyKey ? { eventId: idempotencyKey } : {}),
     });
     if (!accepted.ok) return { status: 'failed', error: accepted.error.message };
     if (!accepted.value.isNew) return { status: 'duplicate' };
-
-    return this.process(accepted.value.receiptId);
+    return { status: 'accepted', receiptId: accepted.value.receiptId };
   }
 
   /**
@@ -129,9 +146,10 @@ export class WhatsappIngestService {
       return { status: 'failed', error: session.error.message };
     }
     if (!session.value) {
-      // Terminal: the session will not appear later, and retrying forever would
-      // hold a recovery slot that live work needs.
-      await this.deps.receipts.markFailed(receiptId, 'unknown session', { terminal: true });
+      // Registration and webhook delivery can race after a number is created.
+      // Keep the receipt retryable: once the session row appears the same stored
+      // payload acquires its company and department through this lookup.
+      await this.deps.receipts.markFailed(receiptId, 'unknown session');
       return { status: 'unknown_session', openwaSessionId: normalized.sessionId };
     }
 

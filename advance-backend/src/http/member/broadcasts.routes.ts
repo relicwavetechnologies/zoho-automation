@@ -32,6 +32,7 @@ import { MAX_BROADCAST_BODY, MAX_BROADCAST_RECIPIENTS } from '../../domain/follo
 import { createMemberScope, type MemberAuthorization } from './member-scope';
 import { createAsyncRoute } from '../middleware/async-route';
 import type { FollowUpsOperation } from '../../application/follow-ups/follow-ups-permission';
+import { createRequiredAudit } from './required-audit';
 
 /** A list route does not let its caller choose how much of the table to read. */
 const LIST_LIMIT = { default: 25, max: 100 } as const;
@@ -77,6 +78,7 @@ const previewSchema = z.object({
 });
 
 const sendSchema = z.object({
+  requestId: z.string().uuid(),
   sessionId: z.string().trim().min(1),
   label: z.string().trim().max(80).optional(),
   body: z.string().min(1).max(MAX_BROADCAST_BODY),
@@ -135,6 +137,7 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
   // become an unhandled rejection, and Node exits on those — one timed-out
   // query used to take the whole backend down with it.
   const route = createAsyncRoute(log);
+  const requiredAudit = createRequiredAudit(deps.auditService, log);
   /*
    * Registered through these rather than on `router` directly, so the backstop
    * cannot be forgotten on a route added later. Naming them for the verb keeps
@@ -285,9 +288,22 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
       return;
     }
 
+    const auditId = await requiredAudit.begin(res, {
+      actorId: scope.userId,
+      companyId: scope.companyId,
+      action: 'followups.broadcast.sent',
+      metadata: {
+        sessionId: parsed.data.sessionId,
+        recipients: parsed.data.recipients.length,
+        departmentId: scope.departmentId,
+      },
+    });
+    if (!auditId) return;
+
     const sent = await deps.broadcasts.send({
       companyId: scope.companyId,
       departmentId: scope.departmentId,
+      requestId: parsed.data.requestId,
       sessionId: parsed.data.sessionId,
       label: parsed.data.label ?? '',
       body: parsed.data.body,
@@ -295,10 +311,7 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
       recipients: parsed.data.recipients,
     });
     if (!sent.ok) {
-      deps.auditService.record({
-        actorId: scope.userId,
-        companyId: scope.companyId,
-        action: 'followups.broadcast.sent',
+      requiredAudit.settle(auditId, {
         outcome: 'failure',
         metadata: {
           sessionId: parsed.data.sessionId,
@@ -322,10 +335,7 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
       unverified: sent.value.unverified.length,
     });
 
-    deps.auditService.record({
-      actorId: scope.userId,
-      companyId: scope.companyId,
-      action: 'followups.broadcast.sent',
+    requiredAudit.settle(auditId, {
       outcome: 'success',
       metadata: {
         broadcastId: sent.value.broadcastId,
@@ -337,6 +347,7 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
         recipients: parsed.data.recipients.length,
         skipped: sent.value.skipped.length,
         unverified: sent.value.unverified.length,
+        gatewayAcknowledged: sent.value.gatewayAcknowledged,
       },
     });
 
@@ -355,6 +366,7 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
       // because "sent" and "sent without knowing the number exists" are
       // different claims.
       unverified: sent.value.unverified,
+      gatewayAcknowledged: sent.value.gatewayAcknowledged,
     });
   });
 
@@ -418,19 +430,26 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
     const scope = await scoped(res, 'cancelBroadcast');
     if (!scope) return;
 
+    const broadcastId = String(req.params['id']);
+    const auditId = await requiredAudit.begin(res, {
+      actorId: scope.userId,
+      companyId: scope.companyId,
+      action: 'followups.broadcast.cancelled',
+      checkpointKey: `${scope.departmentId}:${broadcastId}`,
+      metadata: { broadcastId, departmentId: scope.departmentId },
+    });
+    if (!auditId) return;
+
     const cancelled = await deps.broadcasts.cancel({
       companyId: scope.companyId,
       departmentId: scope.departmentId,
-      broadcastId: String(req.params['id']),
+      broadcastId,
     });
     if (!cancelled.ok) {
-      deps.auditService.record({
-        actorId: scope.userId,
-        companyId: scope.companyId,
-        action: 'followups.broadcast.cancelled',
+      requiredAudit.settle(auditId, {
         outcome: 'failure',
         metadata: {
-          broadcastId: String(req.params['id']),
+          broadcastId,
           departmentId: scope.departmentId,
           error: cancelled.error.message,
         },
@@ -439,23 +458,31 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
       return;
     }
     if (!cancelled.value) {
+      requiredAudit.settle(auditId, {
+        outcome: 'failure',
+        metadata: { broadcastId, departmentId: scope.departmentId, error: 'not_found' },
+      });
       res.status(404).json({ ok: false, error: 'broadcast_not_found' });
+      return;
+    }
+    if (cancelled.value.outcome === 'unknown') {
+      log.warn('broadcasts.cancel_unknown', { broadcastId, userId: scope.userId });
+      // Keep the audit checkpoint pending. The gateway may already have applied
+      // the cancellation, so neither success nor failure is proven yet.
+      res.status(202).json({ ok: true, outcome: 'unknown' });
       return;
     }
 
     log.info('broadcasts.cancelled', {
-      broadcastId: String(req.params['id']),
+      broadcastId,
       userId: scope.userId,
       stopped: cancelled.value.stopped,
     });
 
-    deps.auditService.record({
-      actorId: scope.userId,
-      companyId: scope.companyId,
-      action: 'followups.broadcast.cancelled',
+    requiredAudit.settle(auditId, {
       outcome: 'success',
       metadata: {
-        broadcastId: String(req.params['id']),
+        broadcastId,
         stopped: cancelled.value.stopped,
         departmentId: scope.departmentId,
       },
@@ -464,7 +491,7 @@ export function createBroadcastRoutes(deps: BroadcastRoutesDeps): Router {
     // `stopped: false` means it had already finished. The caller got what it
     // asked for either way, but the screen must not claim to have stopped a send
     // that had already gone out in full.
-    res.json({ ok: true, stopped: cancelled.value.stopped });
+    res.json({ ok: true, outcome: 'confirmed', stopped: cancelled.value.stopped });
   });
 
   return router;

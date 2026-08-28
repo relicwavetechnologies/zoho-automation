@@ -29,6 +29,7 @@ import type { Logger } from '../../shared/logger';
 import type { AuditService } from '../../application/observability/audit.service';
 import {
   isMissingSession,
+  isSessionProvisionUnknown,
   type WhatsappSessionService,
 } from '../../application/whatsapp/whatsapp-session.service';
 import type { WhatsappHistoryRepair } from '../../application/whatsapp/whatsapp-history-repair';
@@ -42,12 +43,14 @@ import {
   nextRecurringRunAt,
 } from '../../application/scheduling/recurring-schedule';
 import type { AuthorizeLarkChatDestination } from '../../application/mail-ops/lark-chat-destination';
+import { createRequiredAudit } from './required-audit';
 
 /** A list route does not let its caller choose how much of the table to read. */
 const LIST_LIMIT = { default: 100, max: 200 } as const;
 
 const createNumberSchema = z.object({
   label: z.string().trim().min(1).max(60),
+  requestId: z.string().uuid(),
 });
 
 const muteSchema = z.object({
@@ -136,6 +139,7 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
   // become an unhandled rejection, and Node exits on those — one timed-out
   // query used to take the whole backend down with it.
   const route = createAsyncRoute(log);
+  const requiredAudit = createRequiredAudit(deps.auditService, log);
   /*
    * Registered through these rather than on `router` directly, so the backstop
    * cannot be forgotten on a route added later. Naming them for the verb keeps
@@ -260,6 +264,14 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
     }
 
     const followUpId = String(req.params['id']);
+    const auditAction = FOLLOW_UP_AUDIT_ACTIONS[parsed.data.action];
+    const auditId = await requiredAudit.begin(res, {
+      actorId: scope.userId,
+      companyId: scope.companyId,
+      action: auditAction,
+      metadata: { followUpId, departmentId: scope.departmentId },
+    });
+    if (!auditId) return;
     const change = parsed.data.action === 'snooze'
       ? { remindAt: new Date(Date.now() + parsed.data.hours * 60 * 60_000) }
       : parsed.data.action === 'reopen'
@@ -277,18 +289,11 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       followUpId,
       ...change,
     });
-    // Named once, above the write, so a failed action is recorded under the same
-    // verb a successful one is. An audit trail that only names what worked
-    // cannot answer "did anyone try".
-    const auditAction = FOLLOW_UP_AUDIT_ACTIONS[parsed.data.action];
     if (!updated.ok) {
       log.error('follow_ups.action_failed', {
         followUpId, action: parsed.data.action, error: updated.error.message,
       });
-      deps.auditService.record({
-        actorId: scope.userId,
-        companyId: scope.companyId,
-        action: auditAction,
+      requiredAudit.settle(auditId, {
         outcome: 'failure',
         metadata: {
           followUpId,
@@ -302,6 +307,10 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
     if (!updated.value) {
       // Another department's follow-up and a non-existent one get the same
       // answer, so membership of one cannot be probed from the other.
+      requiredAudit.settle(auditId, {
+        outcome: 'failure',
+        metadata: { followUpId, departmentId: scope.departmentId, error: 'not_found' },
+      });
       res.status(404).json({ ok: false, error: 'follow_up_not_found' });
       return;
     }
@@ -309,10 +318,7 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
     log.info('follow_ups.action', {
       followUpId, action: parsed.data.action, userId: scope.userId,
     });
-    deps.auditService.record({
-      actorId: scope.userId,
-      companyId: scope.companyId,
-      action: auditAction,
+    requiredAudit.settle(auditId, {
       outcome: 'success',
       metadata: {
         followUpId,
@@ -349,16 +355,42 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       return;
     }
 
+    const auditId = await requiredAudit.begin(res, {
+      actorId: scope.userId,
+      companyId: scope.companyId,
+      action: 'followups.number.linked',
+      checkpointKey: `${scope.departmentId}:${parsed.data.requestId}`,
+      metadata: {
+        departmentId: scope.departmentId,
+        label: parsed.data.label,
+        requestId: parsed.data.requestId,
+      },
+    });
+    if (!auditId) return;
+
     const created = await deps.sessions.create({
       companyId: scope.companyId,
       departmentId: scope.departmentId,
       label: parsed.data.label,
+      requestId: parsed.data.requestId,
     });
     if (!created.ok) {
-      deps.auditService.record({
-        actorId: scope.userId,
-        companyId: scope.companyId,
-        action: 'followups.number.linked',
+      if (isSessionProvisionUnknown(created.error)) {
+        log.warn('follow_ups.number_provisioning_unknown', {
+          requestId: parsed.data.requestId,
+          departmentId: scope.departmentId,
+          error: created.error.message,
+        });
+        // Keep the audit checkpoint pending. Retrying this same request id will
+        // adopt the deterministic OpenWA session if it exists.
+        res.status(503).json({
+          ok: false,
+          code: 'number_provisioning_unknown',
+          message: 'Divo could not confirm whether the number finished provisioning. Try the same link again; it will not create a second session.',
+        });
+        return;
+      }
+      requiredAudit.settle(auditId, {
         outcome: 'failure',
         metadata: {
           label: parsed.data.label,
@@ -370,10 +402,7 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       res.status(502).json({ ok: false, error: 'gateway_unavailable' });
       return;
     }
-    deps.auditService.record({
-      actorId: scope.userId,
-      companyId: scope.companyId,
-      action: 'followups.number.linked',
+    requiredAudit.settle(auditId, {
       outcome: 'success',
       metadata: {
         numberId: created.value.id,
@@ -525,21 +554,27 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       return;
     }
 
+    const chatId = String(req.params['id']);
+    const auditId = await requiredAudit.begin(res, {
+      actorId: scope.userId,
+      companyId: scope.companyId,
+      action: 'followups.chat.tracking_changed',
+      metadata: { chatId, muted: parsed.data.muted, departmentId: scope.departmentId },
+    });
+    if (!auditId) return;
+
     const updated = await deps.followUps.setChatTracking({
       companyId: scope.companyId,
       departmentId: scope.departmentId,
-      chatId: String(req.params['id']),
+      chatId,
       muted: parsed.data.muted,
     });
     if (!updated.ok) {
       log.error('follow_ups.mute_failed', { error: updated.error.message });
-      deps.auditService.record({
-        actorId: scope.userId,
-        companyId: scope.companyId,
-        action: 'followups.chat.tracking_changed',
+      requiredAudit.settle(auditId, {
         outcome: 'failure',
         metadata: {
-          chatId: String(req.params['id']),
+          chatId,
           muted: parsed.data.muted,
           departmentId: scope.departmentId,
           error: updated.error.message,
@@ -550,6 +585,10 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
     }
     if (!updated.value) {
       // Another department's chat and a non-existent one get the same answer.
+      requiredAudit.settle(auditId, {
+        outcome: 'failure',
+        metadata: { chatId, muted: parsed.data.muted, departmentId: scope.departmentId, error: 'not_found' },
+      });
       res.status(404).json({ ok: false, error: 'chat_not_found' });
       return;
     }
@@ -557,13 +596,10 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
     log.info('follow_ups.chat_tracking_changed', {
       chatId: req.params['id'], muted: parsed.data.muted, userId: scope.userId,
     });
-    deps.auditService.record({
-      actorId: scope.userId,
-      companyId: scope.companyId,
-      action: 'followups.chat.tracking_changed',
+    requiredAudit.settle(auditId, {
       outcome: 'success',
       metadata: {
-        chatId: String(req.params['id']),
+        chatId,
         muted: parsed.data.muted,
         departmentId: scope.departmentId,
       },
@@ -689,10 +725,18 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       chatId: body.data.chatId,
     });
     if (verdict.status !== 'allowed') {
-      deps.auditService.record({
+      const refusedAuditId = await requiredAudit.begin(res, {
         actorId: scope.userId,
         companyId: scope.companyId,
         action: 'followups.digest.refused',
+        metadata: {
+          departmentId: scope.departmentId,
+          chatId: body.data.chatId,
+          reason: verdict.status,
+        },
+      });
+      if (!refusedAuditId) return;
+      requiredAudit.settle(refusedAuditId, {
         outcome: 'failure',
         metadata: {
           departmentId: scope.departmentId,
@@ -717,16 +761,32 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       return;
     }
 
+    const auditId = await requiredAudit.begin(res, {
+      actorId: scope.userId,
+      companyId: scope.companyId,
+      action: 'followups.digest.set',
+      metadata: { departmentId: scope.departmentId, chatId: body.data.chatId },
+    });
+    if (!auditId) return;
+
     const existing = await deps.followUps.listDigests({
       companyId: scope.companyId,
       departmentId: scope.departmentId,
     });
     if (!existing.ok) {
       log.error('follow_ups.digest.read_failed', { error: existing.error.message });
+      requiredAudit.settle(auditId, {
+        outcome: 'failure',
+        metadata: { departmentId: scope.departmentId, chatId: body.data.chatId, error: existing.error.message },
+      });
       res.status(500).json({ ok: false, error: 'digest_unavailable' });
       return;
     }
     if (existing.value.length > 1) {
+      requiredAudit.settle(auditId, {
+        outcome: 'failure',
+        metadata: { departmentId: scope.departmentId, chatId: body.data.chatId, error: 'multiple_digests' },
+      });
       res.status(409).json({ ok: false, error: 'multiple_digests' });
       return;
     }
@@ -753,10 +813,7 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
     });
     if (!saved.ok) {
       log.error('follow_ups.digest.save_failed', { error: saved.error.message });
-      deps.auditService.record({
-        actorId: scope.userId,
-        companyId: scope.companyId,
-        action: 'followups.digest.set',
+      requiredAudit.settle(auditId, {
         outcome: 'failure',
         metadata: {
           departmentId: scope.departmentId,
@@ -768,10 +825,7 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       return;
     }
 
-    deps.auditService.record({
-      actorId: scope.userId,
-      companyId: scope.companyId,
-      action: 'followups.digest.set',
+    requiredAudit.settle(auditId, {
       outcome: 'success',
       metadata: {
         departmentId: scope.departmentId,

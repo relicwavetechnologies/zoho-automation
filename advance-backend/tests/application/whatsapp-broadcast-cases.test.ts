@@ -26,18 +26,24 @@ interface RepoCalls {
   created: unknown[];
   status: unknown[];
   applied: unknown[];
+  touched: string[];
 }
 
 const makeRepo = (over: Record<string, unknown> = {}) => {
-  const calls: RepoCalls = { created: [], status: [], applied: [] };
+  const calls: RepoCalls = { created: [], status: [], applied: [], touched: [] };
   const repo = {
     calls,
     listCandidates: async () => ok([]),
     resolveKnownChats: async (input: { waChatIds: readonly string[] }) =>
       ok(new Set(input.waChatIds.filter(id => id.startsWith('9198')))),
-    create: async (input: unknown) => { calls.created.push(input); return ok('bc-1'); },
+    findIdempotent: async () => ok(null),
+    create: async (input: unknown) => {
+      calls.created.push(input);
+      return ok({ broadcastId: 'bc-1', created: true });
+    },
     markStatus: async (input: unknown) => { calls.status.push(input); return ok(undefined); },
     applyBatchStatus: async (input: unknown) => { calls.applied.push(input); return ok(undefined); },
+    touchPoll: async (id: string) => { calls.touched.push(id); return ok(undefined); },
     list: async () => ok([]),
     get: async () => ok(null),
     findForScope: async () => ok(null),
@@ -71,7 +77,11 @@ const service = (repo: unknown, gateway: unknown) => new WhatsappBroadcastServic
   logger: silentLogger,
 });
 
-const scope = { companyId: 'co-1', departmentId: 'dep-1' };
+const scope = {
+  companyId: 'co-1',
+  departmentId: 'dep-1',
+  requestId: '8dbca8a5-2d5a-4ee5-b8a4-a6fd3f706389',
+};
 const known = { waChatId: '919845010001@c.us', displayName: 'Ritu Malhotra', isGroup: false };
 
 describe('send — ordering', () => {
@@ -83,7 +93,10 @@ describe('send — ordering', () => {
   it('records the broadcast before asking the gateway to send anything', async () => {
     const order: string[] = [];
     const repo = makeRepo({
-      create: async () => { order.push('create'); return ok('bc-1'); },
+      create: async () => {
+        order.push('create');
+        return ok({ broadcastId: 'bc-1', created: true });
+      },
       markStatus: async () => ok(undefined),
     });
     const gateway = makeGateway({
@@ -137,7 +150,7 @@ describe('send — the gateway refuses or falls over', () => {
    * the batch and failed only to tell us, and a broadcast that might be running
    * needs a name somebody can look up.
    */
-  it('keeps the row and marks it failed when the gateway does not answer', async () => {
+  it('keeps an unacknowledged batch queued and returns its durable id', async () => {
     const repo = makeRepo();
     const gateway = makeGateway({
       sendBulk: async (): Promise<Result<never, InfraError>> =>
@@ -149,12 +162,11 @@ describe('send — the gateway refuses or falls over', () => {
       requestedById: 'u-1', recipients: [known],
     });
 
-    assert.equal(sent.ok, false);
+    assert.equal(sent.ok, true);
+    assert.equal(sent.ok && sent.value.broadcastId, 'bc-1');
+    assert.equal(sent.ok && sent.value.gatewayAcknowledged, false);
     assert.equal(repo.calls.created.length, 1, 'the row must survive');
-    assert.deepEqual(
-      (repo.calls.status[0] as { status: string }).status,
-      'failed',
-    );
+    assert.equal(repo.calls.status.length, 0, 'queued remains pollable');
   });
 
   it('marks the broadcast sending once the gateway accepts it', async () => {
@@ -189,7 +201,7 @@ describe('send — the gateway refuses or falls over', () => {
     assert.match(sent.ok === false ? sent.error.message : '', /over the limit/i);
   });
 
-  it('does not read an unrelated failure as a refusal', async () => {
+  it('does not read ambiguous gateway acceptance as a refusal', async () => {
     const gateway = makeGateway({
       sendBulk: async (): Promise<Result<never, InfraError>> =>
         err(new InfraError({ layer: 'http', op: 'openwa.sendBulk', cause: 'x', message: 'ECONNREFUSED' })),
@@ -198,7 +210,40 @@ describe('send — the gateway refuses or falls over', () => {
       ...scope, sessionId: 'n1', label: 'Update', body: 'Hi',
       requestedById: 'u-1', recipients: [known],
     });
-    assert.equal(sent.ok === false && refusalOf(sent.error), null);
+    assert.equal(sent.ok, true);
+    assert.equal(sent.ok && sent.value.gatewayAcknowledged, false);
+  });
+
+  it('returns the durable run when marking it sending fails after acceptance', async () => {
+    const repo = makeRepo({
+      markStatus: async () => err(new InfraError({
+        layer: 'prisma', op: 'broadcasts.markStatus', cause: 'db', message: 'database unavailable',
+      })),
+    });
+    const sent = await service(repo, makeGateway()).send({
+      ...scope, sessionId: 'n1', label: 'Update', body: 'Hi',
+      requestedById: 'u-1', recipients: [known],
+    });
+
+    assert.equal(sent.ok, true);
+    assert.equal(sent.ok && sent.value.broadcastId, 'bc-1');
+    assert.equal(sent.ok && sent.value.gatewayAcknowledged, true);
+  });
+
+  it('does not hand the same reviewed request to the gateway twice', async () => {
+    let sends = 0;
+    const repo = makeRepo({
+      findIdempotent: async () => ok('bc-existing'),
+    });
+    const sent = await service(repo, makeGateway({
+      sendBulk: async () => { sends += 1; return ok({}); },
+    })).send({
+      ...scope, sessionId: 'n1', label: 'Update', body: 'Hi',
+      requestedById: 'u-1', recipients: [known],
+    });
+
+    assert.equal(sent.ok && sent.value.broadcastId, 'bc-existing');
+    assert.equal(sends, 0);
   });
 });
 
@@ -284,11 +329,27 @@ describe('send — screening cold recipients', () => {
     // Only the unknown number was checked, whatever the request claimed.
     assert.deepEqual(checked, ['447700900123']);
   });
+
+  it('asks whether recipients are known to the handset doing the sending', async () => {
+    let resolvedSessionId: string | undefined;
+    const repo = makeRepo({
+      resolveKnownChats: async (input: { sessionId?: string }) => {
+        resolvedSessionId = input.sessionId;
+        return ok(new Set([known.waChatId]));
+      },
+    });
+    await service(repo, makeGateway()).send({
+      ...scope, sessionId: 'n1', label: 'Update', body: 'Hi',
+      requestedById: 'u-1', recipients: [known],
+    });
+    assert.equal(resolvedSessionId, 'n1');
+  });
 });
 
 describe('poll', () => {
   const live = {
     id: 'bc-1', gatewayBatchId: 'divo_x', openwaSessionId: 'gw-1', status: 'sending',
+    createdAt: new Date(Date.now() - 60_000),
   };
 
   it('folds the gateway counters into the stored broadcast', async () => {
@@ -323,6 +384,23 @@ describe('poll', () => {
 
     assert.equal(result.ok, true);
     assert.equal((repo.calls.status[0] as { status: string }).status, 'failed');
+  });
+
+  it('gives a young queued batch time to appear after an ambiguous POST', async () => {
+    const repo = makeRepo();
+    const gateway = makeGateway({
+      batchStatus: async (): Promise<Result<never, InfraError>> =>
+        err(new InfraError({ layer: 'http', op: 'openwa.batchStatus', cause: 'x', message: 'OpenWA GET /x -> 404: Batch not found' })),
+    });
+    const result = await service(repo, gateway).poll({
+      ...live,
+      status: 'queued',
+      createdAt: new Date(),
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(repo.calls.touched, ['bc-1']);
+    assert.equal(repo.calls.status.length, 0);
   });
 
   /**
@@ -366,6 +444,7 @@ describe('poll', () => {
 describe('cancel', () => {
   const found = {
     id: 'bc-1', gatewayBatchId: 'divo_x', openwaSessionId: 'gw-1', status: 'sending',
+    createdAt: new Date(Date.now() - 60_000),
   };
 
   /**
@@ -388,7 +467,30 @@ describe('cancel', () => {
     });
 
     const result = await service(repo, gateway).cancel({ ...scope, broadcastId: 'bc-1' });
-    assert.equal(result.ok && result.value?.stopped, false);
+    assert.equal(result.ok && result.value?.outcome, 'confirmed');
+    assert.equal(result.ok && result.value?.outcome === 'confirmed' && result.value.stopped, false);
+  });
+
+  it('keeps cancellation unknown when the gateway response is lost', async () => {
+    const repo = makeRepo({ findForScope: async () => ok(found) });
+    const gateway = makeGateway({
+      cancelBatch: async () => err(new InfraError({
+        layer: 'http', op: 'openwa.cancelBatch', cause: 'timeout', message: 'timeout',
+      })),
+    });
+    const result = await service(repo, gateway).cancel({ ...scope, broadcastId: 'bc-1' });
+    assert.equal(result.ok && result.value?.outcome, 'unknown');
+  });
+
+  it('keeps cancellation unknown when its immediate status poll fails', async () => {
+    const repo = makeRepo({ findForScope: async () => ok(found) });
+    const gateway = makeGateway({
+      batchStatus: async () => err(new InfraError({
+        layer: 'http', op: 'openwa.batchStatus', cause: 'timeout', message: 'timeout',
+      })),
+    });
+    const result = await service(repo, gateway).cancel({ ...scope, broadcastId: 'bc-1' });
+    assert.equal(result.ok && result.value?.outcome, 'unknown');
   });
 
   /**
