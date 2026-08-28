@@ -1,5 +1,7 @@
 import express, { type Express } from 'express';
 import { randomUUID } from 'node:crypto';
+import { KEY_PROVIDERS } from './application/proxy/proxy-key.store';
+import type { ModelProvider } from './application/observability/pricing';
 import type { Container } from './composition';
 import { createHealthRoutes } from './http/health.routes';
 import { createSiteIconRoutes } from './http/icons/site-icon.routes';
@@ -1030,9 +1032,20 @@ export const createServer = (c: Container): DivoServerApplication => {
         apiKeyExhaustion: c.apiKeyExhaustionNotifier,
       }),
     );
+    /*
+     * Every upstream, read from the map that is actually wired rather than
+     * named one by one. The hand-written pair this replaces stopped mentioning
+     * Meta the moment Meta was added, so the one log line that says what the
+     * proxy can reach was quietly under-reporting the thing most of Divo had
+     * just been pointed at.
+     */
     c.logger.info('llm-proxy.enabled', {
-      deepseek: c.env.DEEPSEEK_BASE_URL,
-      openai: c.env.OPENAI_BASE_URL,
+      upstreams: {
+        deepseek: c.env.DEEPSEEK_BASE_URL,
+        openai: c.env.OPENAI_BASE_URL,
+        meta: c.env.META_BASE_URL,
+      } satisfies Record<ModelProvider, string>,
+      keyProviders: [...KEY_PROVIDERS],
       canEncrypt: c.proxyKeyStore.canEncrypt(),
     });
   }

@@ -33,8 +33,24 @@ import { encryptToken, decryptToken, TokenCryptoError } from '../../infrastructu
 export type KeyScope = 'platform' | 'company';
 export type KeySource = 'company' | 'platform';
 
-/** The providers an admin can hold a key for. */
-export const KEY_PROVIDERS = ['deepseek', 'openai'] as const satisfies readonly ModelProvider[];
+/**
+ * The providers an admin can hold a key for.
+ *
+ * `satisfies readonly ModelProvider[]` alone was not enough, and the gap cost a
+ * live outage: it checks that every entry *is* a provider, never that every
+ * provider *is* an entry. So adding Meta to the model catalogue left this list
+ * at two, `z.enum(KEY_PROVIDERS)` on the key route refused a Meta key, and the
+ * admin saw "Could not save that key" over a 400 that named nothing — while the
+ * defaults had already moved to a provider whose key could not be saved.
+ *
+ * The check below closes it in the other direction: a provider added to the
+ * model table and forgotten here is now a compile error naming the one missing.
+ */
+export const KEY_PROVIDERS = ['meta', 'deepseek', 'openai'] as const satisfies readonly ModelProvider[];
+
+type ProviderWithNoKeySlot = Exclude<ModelProvider, (typeof KEY_PROVIDERS)[number]>;
+const _everyProviderHasAKeySlot: [ProviderWithNoKeySlot] extends [never] ? true : never = true;
+void _everyProviderHasAKeySlot;
 
 const PLATFORM_SCOPE_KEY = 'platform';
 
