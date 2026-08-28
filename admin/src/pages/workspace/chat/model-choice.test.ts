@@ -4,6 +4,10 @@ import { reconcileModelSelection, type SelectableModel } from './model-choice'
 
 const models: SelectableModel[] = [
   {
+    id: 'muse-spark-1.2-contributor', label: 'Spark', provider: 'meta', vision: true,
+    reasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh'], defaultReasoningEffort: 'medium',
+  },
+  {
     id: 'deepseek-v4-flash', label: 'Flash', provider: 'deepseek', vision: false,
     reasoningEfforts: ['off', 'high', 'xhigh'], defaultReasoningEffort: 'high',
   },
@@ -14,9 +18,9 @@ const models: SelectableModel[] = [
 ]
 
 describe('chat model choice', () => {
-  it('starts on Flash even when another allowed model is listed first', () => {
+  it('starts on Spark even when another allowed model is listed first', () => {
     assert.deepEqual(reconcileModelSelection([...models].reverse(), null), {
-      model: 'deepseek-v4-flash', reasoningEffort: 'high',
+      model: 'muse-spark-1.2-contributor', reasoningEffort: 'medium',
     })
   })
 

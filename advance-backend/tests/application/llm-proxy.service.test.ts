@@ -11,14 +11,17 @@ const logger = {
   debug() {},
 } as any;
 
-test('allows Luna for an unblocked member without an explicit policy', async () => {
+test('grants the whole catalogue to an unblocked member without an explicit policy', async () => {
   const service = new LlmProxyService({
     memberProxyPolicy: { findUnique: async () => null },
   } as any, logger);
 
+  // Best first, so a caller that takes the head of this list gets Spark. Only
+  // members with no stored row reach it; everyone else is moved by
+  // scripts/backfill-member-model-grants.ts.
   assert.deepEqual(
     await service.allowedModelsFor('user-1'),
-    ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.6-luna'],
+    ['muse-spark-1.2-contributor', 'gpt-5.6-luna', 'deepseek-v4-flash', 'deepseek-v4-pro'],
   );
 });
 

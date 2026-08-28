@@ -41,7 +41,7 @@ export function reconcileModelSelection(
 ): ModelSelection | null {
   if (models.length === 0) return null
   const model = models.find(candidate => candidate.id === preferred?.model)
-    ?? models.find(candidate => candidate.id === 'deepseek-v4-flash')
+    ?? models.find(candidate => candidate.id === 'muse-spark-1.2-contributor')
     ?? models[0]!
   const reasoningEffort = preferred
     && model.reasoningEfforts.includes(preferred.reasoningEffort)

@@ -28,6 +28,7 @@ import type {
   VerifiedKnowledgeEffect,
 } from './run-effect-receipt.store';
 import {
+  DEFAULT_MODEL,
   defaultModelSelection,
   providerOf,
   type ProxyModel,
@@ -53,7 +54,14 @@ import {
 import type { ExecutionRunLifecycle } from '../observability/execution-run-lifecycle';
 
 const MAX_RUNTIME_ATTACHMENTS = 4;
-const LARK_RUNTIME_MODEL: ProxyModel = 'deepseek-v4-flash';
+/*
+ * Lark offers no model picker, so every run in every room lands on this one.
+ *
+ * It is the platform default rather than a name repeated here: a second copy
+ * is how "we moved everybody onto Spark" became true on the web and false in
+ * Lark, which is where nearly everybody actually is.
+ */
+const LARK_RUNTIME_MODEL: ProxyModel = DEFAULT_MODEL;
 const MAX_CONTROLLER_STREAM_LINE_BYTES = 2 * 1_024 * 1_024;
 
 interface ControllerLatencySample {

@@ -540,6 +540,17 @@ jobs:
             --file prisma/migrations/20260822_department_skill_manager_self_approval/migration.sql \
             --schema prisma/schema.prisma </dev/null
 
+          # Grant the platform default model to members who already hold an
+          # explicit grant. Unconditional and here, above `up -d`, because both
+          # alternatives are outages: the proxy reads the member's stored list
+          # and ignores the code default, so a container that starts serving
+          # Spark before this runs refuses every member with a 403, and gating
+          # it on APPLY_SCHEMA would skip it on exactly the ordinary deploys
+          # that carry a default change. Additive and idempotent — it appends a
+          # model to rows that lack it and rewrites nothing else.
+          docker compose --env-file .env.production.local run --rm --no-deps \
+            divo-backend pnpm tsx scripts/backfill-member-model-grants.ts --apply </dev/null
+
           if [[ "${APPLY_SCHEMA}" == "true" ]]; then
             docker compose --env-file .env.production.local run --rm --no-deps \
               divo-backend pnpm prisma db push --skip-generate </dev/null

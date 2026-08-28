@@ -2659,14 +2659,17 @@ describe('desktop /me reports the department role', () => {
       ]);
     });
 
-    it('offers Flash, Pro, and Luna when no policy is stored', async () => {
+    it('offers the whole catalogue when no policy is stored', async () => {
       const router = createDesktopAuthRoutes(makeDeps({ prisma: policyPrisma(null) }));
 
       const result = await callRoute(router, 'GET', '/model-options', {
         locals: { userId: 'user-1', companyId: 'company-1' },
       });
 
-      assert.deepEqual(result.body.data.allowedModels, ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.6-luna']);
+      assert.deepEqual(
+        result.body.data.allowedModels,
+        ['muse-spark-1.2-contributor', 'gpt-5.6-luna', 'deepseek-v4-flash', 'deepseek-v4-pro'],
+      );
       assert.equal((result.body.data.models as { label: string }[])[0]!.label.length > 0, true);
     });
   });

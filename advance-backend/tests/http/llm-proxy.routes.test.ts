@@ -7,6 +7,7 @@ import {
   RunLatencyRecorder,
   type RunLatencySpanStore,
 } from '../../src/application/observability/run-latency-recorder.ts';
+import { PROXY_MODEL_SPECS } from '../../src/application/observability/pricing.ts';
 
 const silent: Logger = {
   info: () => {}, warn: () => {}, error: () => {}, debug: () => {},
@@ -99,6 +100,7 @@ async function forward(
       baseUrls: {
         deepseek: 'https://api.deepseek.example',
         openai: 'https://api.openai.example',
+        meta: 'https://api.meta.example',
       },
       ...(options.latencyRecorder ? { latencyRecorder: options.latencyRecorder } : {}),
     });
@@ -240,9 +242,13 @@ describe('LLM proxy model forwarding', () => {
   it('substitutes a default when the client names no model at all', async () => {
     const { body } = await forward(undefined);
 
-    // Never forwards `undefined`: DeepSeek rejects a request with no model, and
-    // the gate has already priced this call as the default.
-    assert.equal(body['model'], 'deepseek-v4-flash');
+    // Never forwards `undefined`: every upstream rejects a request with no
+    // model, and the gate has already priced this call. An id that means
+    // nothing is billed at the cheapest rate rather than the current default,
+    // so this follows the price table rather than naming a model.
+    const cheapest = [...PROXY_MODEL_SPECS]
+      .sort((a, b) => a.rate.output - b.rate.output)[0]!.id;
+    assert.equal(body['model'], cheapest);
   });
 
   it('sends a DeepSeek model to DeepSeek with the DeepSeek key', async () => {
@@ -252,6 +258,19 @@ describe('LLM proxy model forwarding', () => {
 
     assert.equal(url, 'https://api.deepseek.example/v1/chat/completions');
     assert.equal(authorization, 'Bearer sk-deepseek');
+  });
+
+  it('sends Spark to Meta with the Meta key', async () => {
+    // Divo's default runs through here, so a wrong host or a neighbouring
+    // company's credential would be the first thing every member hits.
+    const { url, authorization, body } = await forward('muse-spark-1.2-contributor', {
+      endpoint: 'responses',
+      keyByProvider: { deepseek: 'sk-deepseek', openai: 'sk-openai', meta: 'sk-meta' },
+    });
+
+    assert.equal(url, 'https://api.meta.example/v1/responses');
+    assert.equal(authorization, 'Bearer sk-meta');
+    assert.equal(body['model'], 'muse-spark-1.2-contributor');
   });
 
   it('sends Luna to OpenAI with the OpenAI key', async () => {

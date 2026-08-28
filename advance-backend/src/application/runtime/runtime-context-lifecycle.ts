@@ -272,6 +272,21 @@ export class RuntimeContextLifecycle {
     if (input.nativeSkills) {
       const [permissionResult, grantedSkillIds, registryRevision] = await memberScopeLoad;
       if (!permissionResult.ok) {
+        /*
+         * The caller only ever sees "Runtime skill access denied", and the two
+         * causes behind it want opposite responses: a member who is genuinely
+         * not entitled, versus a permission read that failed. Collapsing them
+         * with nothing written down sent an engineer looking at grants for a
+         * run that had simply lost the database, so the resolver's own reason
+         * is recorded here even though the answer to Pi stays the same.
+         */
+        this.log.error('runtime.context.skill_access_denied', {
+          companyId: input.companyId,
+          userId: input.userId,
+          departmentId: department.id,
+          reason: permissionResult.error.payload.reason,
+          detail: permissionResult.error.message,
+        });
         return {
           kind: 'denied',
           reason: 'skill_access_denied',
