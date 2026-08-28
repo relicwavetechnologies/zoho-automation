@@ -33,7 +33,7 @@ import {
 import {
   useCompanyDaily, useCompanyScope, useDirectory, useSpendByModel, useSpendMembers,
 } from '@/cursor/use-spend'
-import { KEY_PROVIDERS, useProxyStatus, useSaveProxyKey, type KeyScope } from '@/cursor/use-proxy'
+import { KEY_PROVIDERS, useProxyStatus, useSaveProxyKey, type KeyProvider, type KeyScope } from '@/cursor/use-proxy'
 import { useCompanyForwards } from './data/use-mail-governance'
 import { cleanRunSummary, runTitle } from './data/use-my-activity'
 import { useProxyPolicies, useSaveProxyPolicy } from '@/cursor/use-proxy-policy'
@@ -1024,6 +1024,7 @@ export function CompanyGuardrails({ replay, toast }: Props) {
   const { session } = useAdminAuth()
   const [r1] = useStaged([300], replay)
   const { token, companyId } = useAdminScope()
+  const meta = useProxyStatus(token, 'meta', companyId).data
   const deepseek = useProxyStatus(token, 'deepseek', companyId).data
   const openai = useProxyStatus(token, 'openai', companyId).data
   const memberSpend = useSpendMembers(token, 30, companyId).data
@@ -1044,15 +1045,24 @@ export function CompanyGuardrails({ replay, toast }: Props) {
   const policiesKnown = policyQuery.isSuccess
 
   const policyFor = (userId: string) => policies.find((p) => p.userId === userId)
-  const [keyFor, setKeyFor] = useState<'deepseek' | 'openai' | null>(null)
+  const [keyFor, setKeyFor] = useState<KeyProvider | null>(null)
   const isSuperAdmin = session?.role === 'SUPER_ADMIN'
   const [keyScope, setKeyScope] = useState<KeyScope>('company')
+  const saveMeta = useSaveProxyKey(token, 'meta', companyId)
   const saveDeepseek = useSaveProxyKey(token, 'deepseek', companyId)
   const saveOpenai = useSaveProxyKey(token, 'openai', companyId)
   // The catalogue owns the provider list and its one-line hints; this screen
   // had grown its own copy with the labels and none of the hints, which is two
   // places to add the next provider and one place to forget.
-  const statusOf = { deepseek, openai }
+  const statusOf = { meta, deepseek, openai }
+  /* Keyed rather than branched. The ternaries these replace read
+     `keyFor === 'deepseek' ? … : openai`, which silently called OpenAI's
+     mutation for any third provider — right up until it saved a Meta key into
+     the OpenAI slot. */
+  const saveFor: Record<KeyProvider, ReturnType<typeof useSaveProxyKey>> = {
+    meta: saveMeta, deepseek: saveDeepseek, openai: saveOpenai,
+  }
+  const labelFor = (id: KeyProvider) => KEY_PROVIDERS.find(p => p.id === id)?.label ?? id
   const keys = KEY_PROVIDERS.map((p) => ({ ...p, status: statusOf[p.id] }))
 
   const toggleBlocked = async (userId: string, name: string, nowBlocked: boolean) => {
@@ -1190,7 +1200,7 @@ export function CompanyGuardrails({ replay, toast }: Props) {
 
       {keyFor ? (
         <Prompt
-          title={`${keyFor === 'deepseek' ? 'DeepSeek' : 'OpenAI'} key`}
+          title={`${labelFor(keyFor)} key`}
           description="Stored encrypted by the backend and never returned to any client — this screen can only tell you that one exists."
           label="API key"
           placeholder="sk-…"
@@ -1227,7 +1237,7 @@ export function CompanyGuardrails({ replay, toast }: Props) {
           onClose={() => { setKeyFor(null); setKeyScope('company') }}
           onConfirm={async (key) => {
             try {
-              const save = keyFor === 'deepseek' ? saveDeepseek : saveOpenai
+              const save = saveFor[keyFor]
               // Never send `platform` from a non-super-admin: the control is
               // hidden for them, and the route would refuse it anyway.
               await save.mutateAsync({ key, keyScope: isSuperAdmin ? keyScope : 'company' })

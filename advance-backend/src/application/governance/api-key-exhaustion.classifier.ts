@@ -6,6 +6,7 @@
 export type ApiKeyProvider =
   | 'serper'
   | 'deepseek'
+  | 'meta'
   | 'openai_gateway'
   | 'openai'
   | 'semrush'
@@ -18,6 +19,7 @@ export type ApiKeyProvider =
 export const API_KEY_PROVIDER_LABELS: Record<ApiKeyProvider, string> = {
   serper: 'Web search (Serper)',
   deepseek: 'DeepSeek',
+  meta: 'Meta',
   openai_gateway: 'OpenAI company gateway',
   openai: 'OpenAI',
   semrush: 'Semrush',

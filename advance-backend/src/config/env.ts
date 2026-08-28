@@ -93,6 +93,7 @@ export const EnvSchema = z.object({
   // Luna is served from OpenAI's own OpenAI-compatible endpoint, so the proxy
   // routes to it by the model's provider and forwards an OpenAI key instead.
   OPENAI_BASE_URL:    z.string().default('https://api.openai.com'),
+  META_BASE_URL:      z.string().default('https://api.meta.ai'),
   // Neither provider has an env fallback for the proxy. The key an admin saved
   // in Guardrails is the only key a run uses, so a company that has added none
   // gets a 503 naming that rather than quietly spending on whatever the process
@@ -329,11 +330,11 @@ export const EnvSchema = z.object({
   // ── Manager persona learning ─────────────────────────────────────────────
   REDIS_PERSONA_LEARNING_QUEUE_NAME: z.string().default('persona-learning'),
   PERSONA_LEARNING_WORKER_CONCURRENCY: positiveInt(1),
-  PERSONA_LEARNING_MODEL_ID: z.string().default('deepseek-v4-flash'),
+  PERSONA_LEARNING_MODEL_ID: z.string().default('muse-spark-1.2-contributor'),
   // Group-room transcript compaction. DeepSeek like every other model Divo
   // runs, and a flash tier because this is high-volume background work whose
   // output is a summary, not a user-facing answer.
-  GROUP_SUMMARY_MODEL_ID: z.string().default('deepseek-v4-flash'),
+  GROUP_SUMMARY_MODEL_ID: z.string().default('muse-spark-1.2-contributor'),
 
   // ── Explicit manager Teach ingestion ────────────────────────────────────
   REDIS_MANAGER_TEACH_QUEUE_NAME: z.string().default('manager-teach'),
@@ -437,7 +438,7 @@ export const EnvSchema = z.object({
   WHATSAPP_WEBHOOK_SECRET: z.string().min(16, {
     message: 'WHATSAPP_WEBHOOK_SECRET must be at least 16 characters — the gateway rejects shorter ones when the webhook is registered.',
   }).optional(),
-  WHATSAPP_ANALYSIS_MODEL_ID: z.string().default('deepseek-v4-flash'),
+  WHATSAPP_ANALYSIS_MODEL_ID: z.string().default('muse-spark-1.2-contributor'),
   WHATSAPP_TIMEZONE: z.string().default('Asia/Kolkata'),
   /** How long transcript is kept. Ninety days unless told otherwise. */
   WHATSAPP_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
@@ -486,7 +487,7 @@ export const EnvSchema = z.object({
   KNOWLEDGE_LEARNING_ENABLED: booleanStr.default('true'),
   REDIS_KNOWLEDGE_LEARNING_QUEUE_NAME: z.string().default('knowledge-learning'),
   KNOWLEDGE_LEARNING_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(1),
-  KNOWLEDGE_LEARNING_MODEL_ID: z.string().default('deepseek-v4-flash'),
+  KNOWLEDGE_LEARNING_MODEL_ID: z.string().default('muse-spark-1.2-contributor'),
   KNOWLEDGE_LEARNING_IMMEDIATE_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.9),
   KNOWLEDGE_LEARNING_REPEATED_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.75),
   KNOWLEDGE_LEARNING_REPEATED_EVIDENCE_COUNT: z.coerce.number().int().min(2).max(10).default(3),

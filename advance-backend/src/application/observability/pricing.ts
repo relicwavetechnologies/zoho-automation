@@ -22,6 +22,13 @@
  *     https://api-docs.deepseek.com/quick_start/pricing
  *   OpenAI GPT-5.6 Luna, verified 2026-07-31 after the 2026-07-30 price cut:
  *     https://developers.openai.com/api/docs/models/gpt-5.6-luna
+ *   Meta Muse Spark 1.2, both tiers, verified 2026-08-28:
+ *     https://openrouter.ai/meta/muse-spark-1.2-contributor
+ *     https://openrouter.ai/meta/muse-spark-1.2
+ *   The two tiers are the same model at different prices. `-contributor` is
+ *   12.5x cheaper in and 21.25x cheaper out because Meta trains on what is sent
+ *   to it, and it is capped at 60 rpm / 2.1M tpm against 3,000 rpm / 4M tpm.
+ *   There is no way to buy the price without the training clause.
  */
 
 export interface ModelRate {
@@ -30,7 +37,7 @@ export interface ModelRate {
   output: number
 }
 
-export type ModelProvider = 'deepseek' | 'openai'
+export type ModelProvider = 'deepseek' | 'openai' | 'meta'
 
 /**
  * Pi's provider-neutral reasoning controls, in ascending order of effort.
@@ -57,7 +64,7 @@ export const RUNTIME_REASONING_EFFORTS = [
 export type RuntimeReasoningEffort = (typeof RUNTIME_REASONING_EFFORTS)[number]
 
 /** Every model the proxy offers. Anything else canonicalizes to one of these. */
-export const PROXY_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.6-luna'] as const
+export const PROXY_MODELS = ['muse-spark-1.2-contributor', 'muse-spark-1.2', 'deepseek-v4-flash', 'deepseek-v4-pro', 'gpt-5.6-luna'] as const
 export type ProxyModel = (typeof PROXY_MODELS)[number]
 
 export interface ProxyModelSpec {
@@ -80,7 +87,57 @@ export interface ProxyModelSpec {
   readonly rate: ModelRate
 }
 
+/**
+ * A rate nobody has verified yet.
+ *
+ * Present so a newly added model can be wired end to end before its price list
+ * is to hand — and impossible to ship, because `pricing.test.ts` fails while
+ * any spec still carries it. Cost is not decoration here: the per-person dollar
+ * limit refuses the call when it is reached, so a model priced by guesswork
+ * either stops people early or never stops them at all. The second is the one
+ * that costs money, and it is the reason this model is being added.
+ */
+export const UNPRICED = Object.freeze({ cacheHitIn: -1, cacheMissIn: -1, output: -1 })
+
 const SPECS: readonly ProxyModelSpec[] = [
+  {
+    id: 'muse-spark-1.2-contributor',
+    provider: 'meta',
+    label: 'Spark (contributor)',
+    // Text, images, video, audio and PDF in; text out.
+    vision: true,
+    /*
+     * No `off`, because Spark's reasoning is mandatory — there is no rung that
+     * turns it off, and offering one would be a switch that changes its own
+     * label and nothing else. No `max` either: Spark stops at `xhigh`, and
+     * `max` is DeepSeek's literal wire value rather than a universal ceiling.
+     * The five it does spend are named as they are sent.
+     */
+    reasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'medium',
+    rate: { cacheHitIn: 0.002, cacheMissIn: 0.10, output: 0.20 },
+  },
+  {
+    /*
+     * The same model on the other side of one line in Meta's price table.
+     *
+     * Registered alongside the contributor tier rather than instead of it,
+     * because the difference between them is not performance: contributor is
+     * 12.5x cheaper in exchange for Meta training on the prompts and
+     * completions, and it caps at 60 requests a minute against 3,000. Divo
+     * carries company mail, customer conversations and invoices, so which of
+     * these two a deployment points at is a governance decision somebody has to
+     * make on purpose. Having both here makes it one env var rather than a
+     * release.
+     */
+    id: 'muse-spark-1.2',
+    provider: 'meta',
+    label: 'Spark',
+    vision: true,
+    reasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'medium',
+    rate: { cacheHitIn: 0.15, cacheMissIn: 1.25, output: 4.25 },
+  },
   {
     id: 'deepseek-v4-flash',
     provider: 'deepseek',
@@ -148,7 +205,18 @@ export function canonicalModel(raw: string | undefined | null): ProxyModel {
   // an OpenAI id is a different *provider*, and guessing DeepSeek for it would
   // send the request upstream with the wrong key rather than merely misprice it.
   if (key.startsWith('gpt-') || key.includes('luna')) return 'gpt-5.6-luna'
+  // Named before the pro/reason heuristic below, which would otherwise claim
+  // any Spark id that happens to carry either word for DeepSeek — a different
+  // provider, so the request would go upstream with the wrong key.
+  if (key.includes('muse') || key.includes('spark')) return 'muse-spark-1.2-contributor'
   if (key.includes('pro') || key.includes('reason')) return 'deepseek-v4-pro'
+  /*
+   * An id nobody recognises still lands on the cheapest *priced* model, not on
+   * the one the defaults now use. Moving the default is a decision about what
+   * Divo runs on; this is about what to do with input that means nothing, and
+   * the safe answer there is the smallest bill — which a model carrying
+   * `UNPRICED` cannot claim to be.
+   */
   return 'deepseek-v4-flash'
 }
 

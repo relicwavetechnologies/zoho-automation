@@ -15,9 +15,10 @@ export type KeyScope = "platform" | "company"
 export type KeySource = "company" | "platform"
 
 /** A provider an admin can hold a key for. One key card per entry. */
-export type KeyProvider = "deepseek" | "openai"
+export type KeyProvider = "meta" | "deepseek" | "openai"
 export const KEY_PROVIDERS: ReadonlyArray<{ id: KeyProvider; label: string; hint: string }> = [
-  { id: "deepseek", label: "DeepSeek", hint: "Serves Flash and Pro." },
+  { id: "meta", label: "Meta", hint: "Serves Spark, which most of Divo now runs on." },
+  { id: "deepseek", label: "DeepSeek", hint: "Serves Flash and Pro. Still available; no longer the default." },
   { id: "openai", label: "OpenAI", hint: "Serves Luna, the only model that can read an image." },
 ]
 

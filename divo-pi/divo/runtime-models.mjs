@@ -14,6 +14,8 @@
  */
 
 export const RUNTIME_MODELS = {
+	"muse-spark-1.2-contributor": "meta",
+	"muse-spark-1.2": "meta",
 	"deepseek-v4-flash": "deepseek",
 	"deepseek-v4-pro": "deepseek",
 	"gpt-5.6-luna": "openai",
@@ -22,7 +24,7 @@ export const RUNTIME_MODELS = {
 export const RUNTIME_MODEL_IDS = Object.keys(RUNTIME_MODELS);
 
 /** Which models can be shown an image rather than a transcription of one. */
-export const VISION_MODELS = new Set(["gpt-5.6-luna"]);
+export const VISION_MODELS = new Set(["gpt-5.6-luna", "muse-spark-1.2-contributor", "muse-spark-1.2"]);
 
 /**
  * Exact Pi reasoning levels each provider model honours as a distinct mode.
@@ -39,6 +41,11 @@ export const VISION_MODELS = new Set(["gpt-5.6-luna"]);
  * Offering either is a control whose label changes while the request does not.
  */
 export const RUNTIME_REASONING_LEVELS = Object.freeze({
+	// Spark reasons on every call — there is no rung that turns it off, so one
+	// is not offered. It also stops at `xhigh`; `max` is DeepSeek's literal wire
+	// value below, not a shared ceiling.
+	"muse-spark-1.2-contributor": Object.freeze(["minimal", "low", "medium", "high", "xhigh"]),
+	"muse-spark-1.2": Object.freeze(["minimal", "low", "medium", "high", "xhigh"]),
 	"deepseek-v4-flash": Object.freeze(["off", "high", "max"]),
 	"deepseek-v4-pro": Object.freeze(["off", "high", "max"]),
 	"gpt-5.6-luna": Object.freeze(["off", "low", "medium", "high", "xhigh", "max"]),

@@ -50,6 +50,7 @@ export interface LlmProxyRoutesDeps {
 const PROVIDER_LABEL: Record<ModelProvider, string> = {
   deepseek: 'DeepSeek',
   openai: 'OpenAI',
+  meta: 'Meta',
 };
 interface ProxyBody {
   model?: string;
