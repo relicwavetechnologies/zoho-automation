@@ -665,6 +665,7 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
         days: digest.days,
         timeZone: digest.timeZone,
         status: digest.status,
+        sendOnly: digest.sendOnly,
         nextRunAt: digest.nextRunAt?.toISOString() ?? null,
         lastRunAt: digest.lastRunAt?.toISOString() ?? null,
       },
@@ -687,6 +688,9 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
     /* Pausing is not deleting: the room, the schedule and how far the last run
        reported all survive being switched off for a week. */
     paused: z.boolean().optional(),
+    /* Divo posts here and does not answer here. Defaults on for a new digest:
+       a room made for a schedule's output is a feed, not a chat. */
+    sendOnly: z.boolean().optional(),
   });
 
   put('/digest', async (req, res) => {
@@ -809,6 +813,10 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       days: schedule.data.days,
       timeZone: schedule.data.timeZone,
       status: paused ? 'paused' : 'active',
+      /* Absent means "unchanged" on an edit and "send-only" on a new digest,
+         so a caller that predates the field cannot silently make an existing
+         mechanical room conversational. */
+      sendOnly: body.data.sendOnly ?? existing.value[0]?.sendOnly ?? true,
       nextRunAt,
     });
     if (!saved.ok) {
@@ -837,6 +845,7 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
         days: saved.value.days,
         timeZone: saved.value.timeZone,
         status: saved.value.status,
+        sendOnly: saved.value.sendOnly,
         created: existing.value.length === 0,
       },
     });
@@ -850,6 +859,7 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
         days: saved.value.days,
         timeZone: saved.value.timeZone,
         status: saved.value.status,
+        sendOnly: saved.value.sendOnly,
         nextRunAt: saved.value.nextRunAt?.toISOString() ?? null,
         lastRunAt: saved.value.lastRunAt?.toISOString() ?? null,
       },

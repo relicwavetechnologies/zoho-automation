@@ -134,6 +134,7 @@ export interface FollowUpsRepoPort {
     days: readonly string[];
     timeZone: string;
     status: string;
+    sendOnly: boolean;
     nextRunAt: Date | null;
   }): Promise<Result<DigestRow, InfraError>>;
 
@@ -151,6 +152,8 @@ export interface DigestRow {
   readonly days: readonly string[];
   readonly timeZone: string;
   readonly status: string;
+  /** Whether Divo posts here and does not answer here. */
+  readonly sendOnly: boolean;
   readonly nextRunAt: Date | null;
   readonly lastRunAt: Date | null;
 }
@@ -827,7 +830,7 @@ export class FollowUpsRepository implements FollowUpsRepoPort {
         orderBy: { createdAt: 'asc' },
         select: {
           id: true, larkChatId: true, timesJson: true, daysJson: true,
-          timeZone: true, status: true, nextRunAt: true, lastRunAt: true,
+          timeZone: true, status: true, sendOnly: true, nextRunAt: true, lastRunAt: true,
         },
       });
       return ok(rows.map(row => ({
@@ -844,6 +847,7 @@ export class FollowUpsRepository implements FollowUpsRepoPort {
         days: Array.isArray(row.daysJson) ? row.daysJson.filter((d): d is string => typeof d === 'string') : [],
         timeZone: row.timeZone,
         status: row.status,
+        sendOnly: row.sendOnly,
         nextRunAt: row.nextRunAt,
         lastRunAt: row.lastRunAt,
       })));
@@ -873,6 +877,7 @@ export class FollowUpsRepository implements FollowUpsRepoPort {
     days: readonly string[];
     timeZone: string;
     status: string;
+    sendOnly: boolean;
     nextRunAt: Date | null;
   }): Promise<Result<DigestRow, InfraError>> {
     const data = {
@@ -881,6 +886,7 @@ export class FollowUpsRepository implements FollowUpsRepoPort {
       daysJson: [...input.days] as unknown as Prisma.InputJsonValue,
       timeZone: input.timeZone,
       status: input.status,
+      sendOnly: input.sendOnly,
       nextRunAt: input.nextRunAt,
     };
     try {
@@ -890,14 +896,14 @@ export class FollowUpsRepository implements FollowUpsRepoPort {
           data,
           select: {
             id: true, larkChatId: true, timesJson: true, daysJson: true,
-            timeZone: true, status: true, nextRunAt: true, lastRunAt: true,
+            timeZone: true, status: true, sendOnly: true, nextRunAt: true, lastRunAt: true,
           },
         })
         : await this.db.followUpDigest.create({
           data: { companyId: input.companyId, departmentId: input.departmentId, ...data },
           select: {
             id: true, larkChatId: true, timesJson: true, daysJson: true,
-            timeZone: true, status: true, nextRunAt: true, lastRunAt: true,
+            timeZone: true, status: true, sendOnly: true, nextRunAt: true, lastRunAt: true,
           },
         });
       return ok({
@@ -907,6 +913,7 @@ export class FollowUpsRepository implements FollowUpsRepoPort {
         days: Array.isArray(row.daysJson) ? row.daysJson.filter((d): d is string => typeof d === 'string') : [],
         timeZone: row.timeZone,
         status: row.status,
+        sendOnly: row.sendOnly,
         nextRunAt: row.nextRunAt,
         lastRunAt: row.lastRunAt,
       });

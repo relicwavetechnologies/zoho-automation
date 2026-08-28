@@ -391,6 +391,8 @@ export type DigestSettings = {
   days: string[]
   timeZone: string
   status: string
+  /** Divo posts here and does not answer here. */
+  sendOnly: boolean
   nextRunAt: string | null
   lastRunAt: string | null
 }
@@ -423,6 +425,7 @@ export function useDigest(token?: string): Loadable & {
     days: string[]
     timeZone: string
     paused: boolean
+    sendOnly: boolean
   }) => Promise<void>
 } {
   const [digest, setDigest] = useState<DigestSettings | null>(null)
@@ -461,6 +464,7 @@ export function useDigest(token?: string): Loadable & {
     days: string[]
     timeZone: string
     paused: boolean
+    sendOnly: boolean
   }) => {
     await api.put(`${BASE}/digest`, input, token, { raw: true })
     await load()

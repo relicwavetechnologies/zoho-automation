@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   mayPrepareAttachment,
   isUntaggedGroupMessage,
+  isSendOnlyDigestRoom,
   mayPrepareAttachments,
   resolveCompanyUntaggedGroupPolicy,
   resolveUntaggedGroupPolicy,
@@ -196,5 +197,96 @@ describe('mayPrepareAttachments — message-level short circuit', () => {
       mayPrepareAttachments({ attachmentCount: 0, documentCount: 0, untagged: false, policy: ignore }),
       false,
     );
+  });
+});
+
+// ─── Send-only digest rooms ─────────────────────────────────────────────────
+
+describe('isSendOnlyDigestRoom', () => {
+
+const digestPrisma = (row: { sendOnly: boolean } | null, onCall?: (args: unknown) => void) => ({
+  followUpDigest: {
+    findFirst: async (args: unknown) => { onCall?.(args); return row; },
+  },
+  });
+
+  it('isSendOnlyDigestRoom: a digest room marked send-only silences replies', async () => {
+  assert.equal(
+    await isSendOnlyDigestRoom({
+      prisma: digestPrisma({ sendOnly: true }),
+      companyId: 'c1',
+      chatId: 'oc_digest',
+    }),
+    true,
+  );
+  });
+
+  it('isSendOnlyDigestRoom: a digest room may opt back into conversation', async () => {
+  assert.equal(
+    await isSendOnlyDigestRoom({
+      prisma: digestPrisma({ sendOnly: false }),
+      companyId: 'c1',
+      chatId: 'oc_digest',
+    }),
+    false,
+  );
+  });
+
+  it('isSendOnlyDigestRoom: an ordinary room is untouched', async () => {
+  assert.equal(
+    await isSendOnlyDigestRoom({
+      prisma: digestPrisma(null),
+      companyId: 'c1',
+      chatId: 'oc_team',
+    }),
+    false,
+  );
+  });
+
+  it('isSendOnlyDigestRoom: scoped to the company, never chatId alone', async () => {
+  // One Lark installation can serve more than one Divo company. Matching a room
+  // by id alone would let one company's digest room silence Divo in another's.
+  let seen: unknown = null;
+  await isSendOnlyDigestRoom({
+    prisma: digestPrisma({ sendOnly: true }, args => { seen = args }),
+    companyId: 'c1',
+    chatId: 'oc_digest',
+  });
+  const where = (seen as { where: Record<string, unknown> }).where;
+  assert.equal(where['companyId'], 'c1');
+  assert.equal(where['larkChatId'], 'oc_digest');
+  });
+
+  it('isSendOnlyDigestRoom: a failed lookup lets Divo answer', async () => {
+  // Fails open on purpose. Silencing Divo because a query timed out is the
+  // confusing failure — a bot that stopped responding for no visible reason —
+  // where the other direction costs one unwanted answer.
+  const warnings: string[] = [];
+  assert.equal(
+    await isSendOnlyDigestRoom({
+      prisma: {
+        followUpDigest: { findFirst: async () => { throw new Error('db down') } },
+      },
+      companyId: 'c1',
+      chatId: 'oc_digest',
+      log: { warn: (m) => { warnings.push(m) } },
+    }),
+    false,
+  );
+  assert.equal(warnings.length, 1)
+  });
+
+  it('isSendOnlyDigestRoom: nothing to look up is not a send-only room', async () => {
+  for (const missing of [{ companyId: undefined }, { chatId: undefined }] as const) {
+    assert.equal(
+      await isSendOnlyDigestRoom({
+        prisma: digestPrisma({ sendOnly: true }),
+        companyId: 'c1',
+        chatId: 'oc_digest',
+        ...missing,
+      }),
+      false,
+    );
+  }
   });
 });

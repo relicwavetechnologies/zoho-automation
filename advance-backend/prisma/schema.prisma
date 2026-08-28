@@ -3479,6 +3479,14 @@ model FollowUpDigest {
   /// IANA name. Required, never guessed.
   timeZone       String
   status         String               @default("active")
+  /// Whether this room is a delivery target rather than a conversation.
+  ///
+  /// A digest room is made for Divo to post into, so the default is that Divo
+  /// posts and nothing else: an @mention there is ambient conversation between
+  /// colleagues, recorded in the room transcript like any untagged message and
+  /// never answered. Somebody who wants Divo conversational in the same room
+  /// can turn it off, but they have to mean it.
+  sendOnly       Boolean              @default(true)
   nextRunAt      DateTime?
   lastRunAt      DateTime?
   /// The instant the last delivered digest covered up to.

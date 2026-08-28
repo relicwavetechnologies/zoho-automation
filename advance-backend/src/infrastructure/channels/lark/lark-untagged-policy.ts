@@ -125,3 +125,42 @@ export const resolveCompanyUntaggedGroupPolicy = (input: {
     attachments,
   };
 };
+
+// ─── Send-only rooms ────────────────────────────────────────────────────────
+
+/**
+ * Whether this Lark room is a follow-up digest's delivery target.
+ *
+ * A room somebody pointed a digest at is a feed, not a chat: Divo posts a
+ * schedule's output into it, and a colleague typing `@Divo` there is talking in
+ * front of the team rather than asking Divo for something. Answering turns the
+ * feed into a chat surface — and one that can fail out loud in front of
+ * everyone when a model call drops, which is exactly how this was noticed.
+ *
+ * Fails to `false`. A lookup that cannot answer must not silence Divo in a room
+ * where somebody is waiting for a reply: the mistake is recoverable that way
+ * round (an unwanted answer) and confusing the other way (a bot that stopped
+ * responding for no visible reason).
+ */
+export const isSendOnlyDigestRoom = async (input: {
+  readonly prisma: {
+    readonly followUpDigest: {
+      findFirst(args: unknown): Promise<{ readonly sendOnly: boolean } | null>;
+    };
+  } | undefined;
+  readonly companyId: string | undefined;
+  readonly chatId: string | undefined;
+  readonly log?: { warn(message: string, meta?: Record<string, unknown>): void };
+}): Promise<boolean> => {
+  if (!input.prisma || !input.companyId || !input.chatId) return false;
+  try {
+    const row = await input.prisma.followUpDigest.findFirst({
+      where: { companyId: input.companyId, larkChatId: input.chatId },
+      select: { sendOnly: true },
+    });
+    return row?.sendOnly === true;
+  } catch (error) {
+    input.log?.warn('lark.send_only_room.lookup_failed', { error: String(error) });
+    return false;
+  }
+};
