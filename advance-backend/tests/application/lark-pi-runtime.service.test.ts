@@ -1820,13 +1820,13 @@ test('the run asks for Spark when Lark supplies no choice', async () => {
 
   await service.run(runtimeInput());
 
-  // Moved off DeepSeek deliberately; DeepSeek stays selectable, it is simply no
-  // longer what a Lark run gets when nobody chose. `medium` is Spark's own
-  // default rung, and there is no `off` to fall back to — Spark reasons on
-  // every call.
-  assert.equal(runBody?.['model'], 'muse-spark-1.2-contributor');
-  assert.equal(runBody?.['provider'], 'meta');
-  assert.equal(runBody?.['thinkingLevel'], 'medium');
+  // Still Flash. Spark is in the catalogue and has a key, but neither adapter
+  // that actually runs a model can reach it yet: the backend workers hold a
+  // DeepSeek-only SDK client, and Pi's own provider registry has never heard of
+  // `meta`. Registering a model is not the same as being able to run it.
+  assert.equal(runBody?.['model'], 'deepseek-v4-flash');
+  assert.equal(runBody?.['provider'], 'deepseek');
+  assert.equal(runBody?.['thinkingLevel'], 'high');
 });
 
 test('an allowed web choice reaches the controller as the exact model and effort pair', async () => {
