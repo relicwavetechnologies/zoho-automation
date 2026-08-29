@@ -25,7 +25,7 @@ import {
   type FollowUp, type FollowUpAction, type LinkedNumber,
 } from '../data/use-follow-ups'
 import {
-  needsAttention, numberState, sinceLabel, summarizeFollowUps,
+  needsAttention, numberState, offersHistoryReread, sinceLabel, summarizeFollowUps,
   type NumberState,
 } from '../data/follow-up-summary'
 import {
@@ -523,17 +523,17 @@ function NumbersTab({ numbers, onLink }: {
                 </div>
                 <div className="ws-row-act">
                   {/*
-                    Offered whenever a number is worth looking at, not only when
-                    it is dark. Running it on a healthy number is a no-op — every
-                    message goes through the same unique key the webhook writes
-                    through — so the cost of pressing it needlessly is time.
+                    Offered for every linked number, not only ones in trouble.
+                    Running it on a healthy number is a no-op — every message
+                    goes through the same unique key the webhook writes through
+                    — so the cost of pressing it needlessly is time.
 
                     Withheld entirely when the gateway's engine has no history
                     call: a control that cannot succeed is worse than no control,
                     because the person who presses it and watches it fail stops
                     believing the rest of the page.
                   */}
-                  {needsAttention(number) && numbers.historySupported ? (
+                  {offersHistoryReread(number) && numbers.historySupported ? (
                     <button
                       type="button"
                       className="btn sm"

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  needsAttention, numberState, sinceLabel, summarizeFollowUps,
+  needsAttention, numberState, offersHistoryReread, sinceLabel, summarizeFollowUps,
 } from './follow-up-summary'
 import type { FollowUp, LinkedNumber } from './use-follow-ups'
 
@@ -120,5 +120,30 @@ describe('sinceLabel', () => {
 
   it('does not report a future timestamp as a negative age', () => {
     assert.equal(sinceLabel('2026-08-26T10:00:00Z', NOW), 'just now')
+  })
+})
+
+describe('offering a history re-read', () => {
+  it('offers it for a number nobody has messaged yet', () => {
+    /*
+     * The regression this pins. Gating the control on `needsAttention` hid it
+     * from exactly the number with the most unread history behind it: a
+     * freshly linked handset, whose backfill is sitting in the gateway
+     * unclaimed.
+     */
+    assert.equal(
+      offersHistoryReread(number({ lastSeenAt: null, awaitingFirstMessage: true })),
+      true,
+    )
+  })
+
+  it('still offers it once the number is healthy', () => {
+    // Otherwise the backfill becomes unreachable the moment somebody messages
+    // the number and it stops looking like it needs help.
+    assert.equal(offersHistoryReread(number()), true)
+  })
+
+  it('does not offer it for a number that is not linked yet', () => {
+    assert.equal(offersHistoryReread(number({ status: 'pending' })), false)
   })
 })
