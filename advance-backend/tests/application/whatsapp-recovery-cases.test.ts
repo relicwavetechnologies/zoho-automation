@@ -34,6 +34,7 @@ const SESSION: WhatsappSessionRow = {
   phoneE164: '+919876543210',
   status: 'linked',
   lastSeenAt: new Date('2026-08-25T09:00:00Z'),
+  createdAt: new Date('2026-08-01T00:00:00Z'),
   darkSince: null,
 };
 
@@ -175,6 +176,7 @@ const envelope = (id: string) => ({
 const gatewayStub = (connected: boolean) => ({
   session: async () => ok({ id: SESSION.openwaSessionId, status: connected ? 'connected' : 'disconnected' }),
   chats: async () => ok([]),
+  listSessions: async () => ok([{ id: SESSION.openwaSessionId, name: 'divo-test' }]),
 } as any);
 
 describe('WhatsApp durability — the three failure cases', () => {
@@ -327,6 +329,7 @@ describe('WhatsApp durability — the three failure cases', () => {
         layer: 'http', op: 'openwa.session', cause: 'down', message: 'gateway unavailable',
       })),
       chats: async () => ok([]),
+      listSessions: async () => ok([]),
     } as any;
 
     await new WhatsappReconcileWorker({ receipts, repo, ingest, gateway, logger: noopLogger }).runOnce();
@@ -343,6 +346,7 @@ describe('WhatsApp durability — the three failure cases', () => {
     const gateway = {
       session: async () => ok({ id: SESSION.openwaSessionId, status: 'warming_v2' }),
       chats: async () => ok([]),
+      listSessions: async () => ok([]),
     } as any;
 
     await new WhatsappReconcileWorker({ receipts, repo, ingest, gateway, logger: noopLogger }).runOnce();

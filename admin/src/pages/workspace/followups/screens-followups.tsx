@@ -40,6 +40,10 @@ import { DigestTab } from './digest-tab'
 const NUMBER_STATE: Record<NumberState, { label: string; tone: string }> = {
   healthy: { label: 'Reading', tone: 'b-ok' },
   quiet: { label: 'No messages lately', tone: 'b-warn' },
+  // Linked and working; nobody has messaged it yet. Toneless because it is
+  // neither good news nor bad — the alarm belongs to `quiet`, which means a
+  // number that *was* being read and went silent.
+  new: { label: 'Waiting for first message', tone: '' },
   gap: { label: 'Messages missing', tone: 'b-err' },
   dark: { label: 'Not connected', tone: 'b-err' },
   // Neither good nor bad — it is a step somebody is part-way through.
@@ -422,6 +426,16 @@ function NumbersTab({ numbers, onLink }: {
     setBusy(number.id)
     try {
       const result = await numbers.reread(number.id)
+      if (result.unsupported) {
+        // Not a failure to retry. The list refreshes with `historySupported`
+        // false, so the control disappears rather than inviting another go.
+        notify.done(
+          `Divo reads ${number.label} from now on`,
+          'This WhatsApp connection cannot fetch older messages, so past conversations stay invisible. '
+          + 'Anything sent from here on is read normally.',
+        )
+        return
+      }
       if (!result.complete) {
         // A partial repair leaves the gap marker in place. Saying "done" would
         // retire the only signal that messages are still missing.
@@ -513,8 +527,13 @@ function NumbersTab({ numbers, onLink }: {
                     it is dark. Running it on a healthy number is a no-op — every
                     message goes through the same unique key the webhook writes
                     through — so the cost of pressing it needlessly is time.
+
+                    Withheld entirely when the gateway's engine has no history
+                    call: a control that cannot succeed is worse than no control,
+                    because the person who presses it and watches it fail stops
+                    believing the rest of the page.
                   */}
-                  {needsAttention(number) ? (
+                  {needsAttention(number) && numbers.historySupported ? (
                     <button
                       type="button"
                       className="btn sm"

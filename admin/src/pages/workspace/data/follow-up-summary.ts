@@ -39,7 +39,7 @@ export function summarizeFollowUps(items: FollowUp[], now = new Date()): FollowU
  * button exists to close, and the number would look fine while a client's
  * messages were still absent.
  */
-export type NumberState = 'pending' | 'dark' | 'gap' | 'quiet' | 'healthy'
+export type NumberState = 'pending' | 'dark' | 'gap' | 'quiet' | 'new' | 'healthy'
 
 export function numberState(number: LinkedNumber): NumberState {
   if (number.status === 'pending') return 'pending'
@@ -47,10 +47,25 @@ export function numberState(number: LinkedNumber): NumberState {
   // Connected again, but the messages sent while it was down are still missing.
   if (number.darkSince !== null) return 'gap'
   if (number.stale) return 'quiet'
+  /*
+   * Linked, and simply has not been messaged yet.
+   *
+   * Checked after `stale` so it can only describe a number still inside its
+   * grace. Before this existed, a handset scanned a minute ago was reported as
+   * "no messages lately" and raised the banner that tells the team their counts
+   * are an undercount — the alarm meant for a number that died, shown for one
+   * that is working perfectly and merely new.
+   */
+  if (number.awaitingFirstMessage) return 'new'
   return 'healthy'
 }
 
-/** Whether this number has something a person should act on. */
+/**
+ * Whether this number has something a person should act on.
+ *
+ * `new` is deliberately absent: nothing is wrong and there is nothing to do but
+ * wait for somebody to message it.
+ */
 export function needsAttention(number: LinkedNumber): boolean {
   const state = numberState(number)
   return state === 'dark' || state === 'gap' || state === 'quiet'

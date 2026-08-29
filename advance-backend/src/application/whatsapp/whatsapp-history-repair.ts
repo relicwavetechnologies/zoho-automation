@@ -37,6 +37,17 @@ export interface HistoryRepairReport {
   readonly chatsRead: number;
   readonly messagesRecovered: number;
   readonly failures: readonly { readonly chat: string; readonly error: string }[];
+  /**
+   * The engine behind the gateway cannot read history at all.
+   *
+   * Not a failure to retry and not a gap to keep flagged — a capability that is
+   * absent. Baileys, which is what Divo runs to avoid a browser per handset,
+   * answers `501 Not Implemented` for every chat, so a repair reports thirty
+   * chats read and thirty failures and recovers nothing, forever. Saying that
+   * plainly is the difference between a screen that offers a button which
+   * cannot work and one that tells the team Divo reads forward only.
+   */
+  readonly unsupported: boolean;
 }
 
 export interface HistoryRepairOptions {
@@ -54,10 +65,29 @@ export interface HistoryRepairOptions {
 
 const DEFAULTS = { chatLimit: 30, perChat: 50, pacingMs: 1500 } as const;
 
+/** How a gateway says the active engine does not implement a call. */
+const UNSUPPORTED_PATTERN = /\b501\b|not implemented|not supported by the active engine/i;
+
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 export class WhatsappHistoryRepair {
   private readonly log: Logger;
+
+  /**
+   * Whether the gateway's engine can read history at all.
+   *
+   * Remembered from the gateway's own answer rather than configured here, so
+   * the gateway stays the authority and swapping the engine needs no change on
+   * this side. In memory on purpose: it is a cache of a fact, and the cost of
+   * losing it on restart is one wasted click, whereas storing it would mean a
+   * migration to record something the gateway can already be asked.
+   */
+  private historyUnsupported = false;
+
+  /** False once the gateway has said it cannot read history. */
+  get historySupported(): boolean {
+    return !this.historyUnsupported;
+  }
 
   constructor(
     private readonly deps: {
@@ -135,6 +165,15 @@ export class WhatsappHistoryRepair {
       }
     }
 
+    // Every chat refused for the same reason the engine gives when it simply
+    // does not implement the call. One such refusal could be a fluke; all of
+    // them, with nothing read, is the gateway telling us the capability is not
+    // there.
+    const unsupported = targets.length > 0
+      && failures.length === targets.length
+      && failures.every(failure => UNSUPPORTED_PATTERN.test(failure.error));
+    if (unsupported) this.historyUnsupported = true;
+
     // Only a completed pass clears the mark. A repair that gave up half way
     // still leaves a hole, and saying otherwise would retire the one signal
     // anybody has that messages are missing.
@@ -148,9 +187,13 @@ export class WhatsappHistoryRepair {
       chatsRead: targets.length,
       messagesRecovered,
       failures: failures.length,
+      unsupported,
+      // The reasons, not merely how many. A bare count sent somebody to a
+      // server over SSH to discover that all thirty were the same 501.
+      failureReasons: [...new Set(failures.map(failure => failure.error))].slice(0, 3),
       gapCleared: failures.length === 0,
     });
 
-    return ok({ chatsRead: targets.length, messagesRecovered, failures });
+    return ok({ chatsRead: targets.length, messagesRecovered, failures, unsupported });
   }
 }

@@ -12,6 +12,14 @@ export interface WhatsappSessionRow {
   readonly phoneE164: string | null;
   readonly status: string;
   readonly lastSeenAt: Date | null;
+  /**
+   * When the handset was linked.
+   *
+   * Load-bearing, not bookkeeping: it is the clock the staleness alarm starts
+   * from before a first message ever arrives. Without it "never heard from"
+   * and "stopped being heard from" are the same null.
+   */
+  readonly createdAt: Date;
   /** Set while an unresolved gap exists. Null means nothing known to be missing. */
   readonly darkSince: Date | null;
 }
@@ -206,9 +214,12 @@ export class WhatsappRepository implements WhatsappRepoPort {
    * gateway restart — and nothing anywhere would say so. Follow-ups would simply
    * stop appearing for that number, which reads exactly like a quiet week.
    *
-   * A session that has never been seen is included once it is `linked`, because
-   * "linked but never delivered a message" is the same failure wearing a
-   * different face.
+   * A session that has never been seen is included once it is `linked` *and*
+   * old enough — "linked but never delivered a message" is the same failure
+   * wearing a different face, but only after the same grace every other handset
+   * gets. Measuring a never-seen session from `createdAt` rather than treating
+   * null as instantly stale is what stops a number scanned a minute ago from
+   * raising the alarm meant for one that died yesterday.
    */
   async listStaleSessions(quietSince: Date): Promise<Result<readonly WhatsappSessionRow[], InfraError>> {
     try {
@@ -217,7 +228,10 @@ export class WhatsappRepository implements WhatsappRepoPort {
           OR: [
             {
               status: 'linked',
-              OR: [{ lastSeenAt: null }, { lastSeenAt: { lt: quietSince } }],
+              OR: [
+                { lastSeenAt: null, createdAt: { lt: quietSince } },
+                { lastSeenAt: { lt: quietSince } },
+              ],
             },
             // A disconnected row stays probeable so a recovered gateway session
             // can restore it without somebody reopening the pairing dialog.
@@ -407,5 +421,6 @@ const SESSION_SELECT = {
   phoneE164: true,
   status: true,
   lastSeenAt: true,
+  createdAt: true,
   darkSince: true,
 } as const;

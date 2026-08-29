@@ -35,6 +35,9 @@ import { classifyGatewaySessionStatus } from '../../domain/follow-ups/session-st
 
 const RECOVERY_BATCH = 25;
 const CHAT_REFRESH_INTERVAL_MS = 30 * 60_000;
+/** Hourly. An orphan is a slow leak, not an incident. */
+const ORPHAN_SCAN_INTERVAL_MS = 60 * 60_000;
+
 const PRUNE_INTERVAL_MS = 6 * 60 * 60_000;
 const PRUNE_BATCH = 500;
 
@@ -61,6 +64,10 @@ export class WhatsappReconcileWorker {
   // fiction.
   private lastChatRefreshAt = 0;
   private lastPruneAt = Date.now();
+  // Started full, like the prune clock above: an orphan is a slow leak, and
+  // listing the gateway on every boot would cost a round trip on each restart
+  // to answer a question that changes over hours.
+  private lastOrphanScanAt = Date.now();
 
   constructor(private readonly deps: WhatsappReconcileDeps) {
     this.log = deps.logger.child({ service: 'whatsapp-reconcile' });
@@ -101,8 +108,14 @@ export class WhatsappReconcileWorker {
         pruned = await this.pruneTranscript();
       }
 
-      if (recovered || alarms || renamed || pruned) {
-        this.log.info('whatsapp_reconcile.tick', { recovered, alarms, renamed, pruned });
+      let orphans = 0;
+      if (now - this.lastOrphanScanAt >= ORPHAN_SCAN_INTERVAL_MS) {
+        this.lastOrphanScanAt = now;
+        orphans = await this.reportGatewayOrphans();
+      }
+
+      if (recovered || alarms || renamed || pruned || orphans) {
+        this.log.info('whatsapp_reconcile.tick', { recovered, alarms, renamed, pruned, orphans });
       }
     } finally {
       this.running = false;
@@ -250,6 +263,42 @@ export class WhatsappReconcileWorker {
     }
 
     return alarms;
+  }
+
+  /**
+   * Gateway sessions Divo has no row for.
+   *
+   * Invisible in every other view: the follow-ups page lists Divo's rows, so a
+   * session the gateway holds and Divo does not appears nowhere at all, while
+   * it keeps a connection retrying forever. Three accumulated from one
+   * afternoon of a team retrying a link, and the only reason anybody found out
+   * was a shell on the server.
+   *
+   * Reported, never deleted. A session with no row may be mid-link in another
+   * process, and removing somebody's half-scanned handset to tidy a log is a
+   * far worse outcome than a warning nobody reads for a day.
+   */
+  private async reportGatewayOrphans(): Promise<number> {
+    const remote = await this.deps.gateway.listSessions();
+    if (!remote.ok) {
+      this.log.warn('whatsapp_reconcile.orphan_scan_failed', { error: remote.error.message });
+      return 0;
+    }
+    const known = await this.deps.repo.listLinkedSessions();
+    if (!known.ok) {
+      this.log.warn('whatsapp_reconcile.orphan_scan_failed', { error: known.error.message });
+      return 0;
+    }
+
+    const mine = new Set(known.value.map(session => session.openwaSessionId));
+    const orphans = remote.value.filter(session => session.id && !mine.has(session.id));
+    if (orphans.length > 0) {
+      this.log.warn('whatsapp_reconcile.gateway_orphans', {
+        count: orphans.length,
+        sessions: orphans.slice(0, 10).map(session => ({ id: session.id, name: session.name })),
+      });
+    }
+    return orphans.length;
   }
 
   /** Fill in group subjects, which webhook payloads never carry. */

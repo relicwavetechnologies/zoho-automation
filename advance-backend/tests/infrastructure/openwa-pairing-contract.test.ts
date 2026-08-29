@@ -65,3 +65,51 @@ describe('pairing', () => {
     mock.restoreAll();
   });
 });
+
+/**
+ * Creating a session on a gateway that starts sessions for you.
+ *
+ * Divo runs the gateway with `AUTO_START_SESSIONS`, so by the time the start
+ * call lands the engine is already up and the gateway answers
+ * `400 Session is already started`. Reading that as a failure is what made the
+ * link dialog say "Divo could not confirm whether the number finished
+ * provisioning" on the first attempt every single time, while the gateway's own
+ * log recorded the session as created — four sessions built and abandoned
+ * before one stuck.
+ */
+describe('creating a session', () => {
+  const sequence = (responses: { status: number; body: unknown }[]) => {
+    let call = 0;
+    mock.method(globalThis, 'fetch', async () => {
+      const next = responses[Math.min(call, responses.length - 1)]!;
+      call += 1;
+      return new Response(JSON.stringify(next.body), {
+        status: next.status,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+  };
+
+  it('treats "already started" as the session being up, not as a failure', async () => {
+    sequence([
+      { status: 201, body: { id: 's-9', name: 'divo-dept-hash-desk', status: 'created' } },
+      { status: 400, body: { message: 'Session is already started', error: 'Bad Request', statusCode: 400 } },
+    ]);
+    const result = await client().createSession('divo-dept-hash-desk');
+    assert.equal(result.ok, true);
+    assert.equal(result.ok && result.value.id, 's-9');
+    mock.restoreAll();
+  });
+
+  it('still fails on a 400 that is not the benign one', async () => {
+    // The tolerance is for one exact gateway answer. A rejected id or a
+    // malformed body must still surface, or this becomes a blanket swallow.
+    sequence([
+      { status: 201, body: { id: 's-9', name: 'divo-dept-hash-desk', status: 'created' } },
+      { status: 400, body: { message: 'property id should not exist', error: 'Bad Request', statusCode: 400 } },
+    ]);
+    const result = await client().createSession('divo-dept-hash-desk');
+    assert.equal(result.ok, false);
+    mock.restoreAll();
+  });
+});

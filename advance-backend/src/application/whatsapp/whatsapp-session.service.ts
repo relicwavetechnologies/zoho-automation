@@ -67,6 +67,14 @@ export interface LinkedSessionView {
   /** True once the handset has been quiet longer than the alarm allows. */
   readonly stale: boolean;
   /**
+   * Linked, still inside its grace, and no message has ever arrived.
+   *
+   * A normal state for a number somebody just scanned, and the reason it is
+   * named rather than folded into `stale`: the screen needs to say "waiting for
+   * its first message" instead of raising the alarm meant for a dead handset.
+   */
+  readonly awaitingFirstMessage: boolean;
+  /**
    * When delivery is believed to have stopped, while the gap is still unfilled.
    *
    * Survives the handset reconnecting on purpose. Once messages flow again every
@@ -139,16 +147,27 @@ export class WhatsappSessionService {
     // OpenWA assigns the id, but it returns this name from `GET /sessions`.
     // Binding the reviewed request to a stable name lets a retry adopt a session
     // whose create/start response was lost instead of creating another one.
-    const gatewayName = [
+    // Identity is the department and the request, never the label.
+    //
+    // The label is on the end for whoever reads the gateway's session list, but
+    // it is deliberately not matched on. It is a display name people retype: a
+    // team linking one handset went "rishi live" → "liveband rishi" → "booking
+    // sagar lalwani" → the number itself, and because the old rule matched the
+    // whole string, every correction minted a *new* session instead of adopting
+    // the one already there. Three were left running, paired to nothing, while
+    // the dialog kept promising it would not create a second.
+    const gatewayPrefix = [
       'divo',
       input.departmentId.slice(0, 8),
       sha256(input.requestId).slice(0, 12),
-      slug(input.label).slice(0, 24),
     ].join('-');
+    const gatewayName = `${gatewayPrefix}-${slug(input.label).slice(0, 24)}`;
+    const isOurs = (name: string | undefined): boolean =>
+      typeof name === 'string' && (name === gatewayPrefix || name.startsWith(`${gatewayPrefix}-`));
 
     const listed = await this.deps.gateway.listSessions();
     if (!listed.ok) return listed;
-    let remote = listed.value.find(session => session.name === gatewayName);
+    let remote = listed.value.find(session => isOurs(session.name));
 
     if (!remote) {
       const created = await this.deps.gateway.createSession(gatewayName);
@@ -159,7 +178,7 @@ export class WhatsappSessionService {
         // was lost. Re-read by deterministic name before declaring uncertainty.
         const recovered = await this.deps.gateway.listSessions();
         remote = recovered.ok
-          ? recovered.value.find(session => session.name === gatewayName)
+          ? recovered.value.find(session => isOurs(session.name))
           : undefined;
         if (!remote) return err(provisionUnknown(created.error));
       }
@@ -350,8 +369,18 @@ export class WhatsappSessionService {
 }
 
 function toView(row: WhatsappSessionRow, now: number): LinkedSessionView {
-  const stale = row.status === 'linked'
-    && (row.lastSeenAt === null || now - row.lastSeenAt.getTime() > SESSION_STALE_AFTER_MS);
+  /*
+   * A handset that has never spoken is not a handset that stopped speaking.
+   *
+   * `lastSeenAt` is null until the first webhook arrives, and the old rule read
+   * that as instantly stale — so a number linked ninety seconds ago raised the
+   * same alarm as one silent since yesterday, and the page told the team their
+   * follow-up counts were an undercount when nothing was missing at all. A new
+   * number gets the same grace as any other, measured from when it was linked,
+   * because that is the moment it could first have been heard from.
+   */
+  const since = row.lastSeenAt ?? row.createdAt;
+  const stale = row.status === 'linked' && now - since.getTime() > SESSION_STALE_AFTER_MS;
   return {
     id: row.id,
     label: row.label,
@@ -359,6 +388,10 @@ function toView(row: WhatsappSessionRow, now: number): LinkedSessionView {
     status: row.status,
     lastSeenAt: row.lastSeenAt,
     stale,
+    // Told apart from `stale` on purpose: one is "waiting for its first
+    // message", which is neither wrong nor actionable, and the other is "this
+    // was working and has gone quiet", which somebody has to look at.
+    awaitingFirstMessage: row.status === 'linked' && row.lastSeenAt === null && !stale,
     darkSince: row.darkSince,
   };
 }

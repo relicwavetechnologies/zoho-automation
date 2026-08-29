@@ -16,7 +16,7 @@ const item = (over: Partial<FollowUp> = {}): FollowUp => ({
 
 const number = (over: Partial<LinkedNumber> = {}): LinkedNumber => ({
   id: 's-1', label: 'Bookings desk', phoneE164: '+919876543210',
-  status: 'linked', lastSeenAt: NOW.toISOString(), stale: false,
+  status: 'linked', lastSeenAt: NOW.toISOString(), stale: false, awaitingFirstMessage: false,
   darkSince: null, ...over,
 })
 
@@ -74,6 +74,26 @@ describe('numberState', () => {
 
   it('reports a number still being linked as pending', () => {
     assert.equal(numberState(number({ status: 'pending' })), 'pending')
+  })
+
+  it('does not raise the dead-handset alarm for a number nobody has messaged yet', () => {
+    /*
+     * The bug this exists to stop: a handset linked minutes earlier reported
+     * "no messages lately" and raised the banner telling the team every count
+     * on the page was an undercount. Nothing was missing — nobody had written
+     * to it. The alarm belongs to a number that *was* read and went silent.
+     */
+    const fresh = number({ lastSeenAt: null, awaitingFirstMessage: true })
+    assert.equal(numberState(fresh), 'new')
+    assert.equal(needsAttention(fresh), false)
+  })
+
+  it('still calls a number that went silent quiet, not new', () => {
+    // Once the grace is spent the server sets `stale` and clears the other, so
+    // the real alarm survives this change.
+    const silent = number({ lastSeenAt: null, stale: true, awaitingFirstMessage: false })
+    assert.equal(numberState(silent), 'quiet')
+    assert.equal(needsAttention(silent), true)
   })
 })
 
