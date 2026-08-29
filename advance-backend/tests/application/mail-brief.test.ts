@@ -173,14 +173,14 @@ describe('composing a brief', () => {
     // its `want` sentence may reach the brief. Otherwise a hallucination puts
     // words in a colleague's mouth, in a message that looks like a real report.
     const compose = createMailBriefComposer({
-      model: modelReturning(JSON.stringify({
+      resolveModel: async () => (modelReturning(JSON.stringify({
         wants: [{
           index: 0,
           want: 'Wants the revised cap confirmed before Friday.',
           from: 'Somebody Else <nobody@example.com>',
           subject: 'An email that never arrived',
         }],
-      })) as never,
+      })) as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose(window);
@@ -193,9 +193,9 @@ describe('composing a brief', () => {
 
   it('drops an index that does not exist rather than repairing it', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning(
+      resolveModel: async () => (modelReturning(
         '{"wants":[{"index":99,"want":"Needs a decision."}]}',
-      ) as never,
+      ) as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose(window);
@@ -205,7 +205,7 @@ describe('composing a brief', () => {
 
   it('says nothing needs you, rather than staying silent', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose(window);
@@ -221,7 +221,7 @@ describe('composing a brief', () => {
    */
   it('says so when the model could not be read, and still reports the rules', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('I could not do that.') as never,
+      resolveModel: async () => (modelReturning('I could not do that.') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose(window);
@@ -273,7 +273,7 @@ describe('composing a brief', () => {
 
   it('sends a card, so Lark renders the brief instead of printing its markup', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const card = readCard((await compose(window)).card);
@@ -297,7 +297,7 @@ describe('composing a brief', () => {
    */
   it('opens the body on the verdict, and carries it into the notification', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose(window);
@@ -319,7 +319,7 @@ describe('composing a brief', () => {
    */
   it('names itself with a badge rather than a title band', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose(window);
@@ -347,7 +347,7 @@ describe('composing a brief', () => {
       occurredAt: at(`2026-08-10T02:00:0${i % 10}.000Z`),
     }));
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({ ...window, messages: many, handled: [] });
@@ -373,7 +373,7 @@ describe('composing a brief', () => {
       occurredAt: at(`2026-08-10T02:00:0${i % 10}.000Z`),
     }));
     const compose = createMailBriefComposer({
-      model: modelReturning('I could not do that.') as never,
+      resolveModel: async () => (modelReturning('I could not do that.') as never), modelId: 'deepseek-v4-flash',
     });
 
     const markdown = cardMarkdown(
@@ -395,9 +395,9 @@ describe('composing a brief', () => {
       occurredAt: new Date(Date.parse('2026-08-10T03:00:00.000Z') - i * 60_000),
     }));
     const compose = createMailBriefComposer({
-      model: modelReturning(JSON.stringify({
+      resolveModel: async () => (modelReturning(JSON.stringify({
         wants: [{ index: 0, want: 'Needs a decision.' }, { index: 1, want: 'Needs another.' }],
-      })) as never,
+      })) as never), modelId: 'deepseek-v4-flash',
     });
 
     const markdown = cardMarkdown(
@@ -414,7 +414,7 @@ describe('composing a brief', () => {
    */
   it('caps the rule footnote too, and counts what it left out', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({
@@ -453,7 +453,7 @@ describe('composing a brief', () => {
    */
   it('is a verdict and a footer when there is nothing else to say', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({ ...window, messages: [], handled: [] });
@@ -471,9 +471,9 @@ describe('composing a brief', () => {
    */
   it('carries no card markup into the text rendering', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning(JSON.stringify({
+      resolveModel: async () => (modelReturning(JSON.stringify({
         wants: [{ index: 0, want: 'Wants the revised cap confirmed before Friday.' }],
-      })) as never,
+      })) as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose(window);
@@ -496,7 +496,7 @@ describe('composing a brief', () => {
    */
   it('carries the degraded verdict into the opening line and the notification', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('I could not do that.') as never,
+      resolveModel: async () => (modelReturning('I could not do that.') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose(window);
@@ -514,7 +514,7 @@ describe('composing a brief', () => {
    */
   it('offers a way through to the rules page', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
       appBaseUrl: 'https://divo.example.com',
     });
 
@@ -545,7 +545,7 @@ describe('composing a brief', () => {
   it('drops the button rather than pointing it somewhere useless', async () => {
     for (const appBaseUrl of [undefined, '', '   ', 'not a url', 'javascript:alert(1)']) {
       const compose = createMailBriefComposer({
-        model: modelReturning('{"wants":[]}') as never,
+        resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
         ...(appBaseUrl === undefined ? {} : { appBaseUrl }),
       });
 
@@ -570,7 +570,7 @@ describe('composing a brief', () => {
    */
   it('does not call a mailbox nobody is watching a quiet one', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({
@@ -594,9 +594,9 @@ describe('composing a brief', () => {
    */
   it('says nobody is watching even when the model named mail', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning(
+      resolveModel: async () => (modelReturning(
         '{"wants":[{"index":0,"want":"Needs a decision."}]}',
-      ) as never,
+      ) as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({ ...window, mailboxActive: false });
@@ -611,9 +611,9 @@ describe('composing a brief', () => {
    */
   it('takes a link in a subject down to the words, and drops where it pointed', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning(JSON.stringify({
+      resolveModel: async () => (modelReturning(JSON.stringify({
         wants: [{ index: 0, want: 'Needs a decision.' }],
-      })) as never,
+      })) as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({
@@ -643,7 +643,7 @@ describe('composing a brief', () => {
    */
   it('cannot be defeated by nesting the link or dropping its scheme', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     for (const subject of [
@@ -674,7 +674,7 @@ describe('composing a brief', () => {
    */
   it('leaves ordinary punctuation in a subject alone', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({
@@ -701,7 +701,7 @@ describe('composing a brief', () => {
    */
   it('removes a link from a subject without spaces without eating the subject', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({
@@ -728,7 +728,7 @@ describe('composing a brief', () => {
    */
   it('never truncates through an emoji', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[{"index":0,"want":"Needs a decision."}]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({
@@ -759,7 +759,7 @@ describe('composing a brief', () => {
    */
   it('names a rule whose name is nothing but markup', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({
@@ -780,9 +780,9 @@ describe('composing a brief', () => {
    */
   it('cannot have its markup broken by a subject line', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning(JSON.stringify({
+      resolveModel: async () => (modelReturning(JSON.stringify({
         wants: [{ index: 0, want: 'Needs a decision.' }],
-      })) as never,
+      })) as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({
@@ -825,11 +825,11 @@ describe('composing a brief', () => {
     // order recency, so the composer must not inherit it — slicing it directly
     // showed the twelve oldest and hid every one of the newest eight.
     const compose = createMailBriefComposer({
-      model: modelReturning(JSON.stringify({
+      resolveModel: async () => (modelReturning(JSON.stringify({
         wants: [...many.keys()].reverse().map(i => ({
           index: i, want: `Needs a decision ${i}.`,
         })),
-      })) as never,
+      })) as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose({ ...window, messages: many, handled: [] });
@@ -851,7 +851,7 @@ describe('composing a brief', () => {
 
   it('leaves out rules that did nothing', async () => {
     const compose = createMailBriefComposer({
-      model: modelReturning('{"wants":[]}') as never,
+      resolveModel: async () => (modelReturning('{"wants":[]}') as never), modelId: 'deepseek-v4-flash',
     });
 
     const brief = await compose(window);

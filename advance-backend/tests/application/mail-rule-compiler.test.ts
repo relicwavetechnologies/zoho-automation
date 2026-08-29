@@ -14,7 +14,7 @@ import {
  */
 const compileWith = (reply: unknown): Promise<MailRuleCompilation> =>
   createMailRuleCompiler({
-    model: {
+    resolveModel: async () => ({
       specificationVersion: 'v2',
       provider: 'test',
       modelId: 'test',
@@ -27,7 +27,7 @@ const compileWith = (reply: unknown): Promise<MailRuleCompilation> =>
       }),
       doStream: async () => { throw new Error('not used'); },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    } as any,
+    } as any), modelId: 'deepseek-v4-flash',
   })({ sentence: 'test', mailboxEmail: 'abhishek@emiactech.com' });
 
 describe('extractJson', () => {
@@ -225,7 +225,7 @@ describe('a sentence that names different people for different mail', () => {
     // longest, most structured output this prompt produces is exactly where a
     // fenced reply used to cost somebody their rule.
     const out = await createMailRuleCompiler({
-      model: {
+      resolveModel: async () => ({
         specificationVersion: 'v2',
         provider: 'test',
         modelId: 'test',
@@ -241,7 +241,7 @@ describe('a sentence that names different people for different mail', () => {
         }),
         doStream: async () => { throw new Error('not used'); },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      } as any,
+      } as any), modelId: 'deepseek-v4-flash',
     })({ sentence: 'test', mailboxEmail: 'abhishek@emiactech.com' });
     assert.equal(out.status, 'compiled');
   });

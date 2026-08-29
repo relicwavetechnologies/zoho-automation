@@ -320,7 +320,6 @@ import { isApiKeyExhausted } from './application/governance/api-key-exhaustion.c
 import type { ApiKeyProvider } from './application/governance/api-key-exhaustion.classifier';
 
 // AI model
-import { createDeepSeek } from '@ai-sdk/deepseek';
 import { createBackendModelResolver } from './application/proxy/backend-model.factory';
 import { wrapLanguageModel, type LanguageModel } from 'ai';
 import { OpenWaClient } from './infrastructure/whatsapp/openwa.client';
@@ -831,20 +830,20 @@ export async function buildContainer(
   // deterministic paths rather than failing to boot.
   /*
  * Backend-side jobs resolve their model per company from the Guardrails key
- * store. The `deepSeek` client below still serves the workers not yet moved
- * across; each one that moves loses a dependency on a process-wide key.
+ * store, and every one of them now does. Nothing here reads
+ * `DEEPSEEK_API_KEY` any more: the model id chooses the provider and the
+ * admin's key pays for it, so a provider change is a setting rather than a
+ * redeploy, and an exhausted account is a message on the Guardrails page
+ * rather than seven background jobs failing in seven different ways.
  */
-const backendModel = createBackendModelResolver({
-  keys: proxyKeyStore,
-  baseUrls: {
-    deepseek: env.DEEPSEEK_BASE_URL,
-    openai: env.OPENAI_BASE_URL,
-    meta: env.META_BASE_URL,
-  },
-});
-
-const deepSeek = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_API_KEY } : {});
-  const deepSeekModel = (modelId: string) => deepSeek(modelId);
+  const backendModel = createBackendModelResolver({
+    keys: proxyKeyStore,
+    baseUrls: {
+      deepseek: env.DEEPSEEK_BASE_URL,
+      openai: env.OPENAI_BASE_URL,
+      meta: env.META_BASE_URL,
+    },
+  });
 
   // Backend-side inference is now background work only.
   //
@@ -858,15 +857,21 @@ const deepSeek = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_AP
   // The `provider`/`modelId` columns on aiModelTargetConfig — the "primary"
   // model — no longer select anything; they belonged to the deleted in-backend
   // engine. Only the fast target is read.
-  // Pinned to DeepSeek, not the configurable target: Divo runs DeepSeek
-  // everywhere else, and letting a room's compaction silently switch provider
-  // would change what every later turn in that room is told it already knows.
-  const summarizationModel = deepSeekModel(env.GROUP_SUMMARY_MODEL_ID);
 
   const chatContextService = new LarkChatContextService({
     repo: larkChatContextRepo,
     // Request RBAC stays with the live run; this only condenses stored text.
-    model: summarizationModel,
+    /*
+     * Whatever the platform runs on, on the key an admin manages.
+     *
+     * The note that used to sit here said this was pinned to DeepSeek because
+     * "Divo runs DeepSeek everywhere else" — true when written, false since
+     * every member moved to Spark, and by then the pin was holding a room's
+     * memory on a provider whose account had run dry. Compaction fell back to
+     * the deterministic summary with nothing saying why.
+     */
+    resolveModel: backendModel,
+    modelId: env.GROUP_SUMMARY_MODEL_ID,
     logger: logger.child({ service: 'chat-context' }),
   });
   const groupContextHydrator = new GroupContextHydrator({
@@ -1713,7 +1718,7 @@ const deepSeek = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_AP
     prisma,
     queue: personaLearningQueue,
     extractor: new DeepSeekPersonaLearningExtractor(
-      deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+      backendModel,
       env.PERSONA_LEARNING_MODEL_ID,
     ),
     logger,
@@ -1998,7 +2003,7 @@ const deepSeek = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_AP
     prisma,
     queue: knowledgeLearningQueue,
     extractor: new DeepSeekKnowledgeLearningExtractor(
-      deepSeekModel(env.KNOWLEDGE_LEARNING_MODEL_ID),
+      backendModel,
       env.KNOWLEDGE_LEARNING_MODEL_ID,
     ),
     personalMemoryCommands,
@@ -2234,11 +2239,13 @@ const deepSeek = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_AP
   // Same model the other background readers use — this is a small, strict
   // extraction, not a conversation.
   const compileMailRule = createMailRuleCompiler({
-    model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+    resolveModel: backendModel,
+    modelId: env.PERSONA_LEARNING_MODEL_ID,
   });
 
   const judgeMailMessage = createMailRuleJudge({
-    model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+    resolveModel: backendModel,
+    modelId: env.PERSONA_LEARNING_MODEL_ID,
     // Without this, a rule holding one message in five is indistinguishable
     // from one holding none: the answer that could not be read was discarded
     // and the member only ever saw a fixed sentence.
@@ -2246,7 +2253,8 @@ const deepSeek = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_AP
   });
 
   const composeMailBrief = createMailBriefComposer({
-    model: deepSeekModel(env.PERSONA_LEARNING_MODEL_ID),
+    resolveModel: backendModel,
+    modelId: env.PERSONA_LEARNING_MODEL_ID,
     appBaseUrl: env.APP_BASE_URL,
   });
 
@@ -2272,7 +2280,8 @@ const deepSeek = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_AP
     purchaseOrderStaging: new PrismaStagedPurchaseOrderStore(prisma),
     billStaging:     new PrismaStagedBillStore(prisma),
     invoiceReviewer: createInvoiceReviewer({
-      model: deepSeekModel(env.ZOHO_INVOICE_REVIEW_MODEL_ID),
+      resolveModel: backendModel,
+      modelId: env.ZOHO_INVOICE_REVIEW_MODEL_ID,
       logger: logger.child({ service: 'zoho-invoice-reviewer' }),
     }),
     conversationHistory: conversationRepo,

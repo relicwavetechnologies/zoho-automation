@@ -53,7 +53,19 @@ export class BackendModelUnavailable extends Error {
 
 export type BackendModelResolver = (input: {
   modelId: string;
-  companyId: string;
+  /**
+   * Whose key pays for this call.
+   *
+   * Optional because not every background job knows one. Follow-up analysis
+   * reads a specific company's chats and can say; a Lark room compaction or a
+   * mail-rule compile sits behind layers that never carried a company through,
+   * and threading one down purely to look multi-tenant would be a change to
+   * five subsystems for a value nothing yet reads. Omitting it resolves the
+   * platform key, which is what those calls have always effectively used —
+   * the difference now is that it comes from the store an admin manages rather
+   * than from whatever the process was started with.
+   */
+  companyId?: string;
 }) => Promise<LanguageModel>;
 
 export function createBackendModelResolver(deps: BackendModelFactoryDeps): BackendModelResolver {
@@ -68,8 +80,11 @@ export function createBackendModelResolver(deps: BackendModelFactoryDeps): Backe
 
   return async ({ modelId, companyId }) => {
     const provider = providerOf(modelId);
-    const resolved = await deps.keys.resolve(provider, companyId);
-    if (!resolved) throw new BackendModelUnavailable(provider, companyId);
+    // An empty scope matches no company row, so the store falls through to the
+    // platform key by its own precedence rather than a second rule here.
+    const scope = companyId ?? '';
+    const resolved = await deps.keys.resolve(provider, scope);
+    if (!resolved) throw new BackendModelUnavailable(provider, scope || 'platform');
 
     const cacheKey = `${provider}:${modelId}:${resolved.key.slice(-8)}`;
     const cached = clients.get(cacheKey);

@@ -96,9 +96,9 @@ describe('mail rule judge', () => {
 
   describe('reading the model', () => {
     it('takes a yes with its reasoning and confidence', async () => {
-      const judge = createMailRuleJudge({ model: modelReturning(
+      const judge = createMailRuleJudge({ resolveModel: async () => (modelReturning(
         '{"answer":true,"confidence":0.94,"reason":"Dated invoice with a total and a PDF."}',
-      ) as never });
+      ) as never), modelId: 'deepseek-v4-flash'});
 
       assert.deepEqual(
         await judge({ judge: { question: 'Is this a real invoice?' }, message }),
@@ -111,9 +111,9 @@ describe('mail rule judge', () => {
     });
 
     it('takes a no, and reads through a code fence', async () => {
-      const judge = createMailRuleJudge({ model: modelReturning(
+      const judge = createMailRuleJudge({ resolveModel: async () => (modelReturning(
         '```json\n{"answer":false,"reason":"A webinar promotion with an unsubscribe link."}\n```',
-      ) as never });
+      ) as never), modelId: 'deepseek-v4-flash'});
 
       const verdict = await judge({
         judge: { question: 'Is this a real invoice?' },
@@ -133,7 +133,7 @@ describe('mail rule judge', () => {
      */
     it('treats an unreadable answer as unavailable, not as a rejection', async () => {
       const judge = createMailRuleJudge({
-        model: modelReturning('Sure! I think this one is fine.') as never,
+        resolveModel: async () => (modelReturning('Sure! I think this one is fine.') as never), modelId: 'deepseek-v4-flash',
       });
 
       const verdict = await judge({
@@ -146,9 +146,9 @@ describe('mail rule judge', () => {
     });
 
     it('an answer outside the schema is unavailable rather than coerced', async () => {
-      const judge = createMailRuleJudge({ model: modelReturning(
+      const judge = createMailRuleJudge({ resolveModel: async () => (modelReturning(
         '{"answer":"probably","reason":"Hard to say."}',
-      ) as never });
+      ) as never), modelId: 'deepseek-v4-flash'});
 
       const verdict = await judge({
         judge: { question: 'Is this a real invoice?' },
@@ -160,7 +160,7 @@ describe('mail rule judge', () => {
 
     it('a model that cannot be reached applies the rule’s policy', async () => {
       const judge = createMailRuleJudge({
-        model: modelThrowing(new Error('connect ECONNREFUSED')) as never,
+        resolveModel: async () => (modelThrowing(new Error('connect ECONNREFUSED')) as never), modelId: 'deepseek-v4-flash',
       });
 
       const verdict = await judge({
@@ -243,7 +243,7 @@ describe('when the answer cannot be used', () => {
     return {
       lines,
       run: () => createMailRuleJudge({
-        model: modelReturning(text) as never,
+        resolveModel: async () => (modelReturning(text) as never), modelId: 'deepseek-v4-flash',
         logger: log as never,
       })({ judge: { question: 'Is this a real invoice?' }, message }),
     };
@@ -348,7 +348,7 @@ describe('what actually reaches the provider', () => {
       },
       doStream() { throw new Error('not used'); },
     };
-    await createMailRuleJudge({ model: model as never })({
+    await createMailRuleJudge({ resolveModel: async () => (model as never), modelId: 'deepseek-v4-flash'})({
       judge: { question: 'Is this a real invoice?' }, message,
     });
     return seen ?? {};

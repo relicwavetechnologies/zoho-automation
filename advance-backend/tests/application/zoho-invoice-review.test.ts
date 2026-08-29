@@ -187,7 +187,7 @@ describe('what the reviewer is shown', () => {
 
 describe('reviewer verdicts', () => {
   const reviewer = (object: unknown) => createInvoiceReviewer({
-    model: { modelId: 'stub' } as never,
+    resolveModel: async () => ({ modelId: 'stub' } as never), modelId: 'deepseek-v4-flash',
     logger: { warn: () => {} } as never,
   });
 

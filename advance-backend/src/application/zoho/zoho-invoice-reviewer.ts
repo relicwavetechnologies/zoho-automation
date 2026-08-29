@@ -35,6 +35,7 @@
  * mistake it exists to catch.
  */
 
+import type { BackendModelResolver } from '../proxy/backend-model.factory';
 import { generateObject, NoObjectGeneratedError, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import type { Logger } from '../../shared/logger';
@@ -276,7 +277,17 @@ export function buildInvoiceReviewPrompt(input: InvoiceReviewInput): string {
 }
 
 export function createInvoiceReviewer(deps: {
-  model: LanguageModel;
+  /**
+   * The model to run on, resolved when the call is made.
+   *
+   * Not a client built at boot: that fixed both the provider and the
+   * credential for the life of the process, which is how this work stayed on
+   * DeepSeek after Divo moved to Spark and then failed outright when that
+   * account ran out of balance.
+   */
+  readonly resolveModel: BackendModelResolver;
+  /** Which model to ask for. The resolver turns it into a client. */
+  readonly modelId: string;
   logger?: Logger;
 }): InvoiceReviewer {
   return {
@@ -292,7 +303,7 @@ export function createInvoiceReviewer(deps: {
           options: Record<string, unknown>,
         ) => Promise<{ object: unknown }>;
         const result = await generateStructured({
-          model: deps.model,
+          model: await deps.resolveModel({ modelId: deps.modelId }),
           schema: responseSchema,
           schemaName: 'zoho_invoice_review_verdict',
           schemaDescription: 'Where each value on a draft invoice came from, and what is wrong with it.',
