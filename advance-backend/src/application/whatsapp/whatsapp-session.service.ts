@@ -64,6 +64,13 @@ export interface LinkedSessionView {
   readonly phoneE164: string | null;
   readonly status: string;
   readonly lastSeenAt: Date | null;
+  /**
+   * The newest message Divo holds from this handset.
+   *
+   * What "last message" on the screen means. Not `lastSeenAt`, which answers
+   * the different question of when the webhook stream last proved itself.
+   */
+  readonly lastMessageAt: Date | null;
   /** True once the handset has been quiet longer than the alarm allows. */
   readonly stale: boolean;
   /**
@@ -381,17 +388,27 @@ function toView(row: WhatsappSessionRow, now: number): LinkedSessionView {
    */
   const since = row.lastSeenAt ?? row.createdAt;
   const stale = row.status === 'linked' && now - since.getTime() > SESSION_STALE_AFTER_MS;
+  const lastMessageAt = row.lastMessageAt ?? null;
   return {
     id: row.id,
     label: row.label,
     phoneE164: row.phoneE164,
     status: row.status,
     lastSeenAt: row.lastSeenAt,
+    /*
+     * What Divo has read, which is what the screen reports. `lastSeenAt` stays
+     * the liveness signal underneath and is not shown: a handset whose history
+     * was recovered has messages without having proved its stream, and saying
+     * "last message never" over 296 recovered messages is simply false.
+     */
+    lastMessageAt,
     stale,
-    // Told apart from `stale` on purpose: one is "waiting for its first
-    // message", which is neither wrong nor actionable, and the other is "this
-    // was working and has gone quiet", which somebody has to look at.
-    awaitingFirstMessage: row.status === 'linked' && row.lastSeenAt === null && !stale,
+    // Told apart from `stale` on purpose: one is "nothing has arrived yet",
+    // which is neither wrong nor actionable, and the other is "this was working
+    // and has gone quiet", which somebody has to look at. Keyed on whether any
+    // message exists rather than on the webhook, so recovering a number's
+    // history stops it claiming to be waiting for its first one.
+    awaitingFirstMessage: row.status === 'linked' && lastMessageAt === null && !stale,
     darkSince: row.darkSince,
   };
 }

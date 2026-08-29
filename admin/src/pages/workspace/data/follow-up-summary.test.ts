@@ -16,7 +16,8 @@ const item = (over: Partial<FollowUp> = {}): FollowUp => ({
 
 const number = (over: Partial<LinkedNumber> = {}): LinkedNumber => ({
   id: 's-1', label: 'Bookings desk', phoneE164: '+919876543210',
-  status: 'linked', lastSeenAt: NOW.toISOString(), stale: false, awaitingFirstMessage: false,
+  status: 'linked', lastSeenAt: NOW.toISOString(), lastMessageAt: NOW.toISOString(),
+  stale: false, awaitingFirstMessage: false,
   darkSince: null, ...over,
 })
 

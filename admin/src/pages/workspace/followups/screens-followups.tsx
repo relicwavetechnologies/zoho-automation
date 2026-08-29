@@ -515,7 +515,7 @@ function NumbersTab({ numbers, onLink }: {
                   </b>
                   <p>
                     {number.phoneE164 ?? 'Number not known yet'}
-                    {' · last message '}{sinceLabel(number.lastSeenAt)}
+                    {' · last message '}{sinceLabel(number.lastMessageAt)}
                     {number.darkSince
                       ? ` · missing messages since ${new Date(number.darkSince).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}`
                       : ''}

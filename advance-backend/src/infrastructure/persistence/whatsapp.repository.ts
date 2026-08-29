@@ -20,6 +20,14 @@ export interface WhatsappSessionRow {
    * and "stopped being heard from" are the same null.
    */
   readonly createdAt: Date;
+  /**
+   * The newest message Divo holds from this handset, across all its chats.
+   *
+   * Distinct from `lastSeenAt` on purpose: this says what Divo has read, that
+   * says when the stream last proved itself. A number recovered from history
+   * has the first without the second.
+   */
+  readonly lastMessageAt?: Date | null;
   /** Set while an unresolved gap exists. Null means nothing known to be missing. */
   readonly darkSince: Date | null;
 }
@@ -88,6 +96,17 @@ export class WhatsappRepository implements WhatsappRepoPort {
     }
   }
 
+  /**
+   * The department's handsets, each with the newest message Divo holds for it.
+   *
+   * The newest message is not the same question as `lastSeenAt`, and conflating
+   * them put "waiting for its first message" on a number Divo had already read
+   * 296 messages from. `lastSeenAt` records the last *webhook*, which is the
+   * liveness signal and must keep meaning only that — a history repair writes
+   * messages without proving the stream works, so it deliberately does not
+   * touch it. What the screen asks is "is Divo reading this number", and that
+   * is answered by whether any message exists.
+   */
   async listSessions(
     scope: { companyId: string; departmentId: string },
   ): Promise<Result<readonly WhatsappSessionRow[], InfraError>> {
@@ -97,7 +116,19 @@ export class WhatsappRepository implements WhatsappRepoPort {
         orderBy: { createdAt: 'asc' },
         select: SESSION_SELECT,
       });
-      return ok(rows);
+      // One grouped read for the whole page rather than a query per handset.
+      const newest = await this.db.whatsappChat.groupBy({
+        by: ['owningSessionId'],
+        where: { owningSessionId: { in: rows.map(row => row.id) } },
+        _max: { lastMessageAt: true },
+      });
+      const newestBySession = new Map(
+        newest.map(group => [group.owningSessionId, group._max.lastMessageAt]),
+      );
+      return ok(rows.map(row => ({
+        ...row,
+        lastMessageAt: newestBySession.get(row.id) ?? null,
+      })));
     } catch (cause) {
       return err(wrapInfra('prisma', 'whatsapp.listSessions', cause));
     }

@@ -70,6 +70,15 @@ export type LinkedNumber = {
   phoneE164: string | null
   status: 'pending' | 'linked' | 'disconnected' | string
   lastSeenAt: string | null
+  /**
+   * The newest message Divo holds from this number.
+   *
+   * What the row's "last message" reads from. Not `lastSeenAt`, which is when
+   * the webhook stream last proved itself — a number whose history was
+   * recovered has messages without that, and reporting "never" over them is
+   * simply wrong.
+   */
+  lastMessageAt: string | null
   /** Quiet longer than the alarm allows. */
   stale: boolean
   /**
