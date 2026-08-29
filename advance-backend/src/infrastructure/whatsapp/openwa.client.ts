@@ -160,6 +160,20 @@ class OpenWaHttpError extends Error {
   }
 }
 
+/**
+ * The gateway's way of saying the work is already done.
+ *
+ * Read off the wrapped cause rather than the message string alone: `400` plus
+ * this wording is a benign no-op, while the same wording on a 5xx would be the
+ * gateway malfunctioning and must not be swallowed.
+ */
+const isAlreadyStarted = (error: InfraError): boolean => {
+  const cause = error.payload.cause;
+  return cause instanceof OpenWaHttpError
+    && cause.status === 400
+    && /already\s+started/i.test(cause.message);
+};
+
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Events worth subscribing to. Divo reads conversations, and nothing else. */
@@ -214,14 +228,33 @@ export class OpenWaClient {
     return ok({ ...created.value, id });
   }
 
-  startSession(sessionId: string): Promise<Result<unknown, InfraError>> {
-    return this.request(
+  /**
+   * Bring a session up, and treat "it is already up" as success.
+   *
+   * The postcondition callers want is *the session is running*, not *this call
+   * is what started it*. With `AUTO_START_SESSIONS` on — which is how Divo runs
+   * the gateway — the engine has always started it before this request lands, so
+   * the gateway answers `400 Session is already started` and the strict reading
+   * turned a perfectly provisioned handset into a failure.
+   *
+   * That is not theoretical: it is why linking a second number reported "Divo
+   * could not confirm whether the number finished provisioning" on the first
+   * attempt every single time, while the gateway's own log said `Session
+   * created`. Four sessions were created and abandoned before one stuck.
+   *
+   * Matched on the gateway's status *and* its wording, so an unrelated 400 —
+   * a rejected id, a malformed body — still fails loudly.
+   */
+  async startSession(sessionId: string): Promise<Result<unknown, InfraError>> {
+    const started = await this.request(
       'POST',
       `/sessions/${enc(sessionId)}/start`,
       null,
       {},
       'startSession',
     );
+    if (started.ok || !isAlreadyStarted(started.error)) return started;
+    return ok({ alreadyStarted: true });
   }
 
   /**

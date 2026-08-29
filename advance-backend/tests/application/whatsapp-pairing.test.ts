@@ -36,6 +36,7 @@ const SESSION: WhatsappSessionRow = {
   phoneE164: null,
   status: 'pending',
   lastSeenAt: null,
+  createdAt: new Date('2026-08-29T06:00:00Z'),
   darkSince: null,
 };
 
@@ -234,5 +235,57 @@ describe('session provisioning', () => {
     }).create(request);
     assert.equal(result.ok, false);
     assert.equal(!result.ok && isSessionProvisionUnknown(result.error), true);
+  });
+});
+
+/**
+ * When a linked handset is worth an alarm, and when it is merely new.
+ *
+ * `lastSeenAt` is null until the first webhook arrives, and reading that as
+ * instantly stale is what put "9261202094 is not being read — treat the counts
+ * below as an undercount" on screen ninety seconds after a number was scanned.
+ * Nothing was missing. Nobody had messaged it yet.
+ */
+describe('a number nobody has messaged yet', () => {
+  const listWith = async (row: WhatsappSessionRow) => {
+    const service = new WhatsappSessionService({
+      repo: { listSessions: async () => ok([row]) } as any,
+      gateway: {} as any,
+      logger: noopLogger,
+    });
+    const listed = await service.list(SCOPE);
+    assert.equal(listed.ok, true);
+    return listed.ok ? listed.value[0]! : undefined!;
+  };
+
+  it('is not stale while it is still inside the grace every handset gets', async () => {
+    const view = await listWith({
+      ...SESSION, status: 'linked', lastSeenAt: null, createdAt: new Date(),
+    });
+    assert.equal(view.stale, false);
+    assert.equal(view.awaitingFirstMessage, true);
+  });
+
+  it('becomes stale once it has been silent since it was linked', async () => {
+    // The alarm still works — it is measured from the link, not from nothing.
+    const view = await listWith({
+      ...SESSION,
+      status: 'linked',
+      lastSeenAt: null,
+      createdAt: new Date(Date.now() - 72 * 60 * 60_000),
+    });
+    assert.equal(view.stale, true);
+    assert.equal(view.awaitingFirstMessage, false);
+  });
+
+  it('leaves a handset that has spoken judged by when it last spoke', async () => {
+    const view = await listWith({
+      ...SESSION,
+      status: 'linked',
+      lastSeenAt: new Date(Date.now() - 60_000),
+      createdAt: new Date(Date.now() - 72 * 60 * 60_000),
+    });
+    assert.equal(view.stale, false);
+    assert.equal(view.awaitingFirstMessage, false);
   });
 });

@@ -15,6 +15,7 @@ const SESSION: WhatsappSessionRow = {
   label: 'Bookings desk', openwaSessionId: 'divo-ua-bookings-x1',
   phoneE164: '+919876543210', status: 'linked',
   lastSeenAt: new Date('2026-08-23T09:00:00Z'),
+  createdAt: new Date('2026-08-01T00:00:00Z'),
   darkSince: new Date('2026-08-23T09:00:00Z'),
 };
 

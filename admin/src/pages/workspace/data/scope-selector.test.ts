@@ -10,11 +10,11 @@ import {
 import type { FollowUp, LinkedNumber } from './use-follow-ups'
 
 const numbers: LinkedNumber[] = [
-  { id: 'n1', label: 'Priya Nair', phoneE164: '+919845011223', status: 'linked', lastSeenAt: new Date().toISOString(), stale: false, darkSince: null },
-  { id: 'n2', label: 'Rohit Sharma', phoneE164: '+919845033445', status: 'linked', lastSeenAt: new Date().toISOString(), stale: false, darkSince: null },
-  { id: 'n3', label: 'Vendor Desk', phoneE164: '+919845099001', status: 'linked', lastSeenAt: new Date().toISOString(), stale: false, darkSince: null },
-  { id: 'n4', label: 'Sales Line 1', phoneE164: '+919845022334', status: 'linked', lastSeenAt: new Date().toISOString(), stale: true, darkSince: null },
-  { id: 'n5', label: 'Kavya Reddy', phoneE164: '+919845066778', status: 'disconnected', lastSeenAt: new Date().toISOString(), stale: false, darkSince: new Date().toISOString() },
+  { id: 'n1', label: 'Priya Nair', phoneE164: '+919845011223', status: 'linked', lastSeenAt: new Date().toISOString(), stale: false, awaitingFirstMessage: false, darkSince: null },
+  { id: 'n2', label: 'Rohit Sharma', phoneE164: '+919845033445', status: 'linked', lastSeenAt: new Date().toISOString(), stale: false, awaitingFirstMessage: false, darkSince: null },
+  { id: 'n3', label: 'Vendor Desk', phoneE164: '+919845099001', status: 'linked', lastSeenAt: new Date().toISOString(), stale: false, awaitingFirstMessage: false, darkSince: null },
+  { id: 'n4', label: 'Sales Line 1', phoneE164: '+919845022334', status: 'linked', lastSeenAt: new Date().toISOString(), stale: true, awaitingFirstMessage: false, darkSince: null },
+  { id: 'n5', label: 'Kavya Reddy', phoneE164: '+919845066778', status: 'disconnected', lastSeenAt: new Date().toISOString(), stale: false, awaitingFirstMessage: false, darkSince: new Date().toISOString() },
 ]
 
 const followUps = [

@@ -16,6 +16,15 @@ import { ApiError, api } from '@/lib/api'
 const BASE = '/api/follow-ups'
 const LINK_NUMBER_REQUESTS_KEY = 'divo.followups.link-number-requests'
 
+/**
+ * The single in-flight link attempt.
+ *
+ * A constant rather than the label, so the stored id survives a rename. Only
+ * one number can be linked at a time — the dialog is modal — so one slot is the
+ * honest shape, and it is cleared the moment a link succeeds.
+ */
+const LINK_ATTEMPT_KEY = 'pending'
+
 function readLinkNumberRequests(): Map<string, string> {
   try {
     const stored = JSON.parse(window.localStorage.getItem(LINK_NUMBER_REQUESTS_KEY) ?? '{}') as Record<string, unknown>
@@ -63,6 +72,13 @@ export type LinkedNumber = {
   lastSeenAt: string | null
   /** Quiet longer than the alarm allows. */
   stale: boolean
+  /**
+   * Linked, inside its grace, and no message has ever arrived.
+   *
+   * Separate from `stale` because they read oppositely to a person: this one is
+   * "give it a moment", the other is "something is broken".
+   */
+  awaitingFirstMessage: boolean
   /**
    * When delivery is believed to have stopped, while the gap is still unfilled.
    *
@@ -178,12 +194,17 @@ export function useFollowUps(
 
 export function useLinkedNumbers(token?: string): Loadable & {
   numbers: LinkedNumber[]
+  /** False when the gateway's engine cannot read past messages at all. */
+  historySupported: boolean
   /** Register a number and return the id its pairing dialog polls. */
   create: (label: string) => Promise<string>
   /** Re-read one number's missed history. Resolves to what it recovered. */
   reread: (id: string) => Promise<RereadResult>
 } {
   const [numbers, setNumbers] = useState<LinkedNumber[]>([])
+  // Assumed available until the server says otherwise, so a slow first load
+  // does not blink the control out and back in.
+  const [historySupported, setHistorySupported] = useState(true)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [refusal, setRefusal] = useState<string | null>(null)
@@ -192,10 +213,11 @@ export function useLinkedNumbers(token?: string): Loadable & {
   const load = useCallback(async () => {
     if (!token) return
     try {
-      const data = await api.get<{ numbers: LinkedNumber[] }>(
+      const data = await api.get<{ numbers: LinkedNumber[]; historySupported?: boolean }>(
         `${BASE}/numbers`, token, { quiet: true, raw: true },
       )
       setNumbers(data.numbers ?? [])
+      setHistorySupported(data.historySupported !== false)
       setError(null)
       setRefusal(null)
     } catch (e) {
@@ -221,7 +243,19 @@ export function useLinkedNumbers(token?: string): Loadable & {
   }, [token, load])
 
   const create = useCallback(async (label: string): Promise<string> => {
-    const requestKey = label.trim()
+    /*
+     * One id for the attempt, not one per name typed.
+     *
+     * The request id is what lets a retry adopt the session already sitting on
+     * the gateway instead of creating another. Keying it on the label undid
+     * exactly that: a team linking one handset renamed it between tries —
+     * "rishi live", "liveband rishi", "booking sagar lalwani", the number —
+     * and every rename minted a fresh id, so four sessions were created and
+     * three were left paired to nothing. Renaming is editing the attempt, not
+     * starting a new one, so the id outlives the name and is cleared only when
+     * a link actually succeeds.
+     */
+    const requestKey = LINK_ATTEMPT_KEY
     const requestId = createRequests.current.get(requestKey) ?? crypto.randomUUID()
     createRequests.current.set(requestKey, requestId)
     writeLinkNumberRequests(createRequests.current)
@@ -235,13 +269,22 @@ export function useLinkedNumbers(token?: string): Loadable & {
   }, [token, load])
 
   useEffect(() => { void load() }, [load])
-  return { numbers, loading, error, refusal, refresh: load, create, reread }
+  return { numbers, historySupported, loading, error, refusal, refresh: load, create, reread }
 }
 
 export type RereadResult = {
   ok: boolean
   chatsRead: number
   messagesRecovered: number
+  /**
+   * The connection cannot read past messages at all.
+   *
+   * Distinct from `complete: false`, which means some chats failed and a retry
+   * might do better. This one says the capability is absent, so the honest
+   * response is to stop offering the control rather than to suggest trying
+   * again.
+   */
+  unsupported?: boolean
   /**
    * False when some chats could not be read.
    *

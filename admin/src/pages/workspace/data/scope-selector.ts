@@ -28,6 +28,7 @@ export type ScopeNumberRow = {
 const STATE_LABEL: Record<NumberState, string> = {
   healthy: 'Reading',
   quiet: 'No messages lately',
+  new: 'Waiting for first message',
   gap: 'Messages missing',
   dark: 'Not connected',
   pending: 'Waiting to be linked',
@@ -38,6 +39,8 @@ const HEALTH_DOT: Record<NumberState, 'ok' | 'warn' | 'err' | 'idle'> = {
   gap: 'err',
   dark: 'err',
   quiet: 'warn',
+  // Idle, not warn: a number nobody has messaged yet is working correctly.
+  new: 'idle',
   pending: 'idle',
 }
 

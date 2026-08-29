@@ -340,7 +340,19 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       res.status(500).json({ ok: false, error: 'numbers_unavailable' });
       return;
     }
-    res.json({ ok: true, numbers: listed.value });
+    res.json({
+      ok: true,
+      numbers: listed.value,
+      /*
+       * Whether re-reading a number's past is even possible here.
+       *
+       * The screen offers that as the remedy for a number with a gap, and on an
+       * engine without a history call it is a button that cannot succeed — one
+       * team pressed it, watched it fail on all thirty chats, and reasonably
+       * concluded the page was broken. Better to stop offering it.
+       */
+      historySupported: deps.historyRepair.historySupported,
+    });
   });
 
   post('/numbers', async (req, res) => {
@@ -380,6 +392,13 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
           requestId: parsed.data.requestId,
           departmentId: scope.departmentId,
           error: created.error.message,
+          // The wrapper's own sentence says only that Divo is unsure, which is
+          // what the member is already being told. The gateway's answer is the
+          // part that identifies which call gave up, and logging just the
+          // wrapper is why diagnosing this needed a shell on the server.
+          cause: created.error.payload.cause instanceof Error
+            ? created.error.payload.cause.message
+            : String(created.error.payload.cause ?? ''),
         });
         // Keep the audit checkpoint pending. Retrying this same request id will
         // adopt the deterministic OpenWA session if it exists.
@@ -498,6 +517,10 @@ export function createFollowUpRoutes(deps: FollowUpRoutesDeps): Router {
       // reporting success would retire the only signal that messages are
       // missing.
       complete: repaired.value.failures.length === 0,
+      // Told apart from a failure so the screen can stop offering a button that
+      // cannot work. Nothing was wrong with the request — the engine behind the
+      // gateway has no history call at all.
+      unsupported: repaired.value.unsupported,
       failures: repaired.value.failures,
     });
   });
