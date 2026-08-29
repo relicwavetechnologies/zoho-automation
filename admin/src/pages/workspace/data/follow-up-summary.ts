@@ -71,6 +71,24 @@ export function needsAttention(number: LinkedNumber): boolean {
   return state === 'dark' || state === 'gap' || state === 'quiet'
 }
 
+/**
+ * Whether re-reading this number's past is worth offering.
+ *
+ * Every linked number, because history is orthogonal to health and tying the
+ * two together loses it twice over. Gating on `needsAttention` hid the control
+ * from a freshly linked handset — the one case with the most unread history
+ * behind it — and would have hidden it again the moment somebody messaged that
+ * number and it turned healthy, so the backfill sitting in the gateway could
+ * never have been claimed at all.
+ *
+ * Pressing it needlessly costs time and nothing else: every message is written
+ * through the same unique key the webhook uses, so a re-read of a number that
+ * is already current inserts nothing.
+ */
+export function offersHistoryReread(number: LinkedNumber): boolean {
+  return number.status === 'linked'
+}
+
 /** Rough, human-sized. "3 days" beats "76 hours" on a card somebody skims. */
 export function sinceLabel(iso: string | null, now = new Date()): string {
   if (!iso) return 'never'
