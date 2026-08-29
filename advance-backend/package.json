@@ -45,6 +45,7 @@
   },
   "dependencies": {
     "@ai-sdk/deepseek": "^2.0.35",
+    "@ai-sdk/openai": "^2.0.122",
     "@larksuiteoapi/node-sdk": "^1.71.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@prisma/client": "^6.1.0",

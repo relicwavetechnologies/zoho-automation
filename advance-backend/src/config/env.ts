@@ -1,3 +1,4 @@
+import { DEFAULT_MODEL } from '../application/observability/pricing';
 import { z } from 'zod';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -438,7 +439,15 @@ export const EnvSchema = z.object({
   WHATSAPP_WEBHOOK_SECRET: z.string().min(16, {
     message: 'WHATSAPP_WEBHOOK_SECRET must be at least 16 characters — the gateway rejects shorter ones when the webhook is registered.',
   }).optional(),
-  WHATSAPP_ANALYSIS_MODEL_ID: z.string().default('deepseek-v4-flash'),
+  /*
+   * Whatever Divo currently runs on, not a second copy of a model name.
+   *
+   * Written out, this said `deepseek-v4-flash` and went on saying it after
+   * every member moved to Spark — so the reading half of follow-ups stayed on
+   * a provider the platform had left, and nothing pointed that out until the
+   * account ran out of balance.
+   */
+  WHATSAPP_ANALYSIS_MODEL_ID: z.string().default(DEFAULT_MODEL),
   WHATSAPP_TIMEZONE: z.string().default('Asia/Kolkata'),
   /** How long transcript is kept. Ninety days unless told otherwise. */
   WHATSAPP_RETENTION_DAYS: z.coerce.number().int().positive().default(90),

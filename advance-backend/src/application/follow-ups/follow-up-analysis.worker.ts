@@ -23,7 +23,23 @@ import type { ClaimedDigest } from '../../infrastructure/persistence/follow-ups.
 
 export interface FollowUpAnalysisDeps {
   readonly repo: FollowUpsRepoPort;
-  readonly model: LanguageModel;
+  /**
+   * The model this chat's company runs on, resolved per sweep rather than
+   * fixed at boot.
+   *
+   * A single client built once carried both the provider and the credential
+   * for the whole install: moving Divo's default to Spark left this on
+   * DeepSeek, and when that account ran dry every chat failed with
+   * `Insufficient Balance` while a funded Meta key sat on the Guardrails page.
+   * Resolving per company means the key an admin manages there is the key this
+   * spends, and each company pays for its own reading.
+   */
+  readonly resolveModel: (input: {
+    modelId: string;
+    companyId: string;
+  }) => Promise<LanguageModel>;
+  /** Which model to ask for. The resolver turns it into a client. */
+  readonly modelId: string;
   readonly logger: Logger;
   readonly timeZone?: string;
   readonly scanIntervalMs?: number;
@@ -211,13 +227,35 @@ export class FollowUpAnalysisWorker {
       return null;
     }
 
+    /*
+     * Resolved here rather than held on the worker: the key is per company and
+     * an admin can rotate it without a restart. A company with no key for the
+     * model is a configuration gap, not a chat problem — say so once and leave
+     * the chat unstamped so it is read again when somebody fixes it.
+     */
+    let model: LanguageModel;
+    try {
+      model = await this.deps.resolveModel({
+        modelId: this.deps.modelId,
+        companyId: candidate.companyId,
+      });
+    } catch (cause) {
+      this.log.error('follow_up_analysis.model_unavailable', {
+        chatId: candidate.chatId,
+        companyId: candidate.companyId,
+        modelId: this.deps.modelId,
+        error: cause instanceof Error ? cause.message : String(cause),
+      });
+      return null;
+    }
+
     const result = await analyzeChat({
       chatName: candidate.chatName ?? 'Unnamed chat',
       isGroup: candidate.isGroup,
       timeZone: this.deps.timeZone ?? DEFAULTS.timeZone,
       messages: transcript.value,
       tracked: tracked.value,
-    }, { model: this.deps.model, logger: this.log });
+    }, { model, logger: this.log });
 
     if (!result.ok) {
       // Deliberately not stamped. A model failure says nothing about the chat,
