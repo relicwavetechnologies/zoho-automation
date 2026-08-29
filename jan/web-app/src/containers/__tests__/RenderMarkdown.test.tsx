@@ -1,4 +1,4 @@
-import { render, waitFor, act, cleanup } from '@testing-library/react'
+import { render, waitFor, act, cleanup, fireEvent } from '@testing-library/react'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { RenderMarkdown } from '../RenderMarkdown'
 import { useInterfaceSettings } from '@/hooks/useInterfaceSettings'
@@ -316,6 +316,36 @@ describe('RenderMarkdown', () => {
     expect(codeBlock).toBeTruthy()
   })
 
+  it('copies fenced code blocks as plain text', async () => {
+    const content = `Cleaned 3 of 6 entries:
+
+\`\`\`
+www.example.com
+www.foo.co.uk
+www.emiactech.com
+\`\`\`
+`
+    const { container } = render(<RenderMarkdown content={content} />)
+
+    await waitFor(() =>
+      expect(
+        container.querySelector('[data-streamdown="code-block-copy-button"]')
+      ).toBeTruthy()
+    )
+
+    const button = container.querySelector(
+      '[data-streamdown="code-block-copy-button"]'
+    ) as HTMLButtonElement
+    expect(button.getAttribute('aria-label')).toBe('Copy code block')
+    fireEvent.click(button)
+
+    await waitFor(() =>
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+        'www.example.com\nwww.foo.co.uk\nwww.emiactech.com\n'
+      )
+    )
+  })
+
   describe('LaTeX normalization - display math', () => {
     it('converts \\[...\\] to $$ display math', () => {
       const content = 'Here is math:\n\\[\nx^2 + y^2\n\\]\nDone'
@@ -489,4 +519,3 @@ describe('RenderMarkdown', () => {
     })
   })
 })
-

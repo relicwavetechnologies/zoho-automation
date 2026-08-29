@@ -1,6 +1,6 @@
 
 import { Components, ExtraProps } from 'react-markdown'
-import { memo, useDeferredValue, useMemo } from 'react'
+import { memo, useDeferredValue, useEffect, useMemo, useRef } from 'react'
 import {
   cn,
   disableIndentedCodeBlockPlugin,
@@ -75,6 +75,20 @@ function StreamingCode({ node, className, children, ...props }: CodeProps) {
 const STREAMING_COMPONENTS: Components = { code: StreamingCode }
 
 const ZWSP = '​'
+
+function codeTextFromPre(pre: HTMLPreElement): string {
+  const code = pre.querySelector('code')
+  if (!code) return (pre.textContent ?? '').replace(/\n$/, '')
+
+  const lineNodes = Array.from(code.children).filter((child) =>
+    child.classList.contains('block')
+  )
+  if (lineNodes.length > 1) {
+    return lineNodes.map((line) => line.textContent ?? '').join('\n')
+  }
+
+  return (code.textContent ?? '').replace(/\n$/, '')
+}
 
 // "word**,**" is neither left- nor right-flanking per CommonMark, so the markers
 // render literally; a ZWSP just inside restores flanking (U+200B is treated as
@@ -189,6 +203,7 @@ function RenderMarkdownComponent({
   isAnimating,
   isStreaming,
 }: MarkdownProps) {
+  const markdownRef = useRef<HTMLDivElement>(null)
   const renderHtmlArtifacts = useInterfaceSettings(
     (s) => s.renderHtmlArtifacts
   )
@@ -226,8 +241,73 @@ function RenderMarkdownComponent({
       : null
   }, [normalizedContent, isStreaming, renderHtmlArtifacts])
 
+  useEffect(() => {
+    if (isStreaming) return
+    const root = markdownRef.current
+    if (!root) return
+
+    const timers = new Set<number>()
+
+    const enhanceCodeBlocks = () => {
+      for (const block of root.querySelectorAll(
+        '[data-streamdown="code-block"]'
+      )) {
+        block.classList.add('markdown-copyable-code-container')
+        const copyButton = block.querySelector(
+          '[data-streamdown="code-block-copy-button"]'
+        )
+        if (copyButton) {
+          copyButton.setAttribute('aria-label', 'Copy code block')
+        }
+      }
+
+      for (const pre of root.querySelectorAll<HTMLPreElement>('pre')) {
+        if (pre.closest('[data-streamdown="code-block"]')) continue
+        if (pre.querySelector(':scope > .markdown-code-copy-button')) continue
+
+        pre.classList.add('markdown-copyable-code-block')
+
+        const button = document.createElement('button')
+        button.type = 'button'
+        button.className = 'markdown-code-copy-button'
+        button.setAttribute('aria-label', 'Copy code block')
+        button.textContent = 'Copy'
+
+        button.addEventListener('click', async () => {
+          const text = codeTextFromPre(pre)
+
+          try {
+            await navigator.clipboard.writeText(text)
+            button.dataset.copied = 'true'
+            button.textContent = 'Copied'
+            const timer = window.setTimeout(() => {
+              button.dataset.copied = 'false'
+              button.textContent = 'Copy'
+              timers.delete(timer)
+            }, 1500)
+            timers.add(timer)
+          } catch {
+            button.textContent = 'Copy failed'
+          }
+        })
+
+        pre.appendChild(button)
+      }
+    }
+
+    enhanceCodeBlocks()
+    const observer = new MutationObserver(enhanceCodeBlocks)
+    observer.observe(root, { childList: true, subtree: true })
+
+    return () => {
+      observer.disconnect()
+      for (const timer of timers) window.clearTimeout(timer)
+    }
+  }, [normalizedContent, isStreaming])
+
   return (
     <div
+      ref={markdownRef}
       dir="auto"
       className={cn(
         'markdown wrap-break-word select-text',
