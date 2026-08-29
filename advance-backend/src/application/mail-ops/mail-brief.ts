@@ -37,6 +37,7 @@
  * rows, and a summary of a member's own automation should not be able to be
  * wrong.
  */
+import type { BackendModelResolver } from '../proxy/backend-model.factory';
 import { generateText, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import { extractJson } from './mail-rule-compiler';
@@ -219,7 +220,17 @@ const WANT_MAX    = 180;
 const RULE_MAX    = 60;
 
 export interface MailBriefDeps {
-  readonly model: LanguageModel;
+  /**
+   * The model to run on, resolved when the call is made.
+   *
+   * Not a client built at boot: that fixed both the provider and the
+   * credential for the life of the process, which is how this work stayed on
+   * DeepSeek after Divo moved to Spark and then failed outright when that
+   * account ran out of balance.
+   */
+  readonly resolveModel: BackendModelResolver;
+  /** Which model to ask for. The resolver turns it into a client. */
+  readonly modelId: string;
   /**
    * Where the member manages their mail rules, e.g. `https://divo.example.com`.
    *
@@ -532,7 +543,7 @@ export function createMailBriefComposer(deps: MailBriefDeps) {
     let text: string;
     try {
       const result = await generateText({
-        model: deps.model,
+        model: await deps.resolveModel({ modelId: deps.modelId }),
         system: SYSTEM_PROMPT,
         prompt: `Emails received between ${timeIn(messages[0]!.occurredAt, timeZone)} `
           + `and now:\n\n${listed}`,

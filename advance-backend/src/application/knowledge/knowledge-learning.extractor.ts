@@ -1,3 +1,4 @@
+import type { BackendModelResolver } from '../proxy/backend-model.factory';
 import { generateObject, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import type { ChannelKey } from '../../domain/channel/incoming-message';
@@ -97,7 +98,7 @@ export class DeepSeekKnowledgeLearningExtractor implements KnowledgeLearningExtr
   readonly provider = 'deepseek';
 
   constructor(
-    private readonly model: LanguageModel,
+    private readonly resolveModel: BackendModelResolver,
     readonly modelId: string,
   ) {}
 
@@ -107,7 +108,7 @@ export class DeepSeekKnowledgeLearningExtractor implements KnowledgeLearningExtr
       options: Record<string, unknown>,
     ) => Promise<{ object: unknown }>;
     const result = await generateStructured({
-      model: this.model,
+      model: await this.resolveModel({ modelId: this.modelId }),
       schema: knowledgeLearningExtractionSchema,
       schemaName: 'personal_knowledge_learning',
       schemaDescription: 'Bounded personal-memory create, update, or delete observations.',

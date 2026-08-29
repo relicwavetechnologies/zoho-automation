@@ -69,7 +69,7 @@ const table = (
 ): MailRuleDestination => ({ type: 'routed', routes: ROUTES, otherwise });
 
 const judgeWith = (text: string) =>
-  createMailRuleJudge({ model: modelReturning(text) as never });
+  createMailRuleJudge({ resolveModel: async () => (modelReturning(text) as never), modelId: 'deepseek-v4-flash'});
 
 describe('a judge that names a branch', () => {
   it('returns the branch the model chose', async () => {
@@ -163,7 +163,7 @@ describe('a judge that names a branch', () => {
         };
       },
     };
-    await createMailRuleJudge({ model: model as never })({ routes: ROUTES, message });
+    await createMailRuleJudge({ resolveModel: async () => (model as never), modelId: 'deepseek-v4-flash'})({ routes: ROUTES, message });
 
     assert.ok(seen.includes('invoices'), 'the keys are shown');
     assert.ok(!seen.includes('anish@emiactech.com'), 'the recipient is not');

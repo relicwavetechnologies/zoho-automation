@@ -3,9 +3,16 @@ import { describe, it } from 'node:test';
 import { DeepSeekPersonaLearningExtractor, parseModelJson } from '../../src/application/persona-learning/persona-learning.extractor';
 import { textModel } from '../helpers/mock-model';
 
+
+/**
+ * The extractor now asks for its model when it runs, so the tests hand it one
+ * the same way composition does. Behaviour under test is unchanged.
+ */
+const asResolver = (model: unknown) => async () => model as never;
+
 describe('DeepSeekPersonaLearningExtractor', () => {
   it('accepts schema-valid observations and removes semantic duplicates within one run', async () => {
-    const extractor = new DeepSeekPersonaLearningExtractor(textModel(JSON.stringify({
+    const extractor = new DeepSeekPersonaLearningExtractor(asResolver(textModel(JSON.stringify({
       schemaVersion: 1,
       observations: [
         {
@@ -25,7 +32,7 @@ describe('DeepSeekPersonaLearningExtractor', () => {
           evidenceStrength: 'explicit',
         },
       ],
-    })), 'deepseek-v4-flash');
+    }))), 'deepseek-v4-flash');
 
     const result = await extractor.extract({
       companyId: 'company-1',
@@ -42,7 +49,7 @@ describe('DeepSeekPersonaLearningExtractor', () => {
   });
 
   it('rejects malformed model output rather than writing an unconstrained candidate', async () => {
-    const extractor = new DeepSeekPersonaLearningExtractor(textModel('{"observations":"not an array"}'), 'deepseek-v4-flash');
+    const extractor = new DeepSeekPersonaLearningExtractor(asResolver(textModel('{"observations":"not an array"}')), 'deepseek-v4-flash');
     await assert.rejects(
       extractor.extract({
         companyId: 'company-1',

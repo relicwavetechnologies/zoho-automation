@@ -3,6 +3,7 @@ import type { LanguageModel } from 'ai';
 import type { Result } from '../../shared/result';
 import { ok, err } from '../../shared/result';
 import { InfraError } from '../../shared/errors';
+import type { BackendModelResolver } from '../proxy/backend-model.factory';
 import type { Logger } from '../../shared/logger';
 import type { LarkChatContextRepoPort } from '../../infrastructure/persistence/lark-chat-context.repository';
 import type {
@@ -387,8 +388,18 @@ const MAX_CONTEXT_WRITE_ATTEMPTS = 5;
 export class LarkChatContextService {
   constructor(private readonly deps: {
     repo: LarkChatContextRepoPort;
-    /** Optional for tests and deterministic fallback deployments. */
-    model?: LanguageModel;
+    /**
+     * Optional for tests and deterministic fallback deployments.
+     *
+     * Resolved per compaction rather than built at boot. The credential is the
+     * one an admin manages, so a room's memory stops depending on whatever
+     * key the process happened to start with — which is how this quietly
+     * stopped summarising at all when that account ran out of balance, leaving
+     * every room on the deterministic fallback with nothing saying why.
+     */
+    resolveModel?: BackendModelResolver;
+    /** Which model to ask for. Required whenever a resolver is given. */
+    modelId?: string;
     logger: Logger;
   }) {}
 
@@ -479,11 +490,29 @@ export class LarkChatContextService {
 
     if (compactedChunk.length > 0) {
       const existingSummary = ctx.summaryJson as GroupChatSummary | null;
-      const summaryModel = this.deps.model;
-      const shouldUseLLM = Boolean(summaryModel)
+      const shouldUseLLM = Boolean(this.deps.resolveModel && this.deps.modelId)
         && newCount >= GROUP_CONTEXT_POLICY.MIN_MESSAGES_FOR_LLM_SUMMARY;
 
-      if (shouldUseLLM && summaryModel) {
+      /*
+       * A room whose company has no key falls back to the deterministic
+       * summary rather than losing the compaction outright — the messages are
+       * already compacted by this point, so throwing here would drop them.
+       */
+      let summaryModel: LanguageModel | undefined;
+      if (shouldUseLLM && this.deps.resolveModel && this.deps.modelId) {
+        try {
+          summaryModel = await this.deps.resolveModel({
+            modelId: this.deps.modelId,
+            companyId: ctx.companyId,
+          });
+        } catch (cause) {
+          log.warn('chat_context.summary_model_unavailable', {
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
+        }
+      }
+
+      if (summaryModel) {
         const summary = await refreshSummaryWithLLM(
           compactedChunk, existingSummary, summaryModel, log,
         );

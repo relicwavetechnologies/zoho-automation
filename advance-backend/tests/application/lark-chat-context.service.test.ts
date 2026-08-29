@@ -168,7 +168,7 @@ describe('LarkChatContextService attachment snapshots', () => {
     const repo = new FakeLarkChatContextRepo();
     const service = new LarkChatContextService({
       repo,
-      model: {} as LanguageModel,
+      resolveModel: async () => ({} as LanguageModel), modelId: 'deepseek-v4-flash',
       logger,
     });
 
@@ -260,7 +260,12 @@ describe('LarkChatContextService rolling summary', () => {
       return doGenerate(input);
     };
 
-    const service = new LarkChatContextService({ repo, model, logger });
+    const service = new LarkChatContextService({
+      repo,
+      resolveModel: async () => model,
+      modelId: 'deepseek-v4-flash',
+      logger,
+    });
     const result = await service.appendMessage({
       companyId: 'company_1',
       chatId: 'chat_1',
@@ -332,7 +337,7 @@ describe('LarkChatContextService rolling summary', () => {
 
     const service = new LarkChatContextService({
       repo,
-      model: textModel(JSON.stringify({ summary: 'Older room discussion' })),
+      resolveModel: async () => (textModel(JSON.stringify({ summary: 'Older room discussion' }))), modelId: 'deepseek-v4-flash',
       logger,
     });
     await service.appendMessage({

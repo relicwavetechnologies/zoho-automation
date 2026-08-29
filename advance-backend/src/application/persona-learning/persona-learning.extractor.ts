@@ -1,3 +1,4 @@
+import type { BackendModelResolver } from '../proxy/backend-model.factory';
 import { generateText, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import type { PersonaLearningToolSummary, PersonaLearningTraceContext } from './persona-learning.types';
@@ -76,13 +77,15 @@ export class DeepSeekPersonaLearningExtractor implements PersonaLearningExtracto
   readonly provider = 'deepseek';
 
   constructor(
-    private readonly model: LanguageModel,
+    private readonly resolveModel: BackendModelResolver,
     readonly modelId: string,
   ) {}
 
   async extract(input: PersonaLearningExtractionInput): Promise<PersonaLearningExtraction> {
     const { text } = await generateText({
-      model: this.model,
+      // This one knows whose evidence it is reading, so it spends that
+      // company's key rather than the platform's.
+      model: await this.resolveModel({ modelId: this.modelId, companyId: input.companyId }),
       system: SYSTEM_PROMPT,
       prompt: JSON.stringify({
         evidence: {
