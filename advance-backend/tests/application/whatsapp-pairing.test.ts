@@ -266,6 +266,37 @@ describe('a number nobody has messaged yet', () => {
     assert.equal(view.awaitingFirstMessage, true);
   });
 
+  it('stops claiming to await its first message once history is recovered', async () => {
+    /*
+     * The bug this pins: a re-read pulled 296 messages in and the row still
+     * read "waiting for first message · last message never", because the badge
+     * was keyed on `lastSeenAt` — which only the webhook writes, and which a
+     * history repair deliberately does not touch.
+     */
+    const view = await listWith({
+      ...SESSION,
+      status: 'linked',
+      lastSeenAt: null,
+      createdAt: new Date(),
+      lastMessageAt: new Date('2026-08-26T19:23:00Z'),
+    });
+    assert.equal(view.awaitingFirstMessage, false);
+    assert.equal(view.lastMessageAt?.toISOString(), '2026-08-26T19:23:00.000Z');
+  });
+
+  it('keeps the liveness alarm on the webhook, not on recovered history', async () => {
+    // Recovering old messages must not make a handset whose stream has been
+    // dead for days look alive.
+    const view = await listWith({
+      ...SESSION,
+      status: 'linked',
+      lastSeenAt: null,
+      createdAt: new Date(Date.now() - 72 * 60 * 60_000),
+      lastMessageAt: new Date('2026-08-26T19:23:00Z'),
+    });
+    assert.equal(view.stale, true);
+  });
+
   it('becomes stale once it has been silent since it was linked', async () => {
     // The alarm still works — it is measured from the link, not from nothing.
     const view = await listWith({
@@ -279,11 +310,15 @@ describe('a number nobody has messaged yet', () => {
   });
 
   it('leaves a handset that has spoken judged by when it last spoke', async () => {
+    // "Has spoken" means Divo holds a message from it, so the fixture carries
+    // one: a webhook that fired and stored nothing is a different case, covered
+    // above, and there the row honestly still has nothing to show.
     const view = await listWith({
       ...SESSION,
       status: 'linked',
       lastSeenAt: new Date(Date.now() - 60_000),
       createdAt: new Date(Date.now() - 72 * 60 * 60_000),
+      lastMessageAt: new Date(Date.now() - 60_000),
     });
     assert.equal(view.stale, false);
     assert.equal(view.awaitingFirstMessage, false);
