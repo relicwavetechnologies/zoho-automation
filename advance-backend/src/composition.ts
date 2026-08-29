@@ -321,6 +321,7 @@ import type { ApiKeyProvider } from './application/governance/api-key-exhaustion
 
 // AI model
 import { createDeepSeek } from '@ai-sdk/deepseek';
+import { createBackendModelResolver } from './application/proxy/backend-model.factory';
 import { wrapLanguageModel, type LanguageModel } from 'ai';
 import { OpenWaClient } from './infrastructure/whatsapp/openwa.client';
 import { WhatsappRepository } from './infrastructure/persistence/whatsapp.repository';
@@ -828,7 +829,21 @@ export async function buildContainer(
   // The SDK resolves a missing key at request time, so startup stays
   // independent of this: with no key the callers fall back to their
   // deterministic paths rather than failing to boot.
-  const deepSeek = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_API_KEY } : {});
+  /*
+ * Backend-side jobs resolve their model per company from the Guardrails key
+ * store. The `deepSeek` client below still serves the workers not yet moved
+ * across; each one that moves loses a dependency on a process-wide key.
+ */
+const backendModel = createBackendModelResolver({
+  keys: proxyKeyStore,
+  baseUrls: {
+    deepseek: env.DEEPSEEK_BASE_URL,
+    openai: env.OPENAI_BASE_URL,
+    meta: env.META_BASE_URL,
+  },
+});
+
+const deepSeek = createDeepSeek(env.DEEPSEEK_API_KEY ? { apiKey: env.DEEPSEEK_API_KEY } : {});
   const deepSeekModel = (modelId: string) => deepSeek(modelId);
 
   // Backend-side inference is now background work only.
@@ -2734,9 +2749,17 @@ export async function buildContainer(
       }),
       analysisWorker: new FollowUpAnalysisWorker({
         repo: followUpsRepo,
-        // DeepSeek, like every other backend-side model. The imported agent
-        // defaulted to Claude; the house rule is one provider.
-        model: deepSeekModel(env.WHATSAPP_ANALYSIS_MODEL_ID),
+        /*
+         * The platform default, on the key the Guardrails page manages.
+         *
+         * Not a client fixed at boot on `DEEPSEEK_API_KEY`, which is what this
+         * was: it kept the analysis on DeepSeek after every member moved to
+         * Spark, and when that account ran out of balance every chat failed
+         * with `Insufficient Balance` while a funded Meta key sat unused on
+         * the admin page.
+         */
+        modelId: env.WHATSAPP_ANALYSIS_MODEL_ID,
+        resolveModel: backendModel,
         logger,
         timeZone: env.WHATSAPP_TIMEZONE,
         runDigest: createFollowUpDigestRunner({
