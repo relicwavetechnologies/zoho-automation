@@ -174,6 +174,40 @@ const isAlreadyStarted = (error: InfraError): boolean => {
     && /already\s+started/i.test(cause.message);
 };
 
+/**
+ * A stored gateway row, in the shape the webhook would have delivered.
+ *
+ * Only the fields the normalizer reads are mapped, and each difference is a
+ * real one rather than a rename: the store records `direction` where a webhook
+ * sends `fromMe`, carries no `isGroup` at all (the chat id's suffix is the
+ * authority WhatsApp itself uses), and nests a quoted message under `metadata`.
+ */
+const storedMessageToPayload = (
+  row: Record<string, unknown>,
+  chatId: string,
+): Record<string, unknown> => {
+  const rowChatId = typeof row['chatId'] === 'string' ? row['chatId'] : chatId;
+  const fromMe = row['direction'] === 'outgoing';
+  const metadata = (row['metadata'] ?? {}) as Record<string, unknown>;
+  return {
+    // The WhatsApp id, never the store's own primary key.
+    id: row['waMessageId'],
+    chatId: rowChatId,
+    isGroup: rowChatId.endsWith('@g.us'),
+    fromMe,
+    from: row['from'] ?? row['author'],
+    to: row['to'],
+    author: row['author'],
+    body: row['body'] ?? '',
+    type: row['type'] ?? 'text',
+    timestamp: row['timestamp'],
+    // The store names the counterparty on the row; a webhook carries it on a
+    // contact. Same value, so the two paths name a chat identically.
+    ...(typeof row['chatName'] === 'string' ? { contact: { name: row['chatName'] } } : {}),
+    ...(metadata['quotedMessage'] ? { quotedMessage: metadata['quotedMessage'] } : {}),
+  };
+};
+
 const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Events worth subscribing to. Divo reads conversations, and nothing else. */
@@ -329,18 +363,41 @@ export class OpenWaClient {
    * has seen. The reconcile sweep depends on it: a webhook stream that stopped
    * leaves a hole no amount of waiting will fill.
    */
-  chatHistory(
+  /**
+   * One chat's past, read from the gateway's own store.
+   *
+   * Deliberately not `/messages/:chatId/history`. That is the engine-specific
+   * call and Baileys does not implement it — it answers `501 Operation not
+   * supported by the active engine` for every chat, which is how a re-read came
+   * to report thirty chats, thirty failures and nothing recovered while the
+   * messages were sitting in the gateway the whole time. The gateway keeps its
+   * own copy of everything it has seen, including the backfill Baileys delivers
+   * when a handset links, and that copy is queryable.
+   *
+   * Rows are translated into the webhook's payload shape rather than handed
+   * over raw, so both paths run through one normalizer and write identical
+   * rows. `waMessageId` is the reason that matters: a stored row's `id` is the
+   * gateway's own primary key, and writing that as the message id would defeat
+   * the unique key the webhook path writes through and duplicate every message
+   * already recorded.
+   */
+  async chatHistory(
     sessionId: string,
     chatId: string,
     limit = 50,
   ): Promise<Result<readonly Record<string, unknown>[], InfraError>> {
-    return this.request(
+    const page = await this.request<{ messages?: unknown[] } | unknown[]>(
       'GET',
-      `/sessions/${enc(sessionId)}/messages/${enc(chatId)}/history?limit=${limit}`,
+      `/sessions/${enc(sessionId)}/messages?chatId=${enc(chatId)}&limit=${limit}`,
       null,
       { timeoutMs: 90_000 },
       'chatHistory',
     );
+    if (!page.ok) return page;
+    const rows = Array.isArray(page.value)
+      ? page.value
+      : Array.isArray(page.value?.messages) ? page.value.messages : [];
+    return ok(rows.map(row => storedMessageToPayload(row as Record<string, unknown>, chatId)));
   }
 
   // ── Writing ──────────────────────────────────────────────────────────────

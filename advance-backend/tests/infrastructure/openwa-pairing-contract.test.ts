@@ -113,3 +113,79 @@ describe('creating a session', () => {
     mock.restoreAll();
   });
 });
+
+/**
+ * Reading a chat's past.
+ *
+ * The gateway keeps its own store of everything it has seen, including what
+ * Baileys backfills on link. The engine-specific `/history` call answers 501,
+ * so a repair pointed at it recovered nothing while the messages sat there —
+ * these pin the endpoint and, more importantly, the identity of a message.
+ */
+describe('chat history', () => {
+  const respondJson = (body: unknown) => {
+    mock.method(globalThis, 'fetch', async (url: unknown) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify(body), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    });
+  };
+  let calls: string[] = [];
+
+  it('reads the store, not the engine call that is unimplemented', async () => {
+    calls = [];
+    respondJson({ messages: [], total: 0 });
+    await client().chatHistory('s-1', '9199@c.us', 10);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0]!.includes('/sessions/s-1/messages?chatId='), calls[0]);
+    assert.equal(calls[0]!.includes('/history'), false);
+    mock.restoreAll();
+  });
+
+  it('carries the WhatsApp message id, never the store row id', async () => {
+    // The unique key the webhook path writes through is the WhatsApp id. Using
+    // the row's own primary key would re-insert every message already stored.
+    calls = [];
+    respondJson({
+      messages: [{
+        id: 'b0f1c2d3-0000-4444-8888-99990000aaaa',
+        waMessageId: '3EB0A1B2C3D4E5F60718',
+        chatId: '9199@c.us',
+        direction: 'incoming',
+        author: '9199@c.us',
+        body: 'hi',
+        type: 'text',
+        timestamp: 1787989242,
+        chatName: 'Venue',
+        metadata: { quotedMessage: { body: 'earlier' } },
+      }],
+      total: 1,
+    });
+    const result = await client().chatHistory('s-1', '9199@c.us', 10);
+    assert.equal(result.ok, true);
+    const payload = result.ok ? result.value[0]! : {};
+    assert.equal(payload['id'], '3EB0A1B2C3D4E5F60718');
+    assert.equal(payload['fromMe'], false);
+    assert.equal(payload['isGroup'], false);
+    assert.equal(payload['timestamp'], 1787989242);
+    mock.restoreAll();
+  });
+
+  it('reads group-ness from the chat id, which the store does not carry', async () => {
+    calls = [];
+    respondJson({
+      messages: [{
+        id: 'row-2', waMessageId: 'W2', chatId: '12036@g.us',
+        direction: 'outgoing', author: '9199@c.us', body: 'ok',
+        type: 'text', timestamp: 1787989242,
+      }],
+      total: 1,
+    });
+    const result = await client().chatHistory('s-1', '12036@g.us', 10);
+    const payload = result.ok ? result.value[0]! : {};
+    assert.equal(payload['isGroup'], true);
+    assert.equal(payload['fromMe'], true);
+    mock.restoreAll();
+  });
+});
